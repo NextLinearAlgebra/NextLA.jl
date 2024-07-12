@@ -4,6 +4,15 @@ using Plots
 using StatsPlots
 using JLD2
 
+<<<<<<< HEAD
+=======
+include("../src/zlarfbwrap.jl")
+include("../src/zlarfb_v0.jl")
+include("../src/zlarfb_v1.jl")
+include("../src/zlarfb_v2.jl")
+include("../src/zlarfb_v3.jl")
+
+>>>>>>> 3fb888a (add paths to src)
 #BLAS.set_num_threads(1) # to make sequential
 t = 40
 BLAS.set_num_threads(Threads.nthreads())
@@ -36,7 +45,10 @@ for T in [Float64, ComplexF64, Float32, ComplexF32]
             rlvd = Float64[]
             rlvf = Float64[]
             
+            
             for m in [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
+                println("m = ", m)
+
                 n = m
                 
                 push!(xvals, m)
@@ -176,8 +188,6 @@ for T in [Float64, ComplexF64, Float32, ComplexF32]
             plot!(q, xvals, y3m, marker=:star8, label="Internal Function")
             savefig(q, "larfb memory type=$T t=$t k=$k trans=$trans")
             
-<<<<<<< HEAD
-=======
             """
             p5 = plot()
             plot!(p5, legend=:topleft, xlabel="Matrix Size (n x n)", ylabel = "julia / lapack", title="larfb Time Ratios SMultithreaded")
@@ -185,7 +195,6 @@ for T in [Float64, ComplexF64, Float32, ComplexF32]
             plot!(p5, xvals, rfvl, marker=:circle, label="Internal Function")
             savefig(p5, "larfb time ratios type=$T t=$t k=$k trans=$trans")
             """
->>>>>>> 222ae99 (add paths to src)
             rats = [rlvd; rlvf]
             b1 = minimum(rats) - 0.15
             b2 = maximum(rats) + 0.15
