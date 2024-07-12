@@ -182,6 +182,16 @@ for T in [Float64, ComplexF64, Float32, ComplexF32]
             plot!(q, xvals, y3m, marker=:star8, label="Internal Function")
             savefig(q, "larfb memory type=$T t=$t k=$k trans=$trans")
             
+<<<<<<< HEAD
+=======
+            """
+            p5 = plot()
+            plot!(p5, legend=:topleft, xlabel="Matrix Size (n x n)", ylabel = "julia / lapack", title="larfb Time Ratios SMultithreaded")
+            plot!(p5, xvals, rdvl, marker=:circle, label="Multiple Dispatch")
+            plot!(p5, xvals, rfvl, marker=:circle, label="Internal Function")
+            savefig(p5, "larfb time ratios type=$T t=$t k=$k trans=$trans")
+            """
+>>>>>>> 222ae99 (add paths to src)
             rats = [rlvd; rlvf]
             b1 = minimum(rats) - 0.15
             b2 = maximum(rats) + 0.15
