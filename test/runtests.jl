@@ -1,6 +1,7 @@
 using NextLA
 using Test
 using LinearAlgebra, Random
+<<<<<<< HEAD
 using CUDA
 
 #using Aqua
