@@ -1,6 +1,11 @@
 using DLA
 using Test
+using LinearAlgebra, Random
 
-@testset "DLA.jl" begin
-    # Write your tests here.
-end
+#using Aqua
+#@testset "Project quality" begin
+#    Aqua.test_all(DLA, ambiguities=false)
+#end
+
+include("DLAMatrix.jl")
+include("lu.jl")
