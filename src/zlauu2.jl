@@ -72,7 +72,7 @@ function zlauu2(uplo::Char, n::Int, A::AbstractMatrix{T}, lda::Int) where T
 
             if i < n
                 # Update the diagonal element
-                A[i, i] = aii^2 + real(dot(A[i, i+1:n], A[i, i+1:n]))
+                A[i, i] = aii^2 + dot(A[i, i+1:n], A[i, i+1:n])
 
                 # Update the remaining upper triangle elements
                 if i > 1
@@ -90,11 +90,11 @@ function zlauu2(uplo::Char, n::Int, A::AbstractMatrix{T}, lda::Int) where T
 
             if i < n
                 # Update the diagonal element
-                A[i, i] = aii^2 + real(dot(A[i+1:n, i], A[i+1:n, i]))
+                A[i, i] = aii^2 + dot(A[i+1:n, i], A[i+1:n, i])
 
                 # Update the remaining lower triangle elements
                 if i > 1
-                    A[i, 1:i-1] .= A[i+1:n, 1:i-1]' * A[i+1:n, i] + A[i, 1:i-1] * aii
+                    A[i, 1:i-1] .= adjoint(A[i+1:n, 1:i-1]) * A[i+1:n, i] + A[i, 1:i-1] * aii
                 end
             else
                 # Scale diagonal entries when i == n
