@@ -1,4 +1,5 @@
 using LinearAlgebra
+include("trsm.jl")
 """
     rectrsm!(side, A, n, B, k=1; uplo="L", transpose="N", threshold=128)
 
@@ -15,7 +16,7 @@ where:
 
 # Parameters
 - `side` (Character): `'L'` for left-side multiplication (`op(A) * X = B`) or `'R'` for right-side (`X * op(A) = B`).
-- `A` (AbstractMatrix{T}): Triangular matrix of size `n x n` (either upper or lower, controlled by `uplo`).
+- `A` (AbstractMatrix{T}): Triangular matrix of size `n x nither upper or lower, controlled by `uplo`).
 - `n` (Integer): Size of `A`.
 - `B` (AbstractMatrix{T}): Right-hand side matrix of size `n x k` (defaults to `n x 1`).
 - `k` (Integer, optional): Number of columns in `B` (i.e., different systems to solve in parallel); defaults to 1.
@@ -34,7 +35,7 @@ function rectrsm!(A::AbstractMatrix{T}, n::Int, B::AbstractMatrix{T}, side::Abst
                   uplo::AbstractChar='L', transpose::AbstractChar='N', threshold::Int=16) where T
     # Base case: Small matrix sizes use the non-recursive `trsm` (no BLAS).
     if n <= threshold
-        LinearAlgebra.BLAS.trsm!(side, uplo, transpose, 'N', 1.0, A, B) #sequential, simple TRSM implementation in just Lower Left nontranspose setting
+        trsm!(side, uplo, transpose, A, B)
         return
     end
 
@@ -60,36 +61,39 @@ function rectrsm!(A::AbstractMatrix{T}, n::Int, B::AbstractMatrix{T}, side::Abst
             rectrsm!(A22, n - mid, B2, side, k; uplo=uplo, transpose=transpose, threshold=threshold)
 
         elseif side == 'R'  # Right side
-            # Step 1: Solve A11 * X1 = B1 recursively
-            rectrsm!(A11, mid, B1, side, k; uplo=uplo, transpose=transpose, threshold=threshold)
+            #NOT YET CORRECTLY IMPLEMENTED
+            # # Step 1: Solve A11 * X1 = B1 recursively
+            # rectrsm!(A11, mid, B1, side, k; uplo=uplo, transpose=transpose, threshold=threshold)
 
-            # Step 2: GEMM update B1 = B1 - B2*A21
-            B2 .-= B1 * A21'
+            # # Step 2: GEMM update B1 = B1 - B2*A21
+            # B2 .-= B1 * A21'
 
-            # Step 3: Solve A22 * X2 = B2 recursively
-            rectrsm!(A22, n - mid, B2, side, k; uplo=uplo, transpose=transpose, threshold=threshold)
+            # # Step 3: Solve A22 * X2 = B2 recursively
+            # rectrsm!(A22, n - mid, B2, side, k; uplo=uplo, transpose=transpose, threshold=threshold)
         end
 
     elseif uplo == 'U'  # Upper triangular cases
         if side == 'L'  # Left side
-            # Step 1: Solve A11 * X1 = B1 recursively
-            rectrsm!(A11, mid, B1, side, k; uplo=uplo, transpose=transpose, threshold=threshold)
+            #NOT YET CORRECTLY IMPLEMENTED
+            # # Step 1: Solve A11 * X1 = B1 recursively
+            # rectrsm!(A11, mid, B1, side, k; uplo=uplo, transpose=transpose, threshold=threshold)
 
-            # Step 2: GEMM update B1 = B1 - A12*B2
-            B2 .-= A12 * B1
+            # # Step 2: GEMM update B1 = B1 - A12*B2
+            # B2 .-= A12 * B1
 
-            # Step 3: Solve A22 * X2 = B2 recursively
-            rectrsm!(A22, n - mid, B2, side, k; uplo=uplo, transpose=transpose, threshold=threshold)
+            # # Step 3: Solve A22 * X2 = B2 recursively
+            # rectrsm!(A22, n - mid, B2, side, k; uplo=uplo, transpose=transpose, threshold=threshold)
 
         elseif side == 'R'  # Right side
-            # Step 1: Solve A11 * X1 = B1 recursively
-            rectrsm!(A11, mid, B1, side, k; uplo=uplo, transpose=transpose, threshold=threshold)
+            #NOT YET CORRECTLY IMPLEMENTED
+            # # Step 1: Solve A11 * X1 = B1 recursively
+            # rectrsm!(A11, mid, B1, side, k; uplo=uplo, transpose=transpose, threshold=threshold)
 
-            # Step 2: GEMM update B2 = B2 - B1 * A12
-            B2 .-= B1 * A12'
+            # # Step 2: GEMM update B2 = B2 - B1 * A12
+            # B2 .-= B1 * A12'
 
-            # Step 3: Solve A22 * X2 = B2 recursively
-            rectrsm!(A22, n - mid, B2, side, k; uplo=uplo, transpose=transpose, threshold=threshold)
+            # # Step 3: Solve A22 * X2 = B2 recursively
+            # rectrsm!(A22, n - mid, B2, side, k; uplo=uplo, transpose=transpose, threshold=threshold)
         end
     end
 end

@@ -31,7 +31,7 @@ function trsm!(side::Char, uplo::Char, transpose::Char, A::AbstractMatrix{T}, B:
         for j in 1:k  # Loop over columns of B
             for i in 1:n  # Loop over rows of A and corresponding rows of B
                 B[i, j] /= A[i, i]  # Divide by the diagonal element of A
-                for l in (i+1):n  # Update subsequent rows of B[j] for each i
+                for l in i+1:n  # Update subsequent rows of B[j] for each i
                     B[l, j] -= A[l, i] * B[i, j]
                 end
             end
@@ -42,9 +42,9 @@ function trsm!(side::Char, uplo::Char, transpose::Char, A::AbstractMatrix{T}, B:
         # CASE left side, upper triangular NOT IMPLEMENTED YET
     elseif side == 'R' && uplo == 'L'
         # CASE right side, lower triangular NOT IMPLEMENTED YET
-    elseif side == 'R' && uplo == 'U'
-        # CASE right side, upper triangular NOT IMPLEMENTED YET
     else
-        error("Unsupported case: Only (side='L', uplo='L', transpose='N') implemented.")
+        # CASE right side, upper triangular NOT IMPLEMENTED YET
     end
 end
+
+

@@ -53,4 +53,5 @@ end
 include("DLAMatrix.jl")
 include("lu.jl")
 include("zlauum.jl")
+include("performant_rectrsm.jl")
 end
