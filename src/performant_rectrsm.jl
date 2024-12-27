@@ -12,6 +12,16 @@ function performant_rectrsm!(A::CuArray{T}, n::Int, B::CuArray{T}, side::Abstrac
     if n <= threshold
         # Base case
         performant_trsm!(side, uplo, transpose, A, B)
+        # return B
+        # CUDA.CUBLAS.trsm!(
+        #     'L',      # Side (Left)
+        #     'L',      # Uplo (Lower triangular)
+        #     'N',      # No transpose
+        #     'N',      # Non-diagonal elements
+        #     1.0,      # alpha (scalar)
+        #     A,      # A (lower triangular matrix)
+        #     B,      # B (right-hand side)
+        # )
         return B
     end
 
