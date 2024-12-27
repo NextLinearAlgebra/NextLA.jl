@@ -10,7 +10,7 @@ function performant_rectrsm!(A::CuArray{T}, n::Int, B::CuArray{T}, side::Abstrac
                   uplo::AbstractChar='L', transpose::AbstractChar='N', threshold::Int=16) where T
     
     if n <= threshold
-        # Base case
+        # Base case: choose one of the following - performant trsm is almost sequential, very simple
         performant_trsm!(side, uplo, transpose, A, B)
         # return B
         # CUDA.CUBLAS.trsm!(
