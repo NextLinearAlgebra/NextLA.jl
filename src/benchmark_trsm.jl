@@ -1,70 +1,82 @@
 using LinearAlgebra
+using CUDA
 using BenchmarkTools
 using Plots
 
-include("rectrsm.jl")  # Include rectrsm.jl file
-include("trsm.jl")  # Include trsm.jl file
+include("performant_trsm_2.jl")  # Include performant_trsm_2.jl file
 
-function benchmark_rectrsm()
-    sizes = [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]  # Matrix sizes to test
-    rectrsm_runtimes = Float64[]  # Store runtimes for rectrsm! (in milliseconds)
-    trsm_runtimes = Float64[]  # Store runtimes for trsm! (in milliseconds)
+function benchmark_trsm()
+    sizes = [30, 45, 64, 102, 128, 250, 512, 750, 1024]  # Sizes ≤ 1024
+
+    trsm_2_runtimes = Float64[]  # Store runtimes for performant_trsm_2!
+    cuda_trsm_runtimes = Float64[]  # Store runtimes for cuBLAS trsm
 
     for n in sizes
-        # Generate a random lower triangular matrix A and random matrix B
-        A = Matrix(LowerTriangular(rand(n, n)))  # Lower triangular matrix
-        B = Matrix(rand(n, 1))  # k=1
-        Ac = copy(A)  # Copy of A for trsm!
-        Bc = copy(B)  # Copy of B for trsm!
+        # Generate random lower triangular matrix A and random matrix B
+        A = CuArray(Matrix(LowerTriangular(rand(n, n))))
+        B = CuArray(Matrix(rand(n, 1)))
+
+        Ab = copy(A)
+        Bb = copy(B)
+
+        Ac = copy(A)  # Copy of A for cuBLAS trsm
+        Bc = copy(B)  # Copy of B for cuBLAS trsm
 
         # -----------------------------
-        # Benchmark for rectrsm!
+        # Benchmark for performant_trsm_2!
         # -----------------------------
-        time_rectrsm = @benchmark rectrsm!($A, $n, $B) samples=100  # Run it 100 times
-        median_runtime_rectrsm = median(time_rectrsm).time / 1e6  # Convert nanoseconds to milliseconds
-        push!(rectrsm_runtimes, median_runtime_rectrsm)  # Save the runtime for this matrix size
-        println("rectrsm! - Size: $n x $n | Runtime: $median_runtime_rectrsm ms")
-        
+        time_trsm_2 = @benchmark performant_trsm_2!('L', 'L', 'N', $Ab, $Bb) samples=1000
+        median_runtime_trsm_2 = median(time_trsm_2).time / 1e6  # Convert nanoseconds to milliseconds
+        push!(trsm_2_runtimes, median_runtime_trsm_2)
+        println("performant_trsm_2! - Size: $n x $n | Runtime: $median_runtime_trsm_2 ms")
+
         # -----------------------------
-        # Benchmark for trsm!
+        # Benchmark for cuBLAS trsm
         # -----------------------------
-        # Using 'L' for left side, 'L' for lower triangular, and 'N' for no transpose
-        time_trsm = @benchmark trsm!('L', 'L', 'N', $Ac, $Bc) samples=100  # Run it 100 times
-        median_runtime_trsm = median(time_trsm).time / 1e6  # Convert nanoseconds to milliseconds
-        push!(trsm_runtimes, median_runtime_trsm)  # Save the runtime for this matrix size
-        println("trsm! - Size: $n x $n | Runtime: $median_runtime_trsm ms")
+        time_cuda_trsm = @benchmark CUDA.CUBLAS.trsm!(
+            'L',      # Side (Left)
+            'L',      # Uplo (Lower triangular)
+            'N',      # No transpose
+            'N',      # Non-diagonal elements
+            1.0,      # alpha (scalar)
+            $Ac,      # A (lower triangular matrix)
+            $Bc       # B (right-hand side)
+        ) samples=1000
+
+        median_runtime_cuda_trsm = median(time_cuda_trsm).time / 1e6  # Convert nanoseconds to milliseconds
+        push!(cuda_trsm_runtimes, median_runtime_cuda_trsm)
+        println("cuBLAS trsm - Size: $n x $n | Runtime: $median_runtime_cuda_trsm ms")
     end
 
-    return sizes, rectrsm_runtimes, trsm_runtimes
+    return sizes, trsm_2_runtimes, cuda_trsm_runtimes
 end
 
-
 # Run the benchmark
-sizes, rectrsm_runtimes, trsm_runtimes = benchmark_rectrsm()
+sizes, trsm_2_runtimes, cuda_trsm_runtimes = benchmark_trsm()
 
 # Plot the results
 plot(
     sizes, 
-    rectrsm_runtimes, 
-    label = "rectrsm!", 
+    trsm_2_runtimes, 
+    label = "performant_trsm_2!", 
     xlabel = "Matrix Size (n x n)", 
     ylabel = "Runtime (ms)", 
-    title = "Performance of rectrsm! vs trsm! on CPU", 
+    title = "Performance Comparison: performant_trsm_2! vs cuBLAS trsm", 
     lw = 2, 
-    marker = :o, 
+    marker = :s, 
     markersize = 8, 
     grid = true
 )
 
-# Add trsm! performance to the same plot
+# Add cuBLAS trsm to the same plot
 plot!(
     sizes, 
-    trsm_runtimes, 
-    label = "trsm!", 
+    cuda_trsm_runtimes, 
+    label = "cuBLAS trsm", 
     lw = 2, 
-    marker = :s, 
+    marker = :d, 
     markersize = 8
 )
 
 # Save the plot as an image
-savefig("rectrsm_vs_trsm_performance_plot_2.png")
+savefig("trsm_2_vs_cuda.png")
