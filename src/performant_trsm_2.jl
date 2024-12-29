@@ -2,31 +2,54 @@ using LinearAlgebra
 using KernelAbstractions
 using CUDA
 
-@kernel function step_one(A, B, n)
+# @kernel function step_one(A, B, n)
+#     # Get the column index handled by this thread
+#     col = @index(Global)
+
+#     B[col, 1] = B[col, 1] / A[col, col]
+
+#     for row in 2:n
+#         if col < row
+#             A[row, col] = A[row, col] / A[row, row]
+#         end
+#     end
+# end
+
+# @kernel function step_two(A, B, n)
+#     row = @index(Global)
+#     for col in 1:n
+#         @synchronize
+#         if row > col
+#             # if col == 1
+#             #     # Store thread information in the log array
+#             #     log_index = (row - 1) * 3 + 1
+#             #     log_array[log_index] = threadIdx().x
+#             #     log_array[log_index + 1] = blockIdx().x
+#             #     log_array[log_index + 2] = blockDim().x
+#             # end
+#             B[row, 1] = B[row, 1] - A[row, col] * B[col, 1]
+#         end
+#     end
+# end
+
+@kernel function both_steps(A, B, n)
     # Get the column index handled by this thread
-    col = @index(Global)
+    # col = @index(Global)
+    row = @index(Global)
 
-    B[col, 1] = B[col, 1] / A[col, col]
+    B[row, 1] = B[row, 1] / A[row, row]
 
-    for row in 2:n
-        if col < row
-            A[row, col] = A[row, col] / A[row, row]
+    for i in 2:n
+        if row < i
+            A[i, row] = A[i, row] / A[i, i]
         end
     end
-end
 
-@kernel function step_two(A, B, log_array, n)
-    row = @index(Global)
+    @synchronize
+
     for col in 1:n
         @synchronize
         if row > col
-            # if col == 1
-            #     # Store thread information in the log array
-            #     log_index = (row - 1) * 3 + 1
-            #     log_array[log_index] = threadIdx().x
-            #     log_array[log_index + 1] = blockIdx().x
-            #     log_array[log_index + 2] = blockDim().x
-            # end
             B[row, 1] = B[row, 1] - A[row, col] * B[col, 1]
         end
     end
@@ -45,16 +68,19 @@ function performant_trsm_2!(side::Char, uplo::Char, transpose::Char, A::Abstract
         backend = get_backend(A)
 
         # Pre-allocate a log array to store thread information
-        log_array = CUDA.zeros(Float64, 3 * n)  # 3 values per row
+        # log_array = CUDA.zeros(Float64, 3 * n)  # 3 values per row
 
         # Step 1: Solve the diagonal and scale appropriately
-        step_one(backend, n)(A, B, n, ndrange=n)
+        # step_one(backend, n)(A, B, n, ndrange=n)
 
         # Synchronize before moving to the next step
         # KernelAbstractions.synchronize(backend)
 
         # Step 2: Update the remaining rows based on the scaled solution
-        step_two(backend, n)(A, B, log_array, n, ndrange=n)
+        # step_two(backend, n)(A, B, n, ndrange=n)
+
+        both_steps(backend, n)(A, B, n, ndrange=n)
+
 
         # Synchronize to ensure all computations are complete
         # KernelAbstractions.synchronize(backend)        
