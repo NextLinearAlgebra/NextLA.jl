@@ -7,7 +7,7 @@ include("performant_trsm_2.jl")
 
 # Recursive function for rectangular triangular solve
 function performant_rectrsm!(A::CuArray{T}, n::Int, B::CuArray{T}, side::AbstractChar = 'L', k::Int=1;
-                  uplo::AbstractChar='L', transpose::AbstractChar='N', threshold::Int=1024) where T
+                  uplo::AbstractChar='L', transpose::AbstractChar='N', threshold::Int=128) where T
     
     if n <= threshold
         # Base case: choose one of the following - performant trsm is almost sequential, very simple

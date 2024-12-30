@@ -6,7 +6,10 @@ using Plots
 include("performant_trsm_2.jl")  # Include performant_trsm_2.jl file
 
 function benchmark_trsm()
-    sizes = [30, 45, 64, 102, 128, 250, 512, 750, 1024]  # Sizes ≤ 1024
+    # sizes = [30, 45, 64, 102, 128, 250, 512, 750, 1024]  # Sizes ≤ 1024
+    sizes = [  30,   64,   98,  132,  167,  201,  235,  269,  304,  338,  372,
+    407,  441,  475,  509,  544,  578,  612,  646,  681,  715,  749,
+    784,  818,  852,  886,  921,  955,  989, 1024]
 
     trsm_2_runtimes = Float64[]  # Store runtimes for performant_trsm_2!
     cuda_trsm_runtimes = Float64[]  # Store runtimes for cuBLAS trsm
