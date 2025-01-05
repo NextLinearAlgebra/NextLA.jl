@@ -121,7 +121,7 @@ using CUDA
 
 @testset "Accuracy Test for performant_rectrsm!" begin
     # Matrix sizes to test
-    sizes = [30, 45, 64, 102, 128, 250, 512, 750, 1024, 2048, 4096, 8192, 5000, 6000]
+    sizes = [30, 45, 64, 102, 128, 250, 350, 512, 750, 1024, 2048, 4096, 8192, 5000, 6000] 
 
     # Tolerance for accuracy check
     tolerance = 1e-12
@@ -138,17 +138,24 @@ using CUDA
         Bc = copy(B)
 
         # Convert to CuArray for GPU computation
-        A = CuArray(A)
-        B = CuArray(B)
+        A_gpu = CuArray(A)
+        B_gpu = CuArray(B)
+
+        # Store a copy of A_gpu before the operation
+        A_gpu_before = copy(A_gpu)
 
         # Perform GPU operation with performant_rectrsm!
-        performant_rectrsm!(A, n, B)
+        performant_rectrsm!(A_gpu, n, B_gpu)
+
+        # Check if A_gpu was mutated
+        A_diff = norm(A_gpu - A_gpu_before)
+        @test A_diff < tolerance
 
         # Perform baseline operation with BLAS trsm!
         LinearAlgebra.BLAS.trsm!('L', 'L', 'N', 'N', 1.0, Ac, Bc)
 
         # Compute the Frobenius norm difference (relative error)
-        result_diff = norm(Matrix(B) - Bc) / norm(Bc)
+        result_diff = norm(Matrix(B_gpu) - Bc) / norm(Bc)
 
         println("Size: $n x $n | Result Diff (Relative Error): $result_diff")
 

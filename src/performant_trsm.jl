@@ -1,6 +1,7 @@
 using LinearAlgebra
 using KernelAbstractions
 using CUDA
+#bad
 
 @kernel function gpu_trsm_kernel_parallel!(A, B, n, m)
     # Get the column index handled by this thread
