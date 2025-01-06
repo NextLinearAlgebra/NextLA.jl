@@ -118,23 +118,22 @@ using CUDA
 #     end
 # end
 
-
 @testset "Accuracy Test for performant_rectrsm!" begin
     # Matrix sizes to test
-    sizes = [30, 45, 64, 102, 128, 250, 350, 512, 750, 1024, 2048, 4096]
-    
-    # Number of columns in B to test
-    m_sizes = [1, 2, 4, 8, 16, 32, 64]
+    sizes = [30, 32, 45, 64, 102, 128, 250, 256, 350, 512, 750, 1024, 2048, 4000]
 
+    # Number of columns in B to test
+    m_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256, 350, 512, 750, 1024] 
+    
     # Tolerance for accuracy check
-    tolerance = 1e-12
+    tolerance = 1e-14
 
     for n in sizes
         for m in m_sizes
             # Skip larger combinations to keep test runtime reasonable
-            if n * m > 1_000_000
-                continue
-            end
+            # if n * m > 1_000_000
+            #     continue
+            # end
 
             # Generate random lower triangular matrix
             A = Matrix(LowerTriangular(rand(n, n) .+ 1))  # CPU Array
@@ -153,35 +152,42 @@ using CUDA
             # Store a copy of A_gpu before the operation
             A_gpu_before = copy(A_gpu)
 
-            # Perform GPU operation with performant_rectrsm!
-            performant_rectrsm!(A_gpu, n, B_gpu)
+            # Test all cases: lower-left, lower-right, upper-left, upper-right
+            for side in ['L']#, 'R']
+                for uplo in ['L']#, 'U']
+                    println("Testing side: $side, uplo: $uplo, n: $n, m: $m")
 
-            # Check if A_gpu was mutated
-            A_diff = norm(A_gpu - A_gpu_before)
-            @test A_diff < tolerance
+                    # Perform GPU operation with performant_rectrsm!
+                    performant_rectrsm!(A_gpu, n, B_gpu, side, n, uplo=uplo)
 
-            # Perform baseline operation with BLAS trsm!
-            LinearAlgebra.BLAS.trsm!('L', 'L', 'N', 'N', 1.0, Ac, Bc)
+                    # Check if A_gpu was mutated
+                    A_diff = norm(A_gpu - A_gpu_before)
+                    @test A_diff < tolerance
 
-            # Compute the Frobenius norm difference (relative error)
-            result_diff = norm(Matrix(B_gpu) - Bc) / norm(Bc)
+                    # Perform baseline operation with BLAS trsm!
+                    LinearAlgebra.BLAS.trsm!('L', 'L', 'N', 'N', 1.0, Ac, Bc)
 
-            println("Size: $n x $n, B columns: $m | Result Diff (Relative Error): $result_diff")
+                    # Compute the Frobenius norm difference (relative error)
+                    result_diff = norm(Matrix(B_gpu) - Bc) / norm(Bc)
 
-            # Skip NaN cases (don't count as failure)
-            if isnan(result_diff)
-                println("Size: $n x $n, B columns: $m | Skipping NaN result")
-                continue
+                    println("Size: $n x $n, B columns: $m | Result Diff (Relative Error): $result_diff")
+
+                    # Skip NaN cases (don't count as failure)
+                    if isnan(result_diff)
+                        println("Size: $n x $n, B columns: $m | Skipping NaN result")
+                        continue
+                    end
+
+                    # Check if the relative error exceeds tolerance
+                    if result_diff >= tolerance
+                        println("Test failed for matrix size $n x $n, B columns: $m")
+                        println("Relative error: $result_diff")
+                    end
+
+                    # Assert relative error is within tolerance
+                    @test result_diff < tolerance
+                end
             end
-
-            # Check if the relative error exceeds tolerance
-            if result_diff >= tolerance
-                println("Test failed for matrix size $n x $n, B columns: $m")
-                println("Relative error: $result_diff")
-            end
-
-            # Assert relative error is within tolerance
-            @test result_diff < tolerance
         end
     end
 end
