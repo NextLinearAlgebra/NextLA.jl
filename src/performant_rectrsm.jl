@@ -3,8 +3,8 @@ using KernelAbstractions
 using CUDA
 
 # Include the performant_trsm.jl file for the base case 
-# include("performant_trsm_2 copy.jl")
-include("performant_trsm_2.jl")
+include("performant_trsm_2 copy.jl")
+# include("performant_trsm_2.jl")
 
 function partition_matrices!(A, B, n)
     # mid = div(n, 2)
@@ -33,7 +33,7 @@ function performant_rectrsm!(A::AbstractMatrix{T}, n::Int, B::AbstractMatrix{T},
     if n <= threshold
         # Base case: choose one of the following - performant trsm is almost sequential, very simple
         # performant_trsm_2_2!(side, uplo, transpose, A, B)
-        performant_trsm_2!(side, uplo, transpose, A, B)
+        performant_trsm_2_2!(side, uplo, transpose, A, B)
         return B
     end
 

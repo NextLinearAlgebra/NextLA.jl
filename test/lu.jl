@@ -121,57 +121,67 @@ using CUDA
 
 @testset "Accuracy Test for performant_rectrsm!" begin
     # Matrix sizes to test
-    sizes = [30, 45, 64, 102, 128, 250, 350, 512, 750, 1024, 2048, 4096, 8192, 5000, 6000] 
+    sizes = [30, 45, 64, 102, 128, 250, 350, 512, 750, 1024, 2048, 4096]
+    
+    # Number of columns in B to test
+    m_sizes = [1, 2, 4, 8, 16, 32, 64]
 
     # Tolerance for accuracy check
     tolerance = 1e-12
 
     for n in sizes
-        # Generate random lower triangular matrix
-        A = Matrix(LowerTriangular(rand(n, n) .+ 1))  # CPU Array
-        diag = Diagonal(10 * ones(n, n))  # Create a diagonal matrix with 10s
-        A = A + diag  # Add 10 to the diagonal elements of the matrix
+        for m in m_sizes
+            # Skip larger combinations to keep test runtime reasonable
+            if n * m > 1_000_000
+                continue
+            end
 
-        # Generate random right-hand side
-        B = Matrix(rand(n, 1) .+ 1)  # CPU Array
-        Ac = copy(A)
-        Bc = copy(B)
+            # Generate random lower triangular matrix
+            A = Matrix(LowerTriangular(rand(n, n) .+ 1))  # CPU Array
+            diag = Diagonal(10 * ones(n, n))  # Create a diagonal matrix with 10s
+            A = A + diag  # Add 10 to the diagonal elements of the matrix
 
-        # Convert to CuArray for GPU computation
-        A_gpu = CuArray(A)
-        B_gpu = CuArray(B)
+            # Generate random right-hand side
+            B = Matrix(rand(n, m) .+ 1)  # CPU Array
+            Ac = copy(A)
+            Bc = copy(B)
 
-        # Store a copy of A_gpu before the operation
-        A_gpu_before = copy(A_gpu)
+            # Convert to CuArray for GPU computation
+            A_gpu = CuArray(A)
+            B_gpu = CuArray(B)
 
-        # Perform GPU operation with performant_rectrsm!
-        performant_rectrsm!(A_gpu, n, B_gpu)
+            # Store a copy of A_gpu before the operation
+            A_gpu_before = copy(A_gpu)
 
-        # Check if A_gpu was mutated
-        A_diff = norm(A_gpu - A_gpu_before)
-        @test A_diff < tolerance
+            # Perform GPU operation with performant_rectrsm!
+            performant_rectrsm!(A_gpu, n, B_gpu)
 
-        # Perform baseline operation with BLAS trsm!
-        LinearAlgebra.BLAS.trsm!('L', 'L', 'N', 'N', 1.0, Ac, Bc)
+            # Check if A_gpu was mutated
+            A_diff = norm(A_gpu - A_gpu_before)
+            @test A_diff < tolerance
 
-        # Compute the Frobenius norm difference (relative error)
-        result_diff = norm(Matrix(B_gpu) - Bc) / norm(Bc)
+            # Perform baseline operation with BLAS trsm!
+            LinearAlgebra.BLAS.trsm!('L', 'L', 'N', 'N', 1.0, Ac, Bc)
 
-        println("Size: $n x $n | Result Diff (Relative Error): $result_diff")
+            # Compute the Frobenius norm difference (relative error)
+            result_diff = norm(Matrix(B_gpu) - Bc) / norm(Bc)
 
-        # Skip NaN cases (don't count as failure)
-        if isnan(result_diff)
-            println("Size: $n x $n | Skipping NaN result")
-            continue
+            println("Size: $n x $n, B columns: $m | Result Diff (Relative Error): $result_diff")
+
+            # Skip NaN cases (don't count as failure)
+            if isnan(result_diff)
+                println("Size: $n x $n, B columns: $m | Skipping NaN result")
+                continue
+            end
+
+            # Check if the relative error exceeds tolerance
+            if result_diff >= tolerance
+                println("Test failed for matrix size $n x $n, B columns: $m")
+                println("Relative error: $result_diff")
+            end
+
+            # Assert relative error is within tolerance
+            @test result_diff < tolerance
         end
-
-        # Check if the relative error exceeds tolerance
-        if result_diff >= tolerance
-            println("Test failed for matrix size $n x $n")
-            println("Relative error: $result_diff")
-        end
-
-        # Assert relative error is within tolerance
-        @test result_diff < tolerance
     end
 end

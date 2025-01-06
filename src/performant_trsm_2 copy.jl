@@ -19,43 +19,41 @@ Key assumptions:
 The result is computed in-place, modifying `B` to contain the solution `x`.
 """
 
-@kernel function both_steps(A, B, n)
-    # Allocate shared memory for diagonal and vector B
+@kernel function both_steps_parallel(A, B, n)
+    col = @index(Group)  # Block ID corresponds to column
+    row = @index(Local)  # Thread ID corresponds to row within the column
+
     diag = @localmem eltype(A) 1024
     B_c = @localmem eltype(B) 1024
 
-    # Determine the row index of the current thread
-    row = @index(Global)
-
     if row <= n
-        # Load the diagonal element and normalize B[row]
         diag[row] = A[row, row]
-        B_c[row] = B[row] / diag[row]
+        B_c[row] = B[row, col] / diag[row]
     end
 
-    # Substitution step
-    for col in 1:n
+    for i in 1:n
         @synchronize
-        if row > col
-            B_c[row] -= (A[col, row] / diag[row]) * B_c[col]
+        if row > i
+            B_c[row] -= (A[i, row] / diag[row]) * B_c[i]
         end
     end
 
-    # Write back the result to B
-    B[row, 1] = B_c[row]
+    if row <= n
+        B[row, col] = B_c[row]
+    end
 end
 
 function performant_trsm_2_2!(
     side::Char, uplo::Char, transposed::Char, A::AbstractMatrix{T}, B::AbstractMatrix{T}
 ) where T
     if side == 'L' && uplo == 'L' && transposed == 'N'
-        n = size(A, 1)
+        n, m = size(B)
+        @assert size(A, 1) == size(A, 2) == n "Matrix A must be square and match the number of rows in B"
 
-        # Get the backend (GPU)
         backend = get_backend(A)
-
-        # Launch the kernel with GPU backend
-        both_steps(backend, n)(transpose(A), B, n, ndrange=n)
+        
+        # Launch kernel with m blocks (columns) and n threads per block (rows)
+        both_steps_parallel(backend, (n,))(transpose(A), B, n, ndrange=(n, m))
 
         return B
     else
