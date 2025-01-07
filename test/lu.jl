@@ -120,7 +120,8 @@ using CUDA
 
 @testset "Accuracy Test for performant_rectrsm!" begin
     # Matrix sizes to test
-    sizes = [30, 32, 45, 64, 102, 128, 250, 256, 350, 512, 750, 1024, 2048, 4000]
+    # sizes = [30, 32, 45, 64, 102, 128, 250, 256, 350, 512, 750, 1024, 2048, 4000, 10000]
+    sizes = [2048, 4000, 10000]
 
     # Number of columns in B to test
     m_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256, 350, 512, 750, 1024] 
@@ -154,7 +155,7 @@ using CUDA
 
             # Test all cases: lower-left, lower-right, upper-left, upper-right
             for side in ['L']#, 'R']
-                for uplo in ['L']#, 'U']
+                for uplo in ['L'] #, 'U']
                     println("Testing side: $side, uplo: $uplo, n: $n, m: $m")
 
                     # Perform GPU operation with performant_rectrsm!
@@ -165,7 +166,7 @@ using CUDA
                     @test A_diff < tolerance
 
                     # Perform baseline operation with BLAS trsm!
-                    LinearAlgebra.BLAS.trsm!('L', 'L', 'N', 'N', 1.0, Ac, Bc)
+                    LinearAlgebra.BLAS.trsm!(side, uplo, 'N', 'N', 1.0, Ac, Bc)
 
                     # Compute the Frobenius norm difference (relative error)
                     result_diff = norm(Matrix(B_gpu) - Bc) / norm(Bc)

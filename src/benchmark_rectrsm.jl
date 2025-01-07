@@ -68,7 +68,7 @@ end
 sizes, rectrsm_runtimes, trsm_runtimes = benchmark_rectrsm()
 
 # Generate and save separate plots for each value of m
-for m in [1, 32, 128]
+for m in [256]
     # Create a new plot for each m value
     p = plot(
         sizes,
@@ -93,5 +93,5 @@ for m in [1, 32, 128]
     )
 
     # Save the plot for this m value
-    savefig("performant_rectrsm_comparison_m_$m.png")
+    savefig("performant_rectrsm_1024t_comparison_m_$m.png")
 end
