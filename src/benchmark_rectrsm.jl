@@ -13,8 +13,8 @@ function trsm_flops(t, m, n)
 
 function benchmark_rectrsm()
     sizes = [32, 64, 128, 256, 512, 1024, 2048, 3072, 4096, 6144, 8192, 10240]
-    sizes = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
-    m_values = [128]  # Different values of m for benchmarking
+    sizes = [256, 512, 1024, 2048, 4096, 8192, 16384] #, 32768]
+    m_values = [256]  # Different values of m for benchmarking
     rectrsm_runtimes = Dict()  # Dictionary to store runtimes for different m values
     trsm_runtimes = Dict()  # Dictionary to store cuBLAS runtimes for different m values
 
@@ -67,22 +67,28 @@ end
 # Run the benchmark
 sizes, rectrsm_runtimes, trsm_runtimes = benchmark_rectrsm()
 
+
 # Generate and save separate plots for each value of m
-for m in [256]
+for m in keys(rectrsm_runtimes)
+    # Convert sizes to Float64 to ensure compatibility
+    x_values = Float64.(sizes)
+    
     # Create a new plot for each m value
     p = plot(
-        sizes,
+        x_values,
         rectrsm_runtimes[m],  # Performant Rectrsm!
         label = "performant_rectrsm! (m=$m)",
         xlabel = "Matrix Size (n x n)",
-        ylabel = "Runtime (ms)",
+        ylabel = "Runtime (s)",
         lw = 2,
         marker = :circle,
         markersize = 6,
-        color = :blue
+        color = :blue,
+        xscale = :log2,  # Use logarithmic scale for x-axis
+        yscale = :log10  # Use logarithmic scale for y-axis
     )
     plot!(
-        sizes,
+        x_values,
         trsm_runtimes[m],  # cuBLAS trsm
         label = "cuBLAS trsm (m=$m)",
         lw = 2,
@@ -92,6 +98,9 @@ for m in [256]
         linestyle = :dash
     )
 
+    # Set the title
+    title!("Performance Comparison (m=$m)")
+
     # Save the plot for this m value
-    savefig("performant_rectrsm_1024t_comparison_m_$m.png")
+    savefig(p, "performant_rectrsm_1024t_comparison_m_$m.png")
 end

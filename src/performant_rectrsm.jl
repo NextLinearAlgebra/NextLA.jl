@@ -110,25 +110,17 @@ end
 end
 
 function performant_rectrsm!(A::AbstractMatrix{T}, n::Int, B::AbstractMatrix{T}, side::AbstractChar = 'L', k::Int=1;
-    uplo::AbstractChar='L', transpose::AbstractChar='N', threshold::Int=1024,
-    precompiled_kernels=nothing) where T <: AbstractFloat
+    uplo::AbstractChar='L', transpose::AbstractChar='N', threshold::Int=256) where T <: AbstractFloat
 
-    if precompiled_kernels === nothing
-        backend = get_backend(A)
-        precompiled_kernels = (
-            both_steps_parallel = both_steps_parallel(backend, (1024,)),
-            upper_left_kernel = upper_left_kernel(backend, (1024,)),
-            coalesced_matmul = coalesced_matmul_kernel!(backend, (TILE_DIM, TILE_DIM))
-        )
-    end
+    backend = get_backend(A)
 
     if n <= threshold
         n, m = size(B)
 
         if side == 'L' && uplo == 'L' && transpose == 'N'
-            precompiled_kernels.both_steps_parallel(Transpose(A), B, n, ndrange=(n, m))
+            both_steps_parallel(backend, (1024,))(Transpose(A), B, n, ndrange=(n, m))
         elseif side == 'L' && uplo == 'U' && transpose == 'N'
-            precompiled_kernels.upper_left_kernel(Transpose(A), B, n, ndrange=(n, m))
+            upper_left_kernel(backend, (1024,))(Transpose(A), B, n, ndrange=(n, m))
         else
             error("Unsupported combination of side, uplo, and transposed parameters.")
         end
@@ -136,8 +128,6 @@ function performant_rectrsm!(A::AbstractMatrix{T}, n::Int, B::AbstractMatrix{T},
         return B
     end
     
-    
-
     if isinteger(log2(n))
         mid = div(n, 2)
         A11 = view(A, 1:mid, 1:mid)
@@ -146,12 +136,12 @@ function performant_rectrsm!(A::AbstractMatrix{T}, n::Int, B::AbstractMatrix{T},
         B1 = view(B, 1:mid, :)
         B2 = view(B, mid+1:n, :)
 
-        performant_rectrsm!(A11, mid, B1, side, k; uplo=uplo, transpose=transpose, threshold=threshold, precompiled_kernels=precompiled_kernels)
+        performant_rectrsm!(A11, mid, B1, side, k; uplo=uplo, transpose=transpose, threshold=threshold)
 
         N, R, M = size(B2, 1), size(A21, 2), size(B2, 2)
-        precompiled_kernels.coalesced_matmul(B2, A21, B1, N, R, M, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
+        coalesced_matmul_kernel!(backend, (TILE_DIM, TILE_DIM))(B2, A21, B1, N, R, M, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
 
-        performant_rectrsm!(A22, n - mid, B2, side, k; uplo=uplo, transpose=transpose, threshold=threshold, precompiled_kernels=precompiled_kernels)
+        performant_rectrsm!(A22, n - mid, B2, side, k; uplo=uplo, transpose=transpose, threshold=threshold)
     else
         largest_pow2 = 2 ^ floor(Int, log2(n))
         M1 = largest_pow2
@@ -163,12 +153,12 @@ function performant_rectrsm!(A::AbstractMatrix{T}, n::Int, B::AbstractMatrix{T},
         B1 = view(B, 1:M1, :)
         B2 = view(B, M1+1:n, :)
 
-        performant_rectrsm!(A11, M1, B1, side, k; uplo=uplo, transpose=transpose, threshold=threshold, precompiled_kernels=precompiled_kernels)
+        performant_rectrsm!(A11, M1, B1, side, k; uplo=uplo, transpose=transpose, threshold=threshold)
 
         N, R, M = size(B2, 1), size(A21, 2), size(B2, 2)
-        precompiled_kernels.coalesced_matmul(B2, A21, B1, N, R, M, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
+        coalesced_matmul_kernel!(backend, (TILE_DIM, TILE_DIM))(B2, A21, B1, N, R, M, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
 
-        performant_rectrsm!(A22, M2, B2, side, k; uplo=uplo, transpose=transpose, threshold=threshold, precompiled_kernels=precompiled_kernels)
+        performant_rectrsm!(A22, M2, B2, side, k; uplo=uplo, transpose=transpose, threshold=threshold)
     end
     
     return B

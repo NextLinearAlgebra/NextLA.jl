@@ -18,23 +18,23 @@ function benchmark_trsm()
 
         for n in sizes
             # Generate random lower triangular matrix A and random matrix B
-            A = CuArray(Matrix(LowerTriangular(rand(n, n))))
-            B = CuArray(Matrix(rand(n, m)))
+            A = CuArray(Matrix(LowerTriangular(rand(n, n))))  # Lower triangular matrix
+            B = CuArray(Matrix(rand(n, m)))  # Matrix B of size n x m
 
             Ac = copy(A)  # Copy of A for cuBLAS trsm
             Bc = copy(B)  # Copy of B for cuBLAS trsm
 
-            # Benchmark for performant_trsm_2_2!
-            time_trsm_2_copy = @benchmark performant_trsm_2_2!('L', 'L', 'N', $A, $B) samples=50 seconds=2
-            median_runtime_trsm_2_copy = median(time_trsm_2_copy).time / 1e6
+            # Benchmark for performant_trsm_2_2! using CUDA.@sync
+            time_trsm_2_copy = @belapsed (CUDA.@sync performant_trsm_2_2!('L', 'L', 'N', $A, $B))  # Synchronize GPU timing
+            median_runtime_trsm_2_copy = time_trsm_2_copy  # Time in seconds (already synced)
             push!(trsm_2_copy_runtimes, median_runtime_trsm_2_copy)
-            println("performant_trsm_2_2! - Size: $n x $n, m: $m | Runtime: $median_runtime_trsm_2_copy ms")
+            println("performant_trsm_2_2! - Size: $n x $n, m: $m | Runtime: $median_runtime_trsm_2_copy s")
 
-            # Benchmark for cuBLAS trsm
-            time_cuda_trsm = @benchmark CUDA.CUBLAS.trsm!('L', 'L', 'N', 'N', 1.0, $Ac, $Bc) samples=50 seconds=2
-            median_runtime_cuda_trsm = median(time_cuda_trsm).time / 1e6
+            # Benchmark for cuBLAS trsm using CUDA.@sync
+            time_cuda_trsm = @belapsed (CUDA.@sync CUDA.CUBLAS.trsm!('L', 'L', 'N', 'N', 1.0, $Ac, $Bc))  # Synchronize GPU timing
+            median_runtime_cuda_trsm = time_cuda_trsm  # Time in seconds (already synced)
             push!(cuda_trsm_runtimes, median_runtime_cuda_trsm)
-            println("cuBLAS trsm - Size: $n x $n, m: $m | Runtime: $median_runtime_cuda_trsm ms")
+            println("cuBLAS trsm - Size: $n x $n, m: $m | Runtime: $median_runtime_cuda_trsm s")
         end
 
         results[m] = (trsm_2_copy_runtimes, cuda_trsm_runtimes)
@@ -55,14 +55,14 @@ for m in keys(results)
         trsm_2_copy_runtimes,
         label = "performant_trsm_2_2!",
         xlabel = "Matrix Size (n x n)",
-        ylabel = "Runtime (ms)",
+        ylabel = "Runtime (s)",
         title = "Runtime Comparison for B with m=$m",
         lw = 2,
         marker = :square,
         markersize = 4,
         color = :green,
         legend = :topleft,
-        yscale = :log10
+        yscale = :log10  # Log scale to better visualize the differences
     )
     plot!(
         sizes,
@@ -77,4 +77,3 @@ for m in keys(results)
     # Save the plot
     savefig("trsm_comparison_m_$m.png")
 end
-
