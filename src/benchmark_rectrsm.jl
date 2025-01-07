@@ -5,17 +5,27 @@ using Plots
 
 include("performant_rectrsm.jl")  # Include performant_rectrsm.jl file
 
+function trsm_flops(t, m, n)
+    flops_add= 0.5 * n * m * (m-1.0)
+    flops_mult= 0.5 * n * m * (m+1.0)
+     return flops_add + flops_mult
+ end
+
 function benchmark_rectrsm()
-    sizes = [30, 64, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 10000]
-    m_values = [1, 32, 128]  # Different values of m for benchmarking
+    sizes = [32, 64, 128, 256, 512, 1024, 2048, 3072, 4096, 6144, 8192, 10240]
+    sizes = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+    m_values = [128]  # Different values of m for benchmarking
     rectrsm_runtimes = Dict()  # Dictionary to store runtimes for different m values
     trsm_runtimes = Dict()  # Dictionary to store cuBLAS runtimes for different m values
 
-    for m in m_values
-        rectrsm_runtimes[m] = Float64[]  # Initialize an empty list for each m value
-        trsm_runtimes[m] = Float64[]  # Initialize an empty list for each m value
+#    for m in m_values
+       # rectrsm_runtimes[m] = Float64[]  # Initialize an empty list for each m value
+        #trsm_runtimes[m] = Float64[]  # Initialize an empty list for each m value
 
         for n in sizes
+            m = m_values[1]
+            rectrsm_runtimes[m] = Float64[]  # Initialize an empty list for each m value
+            trsm_runtimes[m] = Float64[]  
             # Generate random lower triangular matrix A and random matrix B (of size n x m)
             A = CuArray(Matrix(LowerTriangular(rand(n, n))))  # Lower triangular matrix
             B = CuArray(Matrix(rand(n, m)))  # Matrix B of size n x m
@@ -26,15 +36,16 @@ function benchmark_rectrsm()
             # -----------------------------
             # Benchmark for performant_rectrsm!
             # -----------------------------
-            time_rectrsm = @benchmark performant_rectrsm!($A, $n, $B) samples=100
-            median_runtime_rectrsm = median(time_rectrsm).time / 1e6  # Convert to milliseconds
+            time_rectrsm = @belapsed (CUDA.@sync performant_rectrsm!($A, $n, $B)) #@benchmark performant_rectrsm!($A, $n, $B) samples=100
+            median_runtime_rectrsm =time_rectrsm  #median(time_rectrsm).time / 1e6  # Convert to milliseconds
+            recgflopss = (trsm_flops(Float64, n, m)/10^9) / median_runtime_rectrsm
             push!(rectrsm_runtimes[m], median_runtime_rectrsm)
-            println("performant_rectrsm! - Size: $n x $m | Runtime: $median_runtime_rectrsm ms")
+            println("performant_rectrsm! - Size: $n x $m | Runtime: $median_runtime_rectrsm s Gflops/s: $recgflopss")
 
             # -----------------------------
             # Benchmark for cuBLAS trsm
             # -----------------------------
-            time_trsm = @benchmark CUDA.CUBLAS.trsm!(
+            time_trsm = @belapsed (CUDA.@sync CUDA.CUBLAS.trsm!( #@benchmark CUDA.CUBLAS.trsm!(
                 'L',  # Side (Left)
                 'L',  # Uplo (Lower triangular)
                 'N',  # No transpose
@@ -42,12 +53,13 @@ function benchmark_rectrsm()
                 1.0,  # alpha (scalar)
                 $Ac,  # A
                 $Bc   # B
-            ) samples=100
-            median_runtime_trsm = median(time_trsm).time / 1e6  # Convert to milliseconds
+            ))# samples=100
+            median_runtime_trsm = time_trsm #median(time_trsm).time / 1e6  # Convert to milliseconds
+            cugflopss = (trsm_flops(Float64, n, m)/10^9) / median_runtime_trsm
             push!(trsm_runtimes[m], median_runtime_trsm)
-            println("cuBLAS trsm - Size: $n x $m | Runtime: $median_runtime_trsm ms")
+            println("cuBLAS trsm - Size: $n x $m | Runtime: $median_runtime_trsm s Gflops/s: $cugflopss")
         end
-    end
+#    end
 
     return sizes, rectrsm_runtimes, trsm_runtimes
 end
