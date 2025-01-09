@@ -3,7 +3,7 @@ using KernelAbstractions
 using CUDA
 
 # Include the performant_trsm.jl file for the base case 
-include("performant_trsm_2.jl")
+include("performant_trsm_2 copy.jl")
 
 # Recursive function for rectangular triangular solve
 function performant_rectrsm!(A::CuArray{T}, n::Int, B::CuArray{T}, side::AbstractChar = 'L', k::Int=1;
@@ -11,7 +11,7 @@ function performant_rectrsm!(A::CuArray{T}, n::Int, B::CuArray{T}, side::Abstrac
     
     if n <= threshold
         # Base case: choose one of the following - performant trsm is almost sequential, very simple
-        performant_trsm_2!(side, uplo, transpose, A, B)
+        performant_trsm_2_2!(side, uplo, transpose, A, B)
 
         # return B
         # CUDA.CUBLAS.trsm!(

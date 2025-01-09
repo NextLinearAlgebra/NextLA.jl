@@ -2,32 +2,9 @@ using LinearAlgebra
 using KernelAbstractions
 using CUDA
 using StaticArrays
+include("performant_trsm_2 copy.jl")
 
 const TILE_DIM = 32
-
-@kernel function both_steps_parallel(A, B, n)
-    col = @index(Group)
-    row = @index(Local)
-
-    diag = @localmem eltype(A) 1024
-    B_c = @localmem eltype(B) 1024
-
-    if row <= n
-        diag[row] = A[row, row]
-        B_c[row] = B[row, col] / diag[row]
-    end
-
-    for i in 1:n
-        @synchronize
-        if row > i
-            B_c[row] -= (A[i, row] / diag[row]) * B_c[i]
-        end
-    end
-
-    if row <= n
-        B[row, col] = B_c[row]
-    end
-end
 
 @kernel function upper_left_kernel(A, B, n)
     col = @index(Group)
@@ -37,19 +14,46 @@ end
     B_c = @localmem eltype(B) 1024
 
     if row <= n
-        diag[row] = A[row, row]
-        B_c[row] = B[row, col] / diag[row]
+        @inbounds diag[row] = A[row, row]
+        @inbounds B_c[row] = B[row, col] / diag[row]
     end
 
     for i in n:-1:1
         @synchronize
         if row < i
-            B_c[row] -= (A[i, row] / diag[row]) * B_c[i]
+            @inbounds B_c[row] -= (A[i, row] / diag[row]) * B_c[i]
         end
     end
 
     if row <= n
-        B[row, col] = B_c[row]
+        @inbounds B[row, col] = B_c[row]
+    end
+end
+
+
+@kernel function both_steps_parallel(A, B, n)
+    col = @index(Group)
+    row = @index(Local)
+
+    diag = @localmem eltype(A) 1024
+    B_c = @localmem eltype(B) 1024
+    shared_col = @localmem eltype(A) 1024
+
+    if row <= n
+        @inbounds diag[row] = A[row, row]
+        @inbounds B_c[row] = B[row, col] / diag[row]
+    end
+
+    for i in 1:n
+        @synchronize
+        if row > i
+            @inbounds shared_col[i] = A[i, row]
+            @inbounds B_c[row] -= (shared_col[i] / diag[row]) * B_c[i]
+        end
+    end
+
+    if row <= n
+        @inbounds B[row, col] = B_c[row]
     end
 end
 
@@ -118,13 +122,12 @@ function performant_rectrsm!(A::AbstractMatrix{T}, n::Int, B::AbstractMatrix{T},
         n, m = size(B)
 
         if side == 'L' && uplo == 'L' && transpose == 'N'
-            both_steps_parallel(backend, (1024,))(Transpose(A), B, n, ndrange=(n, m))
+            both_steps_parallel(backend, (n,))(Transpose(A), B, n, ndrange=(n, m))
         elseif side == 'L' && uplo == 'U' && transpose == 'N'
-            upper_left_kernel(backend, (1024,))(Transpose(A), B, n, ndrange=(n, m))
+            upper_left_kernel(backend, (n,))(Transpose(A), B, n, ndrange=(n, m))
         else
             error("Unsupported combination of side, uplo, and transposed parameters.")
         end
-
         return B
     end
     

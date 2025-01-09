@@ -120,8 +120,8 @@ using CUDA
 
 @testset "Accuracy Test for performant_rectrsm!" begin
     # Matrix sizes to test
-    # sizes = [30, 32, 45, 64, 102, 128, 250, 256, 350, 512, 750, 1024, 2048, 4000, 10000]
-    sizes = [2048, 4000, 10000]
+    sizes = [30, 32, 45, 64, 102, 128, 250, 256, 350, 512, 750, 1024] #, 2048, 4000, 10000]
+    # sizes = [2048, 4000, 10000]
 
     # Number of columns in B to test
     m_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256, 350, 512, 750, 1024] 

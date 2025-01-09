@@ -6,9 +6,12 @@ using Plots
 include("performant_trsm_2 copy.jl")  # Include performant_trsm_2_copy.jl file
 
 function benchmark_trsm()
-    sizes = [32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 480, 512, 
-             544, 576, 608, 640, 672, 704, 736, 768, 800, 832, 864, 896, 928, 960, 992, 1024]
-    m_values = [1, 2, 4, 8, 16, 32, 64, 128]  # Different numbers of columns in B
+    # sizes = [32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 480, 512, 
+    #          544, 576, 608, 640, 672, 704, 736, 768, 800, 832, 864, 896, 928, 960, 992, 1024]
+    sizes = [32, 64, 96, 128, 192, 256, 384, 512, 768, 1024]
+
+    # m_values = [1, 2, 4, 8, 16, 32, 64, 128]  # Different numbers of columns in B
+    m_values = [256]
 
     results = Dict()
 
@@ -75,5 +78,5 @@ for m in keys(results)
     )
 
     # Save the plot
-    savefig("trsm_comparison_m_$m.png")
+    savefig("trsm_comparison_m_2_$m.png")
 end
