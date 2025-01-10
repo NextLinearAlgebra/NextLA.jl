@@ -74,5 +74,5 @@ for m in keys(rectrsm_runtimes)
     )
 
     # Save the plot
-    savefig(p, "rectrsm_comparison_linear_$m.png")
+    savefig(p, "rectrsm_comparison_extended_$m.png")
 end

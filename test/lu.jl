@@ -120,46 +120,42 @@ using CUDA
 
 @testset "Accuracy Test for performant_rectrsm!" begin
     # Matrix sizes to test
-    sizes = [30, 32, 45, 64, 102, 128, 250, 256, 350, 512, 750, 1024] #, 2048, 4000, 10000]
-    # sizes = [2048, 4000, 10000]
+    sizes = [30, 32, 45, 64, 102, 128, 250, 256, 350, 512, 750, 1024, 2048, 4096, 8192]
 
-    # Number of columns in B to test
-    m_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256, 350, 512, 750, 1024] 
+    # Number of columns/rows in B to test
+    m_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256, 350, 750, 1024] 
     
     # Tolerance for accuracy check
     tolerance = 1e-14
 
     for n in sizes
         for m in m_sizes
-            # Skip larger combinations to keep test runtime reasonable
-            # if n * m > 1_000_000
-            #     continue
-            # end
-
-            # Generate random lower triangular matrix
-            A = Matrix(LowerTriangular(rand(n, n) .+ 1))  # CPU Array
-            diag = Diagonal(10 * ones(n, n))  # Create a diagonal matrix with 10s
-            A = A + diag  # Add 10 to the diagonal elements of the matrix
-
-            # Generate random right-hand side
-            B = Matrix(rand(n, m) .+ 1)  # CPU Array
-            Ac = copy(A)
-            Bc = copy(B)
+            # Generate random lower triangular matrix with positive diagonal
+            A = Matrix(LowerTriangular(rand(n, n) .+ 1))
+            A += Diagonal(10 * ones(n, n))  # Ensure well-conditioned matrix
 
             # Convert to CuArray for GPU computation
             A_gpu = CuArray(A)
-            B_gpu = CuArray(B)
-
-            # Store a copy of A_gpu before the operation
-            A_gpu_before = copy(A_gpu)
 
             # Test all cases: lower-left, lower-right, upper-left, upper-right
-            for side in ['L']#, 'R']
-                for uplo in ['L'] #, 'U']
+            for side in ['R'] 
+                for uplo in ['L', 'U']
                     println("Testing side: $side, uplo: $uplo, n: $n, m: $m")
 
+                    # Create B matrix based on side
+                    if side == 'L'
+                        B = Matrix(rand(n, m) .+ 1)
+                    else
+                        B = Matrix(rand(m, n) .+ 1)
+                    end
+                    Bc = copy(B)
+                    B_gpu = CuArray(B)
+
+                    Ac = copy(A)
+                    A_gpu_before = copy(A_gpu)
+
                     # Perform GPU operation with performant_rectrsm!
-                    performant_rectrsm!(A_gpu, n, B_gpu, side, n, uplo=uplo)
+                    performant_rectrsm!(A_gpu, n, B_gpu, side, uplo=uplo)
 
                     # Check if A_gpu was mutated
                     A_diff = norm(A_gpu - A_gpu_before)
@@ -171,17 +167,17 @@ using CUDA
                     # Compute the Frobenius norm difference (relative error)
                     result_diff = norm(Matrix(B_gpu) - Bc) / norm(Bc)
 
-                    println("Size: $n x $n, B columns: $m | Result Diff (Relative Error): $result_diff")
+                    println("Size: $n x $n, B size: $(size(B)) | Result Diff (Relative Error): $result_diff")
 
                     # Skip NaN cases (don't count as failure)
                     if isnan(result_diff)
-                        println("Size: $n x $n, B columns: $m | Skipping NaN result")
+                        println("Size: $n x $n, B size: $(size(B)) | Skipping NaN result")
                         continue
                     end
 
                     # Check if the relative error exceeds tolerance
                     if result_diff >= tolerance
-                        println("Test failed for matrix size $n x $n, B columns: $m")
+                        println("Test failed for matrix size $n x $n, B size: $(size(B))")
                         println("Relative error: $result_diff")
                     end
 

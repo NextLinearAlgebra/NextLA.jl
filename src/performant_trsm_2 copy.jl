@@ -72,25 +72,111 @@ end
 end
 
 
+@kernel function right_lower_kernel(A, B, n)
+    # xA = b, A is lower triangular
+    row = @index(Group)
+    col = @index(Local)
+
+    diag = @localmem eltype(A) 1024
+    B_r = @localmem eltype(B) 1024
+    A_row = @localmem eltype(A) 1024
+
+    if col <= n
+        @inbounds diag[col] = A[col, col]
+        @inbounds B_r[col] = B[row, col] / diag[col]
+    end
+
+    for i in n:-1:1
+        @synchronize
+        if col < i
+            @inbounds A_row[i] = A[col, i] / diag[col]
+            @inbounds B_r[col] -= B_r[i] * A_row[i] 
+        end
+    end
+
+    if col <= n
+        @inbounds B[row, col] = B_r[col]
+    end
+end
+
+
+
+@kernel function right_upper_kernel(A, B, n)
+    # xA = b, A is upper triangular
+    row = @index(Group)
+    col = @index(Local)
+
+    diag = @localmem eltype(A) 1024
+    B_r = @localmem eltype(B) 1024
+    A_row = @localmem eltype(A) 1024
+
+    if col <= n
+        @inbounds diag[col] = A[col, col]
+        @inbounds B_r[col] = B[row, col] / diag[col]
+    end
+    
+
+    for i in 1:n
+        @synchronize
+        if col > i
+            @inbounds A_row[i] = A[col, i] / diag[col]
+            @inbounds B_r[col] -= B_r[i] * A_row[i]
+        end
+    end
+
+    if col <= n
+        @inbounds B[row, col] = B_r[col]
+    end
+end
+
+
+
 function performant_trsm_2_2!(
     side::Char, uplo::Char, transposed::Char, A::AbstractMatrix{T}, B::AbstractMatrix{T}
 ) where T
     n, m = size(B)
-    @assert size(A, 1) == size(A, 2) == n "Matrix A must be square and match the number of rows in B"
+    # @assert size(A, 1) == size(A, 2) == n "Matrix A must be square and match the number of rows in B"
 
     backend = get_backend(A)
 
     if side == 'L' && uplo == 'L' && transposed == 'N'
+        # A is lower triangular, not transposed
         both_steps_parallel(backend, (n,))(transpose(A), B, n, ndrange=(n, m))
+
     elseif side == 'L' && uplo == 'U' && transposed == 'N'
+        # A is upper triangular, not transposed
         upper_left_kernel(backend, (n,))(transpose(A), B, n, ndrange=(n, m))
+
+    elseif side == 'L' && uplo == 'L' && transposed == 'T'
+        # A is lower triangular, transposed
+        right_lower_kernel(backend, (n,))(transpose(A), B, n, ndrange=(n, m))
+
+    elseif side == 'L' && uplo == 'U' && transposed == 'T'
+        # A is upper triangular, transposed
+        right_upper_kernel(backend, (n,))(transpose(A), B, n, ndrange=(n, m))
+
+    elseif side == 'R' && uplo == 'L' && transposed == 'N'
+        # B * A, A is lower triangular, not transposed
+        right_lower_kernel(backend, (m,))(transpose(A), B, m, ndrange=(m, n))
+
+    elseif side == 'R' && uplo == 'U' && transposed == 'N'
+        # B * A, A is upper triangular, not transposed
+        right_upper_kernel(backend, (m,))(transpose(A), B, n, ndrange=(m, n))
+
+    elseif side == 'R' && uplo == 'L' && transposed == 'T'
+        # B * A, A is lower triangular, transposed
+        both_steps_parallel(backend, (m,))(A, B, n, ndrange=(m, n))
+
+    elseif side == 'R' && uplo == 'U' && transposed == 'T'
+        # B * A, A is upper triangular, transposed
+        upper_left_kernel(backend, (m,))(A, B, n, ndrange=(m, n))
+
     else
         error("Unsupported combination of side, uplo, and transposed parameters.")
     end
 
     return B
 end
-
 
 
 
