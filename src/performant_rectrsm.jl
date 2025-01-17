@@ -332,7 +332,7 @@ function performant_rectrsm!(A::AbstractMatrix{T}, n, B::AbstractMatrix{T}, side
             performant_rectrsm!(A22, M2, B2, side; uplo=uplo, transpose=transpose, threshold=threshold)
     
             # Update the first part
-            N, R, M = size(B2, 1), size(A21, 1), size(B2, 2)
+            N, R, M = size(B1, 1), size(A21, 1), size(B1, 2)
             coalesced_matmul_kernel!(backend, (TILE_DIM, TILE_DIM))(B1, B2, A21, N, R, M, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
     
             # Solve the first part

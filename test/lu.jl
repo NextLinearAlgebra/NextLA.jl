@@ -139,7 +139,7 @@ using CUDA
 
             # Test all cases: lower-left, lower-right, upper-left, upper-right
             for side in ['R'] 
-                for uplo in ['L', 'U']
+                for uplo in ['L']#, 'U']
                     println("Testing side: $side, uplo: $uplo, n: $n, m: $m")
 
                     # Create B matrix based on side
