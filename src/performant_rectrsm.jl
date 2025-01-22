@@ -201,16 +201,19 @@ function performant_rectrsm!(A::AbstractMatrix{T}, n, B::AbstractMatrix{T}, side
     minus = LinearAlgebra.MulAddMul(one*(-1),one)
 
     if n <= threshold
+        if transpose == 'N'
+            A = Transpose(A)
+        end
         n, m = size(B)
     
-        if side == 'L' && uplo == 'L' && transpose == 'N'
-            lower_left_kernel(backend, (n,))(Transpose(A), B, n, ndrange=(n, m))
-        elseif side == 'L' && uplo == 'U' && transpose == 'N'
-            upper_left_kernel(backend, (n,))(Transpose(A), B, n, ndrange=(n, m))
-        elseif side == 'R' && uplo == 'L' && transpose == 'N'
-            right_lower_kernel(backend, (m,))(Transpose(A), B, m, ndrange=(m, n))
-        elseif side == 'R' && uplo == 'U' && transpose == 'N'
-            right_upper_kernel(backend, (m,))(Transpose(A), B, m, ndrange=(m, n))
+        if side == 'L' && uplo == 'L' #&& transpose == 'N'
+            lower_left_kernel(backend, (n,))(A, B, n, ndrange=(n, m))
+        elseif side == 'L' && uplo == 'U'# && transpose == 'N'
+            upper_left_kernel(backend, (n,))(A, B, n, ndrange=(n, m))
+        elseif side == 'R' && uplo == 'L' #&& transpose == 'N'
+            right_lower_kernel(backend, (m,))(A, B, m, ndrange=(m, n))
+        elseif side == 'R' && uplo == 'U' #&& transpose == 'N'
+            right_upper_kernel(backend, (m,))(A, B, m, ndrange=(m, n))
         else
             error("Unsupported combination of side, uplo, and transposed parameters.")
         end
@@ -218,7 +221,7 @@ function performant_rectrsm!(A::AbstractMatrix{T}, n, B::AbstractMatrix{T}, side
     end
     
     # Recursive case: Split the problem into smaller subproblems
-    if side == 'L' && uplo == 'L' && transpose == 'N'
+    if side == 'L' && uplo == 'L'# && transpose == 'N'
         if isinteger(log2(n))
             mid = div(n, 2)
             A11 = view(A, 1:mid, 1:mid)
@@ -259,6 +262,47 @@ function performant_rectrsm!(A::AbstractMatrix{T}, n, B::AbstractMatrix{T}, side
             performant_rectrsm!(A22, M2, B2, side; uplo=uplo, transpose=transpose, threshold=threshold)
         end
     elseif side == 'L' && uplo == 'U' && transpose == 'N'
+        
+        # if isinteger(log2(n))
+        #     mid = div(n, 2)
+        #     A11 = view(A, 1:mid, 1:mid)
+        #     A22 = view(A, mid+1:n, mid+1:n)
+        #     A21 = view(A, mid+1:n, 1:mid)
+        #     B1 = view(B, 1:mid, :)
+        #     B2 = view(B, mid+1:n, :)
+    
+        #     # Solve the first half
+        #     performant_rectrsm!(A11, mid, B1, side; uplo=uplo, transpose=transpose, threshold=threshold)
+    
+        #     # Update the second half
+        #     N, R, M = size(B2, 1), size(A21, 2), size(B2, 2)
+        #     coalesced_matmul_kernel!(backend, (TILE_DIM, TILE_DIM))(B2, A21, B1, N, R, M, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
+    
+        #     # Solve the second half
+        #     performant_rectrsm!(A22, n - mid, B2, side; uplo=uplo, transpose=transpose, threshold=threshold)
+        # else
+        #     # Handle non-power-of-two sizes
+        #     largest_pow2 = 2 ^ floor(Int, log2(n))
+        #     M1 = largest_pow2
+        #     M2 = n - M1
+            
+        #     A11 = view(A, 1:M1, 1:M1)
+        #     A22 = view(A, M1+1:n, M1+1:n)
+        #     A21 = view(A, M1+1:n, 1:M1)
+        #     B1 = view(B, 1:M1, :)
+        #     B2 = view(B, M1+1:n, :)
+    
+        #     # Solve the first part
+        #     performant_rectrsm!(A11, M1, B1, side; uplo=uplo, transpose=transpose, threshold=threshold)
+    
+        #     # Update the second part
+        #     N, R, M = size(B2, 1), size(A21, 2), size(B2, 2)
+        #     coalesced_matmul_kernel!(backend, (TILE_DIM, TILE_DIM))(B2, A21, B1, N, R, M, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
+    
+        #     # Solve the second part
+        #     performant_rectrsm!(A22, M2, B2, side; uplo=uplo, transpose=transpose, threshold=threshold)
+        # end
+    elseif side == 'L' && uplo == 'U' #&& transpose == 'N'
         if isinteger(log2(n))
             mid = div(n, 2)
             A11 = view(A, 1:mid, 1:mid)
@@ -298,7 +342,7 @@ function performant_rectrsm!(A::AbstractMatrix{T}, n, B::AbstractMatrix{T}, side
             # Solve the second part
             performant_rectrsm!(A22, M2, B2, side; uplo=uplo, transpose=transpose, threshold=threshold)
         end
-    elseif side == 'R' && uplo == 'L' && transpose == 'N'
+    elseif side == 'R' && uplo == 'L' #&& transpose == 'N'
         if isinteger(log2(n))
             mid = div(n, 2)
             A11 = view(A, 1:mid, 1:mid)
@@ -338,7 +382,7 @@ function performant_rectrsm!(A::AbstractMatrix{T}, n, B::AbstractMatrix{T}, side
             # Solve the first part
             performant_rectrsm!(A11, M1, B1, side; uplo=uplo, transpose=transpose, threshold=threshold)
         end
-    elseif side == 'R' && uplo == 'U' && transpose == 'N'
+    elseif side == 'R' && uplo == 'U'# && transpose == 'N'
         if isinteger(log2(n))
             mid = div(n, 2)
             A11 = view(A, 1:mid, 1:mid)
