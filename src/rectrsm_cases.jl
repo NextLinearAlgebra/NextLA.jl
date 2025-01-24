@@ -27,7 +27,7 @@ function lower_left_rectrsm!(A::AbstractMatrix{T}, n, B::AbstractMatrix{T}, back
 
         # Update the second half
         N, R, M = size(B2, 1), size(A21, 2), size(B2, 2)
-        coalesced_matmul_kernel!(backend, (TILE_DIM, TILE_DIM))(B2, A21, B1, N, R, M, false, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
+        matmul!(backend, (TILE_DIM, TILE_DIM))(B2, A21, B1, N, R, M, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
 
         # Solve the second half
         lower_left_rectrsm!(A22, n - mid, B2, backend, threshold)
@@ -48,7 +48,7 @@ function lower_left_rectrsm!(A::AbstractMatrix{T}, n, B::AbstractMatrix{T}, back
 
         # Update the second part
         N, R, M = size(B2, 1), size(A21, 2), size(B2, 2)
-        coalesced_matmul_kernel!(backend, (TILE_DIM, TILE_DIM))(B2, A21, B1, N, R, M, false, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
+        matmul!(backend, (TILE_DIM, TILE_DIM))(B2, A21, B1, N, R, M, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
 
         # Solve the second part
         lower_left_rectrsm!(A22, M2, B2, backend, threshold)
@@ -77,7 +77,7 @@ function upper_left_rectrsm!(A::AbstractMatrix{T}, n, B::AbstractMatrix{T}, back
         
         # Update the second half
         N, R, M = size(B1, 1), size(A12, 2), size(B1, 2)
-        coalesced_matmul_kernel!(backend, (TILE_DIM, TILE_DIM))(B1, A12, B2, N, R, M, false, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
+        matmul!(backend, (TILE_DIM, TILE_DIM))(B1, A12, B2, N, R, M, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
 
         # Solve the second half
         upper_left_rectrsm!(A11, mid, B1, backend, threshold)
@@ -98,7 +98,7 @@ function upper_left_rectrsm!(A::AbstractMatrix{T}, n, B::AbstractMatrix{T}, back
 
         # Update the second part
         N, R, M = size(B1, 1), size(A12, 2), size(B1, 2)
-        coalesced_matmul_kernel!(backend, (TILE_DIM, TILE_DIM))(B1, A12, B2, N, R, M, false, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
+        matmul!(backend, (TILE_DIM, TILE_DIM))(B1, A12, B2, N, R, M, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
 
         # Solve the second part
         upper_left_rectrsm!(A11, M1, B1, backend, threshold)
@@ -129,7 +129,7 @@ function lower_right_rectrsm!(A::AbstractMatrix{T}, n, B::AbstractMatrix{T}, bac
 
         # Update the first half
         N, R, M = size(B1, 1), size(A21, 1), size(B1, 2)
-        coalesced_matmul_kernel!(backend, (TILE_DIM, TILE_DIM))(B1, B2, A21, N, R, M, false, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
+        matmul!(backend, (TILE_DIM, TILE_DIM))(B1, B2, A21, N, R, M, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
 
         # Solve the first half
         lower_right_rectrsm!(A11, mid, B1, backend, threshold)
@@ -149,7 +149,7 @@ function lower_right_rectrsm!(A::AbstractMatrix{T}, n, B::AbstractMatrix{T}, bac
         lower_right_rectrsm!(A22, M2, B2, backend, threshold)
         # Update the first part
         N, R, M = size(B1, 1), size(A21, 1), size(B1, 2)
-        coalesced_matmul_kernel!(backend, (TILE_DIM, TILE_DIM))(B1, B2, A21, N, R, M, false, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
+        matmul!(backend, (TILE_DIM, TILE_DIM))(B1, B2, A21, N, R, M, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
 
         # Solve the first part
         lower_right_rectrsm!(A11, M1, B1, backend, threshold)
@@ -179,7 +179,7 @@ function upper_right_rectrsm!(A::AbstractMatrix{T}, n, B::AbstractMatrix{T}, bac
 
         # Update the second half
         N, R, M = size(B2, 1), size(A12, 2), size(B2, 2)
-        coalesced_matmul_kernel!(backend, (TILE_DIM, TILE_DIM))(B2, B1, A12, N, R, M, false, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
+        matmul!(backend, (TILE_DIM, TILE_DIM))(B2, B1, A12, N, R, M, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
 
         # Solve the second half
         upper_right_rectrsm!(A22, n - mid, B2, backend, threshold)
@@ -200,7 +200,7 @@ function upper_right_rectrsm!(A::AbstractMatrix{T}, n, B::AbstractMatrix{T}, bac
 
         # Update the second part
         N, R, M = size(B2, 1), size(A12, 1), size(B2, 2)
-        coalesced_matmul_kernel!(backend, (TILE_DIM, TILE_DIM))(B2, B1, A12, N, R, M, false, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
+        matmul!(backend, (TILE_DIM, TILE_DIM))(B2, B1, A12, N, R, M, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
 
         # Solve the second part
         upper_right_rectrsm!(A22, M2, B2, backend, threshold)
