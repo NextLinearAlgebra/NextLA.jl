@@ -43,7 +43,6 @@ function unified_rectrxm!(
     )
     backend = get_backend(A)
     n = size(A, 1)
-    threshold = 256
 
     if transpose == 'T' || transpose == 'C'
         A = (transpose == 'T') ? Transpose(A) : Adjoint(A)
@@ -54,6 +53,7 @@ function unified_rectrxm!(
     
     # TRSM: Triangular Solve
     if func == 'S'
+        threshold = 256
         # Scale B with alpha before solving
         B .= alpha .* B
 
@@ -71,6 +71,7 @@ function unified_rectrxm!(
 
     # TRMM: Triangular Multiply
     elseif func == 'M'
+        threshold = 16
         if side == 'L' && uplo == 'L'
             lower_left_rectrmm!(A, n, B, backend, threshold)
         elseif side == 'L' && uplo == 'U'

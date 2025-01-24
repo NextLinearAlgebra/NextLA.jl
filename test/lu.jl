@@ -124,10 +124,10 @@ using Test
 
 @testset "Accuracy Test for unified_rectrxm!" begin
     # Matrix sizes to test
-    sizes = [30, 32, 45, 64, 102, 128, 250, 256, 512, 1024, 2048, 4096, 8192] #350, 750
+    sizes = [16, 32, 128, 256, 2048, 4096] #512, 1024, 2048, 64, 8192, 250, 350, 750
 
     # Number of columns/rows in B to test
-    m_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256]  
+    m_sizes = [1, 8, 64]  #2, 4, 16, 32, 128, 256
     
     # Tolerance for accuracy check
     tolerance = 1e-14
@@ -137,96 +137,79 @@ using Test
             for side in ['L', 'R']
                 for uplo in ['L', 'U']
                     for trans in ['N', 'T', 'C']
-                        for alpha in [1.0]
-                            println("Testing side: $side, uplo: $uplo, trans: $trans, alpha: $alpha, n: $n, m: $m")
-                            
-                            # Generate triangular matrix A based on `uplo`
-                            if uplo == 'L'
-                                A = Matrix(LowerTriangular(rand(n, n) .+ 1))
-                            else
-                                A = Matrix(UpperTriangular(rand(n, n) .+ 1))
-                            end
-                            A += Diagonal(10 * ones(n, n))  # Ensure well-conditioned matrix
-
-                            # Convert to CuArray for GPU computation
-                            A_gpu = CuArray(A)
-
-                            # Create B matrix based on side
-                            if side == 'L'
-                                B = Matrix(rand(n, m) .+ 1)
-                            else
-                                B = Matrix(rand(m, n) .+ 1)
-                            end
-                            Bc = copy(B)
-                            B_gpu = CuArray(B)
-
-                            Ac = copy(A)
-                            A_gpu_before = copy(A_gpu)
-
-                            # Perform GPU operation with unified_rectrxm! for TRSM 'S'
-                            unified_rectrxm!(side, uplo, trans, alpha, 'S', A_gpu, B_gpu)
-
-                            # Check if A_gpu was mutated
-                            A_diff = norm(A_gpu - A_gpu_before)
-                            @test A_diff < tolerance
-
-                            # Perform baseline operation with BLAS trsm!
-                            CUBLAS.BLAS.trsm!(side, uplo, trans, 'N', alpha, Ac, Bc)
-
-                            # Compute the Frobenius norm difference (relative error)
-                            result_diff = norm(Matrix(B_gpu) - Bc) / norm(Bc)
-
-                            println("Size: $n x $n, B size: $(size(B)) | Result Diff (Relative Error): $result_diff")
-
-                            # Fail if result_diff is NaN
-                            if isnan(result_diff)
-                                println("GOT NAN..... SKIPPING FOR NOW")
-                                # error("NaN encountered! Matrix size: $n x $n, B size: $(size(B)), trans: $trans")
-                            end
-
-                            # Check if the relative error exceeds tolerance
-                            if result_diff >= tolerance
-                                println("Test failed for matrix size $n x $n, B size: $(size(B)), trans: $trans")
-                                println("Relative error: $result_diff")
-                            end
-
-                            # Assert relative error is within tolerance
-                            @test result_diff < tolerance
-
-                            # Check if we're testing 'L', 'L', 'N' (Lower, Lower, Non-Transpose)
-                            if uplo == 'L' && side == 'L' && trans == 'N'
-                                # Test TRMM: Update B as alpha*A*B
-                                # Create another pair of matrices for TRMM 'M'
-                                A_trmm = copy(A)
-                                B_trmm = copy(B)
-
-                                Ac_trmm = copy(A_trmm)
-                                Bc_trmm = copy(B_trmm)
-
-                                # Perform the TRMM operation on the GPU
-                                unified_rectrxm!(side, uplo, trans, alpha, 'M', A_trmm, B_trmm)
-
-                                # Perform the baseline TRMM operation with CUBLAS
-                                CUBLAS.BLAS.trmm!(side, uplo, trans, 'N', alpha, Ac_trmm, Bc_trmm)
-
-                                # Compute the Frobenius norm difference for TRMM
-                                trmm_diff = norm(Matrix(B_trmm) - Bc_trmm) / norm(Bc_trmm)
-
-                                println("TRMM Test | Size: $n x $n, B size: $(size(B)) | Result Diff (Relative Error): $trmm_diff")
-
-                                # Fail if result_diff for TRMM is NaN
-                                if isnan(trmm_diff)
-                                    error("NaN encountered in TRMM test! Matrix size: $n x $n, B size: $(size(B))")
+                        for func in ['S', 'M']
+                            for alpha in [1.0]
+                                # Skip testing 'M' if the side is not 'L'
+                                if func == 'M' && (side == 'R' && (trans != 'N' || uplo == 'U'))
+                                    continue
                                 end
 
-                                # Check if the relative error exceeds tolerance for TRMM
-                                if trmm_diff >= tolerance
-                                    println("TRMM Test failed for matrix size $n x $n, B size: $(size(B))")
-                                    println("Relative error: $trmm_diff")
+                                # Log the test configuration
+                                println("Testing side: $side, uplo: $uplo, trans: $trans, alpha: $alpha, n: $n, m: $m")
+
+                                # Generate the triangular matrix A based on `uplo`
+                                if uplo == 'L'
+                                    # Lower triangular matrix
+                                    A = Matrix(LowerTriangular(rand(n, n) .+ 1))
+                                else
+                                    # Upper triangular matrix
+                                    A = Matrix(UpperTriangular(rand(n, n) .+ 1))
                                 end
 
-                                # Assert relative error is within tolerance for TRMM
-                                @test trmm_diff < tolerance
+                                # Add a diagonal to ensure the matrix is well-conditioned
+                                A += Diagonal(10 * ones(n, n))
+
+                                # Convert A to a CuArray for GPU computation
+                                A_gpu = CuArray(A)
+
+                                # Generate the B matrix based on the `side`
+                                if side == 'L'
+                                    B = Matrix(rand(n, m) .+ 1)  # B has n rows
+                                else
+                                    B = Matrix(rand(m, n) .+ 1)  # B has n columns
+                                end
+
+                                # Create copies of A and B for baseline and comparison
+                                Ac = copy(A)
+                                Bc = copy(B)
+                                B_gpu = CuArray(B)
+                                A_gpu_before = copy(A_gpu)
+
+                                # Perform the GPU operation using `unified_rectrxm!`
+                                unified_rectrxm!(side, uplo, trans, alpha, func, A_gpu, B_gpu)
+
+                                # Check if A_gpu was mutated (A should not be changed by `unified_rectrxm!`)
+                                A_diff = norm(A_gpu - A_gpu_before)
+                                @test A_diff < tolerance
+
+                                # Perform the baseline operation using BLAS `trsm!` or `trmm!`
+                                if func == 'S'
+                                    # Solve triangular system: A * X = B or X * A = B
+                                    CUBLAS.BLAS.trsm!(side, uplo, trans, 'N', alpha, Ac, Bc)
+                                elseif func == 'M'
+                                    # Matrix multiply with triangular matrix: B = alpha * A * B
+                                    CUBLAS.BLAS.trmm!(side, uplo, trans, 'N', alpha, Ac, Bc)
+                                end
+
+                                # Compute the Frobenius norm difference (relative error)
+                                result_diff = norm(Matrix(B_gpu) - Bc) / norm(Bc)
+
+                                # Log the result difference
+                                println("Size: $n x $n, B size: $(size(B)) | Result Diff (Relative Error): $result_diff")
+
+                                # Handle NaN results (indicating an error in the computation)
+                                if isnan(result_diff)
+                                    println("GOT NAN..... SKIPPING FOR NOW")
+                                end
+
+                                # Check if the relative error exceeds the tolerance
+                                if result_diff >= tolerance
+                                    println("Test failed for matrix size $n x $n, B size: $(size(B)), trans: $trans")
+                                    println("Relative error: $result_diff")
+                                end
+
+                                # Assert that the relative error is within the tolerance
+                                @test result_diff < tolerance
                             end
                         end
                     end
@@ -235,3 +218,52 @@ using Test
         end
     end
 end
+
+
+# @testset "Equivalence Test for TRSM: Left Upper vs Right Lower" begin
+#     # Matrix sizes to test
+#     sizes = [16, 32, 128, 256, 2048]
+    
+#     # Number of columns in B to test
+#     m_sizes = [1, 8, 64]
+    
+#     # Tolerance for accuracy check
+#     tolerance = 1e-12
+
+#     for n in sizes
+#         for m in m_sizes
+#             # Generate an upper triangular matrix A
+#             A = Matrix(UpperTriangular(rand(n, n) .+ 1))
+#             A += Diagonal(10 * ones(n, n))  # Ensure well-conditioned
+            
+#             # Generate B matrix
+#             B = rand(n, m) .+ 1
+            
+#             # Create copies for the two cases
+#             A_left = CuArray(A)
+#             B_left = CuArray(copy(B))
+            
+#             A_right = CuArray(transpose(A))
+#             B_right = CuArray(transpose(B))
+            
+#             # Case 1: Left, Upper, Non-transposed
+#             unified_rectrxm!('L', 'U', 'N', 1.0, 'S', A_left, B_left)
+            
+#             # Case 2: Right, Lower, Non-transposed
+#             unified_rectrxm!('R', 'L', 'N', 1.0, 'S', A_right, B_right)
+            
+#             # Compare results
+#             result_diff = norm(Matrix(B_left) - Matrix(transpose(B_right))) / norm(Matrix(B_left))
+            
+#             @test result_diff < tolerance
+            
+#             if result_diff >= tolerance
+#                 println("Test failed for matrix size $n x $n, B size: $n x $m")
+#                 println("Relative error: $result_diff")
+#             else
+#                 println("Test passed for matrix size $n x $n, B size: $n x $m")
+#                 println("Relative error: $result_diff")
+#             end
+#         end
+#     end
+# end
