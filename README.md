@@ -1,4 +1,5 @@
-# DLA
+
+# DLA.jl
 
 [![Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://rabab53.github.io/DLA.jl/stable/)
 [![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://rabab53.github.io/DLA.jl/dev/)
@@ -7,9 +8,7 @@
 [![Coverage](https://codecov.io/gh/rabab53/DLA.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/rabab53/DLA.jl)
 
 
-# DLA.jl
-
-**DLA.jl** is a high-performance, hardware-agnostic, and datatype-flexible **dense linear algebra** package implemented in **Julia**. It provides a unified API for **BLAS/LAPACK** operations, enabling users to efficiently execute fundamental matrix computations across **CPUs and GPUs** without sacrificing performance.
+**DLA.jl** is a high-performance, hardware-agnostic, and datatype-flexible **dense linear algebra** package implemented in **Julia**. It provides a unified API for linear algebra operations, enabling users to efficiently execute fundamental matrix computations across **CPUs and GPUs** without sacrificing performance.
 
 ![Handout](handout.png)
 
@@ -23,11 +22,11 @@
 
 ## 📌 Why Julia for Dense Linear Algebra?
 
-Traditionally, **LAPACK/BLAS** libraries have been optimized for **Fortran and C**, requiring separate implementations for different hardware and data types. **DLA.jl** leverages Julia’s **multiple dispatch, type inference, and metaprogramming capabilities** to dynamically generate optimized machine code, making it a future-proof alternative.
+Traditionally, linear algebra libraries have been optimized for **Fortran and C**, requiring separate implementations for different hardware and data types. **DLA.jl** leverages Julia’s **multiple dispatch, type inference, and metaprogramming capabilities** to dynamically generate optimized machine code, making it a future-proof alternative.
 
 ## 📈 Performance
 
-Benchmarks indicate that **DLA.jl** achieves performance **comparable to or better than** LAPACK and NVIDIA’s CUSOLVER for medium to large problem sizes. Key highlights:
+Benchmarks indicate that **DLA.jl** achieves performance **comparable to or better than** state-of-art for medium to large problem sizes. Key highlights:
 
 - **Close to native performance** across different data types.
 - **No need for separate CPU/GPU implementations**—a single API works across both.
