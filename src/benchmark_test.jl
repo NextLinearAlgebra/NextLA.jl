@@ -1,9 +1,9 @@
 using LinearAlgebra
 using CUDA
 using BenchmarkTools
+using Statistics
 using Plots
-
-include("for_testing.jl")  # Include the file with the two functions
+include("for_testing.jl")  # Include the file with the functions
 
 function trsm_flops(n, m)
     flops_add = 0.5 * n * m * (m-1.0)
@@ -11,52 +11,69 @@ function trsm_flops(n, m)
     return flops_add + flops_mult
 end
 
-function benchmark_functions()
-    sizes = [256, 512, 1024, 2048, 4096, 8192]  # Matrix sizes for benchmarking
-    m_values = [128, 256, 512]  # Different values of m for benchmarking
+function benchmark_functions(num_trials=10)
+    sizes = [256, 512, 1024, 2048, 4096, 8192, 16384]
+    m = 256  # Fixed m value
+    runtimes = Dict()
 
-    left_upper_no_transpose_runtimes = Dict()
-    left_upper_transpose_runtimes = Dict()
+    cases = [
+        ("R", "U", right_upper_no_transpose, right_upper_transpose),
+        ("R", "L", right_lower_no_transpose, right_lower_transpose),
+        ("L", "U", left_upper_no_transpose, left_upper_transpose),
+        ("L", "L", left_lower_no_transpose, left_lower_transpose)
+    ]
 
-    for m in m_values
-        left_upper_no_transpose_runtimes[m] = Float64[]
-        left_upper_transpose_runtimes[m] = Float64[]
+    for (side, uplo, no_transpose_func, transpose_func) in cases
+        runtimes[(side, uplo)] = Dict("no_transpose" => Float64[], "transpose" => Float64[])
 
         for n in sizes
-            A = Matrix(UpperTriangular(rand(n, n) .+ 1))
-            A .+= Diagonal(10 * ones(n))  # Ensure well-conditioned
-            A = CuArray(A)
-            B = CuArray(rand(n, m) .+ 1)
-            A_c = copy(A)
-            B_c = copy(B)
+            A = CuArray(if uplo == "U"
+                Matrix(UpperTriangular(rand(n, n) .+ 1))
+            else
+                Matrix(LowerTriangular(rand(n, n) .+ 1))
+            end .+ Diagonal(10 * ones(n)))
 
-            # Benchmark left_upper_no_transpose
-            time_no_transpose = @belapsed (CUDA.@sync left_upper_no_transpose($A, $B))
-            push!(left_upper_no_transpose_runtimes[m], time_no_transpose)
+            B = if side == "R"
+                CuArray(rand(m, n) .+ 1)
+            else
+                CuArray(rand(n, m) .+ 1)
+            end
 
-            # Benchmark left_upper_transpose
-            time_transpose = @belapsed (CUDA.@sync left_upper_transpose($A_c, $B_c))
-            push!(left_upper_transpose_runtimes[m], time_transpose)
+            # Benchmark no_transpose
+            times_no_transpose = [
+                @belapsed CUDA.@sync $no_transpose_func($(copy(A)), $(copy(B)))
+                for _ in 1:num_trials
+            ]
+            avg_time_no_transpose = mean(times_no_transpose)
+            push!(runtimes[(side, uplo)]["no_transpose"], avg_time_no_transpose)
 
-            println("Size: $n x $m | No Transpose: $time_no_transpose s | Transpose: $time_transpose s")
+            # Benchmark transpose
+            times_transpose = [
+                @belapsed CUDA.@sync $transpose_func($(copy(A)), $(copy(B)))
+                for _ in 1:num_trials
+            ]
+            avg_time_transpose = mean(times_transpose)
+            push!(runtimes[(side, uplo)]["transpose"], avg_time_transpose)
+
+            println("Case: $side, $uplo | Size: $n x $m | No Transpose: $avg_time_no_transpose s | Transpose: $avg_time_transpose s")
         end
     end
 
-    return sizes, m_values, left_upper_no_transpose_runtimes, left_upper_transpose_runtimes
+    return sizes, runtimes
 end
 
 # Run the benchmark
-sizes, m_values, no_transpose_runtimes, transpose_runtimes = benchmark_functions()
+sizes, runtimes = benchmark_functions(10)  # Run 10 trials for each case
 
 # Generate and save plots
-for m in m_values
+for ((side, uplo), data) in runtimes
     p = plot(
         sizes,
-        no_transpose_runtimes[m],
+        data["no_transpose"],
         label = "No Transpose",
         xlabel = "Matrix Size (n)",
         ylabel = "Runtime (s)",
-        title = "Runtime Comparison (m=$m)",
+        title = "Runtime Comparison ($side, $uplo, m=256)",
         lw = 2,
         marker = :square,
         markersize = 4,
@@ -66,7 +83,7 @@ for m in m_values
     plot!(
         p,
         sizes,
-        transpose_runtimes[m],
+        data["transpose"],
         label = "Transpose",
         lw = 2,
         marker = :diamond,
@@ -75,5 +92,5 @@ for m in m_values
     )
 
     # Save the plot
-    savefig(p, "runtime_comparison_m_$m.png")
+    savefig(p, "runtime_$(side)_$(uplo)_comparison_m_256.png")
 end

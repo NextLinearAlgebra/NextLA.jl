@@ -61,7 +61,7 @@ function upper_left_rectrsm!(A::AbstractMatrix{T}, n, B::AbstractMatrix{T}, back
     # Base case: Small matrix handling
     if n <= threshold
         n, m = size(B)
-        upper_left_kernel(backend, (n,))(Transpose(A), B, n, ndrange=(n, m))
+        upper_left_kernel(backend, (n,))(A, B, n, ndrange=(n, m))
         return B
     end
     if isinteger(log2(n))

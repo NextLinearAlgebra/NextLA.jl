@@ -112,6 +112,14 @@ function lower_right_rectrmm!(A, n, B, backend, threshold = 16)
 
     end
 end
+
+function upper_right_rectrmm!(A, n, B, backend, threshold = 16)
+    if n <= threshold
+        RightLowerTRMM!(A, B)
+    else 
+    
+    end
+end
 # TO DO: implement recTRMM_LR and rec_TRMM_UR
 
 

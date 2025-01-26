@@ -55,7 +55,7 @@ end
     for i in n:-1:1
         @synchronize
         if row < i
-            @inbounds A_col[i] = A[i, row] / diag[row]
+            @inbounds A_col[i] = A[row, i] / diag[row]
             @inbounds B_c[row] -= A_col[i] * B_c[i]
         end
     end
