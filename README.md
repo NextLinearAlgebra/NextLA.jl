@@ -35,6 +35,7 @@ Benchmarks indicate that **DLA.jl** achieves performance **comparable to or bett
 
 ## 📚 References
 
+```bibtex
 @inproceedings{dla,
   title={{Synthesizing Numerical Linear Algebra using Julia}},
   author={Xuan, Sophie and Ringoot, Evelyne and Alomairy, Rabab and Tome, Felipe and Samaroo, Julian and Edelman, Alan},
@@ -42,7 +43,7 @@ Benchmarks indicate that **DLA.jl** achieves performance **comparable to or bett
   year={2024},
   organization={IEEE}
 }
-
+```
 ## 👥 Contributors
 
 - **Rabab Alomairy** (@Rabab53)
