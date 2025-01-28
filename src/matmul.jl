@@ -148,3 +148,10 @@ function GEMM_ADD!(A, B, C; nthreads = (16, 16))
     NDrange = (size(C, 1) + nthreads[1], size(C,2) + nthreads[2])
     kernel(A, B, C; ndrange =  NDrange)
 end
+
+function GEMM_SUB!(A, B, C)
+    backend = get_backend(A)
+    TILE_DIM = 32
+    N, R, M = size(A, 1), size(C, 1), size(A, 2)
+    matmul!(backend, (TILE_DIM, TILE_DIM))(A, B, C, N, R, M, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
+end

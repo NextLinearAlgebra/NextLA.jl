@@ -2,6 +2,7 @@ include("matmul.jl")
 include("trsm_base_cases.jl")
 include("rectrsm_cases.jl")
 include("rectrmm_cases.jl")
+include("unifrec.jl")
 
 """
 Unified recursive function for triangular matrix solve (TRSM) and multiply (TRMM) operations.
@@ -42,6 +43,7 @@ function unified_rectrxm!(
         B::AbstractMatrix
     )
     backend = get_backend(A)
+    threshold = 16
     n = size(A, 1)
 
     if transpose == 'T' || transpose == 'C'
@@ -54,42 +56,13 @@ function unified_rectrxm!(
     # TRSM: Triangular Solve
     if func == 'S'
         threshold = 256
-        # Scale B with alpha before solving
         B .= alpha .* B
-
-        if side == 'L' && uplo == 'L'
-            return lower_left_rectrsm!(A, n, B, backend, threshold)
-        elseif side == 'L' && uplo == 'U'
-            return upper_left_rectrsm!(A, n, B, backend, threshold)
-        elseif side == 'R' && uplo == 'L'
-            return lower_right_rectrsm!(A, n, B, backend, threshold)
-        elseif side == 'R' && uplo == 'U'
-            return upper_right_rectrsm!(A, n, B, backend, threshold)
-        else
-            error("Unsupported combination of side, uplo, and transpose parameters.")
-        end
-
-    # TRMM: Triangular Multiply
-    elseif func == 'M'
-        threshold = 16
-        if side == 'L' && uplo == 'L'
-            lower_left_rectrmm!(A, n, B, backend, threshold)
-        elseif side == 'L' && uplo == 'U'
-            upper_left_rectrmm!(A, n, B, backend, threshold)
-        elseif side == 'R' && uplo == 'L'
-            lower_right_rectrmm!(A, n, B, backend, threshold)
-        elseif side == 'R' && uplo == 'U'
-            upper_right_rectrmm!(A, n, B, backend, threshold)
-        else
-            error("Unsupported combination of side, uplo, and transpose parameters.")
-        end
-
-        # Scale B with alpha after multiplication
-        B .= alpha .* B
-        return B
-    else
-        error("Invalid operation type. Use 'S' for TRSM or 'M' for TRMM.")
     end
+    unified_rec(func, side, uplo, A, n, B, backend, threshold)
+    if func == 'M'
+        B .= alpha .* B
+    end
+    return B
 end
 
 

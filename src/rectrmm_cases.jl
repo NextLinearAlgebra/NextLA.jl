@@ -15,6 +15,54 @@ export recTRMM_LR!
 # implementing the base kernels, dependent on the occupied side of A,
 # in place, store result in B
 
+function unified_rectrmm!(side::Char, uplo::Char, A::AbstractMatrix{T}, n, B::AbstractMatrix{T}, backend, threshold::Int=16) where T <: AbstractFloat
+    if n <= threshold
+        if side == 'L' && uplo == 'L'
+            LeftLowerTRMM!(A, B)
+        elseif side == 'L' && uplo == 'U'
+            LeftUpperTRMM!(A, B)
+        elseif side == 'R' && uplo == 'L'
+            RightLowerTRMM!(A, B)
+        else # side == 'R' && uplo == 'U'
+            RightUpperTRMM!(A, B)
+        end
+        return B
+    end
+
+    split = div(n, 2)
+    A11 = @view(A[1:split, 1:split])
+    A21 = @view(A[split+1:end, 1:split])
+    A22 = @view(A[split+1:end, split+1:end])
+    A12 = @view(A[1:split, split+1:end])
+
+    if side == 'L'
+        B1 = @view(B[1:split, :])
+        B2 = @view(B[split+1:end, :])
+    else
+        B1 = @view(B[:, 1:split])
+        B2 = @view(B[:, split+1:end])
+    end
+
+    if (side == 'L' && uplo == 'U') || (side == 'R' && uplo == 'L')
+        unified_rectrmm!(side, uplo, A11, split, B1, backend, threshold)
+        if side == 'L'
+            GEMM_ADD!(A12, B2, B1)
+        else
+            GEMM_ADD!(B2, A21, B1)
+        end
+        unified_rectrmm!(side, uplo, A22, n - split, B2, backend, threshold)
+    else
+        unified_rectrmm!(side, uplo, A22, n - split, B2, backend, threshold)
+        if side == 'L'
+            GEMM_ADD!(A21, B1, B2)
+        else
+            GEMM_ADD!(B1, A12, B2)
+        end
+        unified_rectrmm!(side, uplo, A11, split, B1, backend, threshold)
+    end
+
+    return B
+end
 
 
 
