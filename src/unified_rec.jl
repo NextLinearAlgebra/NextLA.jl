@@ -42,7 +42,6 @@ function unified_rectrxm!(
         A::AbstractMatrix, 
         B::AbstractMatrix
     )
-    backend = get_backend(A)
     threshold = 16
     n = size(A, 1)
 
@@ -58,7 +57,7 @@ function unified_rectrxm!(
         threshold = 256
         B .= alpha .* B
     end
-    unified_rec(func, side, uplo, A, n, B, backend, threshold)
+    unified_rec(func, side, uplo, A, n, B, threshold)
     if func == 'M'
         B .= alpha .* B
     end

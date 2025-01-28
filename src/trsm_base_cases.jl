@@ -127,3 +127,27 @@ end
         @inbounds B[row, col] = B_r[col]
     end
 end
+
+function LeftLowerTRSM!(A, B)
+    n, m = size(B)
+    backend = get_backend(A)
+    lower_left_kernel(backend, (n,))(Transpose(A), B, n, ndrange=(n, m))
+end
+
+function LeftUpperTRSM!(A, B)
+    n, m = size(B)
+    backend = get_backend(A)
+    upper_left_kernel(backend, (n,))(A, B, n, ndrange=(n, m))
+end
+
+function RightLowerTRSM!(A, B)
+    n, m = size(B)
+    backend = get_backend(A)
+    right_lower_kernel(backend, (m,))(Transpose(A), B, m, ndrange=(m, n))
+end
+
+function RightUpperTRSM!(A, B)
+    n, m = size(B)
+    backend = get_backend(A)
+    right_upper_kernel(backend, (m,))(Transpose(A), B, m, ndrange=(m, n))
+end

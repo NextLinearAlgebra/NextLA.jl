@@ -1,19 +1,14 @@
-function unified_rec(func::Char, side::Char, uplo::Char, A::AbstractMatrix{T}, n, B::AbstractMatrix{T}, backend, threshold::Int=256) where T <: AbstractFloat
+function unified_rec(func::Char, side::Char, uplo::Char, A::AbstractMatrix{T}, n, B::AbstractMatrix{T}, threshold::Int=256) where T <: AbstractFloat
     if n <= threshold
-        n, m = size(B)
         if func == 'S'
-            if side == 'L'
-                if uplo == 'L'
-                    lower_left_kernel(backend, (n,))(Transpose(A), B, n, ndrange=(n, m))
-                else
-                    upper_left_kernel(backend, (n,))(A, B, n, ndrange=(n, m))
-                end
+            if side == 'L' && uplo == 'L'
+                LeftLowerTRSM!(A, B)
+            elseif side == 'L' && uplo == 'U'
+                LeftUpperTRSM!(A, B)
+            elseif side == 'R' && uplo == 'L'
+                RightLowerTRSM!(A, B)
             else
-                if uplo == 'L'
-                    right_lower_kernel(backend, (m,))(Transpose(A), B, m, ndrange=(m, n))
-                else 
-                    right_upper_kernel(backend, (m,))(Transpose(A), B, m, ndrange=(m, n))
-                end
+                RightUpperTRSM!(A, B)
             end
         else
             if side == 'L' && uplo == 'L'
@@ -29,7 +24,7 @@ function unified_rec(func::Char, side::Char, uplo::Char, A::AbstractMatrix{T}, n
         return B
     end
 
-    if (isinteger(log2(n)) || func == 'M')
+    if isinteger(log2(n))
         mid = div(n, 2)
     else
         mid = 2 ^ floor(Int, log2(n))
@@ -53,7 +48,7 @@ function unified_rec(func::Char, side::Char, uplo::Char, A::AbstractMatrix{T}, n
         (side == 'R' && uplo == 'U' && func == 'S') || 
         (side == 'L' && uplo == 'U' && func == 'M') || 
         (side == 'R' && uplo == 'L' && func == 'M')
-        unified_rec(func, side, uplo, A11, mid, B1, backend, threshold)
+        unified_rec(func, side, uplo, A11, mid, B1, threshold)
         if side == 'L'
             if func == 'S'
                 GEMM_SUB!(B2, A21, B1)
@@ -67,9 +62,9 @@ function unified_rec(func::Char, side::Char, uplo::Char, A::AbstractMatrix{T}, n
                 GEMM_ADD!(B2, A21, B1)
             end
         end
-        unified_rec(func, side, uplo, A22, mid_remainder, B2, backend, threshold)
+        unified_rec(func, side, uplo, A22, mid_remainder, B2, threshold)
     else
-        unified_rec(func, side, uplo, A22, mid_remainder, B2, backend, threshold)
+        unified_rec(func, side, uplo, A22, mid_remainder, B2, threshold)
         if side == 'L'
             if func == 'S'
                 GEMM_SUB!(B1, A12, B2)
@@ -83,7 +78,7 @@ function unified_rec(func::Char, side::Char, uplo::Char, A::AbstractMatrix{T}, n
                 GEMM_ADD!(B1, A12, B2)
             end
         end
-        unified_rec(func, side, uplo, A11, mid, B1, backend, threshold)
+        unified_rec(func, side, uplo, A11, mid, B1, threshold)
     end
     return B
 end
