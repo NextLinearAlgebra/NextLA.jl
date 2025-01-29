@@ -285,26 +285,35 @@ end
 # wrapper function for the LLTRMM kernel
 function LeftLowerTRMM!(A, B; n_threads = (16,16))
     backend = get_backend(A)
+    Ndrange = max(size(A), size(B))
+    Ndrange = (Ndrange[1]+ 16, Ndrange[2]+16)
+    LeftLowerTRMM_kernel!(backend, n_threads)(A, B, ndrange = Ndrange)
     # need to specify ndrange as the larger of the 2 ARGUMENTS
-    LeftLowerTRMM_kernel!(backend, n_threads)(A, B, ndrange = max(size(A), size(B)))
+    # LeftLowerTRMM_kernel!(backend, n_threads)(A, B, ndrange = max(size(A), size(B)))
 end
 
 # wrapper function for the LUTRMM kernel
 function LeftUpperTRMM!(A, B; n_threads = (16,16))
     backend = get_backend(A)
+    Ndrange = max(size(A), size(B))
+    Ndrange = (Ndrange[1]+ 16, Ndrange[2]+16)
     # could not use overloading with only 2 args
-    LeftUpperTRMM_kernel!(backend, n_threads)(A, B, ndrange = max(size(A), size(B)))
+    LeftUpperTRMM_kernel!(backend, n_threads)(A, B, ndrange = Ndrange)
 end
 
 # wrapper function for the RLTRMM kernel
 function RightLowerTRMM!(A, B; n_threads = (16,16))
     backend = get_backend(A)
+    Ndrange = max(size(A), size(B))
+    Ndrange = (Ndrange[1]+ 16, Ndrange[2]+16)
     # could not use overloading with only 2 args
-    RightLowerTRMM_kernel!(backend, n_threads)(A, B, ndrange = max(size(A), size(B)))
+    RightLowerTRMM_kernel!(backend, n_threads)(A, B, ndrange = Ndrange)
 end
 
 function RightUpperTRMM!(A, B; n_threads = (16,16))
     backend = get_backend(A)
+    Ndrange = max(size(A), size(B))
+    Ndrange = (Ndrange[1]+ 16, Ndrange[2]+16)
     # could not use overloading with only 2 args
-    RightUpperTRMM_kernel!(backend, n_threads)(A, B, ndrange = max(size(A), size(B)))
+    RightUpperTRMM_kernel!(backend, n_threads)(A, B, ndrange = Ndrange)
 end
