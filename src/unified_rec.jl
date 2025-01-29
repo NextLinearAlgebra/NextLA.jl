@@ -1,8 +1,6 @@
+include("unifrec.jl")
 include("matmul.jl")
 include("trsm_base_cases.jl")
-include("rectrsm_cases.jl")
-include("rectrmm_cases.jl")
-include("unifrec.jl")
 
 """
 Unified recursive function for triangular matrix solve (TRSM) and multiply (TRMM) operations.
@@ -48,9 +46,7 @@ function unified_rectrxm!(
     if transpose == 'T' || transpose == 'C'
         A = (transpose == 'T') ? Transpose(A) : Adjoint(A)
         uplo = (uplo == 'L') ? 'U' : 'L'
-    end
-    
-
+    end    
     
     # TRSM: Triangular Solve
     if func == 'S'

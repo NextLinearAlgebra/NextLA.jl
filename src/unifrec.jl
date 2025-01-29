@@ -1,3 +1,8 @@
+include("matmul.jl")
+include("trsm_base_cases.jl")
+include("trmm_base_cases.jl")
+
+
 function unified_rec(func::Char, side::Char, uplo::Char, A::AbstractMatrix{T}, n, B::AbstractMatrix{T}, threshold::Int=256) where T <: AbstractFloat
     if n <= threshold
         if func == 'S'
