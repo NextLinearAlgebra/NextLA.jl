@@ -86,7 +86,7 @@ end
     for i in n:-1:1
         @synchronize
         if col < i
-            @inbounds A_row[i] = A[col, i] / diag[col]
+            @inbounds A_row[i] = A[i, col] / diag[col]
             @inbounds B_r[col] -= B_r[i] * A_row[i] 
         end
     end
@@ -143,7 +143,7 @@ end
 function RightLowerTRSM!(A, B)
     n, m = size(B)
     backend = get_backend(A)
-    right_lower_kernel(backend, (m,))(Transpose(A), B, m, ndrange=(m, n))
+    right_lower_kernel(backend, (m,))(A, B, m, ndrange=(m, n))
 end
 
 function RightUpperTRSM!(A, B)
