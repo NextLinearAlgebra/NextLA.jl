@@ -48,7 +48,6 @@ function unified_rectrxm!(
         uplo = (uplo == 'L') ? 'U' : 'L'
     end    
     
-    # TRSM: Triangular Solve
     if func == 'S'
         threshold = 256
         B .= alpha .* B
