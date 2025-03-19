@@ -1,44 +1,45 @@
-using LinearAlgebra
+export zlauu2
+
+"""
+Purpose:
+=======
+ZLAUU2 computes the product U * U' or L' * L, where the triangular
+factor U or L is stored in the upper or lower triangular part of
+the array A.
+
+If UPLO = 'U' or 'u', the upper triangle of the result is stored,
+overwriting the factor U in A.
+If UPLO = 'L' or 'l', the lower triangle of the result is stored,
+overwriting the factor L in A.
+
+Arguments:
+==========
+UPLO    (input) CHARACTER*1
+        Specifies whether the triangular factor stored in the array A
+        is upper or lower triangular:
+        = 'U':  Upper triangular
+        = 'L':  Lower triangular
+
+N       (input) INTEGER
+        The order of the triangular factor U or L.  N >= 0.
+
+A       (input/output) COMPLEX{T} array, dimension (LDA,N)
+        On entry, the triangular factor U or L.
+        On exit, if UPLO = 'U', the upper triangle of A is
+        overwritten with the upper triangle of the product U * U';
+        if UPLO = 'L', the lower triangle of A is overwritten with
+        the lower triangle of the product L' * L.
+
+LDA     (input) INTEGER
+        The leading dimension of the array A.  LDA >= max(1,N).
+
+INFO    (output) INTEGER
+        = 0: successful exit
+        < 0: if INFO = -k, the k-th argument had an illegal value
+"""
 
 function zlauu2(uplo::Char, n::Int, A::AbstractMatrix{T}, lda::Int) where T
-    """
-    Purpose:
-    =======
-    ZLAUU2 computes the product U * U' or L' * L, where the triangular
-    factor U or L is stored in the upper or lower triangular part of
-    the array A.
 
-    If UPLO = 'U' or 'u', the upper triangle of the result is stored,
-    overwriting the factor U in A.
-    If UPLO = 'L' or 'l', the lower triangle of the result is stored,
-    overwriting the factor L in A.
-
-    Arguments:
-    ==========
-    UPLO    (input) CHARACTER*1
-            Specifies whether the triangular factor stored in the array A
-            is upper or lower triangular:
-            = 'U':  Upper triangular
-            = 'L':  Lower triangular
-    
-    N       (input) INTEGER
-            The order of the triangular factor U or L.  N >= 0.
-    
-    A       (input/output) COMPLEX{T} array, dimension (LDA,N)
-            On entry, the triangular factor U or L.
-            On exit, if UPLO = 'U', the upper triangle of A is
-            overwritten with the upper triangle of the product U * U';
-            if UPLO = 'L', the lower triangle of A is overwritten with
-            the lower triangle of the product L' * L.
-
-    LDA     (input) INTEGER
-            The leading dimension of the array A.  LDA >= max(1,N).
-    
-    INFO    (output) INTEGER
-            = 0: successful exit
-            < 0: if INFO = -k, the k-th argument had an illegal value
-    """
-    
     # Initialize the INFO variable
     info = 0
 

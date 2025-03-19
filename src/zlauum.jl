@@ -1,6 +1,6 @@
-using LinearAlgebra
+export zlauum
 
-include("zlauu2.jl")  # Import the unblocked version of the matrix multiplication function (zlauu2) to use later in this computation.
+ # Import the unblocked version of the matrix multiplication function (zlauu2) to use later in this computation.
 
 """
     zlauum(uplo::Char, n::Int, a::AbstractMatrix{T}, lda::Int, block_size::Int)

@@ -1,14 +1,14 @@
 ```@meta
-CurrentModule = DLA
+CurrentModule = NextLA
 ```
 
-# DLA
+# NextLA
 
-Documentation for [DLA](https://github.com/rabab53/DLA.jl).
+Documentation for [NextLA](https://github.com/rabab53/NextLA.jl).
 
 ```@index
 ```
 
 ```@autodocs
-Modules = [DLA]
+Modules = [NextLA]
 ```

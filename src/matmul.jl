@@ -1,7 +1,4 @@
-using LinearAlgebra
-using KernelAbstractions
-using CUDA
-using StaticArrays
+export GEMM_ADD!, GEMM_SUB!
 
 const TILE_DIM = 32
 

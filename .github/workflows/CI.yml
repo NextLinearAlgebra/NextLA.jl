@@ -72,6 +72,6 @@ jobs:
         shell: julia --project=docs --color=yes {0}
         run: |
           using Documenter: DocMeta, doctest
-          using DLA
-          DocMeta.setdocmeta!(DLA, :DocTestSetup, :(using DLA); recursive=true)
-          doctest(DLA)
+          using NextLA
+          DocMeta.setdocmeta!(NextLA, :DocTestSetup, :(using NextLA); recursive=true)
+          doctest(NextLA)

@@ -1,14 +1,14 @@
-using DLA
+using NextLA
 using Documenter
 
-DocMeta.setdocmeta!(DLA, :DocTestSetup, :(using DLA); recursive=true)
+DocMeta.setdocmeta!(NextLA, :DocTestSetup, :(using NextLA); recursive=true)
 
 makedocs(;
-    modules=[DLA],
+    modules=[NextLA],
     authors="Rabab Alomairy",
-    sitename="DLA.jl",
+    sitename="NextLA.jl",
     format=Documenter.HTML(;
-        canonical="https://rabab53.github.io/DLA.jl",
+        canonical="https://rabab53.github.io/NextLA.jl",
         edit_link="main",
         assets=String[],
     ),
@@ -18,6 +18,6 @@ makedocs(;
 )
 
 deploydocs(;
-    repo="github.com/rabab53/DLA.jl",
+    repo="github.com/rabab53/NextLA.jl",
     devbranch="main",
 )

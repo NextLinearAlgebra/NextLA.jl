@@ -1,11 +1,4 @@
-using LinearAlgebra
-using KernelAbstractions
-using CUDA
-using StaticArrays
-export LeftLowerTRMM!
-export LeftUpperTRMM!
-export RightLowerTRMM!
-
+export LeftLowerTRMM!, LeftUpperTRMM!, RightLowerTRMM!, RightUpperTRMM!
 
 # Performs in place TRMM B = A * B 
 # where A is an NxN lower triangular matrix and B is an NxM matrix

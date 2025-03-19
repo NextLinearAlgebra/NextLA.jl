@@ -33,7 +33,7 @@ end
 
 
 # the following method is meant to catch calls to DLA lu! implmenation which is the getrf LAPACK code written in Julia
-LinearAlgebra.lu!(A::DLAMatrix{<:BlasFloat}; check::Bool = true, allowsingular::Bool = false) = LinearAlgebra.lu!(A, RowMaximum(); check, allowsingular)
+LinearAlgebra.lu!(A::NextLAMatrix{<:BlasFloat}; check::Bool = true, allowsingular::Bool = false) = LinearAlgebra.lu!(A, RowMaximum(); check, allowsingular)
 
 """
 Computes an LU factorization of a general M-by-N matrix A using partial pivoting with row exchanges.
@@ -45,7 +45,7 @@ and U is upper triangular (upper trapezoidal if m < n)
 This is the recursive form of the algorithm. 
 """
 
-function LinearAlgebra.lu!(A::DLAMatrix{T}, ::RowMaximum; check::Bool = true, allowsingular::Bool = false) where {T<:BlasFloat}
+function LinearAlgebra.lu!(A::NextLAMatrix{T}, ::RowMaximum; check::Bool = true, allowsingular::Bool = false) where {T<:BlasFloat}
     A = A.data
     m, n = size(A)
     minmn = min(m,n)
@@ -61,11 +61,11 @@ function LinearAlgebra.lu!(A::DLAMatrix{T}, ::RowMaximum; check::Bool = true, al
 end
 
 
-LinearAlgebra.lu!(A::DLAMatrix,  pivot::Union{CompletePivoting, RowMaximum, RowNonZero, NoPivot}= lupivottype(eltype(A.data));
+LinearAlgebra.lu!(A::NextLAMatrix,  pivot::Union{CompletePivoting, RowMaximum, RowNonZero, NoPivot}= lupivottype(eltype(A.data));
     check::Bool = true, allowsingular::Bool = false)  = LinearAlgebra.generic_lufact!(A, pivot; check, allowsingular) 
 
 
-function LinearAlgebra.generic_lufact!(A::DLAMatrix{T}, pivot::Union{CompletePivoting, RowMaximum, RowNonZero, NoPivot} = lupivottype(T); 
+function LinearAlgebra.generic_lufact!(A::NextLAMatrix{T}, pivot::Union{CompletePivoting, RowMaximum, RowNonZero, NoPivot} = lupivottype(T); 
     check::Bool = true, allowsingular::Bool = false)  where {T}
     
     A = A.data
@@ -313,7 +313,7 @@ where P and Q are permutation matrices, L is lower triangular with unit diagonal
 
 """
 
-function getc2!(A::DLAMatrix{T}, ::CompletePivoting; check::Bool = true,  allowsingular::Bool = false) where {T<:BlasFloat}
+function getc2!(A::NextLAMatrix{T}, ::CompletePivoting; check::Bool = true,  allowsingular::Bool = false) where {T<:BlasFloat}
     A = A.data
     check && LAPACK.chkfinite(A)
 

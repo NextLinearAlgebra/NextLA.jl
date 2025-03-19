@@ -1,8 +1,5 @@
-using LinearAlgebra
-using KernelAbstractions
-using CUDA
-using StaticArrays
 
+export LeftLowerTRSM!, LeftUpperTRSM!, RightLowerTRSM!, RightUpperTRSM!
 
 # Kernel function for solving lower triangular system Ax = b
 @kernel function lower_left_kernel(A, B, n)

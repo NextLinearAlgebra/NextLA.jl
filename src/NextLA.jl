@@ -1,11 +1,37 @@
-module DLA
+module NextLA
 
 using LinearAlgebra
 import LinearAlgebra
-import LinearAlgebra: Adjoint, BLAS, Diagonal, Bidiagonal, Tridiagonal, LAPACK, LowerTriangular, PosDefException, Transpose, UpperTriangular, UnitLowerTriangular, UnitUpperTriangular, diagind, ishermitian, issymmetric, PivotingStrategy, BlasFloat, BlasInt
+import LinearAlgebra: Adjoint, BLAS, Diagonal, Bidiagonal, Tridiagonal, LAPACK
+import LinearAlgebra: LowerTriangular, PosDefException, Transpose, UpperTriangular
+import LinearAlgebra: UnitLowerTriangular, UnitUpperTriangular, diagind, ishermitian, issymmetric
+import LinearAlgebra: PivotingStrategy, BlasFloat, BlasInt
 import Random
+using KernelAbstractions
+using StaticArrays
 
+DEV = :NVIDIA
 
+if DEV == :NVIDIA
+    using CUDA
+    ArrayKA = CUDA.CuArray
+    Backend = CUDA.CUDABackend()
+elseif DEV == :AMD
+    using AMDGPU
+    ArrayKA = AMDGPU.ROCArray
+    Backend = AMDGPU.ROCBackend()
+elseif DEV == :oneAPI
+    using oneAPI 
+    ArrayKA = oneAPI.oneArray
+    Backend = oneAPI.oneAPIBackend()
+elseif DEV == :Metal
+    using Metal 
+    ArrayKA = Metal.MtlArray
+    Backend = Metal.MetalBackend()
+else DEV == :CPU
+    ArrayKA = Array
+    Backend = CPU()
+end
 
 """
     lamch(::Type{T}, cmach) where{T<: Number}
@@ -50,8 +76,13 @@ function lamch(::Type{T}, cmach) where{T<: Number}
 end
 
 # Write your package code here.
-include("DLAMatrix.jl")
+include("NextLAMatrix.jl")
 include("lu.jl")
+include("trmm.jl")
+include("trsm.jl")
+include("rectrxm.jl")
+include("matmul.jl")
+include("zlauu2.jl") 
 include("zlauum.jl")
-include("performant_rectrsm.jl")
+
 end
