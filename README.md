@@ -35,12 +35,20 @@ Benchmarks indicate that **NextLA.jl** achieves performance **comparable to or b
 ## 📚 References
 
 ```bibtex
-@inproceedings{dla,
+@inproceedings{nextla1,
   title={{Synthesizing Numerical Linear Algebra using Julia}},
   author={Xuan, Sophie and Ringoot, Evelyne and Alomairy, Rabab and Tome, Felipe and Samaroo, Julian and Edelman, Alan},
   booktitle={2024 IEEE High Performance Extreme Computing Conference (HPEC)},
   year={2024},
   organization={IEEE}
+}
+
+@inproceedings{nextla2,
+  title={{Toward Portable GPU Performance: Julia Recursive Implementation of TRMM and TRSM}},
+  author={Vicki Carrica⋆, Maxwell Onyango⋆, Rabab Alomairy, Evelyne Ringoot, James Schloss, and Alan Edelman},
+  booktitle={Asynchronous Many-Task Systems and Applications (WAMTA)},
+  year={2025},
+  organization={Springer Nature}
 }
 ```
 ## 👥 Contributors
