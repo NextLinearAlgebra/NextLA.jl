@@ -1,6 +1,7 @@
-export lauum
+export zlauum
 
- # Import the unblocked version of the matrix multiplication function (lauu2) to use later in this computation.
+ # Import the unblocked version of the matrix multiplication function (zlauu2) to use later in this computation.
+ 
 
 """
     lauum(uplo::Char, n::Int, a::AbstractMatrix{T}, lda::Int, block_size::Int)
