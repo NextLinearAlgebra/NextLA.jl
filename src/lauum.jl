@@ -1,9 +1,9 @@
-export zlauum
+export lauum
 
- # Import the unblocked version of the matrix multiplication function (zlauu2) to use later in this computation.
+ # Import the unblocked version of the matrix multiplication function (lauu2) to use later in this computation.
 
 """
-    zlauum(uplo::Char, n::Int, a::AbstractMatrix{T}, lda::Int, block_size::Int)
+    lauum(uplo::Char, n::Int, a::AbstractMatrix{T}, lda::Int, block_size::Int)
 
 This function computes the product of a triangular matrix with its conjugate transpose. Specifically, it computes:
 
@@ -35,7 +35,7 @@ Where:
     - `-2`: Invalid value for `n`.
     - `-4`: Invalid value for `lda`.
 """
-function zlauum(uplo::Char, n::Int, a::AbstractMatrix{T}, lda::Int, block_size::Int) where T
+function lauum(uplo::Char, n::Int, a::AbstractMatrix{T}, lda::Int, block_size::Int) where T
     # Validate the 'uplo' parameter to ensure it is either 'U' or 'L'
     if !(uplo in ['U', 'L'])
         return -1  # Return an error code for invalid 'uplo'
@@ -61,7 +61,7 @@ function zlauum(uplo::Char, n::Int, a::AbstractMatrix{T}, lda::Int, block_size::
 
     # If block_size is less than or equal to 1, or greater than or equal to n, use the unblocked version
     if block_size <= 1 || block_size >= n
-        zlauu2(uplo, n, a, lda)  # Call the unblocked computation
+        lauu2(uplo, n, a, lda)  # Call the unblocked computation
         return 0  # Return success code
     end
 
@@ -97,8 +97,8 @@ function compute_upper(n::Int, block_size::Int, a::AbstractMatrix{T}, lda::Int) 
         # Update the upper triangle of the matrix using the current block
         view(a, 1:i-1, i:i+ib-1) .= view(a, 1:i-1, i:i+ib-1) * view(a, i:i+ib-1, i:i+ib-1)'
 
-        # Compute the product U * U' for the current block using the zlauu2 function
-        # zlauu2('U', ib, view(a, i:i+ib-1, i:i+ib-1), lda)
+        # Compute the product U * U' for the current block using the lauu2 function
+        # lauu2('U', ib, view(a, i:i+ib-1, i:i+ib-1), lda)
         U = view(a, i:i+ib-1, i:i+ib-1)  # Extract the block U
         U_Ut = U * adjoint(U)  # Use adjoint for complex matrices
         # Only update the upper triangular part of the matrix
