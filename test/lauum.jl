@@ -1,4 +1,4 @@
-@testset "zlauum test" begin
+@testset "lauum test" begin
     for T in [Float32, Float64, ComplexF32, ComplexF64]
         for uplo in ['U', 'L']
             # Test different matrix sizes including edge cases
@@ -13,8 +13,8 @@
                         A = Matrix(LowerTriangular(-0.5 .+ rand(T, n, n)))
                     end
                     Ac = copy(A)             
-                    info = zlauum(uplo, n, A, n, block_size)                  
-                    @test info == 0  # Ensure no error from zlauum
+                    info = lauum(uplo, n, A, n, block_size)                  
+                    @test info == 0  # Ensure no error from lauum
                     # Set tolerance based on type
                     tolerance = T <: Union{Float64, ComplexF64} ? 1e-12 : 1e-6
                     if uplo == 'U'
@@ -22,7 +22,7 @@
                         result_diff = norm(Matrix(A) - expected_result) / n
                         @test result_diff < tolerance  # Use adjusted tolerance
                         if result_diff >= tolerance
-                            println("Failure in zlauum test for T: $T, uplo: $uplo, n: $n, block_size: $block_size")
+                            println("Failure in lauum test for T: $T, uplo: $uplo, n: $n, block_size: $block_size")
                             println("Difference norm: $result_diff")
                         end
                     else
@@ -30,7 +30,7 @@
                         result_diff = norm(Matrix(A) - expected_result) / n
                         @test result_diff < tolerance  # Use adjusted tolerance
                         if result_diff >= tolerance
-                            println("Failure in zlauum test for T: $T, uplo: $uplo, n: $n, block_size: $block_size")
+                            println("Failure in lauum test for T: $T, uplo: $uplo, n: $n, block_size: $block_size")
                             println("Difference norm: $result_diff")
                         end
                     end

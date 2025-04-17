@@ -1,9 +1,9 @@
-export zlauu2
+export lauu2
 
 """
 Purpose:
 =======
-ZLAUU2 computes the product U * U' or L' * L, where the triangular
+LAUU2 computes the product U * U' or L' * L, where the triangular
 factor U or L is stored in the upper or lower triangular part of
 the array A.
 
@@ -38,7 +38,7 @@ INFO    (output) INTEGER
         < 0: if INFO = -k, the k-th argument had an illegal value
 """
 
-function zlauu2(uplo::Char, n::Int, A::AbstractMatrix{T}, lda::Int) where T
+function lauu2(uplo::Char, n::Int, A::AbstractMatrix{T}, lda::Int) where T
 
     # Initialize the INFO variable
     info = 0
