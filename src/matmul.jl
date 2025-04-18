@@ -3,7 +3,7 @@ export GEMM_ADD!, GEMM_SUB!
 const TILE_DIM = 32
 
 @kernel function matmul!(
-    output, input1, input2, N::Int, R::Int, M::Int, alpha::Float64 = 1.0,  
+    output, input1, input2, N::Int, R::Int, M::Int, alpha::Float64 = 1.0, transA::Char = 'N', transB::Char = 'N',
     ::Val{BANK} = Val(1)
 ) where {BANK}
 
@@ -26,14 +26,20 @@ const TILE_DIM = 32
         K = t * TILE_DIM + j
 
         if I <= N && K <= R
-            @inbounds tile1[i, j] = input1[I, K]
+            @inbounds tile1[i, j] =
+                (transA == 'N' || transA == 'n') ? input1[I, K] :
+                (transA == 'T' || transA == 't') ? input1[K, I] :
+                                                   conj(input1[K, I])
         else
             @inbounds tile1[i, j] = zero(eltype(output))
         end
 
         K = t * TILE_DIM + i
         if K <= R && J <= M
-            @inbounds tile2[i, j] = input2[K, J]
+            @inbounds tile2[i, j] =
+                (transB == 'N' || transB == 'n') ? input2[K, J] :
+                (transB == 'T' || transB == 't') ? input2[J, K] :
+                                                   conj(input2[J, K])
         else
             @inbounds tile2[i, j] = zero(eltype(output))
         end
