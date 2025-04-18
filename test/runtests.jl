@@ -10,5 +10,6 @@ using CUDA
 
 include("NextLAMatrix.jl")
 include("lu.jl")
-include("rectrxm.jl")
+include("unified_rectrxm.jl")
+include("trsm.jl")
 
