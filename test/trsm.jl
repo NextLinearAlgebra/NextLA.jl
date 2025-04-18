@@ -1,62 +1,155 @@
+using Test
+using CUDA
+using LinearAlgebra
 
-@testset "Equivalence Test for TRSM: All Cases" begin
+
+@testset "Accuracy Test for TRSM Kernels" begin
     # Matrix sizes to test
-    sizes = [16, 32, 128, 256, 2048]
-    # Number of columns in B to test
-    m_sizes = [1, 8, 64]
+    sizes = [16, 32, 128, 256, 1024, 250, 275, 300, 325, 350, 750]
+
+    # Number of columns/rows in B to test
+    m_sizes = [1, 8, 64, 256]
+
     # Tolerance for accuracy check
-    tolerance = 1e-12
-    cases = [
-        ("Left Upper", left_upper_no_transpose, left_upper_transpose),
-        ("Left Lower", left_lower_no_transpose, left_lower_transpose),
-        ("Right Upper", right_upper_no_transpose, right_upper_transpose),
-        ("Right Lower", right_lower_no_transpose, right_lower_transpose)
-    ]
-    for (case_name, no_transpose_func, transpose_func) in cases
-        @testset "$case_name" begin
-            for n in sizes
-                for m in m_sizes
-                    # Generate appropriate triangular matrix A
-                    A = if startswith(case_name, "Left")
-                        if contains(case_name, "Upper")
-                            Matrix(UpperTriangular(rand(n, n) .+ 1))
-                        else
-                            Matrix(LowerTriangular(rand(n, n) .+ 1))
-                        end
-                    else
-                        if contains(case_name, "Upper")
-                            Matrix(UpperTriangular(rand(m, m) .+ 1))
-                        else
-                            Matrix(LowerTriangular(rand(m, m) .+ 1))
-                        end
-                    end
-                    A += Diagonal(10 * ones(size(A, 1)))  # Ensure well-conditioned
-                    # Generate B matrix
-                    B = if startswith(case_name, "Left")
-                        rand(n, m) .+ 1
-                    else
-                        rand(n, m) .+ 1
-                    end
-                    # Create copies for the two cases
-                    A_no_transpose = CuArray(A)
-                    B_no_transpose = CuArray(copy(B))
-                    A_transpose = CuArray(A)
-                    B_transpose = CuArray(copy(B))
-                    # Apply no_transpose function
-                    no_transpose_func(A_no_transpose, B_no_transpose)
-                    # Apply transpose function
-                    transpose_func(A_transpose, B_transpose)
-                    # Compare results
-                    result_diff = norm(Matrix(B_no_transpose) - Matrix(B_transpose)) / norm(Matrix(B_no_transpose))
-                    @test result_diff < tolerance
-                    if result_diff >= tolerance
-                        println("Test failed for $case_name, matrix size $(size(A)), B size: $(size(B))")
-                        println("Relative error: $result_diff")
-                    else
-                        println("Test passed for $case_name, matrix size $(size(A)), B size: $(size(B))")
-                        println("Relative error: $result_diff")
-                    end
-                end
+    tolerance = 1e-5
+
+    ###########################################################################
+    # Test LeftLowerTRSM! (solves A * X = B with A lower-triangular on the left)
+    ###########################################################################
+    @testset "LeftLowerTRSM!" begin
+        for n in sizes
+            for m in m_sizes
+                # Prepare CPU matrices
+                A = Matrix(LowerTriangular(rand(Float32, n, n) .+ 1))
+                A .+= Diagonal(10.0 * ones(Float32, n))
+                B = rand(Float32, n, m) .+ 1
+
+                # Copies for baseline
+                Ac = copy(A)
+                Bc = copy(B)
+
+                # Move to GPU
+                A_gpu = CuArray(A)
+                B_gpu = CuArray(B)
+
+                # Call our kernel
+                LeftLowerTRSM!(A_gpu, B_gpu)
+
+                # Baseline with BLAS trsm!
+                # CUBLAS.BLAS.trsm!('L', 'L', 'N', 'N', 1.0, Ac, Bc)
+                CUBLAS.BLAS.trsm!('L','L','N','N', one(eltype(A)), Ac, Bc)
+
+                # Compute relative error
+                result_diff = norm(Array(B_gpu) .- Bc) / norm(Bc)
+                println("Size: $n x $n, B size: $(size(B)) | Result Diff (Relative Error): $result_diff")
+
+                @test result_diff < tolerance
+            end
+        end
+    end
+
+    ###########################################################################
+    # Test LeftUpperTRSM! (solves A * X = B with A upper-triangular on the left)
+    ###########################################################################
+    @testset "LeftUpperTRSM!" begin
+        for n in sizes
+            for m in m_sizes
+                # Prepare CPU matrices
+                A = Matrix(UpperTriangular(rand(Float32, n, n) .+ 1.0))
+                A .+= Diagonal(10.0 * ones(Float32, n))
+                B = rand(Float32, n, m) .+ 1.0
+
+                # Copies for baseline
+                Ac = copy(A)
+                Bc = copy(B)
+
+                # Move to GPU
+                A_gpu = CuArray(A)
+                B_gpu = CuArray(B)
+
+                # Call our kernel
+                LeftUpperTRSM!(A_gpu, B_gpu)
+
+                # Baseline with BLAS trsm!
+                # CUBLAS.BLAS.trsm!('L', 'U', 'N', 'N', 1.0, Ac, Bc)
+                CUBLAS.BLAS.trsm!('L','U','N','N', one(eltype(A)), Ac, Bc)
+
+                # Compute relative error
+                result_diff = norm(Array(B_gpu) .- Bc) / norm(Bc)
+                println("Size: $n x $n, B size: $(size(B)) | Result Diff (Relative Error): $result_diff")
+
+                @test result_diff < tolerance
+            end
+        end
+    end
+
+    ###########################################################################
+    # Test RightLowerTRSM! (solves X * A = B with A lower-triangular on the right)
+    ###########################################################################
+    @testset "RightLowerTRSM!" begin
+        for n in sizes
+            for m in m_sizes
+                # Prepare CPU matrices
+                A = Matrix(LowerTriangular(rand(Float32, n, n) .+ 1.0))
+                A .+= Diagonal(10.0 * ones(Float32, n))
+                B = rand(Float32, m, n) .+ 1.0
+
+                # Copies for baseline
+                Ac = copy(A)
+                Bc = copy(B)
+
+                # Move to GPU
+                A_gpu = CuArray(A)
+                B_gpu = CuArray(B)
+
+                # Call our kernel
+                RightLowerTRSM!(A_gpu, B_gpu)
+
+                # Baseline with BLAS trsm!
+                # CUBLAS.BLAS.trsm!('R', 'L', 'N', 'N', 1.0, Ac, Bc)
+                CUBLAS.BLAS.trsm!('R','L','N','N', one(eltype(A)), Ac, Bc)
+
+                # Compute relative error
+                result_diff = norm(Array(B_gpu) .- Bc) / norm(Bc)
+                println("Size: $n x $n, B size: $(size(B)) | Result Diff (Relative Error): $result_diff")
+
+                @test result_diff < tolerance
+            end
+        end
+    end
+
+    ###########################################################################
+    # Test RightUpperTRSM! (solves X * A = B with A upper-triangular on the right)
+    ###########################################################################
+    @testset "RightUpperTRSM!" begin
+        for n in sizes
+            for m in m_sizes
+                # Prepare CPU matrices
+                A = Matrix(UpperTriangular(rand(Float32, n, n) .+ 1.0))
+                A .+= Diagonal(10.0 * ones(Float32, n))
+                B = rand(Float32, m, n) .+ 1.0
+
+                # Copies for baseline
+                Ac = copy(A)
+                Bc = copy(B)
+
+                # Move to GPU
+                A_gpu = CuArray(A)
+                B_gpu = CuArray(B)
+
+                # Call our kernel
+                RightUpperTRSM!(A_gpu, B_gpu)
+
+                # Baseline with BLAS trsm!
+                # CUBLAS.BLAS.trsm!('R', 'U', 'N', 'N', 1.0, Ac, Bc)
+                CUBLAS.BLAS.trsm!('R','U','N','N', one(eltype(A)), Ac, Bc)
+
+                # Compute relative error
+                result_diff = norm(Array(B_gpu) .- Bc) / norm(Bc)
+
+                println("Size: $n x $n, B size: $(size(B)) | Result Diff (Relative Error): $result_diff")
+
+                @test result_diff < tolerance
             end
         end
     end
