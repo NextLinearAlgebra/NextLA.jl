@@ -57,7 +57,11 @@ function unified_rectrxm!(
     return B
 end
 
-function unified_rec(func::Char, side::Char, uplo::Char, A::AbstractMatrix{T}, n, B::AbstractMatrix{T}, threshold::Int=256) where T <: AbstractFloat
+function unified_rec(func::Char, side::Char, uplo::Char,
+    A::AbstractMatrix{T}, n,
+    B::AbstractMatrix{T}, threshold::Int=256,
+    depth::Int=1, diag::Bool=false) where T <: AbstractFloat
+
     if n <= threshold
         if func == 'S'
             if side == 'L' && uplo == 'L'
@@ -67,7 +71,7 @@ function unified_rec(func::Char, side::Char, uplo::Char, A::AbstractMatrix{T}, n
             elseif side == 'R' && uplo == 'L'
                 RightLowerTRSM!(A, B)
             else
-                RightUpperTRSM!(A, B)
+                RightUpperTRSM!(A, B)   
             end
         else
             if side == 'L' && uplo == 'L'
@@ -79,66 +83,150 @@ function unified_rec(func::Char, side::Char, uplo::Char, A::AbstractMatrix{T}, n
             else
                 RightUpperTRMM!(A, B)
             end
-        end
-        return B
+        end 
+        return B    
     end
 
+    # split point
     if isinteger(log2(n))
         mid = div(n, 2)
     else
         mid = 2 ^ floor(Int, log2(n))
     end
+
     mid_remainder = n - mid
 
-    A11 = view(A, 1:mid, 1:mid)
-    A22 = view(A, mid+1:n, mid+1:n)
-    A21 = view(A, mid+1:n, 1:mid)
-    A12 = view(A, 1:mid, mid+1:n)
+    # block views
+    A11 = view(A, 1:mid,       1:mid)
+    A22 = view(A, mid+1:n,     mid+1:n)
+    A21 = view(A, mid+1:n,     1:mid)
+    A12 = view(A, 1:mid,       mid+1:n)
 
     if side == 'L'
-        B1 = view(B, 1:mid, :)
-        B2 = view(B, mid+1:n, :)
+        B1 = view(B, 1:mid,     :)
+        B2 = view(B, mid+1:n,   :)
     else
-        B1 = view(B, :, 1:mid)
-        B2 = view(B, :, mid+1:n)
+        B1 = view(B, :,         1:mid)
+        B2 = view(B, :,         mid+1:n)
     end
 
+    # first half
     if (side == 'L' && uplo == 'L' && func == 'S') || 
         (side == 'R' && uplo == 'U' && func == 'S') || 
         (side == 'L' && uplo == 'U' && func == 'M') || 
         (side == 'R' && uplo == 'L' && func == 'M')
-        unified_rec(func, side, uplo, A11, mid, B1, threshold)
+
+        unified_rec(func, side, uplo, A11, mid, B1, threshold, depth+1)
+
+        # GEMM update in mixed precision if deep enough
         if side == 'L'
             if func == 'S'
-                GEMM_SUB!(B2, A21, B1)
-            else
-                GEMM_ADD!(A12, B2, B1)
+                if depth >= 2
+                    # B2 .-= A21 * B1 in Float16
+                    A16 = Float16.(copy(A21))
+                    B1_16 = Float16.(copy(B1))
+                    B2_16 = Float16.(copy(B2))
+                    GEMM_SUB!(B2_16, A16, B1_16)
+                    copy!(B2, B2_16)
+                else
+                    GEMM_SUB!(B2, A21, B1)
+                end
+            else  # func == 'M'
+                if depth >= 2
+                    # B1 .+= A12 * B2 in Float16
+                    A16 = Float16.(copy(A12))
+                    B2_16 = Float16.(copy(B2))
+                    B1_16 = Float16.(copy(B1))
+                    GEMM_ADD!(B1_16, A16, B2_16)
+                    copy!(B1, B1_16)
+                else
+                    GEMM_ADD!(A12, B2, B1)
+                end
             end
-        else
+        else  # side == 'R'
             if func == 'S'
-                GEMM_SUB!(B2, B1, A12)
-            else
-                GEMM_ADD!(B2, A21, B1)
+                if depth >= 2
+                    # B2 .-= B1 * A12 in Float16
+                    B1_16 = Float16.(copy(B1))
+                    A16  = Float16.(copy(A12))
+                    B2_16 = Float16.(copy(B2))
+                    GEMM_SUB!(B2_16, B1_16, A16)
+                    copy!(B2, B2_16)
+                else
+                    GEMM_SUB!(B2, B1, A12)
+                end
+            else  # func == 'M'
+                if depth >= 2
+                    # B2 .+= B1 * A21 in Float16
+                    B1_16 = Float16.(copy(B1))
+                    A16  = Float16.(copy(A21))
+                    B2_16 = Float16.(copy(B2))
+                    GEMM_ADD!(B2_16, B1_16, A16)
+                    copy!(B2, B2_16)
+                else
+                    GEMM_ADD!(B2, A21, B1)
+                end
             end
         end
-        unified_rec(func, side, uplo, A22, mid_remainder, B2, threshold)
+
+        unified_rec(func, side, uplo, A22, mid_remainder, B2, threshold, depth+1)
+
+    # second half
     else
-        unified_rec(func, side, uplo, A22, mid_remainder, B2, threshold)
+        unified_rec(func, side, uplo, A22, mid_remainder, B2, threshold, depth+1)
+
         if side == 'L'
             if func == 'S'
-                GEMM_SUB!(B1, A12, B2)
-            else
-                GEMM_ADD!(A21, B1, B2)
+                if depth >= 2
+                    # B1 .-= A12 * B2 in Float16
+                    A16 = Float16.(copy(A12))
+                    B2_16 = Float16.(copy(B2))
+                    B1_16 = Float16.(copy(B1))
+                    GEMM_SUB!(B1_16, A16, B2_16)
+                    copy!(B1, B1_16)
+                else
+                    GEMM_SUB!(B1, A12, B2)
+                end
+            else  # func == 'M'
+                if depth >= 2
+                    # B2 .+= A21 * B1 in Float16
+                    A16 = Float16.(copy(A21))
+                    B1_16 = Float16.(copy(B1))
+                    B2_16 = Float16.(copy(B2))
+                    GEMM_ADD!(B2_16, A16, B1_16)
+                    copy!(B2, B2_16)
+                else
+                    GEMM_ADD!(A21, B1, B2)
+                end
             end
-        else
+        else  # side == 'R'
             if func == 'S'
-                GEMM_SUB!(B1, B2, A21)
-            else
-                GEMM_ADD!(B1, A12, B2)
+                if depth >= 2
+                    # B1 .-= B2 * A21 in Float16
+                    B2_16 = Float16.(copy(B2))
+                    A16  = Float16.(copy(A21))
+                    B1_16 = Float16.(copy(B1))
+                    GEMM_SUB!(B1_16, B2_16, A16)
+                    copy!(B1, B1_16)
+                else
+                    GEMM_SUB!(B1, B2, A21)
+                end
+            else  # func == 'M'
+                if depth >= 2
+                    # B1 .+= B2 * A12 in Float16
+                    B2_16 = Float16.(copy(B2))
+                    A16  = Float16.(copy(A12))
+                    B1_16 = Float16.(copy(B1))
+                    GEMM_ADD!(B1_16, B2_16, A16)
+                    copy!(B1, B1_16)
+                else
+                    GEMM_ADD!(B1, A12, B2)
+                end
             end
         end
-        unified_rec(func, side, uplo, A11, mid, B1, threshold)
+
+        unified_rec(func, side, uplo, A11, mid, B1, threshold, depth+1)
     end
+
     return B
 end
-

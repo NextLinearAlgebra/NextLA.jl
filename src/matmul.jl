@@ -26,23 +26,19 @@ const TILE_DIM = 32
         K = t * TILE_DIM + j
 
         if I <= N && K <= R
-            @inbounds tile1[i, j] =
-                (transA == 'N' || transA == 'n') ? input1[I, K] :
-                (transA == 'T' || transA == 't') ? input1[K, I] :
-                                                   conj(input1[K, I])
+            @inbounds tile1[i, j] = transA in ('N', 'n') ? input1[I, K] : input1[K, I]
         else
             @inbounds tile1[i, j] = zero(eltype(output))
         end
+        
 
         K = t * TILE_DIM + i
         if K <= R && J <= M
-            @inbounds tile2[i, j] =
-                (transB == 'N' || transB == 'n') ? input2[K, J] :
-                (transB == 'T' || transB == 't') ? input2[J, K] :
-                                                   conj(input2[J, K])
+            @inbounds tile2[i, j] = transB in ('N', 'n') ? input2[K, J] : input2[J, K]
         else
             @inbounds tile2[i, j] = zero(eltype(output))
         end
+        
 
         @synchronize
 
