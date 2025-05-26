@@ -3,8 +3,6 @@ using LinearAlgebra
 using BenchmarkTools
 using Cthulhu
 
-include("../src/zgeqrt.jl")
-include("zgeqrtwrappers.jl")
 
 function gen_zlarft_test(::Type{T}, n,k) where {T<: Number}
     direct = 'F'

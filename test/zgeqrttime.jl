@@ -2,8 +2,6 @@ using BenchmarkTools
 using LinearAlgebra
 using JLD2
 
-include("../src/zgeqrt.jl")
-include("zgeqrtwrappers.jl")
 
 function gen_zgeqrt_time(::Type{T}, m, n, ib) where {T<:Number}
     lda = m

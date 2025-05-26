@@ -4,7 +4,6 @@ using LinearAlgebra.LAPACK: liblapack, chkstride1, chklapackerror
 using LinearAlgebra.BLAS: @blasfunc
 using BenchmarkTools
 
-include("zpamm.jl")
 
 function lapack_tprfb!(::Type{T}, side::AbstractChar, trans::AbstractChar, direct::AbstractChar, storev::AbstractChar,
     l::Int64, V::AbstractMatrix{T}, Tee::AbstractMatrix{T}, A::AbstractMatrix{T}, B::AbstractMatrix{T}) where {T<: Number}

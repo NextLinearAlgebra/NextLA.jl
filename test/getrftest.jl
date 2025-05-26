@@ -5,7 +5,6 @@ using LinearAlgebra.BLAS: @blasfunc
 using BenchmarkTools
 using Test
 
-include("../src/getrf2.jl")
 
 function gen_getrf2_test_rand(::Type{T}, m, n) where {T<: Number}
     A = rand(T,m,n)

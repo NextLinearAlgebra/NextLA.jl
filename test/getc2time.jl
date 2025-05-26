@@ -7,7 +7,6 @@ using JLD2
 using Plots
 using StatsPlots
 
-include("../src/getc2.jl")
 
 function gen_getc2_time(::Type{T}, n) where T
     A = rand(T,n,n)

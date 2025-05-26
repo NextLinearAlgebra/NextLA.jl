@@ -4,7 +4,6 @@ using JLD2
 using Plots
 using StatsPlots
 
-include("../src/getrf2.jl")
 
 function gen_getrf2_time(::Type{T}, m, n) where {T<: Number}
     A = rand(T,m,n)

@@ -1,8 +1,6 @@
 using BenchmarkTools
 using LinearAlgebra
 
-include("../src/zgeqrt.jl")
-include("zgeqrtwrappers.jl")
 
 BLAS.set_num_threads(Threads.nthreads())
 

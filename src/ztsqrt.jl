@@ -4,9 +4,6 @@ using LinearAlgebra.LAPACK: liblapack, chkstride1, chklapackerror
 using LinearAlgebra.BLAS: @blasfunc
 using BenchmarkTools
 
-include("zlarfg.jl")
-include("ztsmqr.jl")
-
 function lapack_tsqrt!(::Type{T}, l::Int64, A::AbstractMatrix{T}, B::AbstractMatrix{T}, Tau::AbstractMatrix{T}) where{T<: Number}
     m,n = size(B)
     nb = max(1, stride(Tau,2))

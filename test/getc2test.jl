@@ -4,7 +4,6 @@ using LinearAlgebra.LAPACK: liblapack, chkstride1, chklapackerror
 using LinearAlgebra.BLAS: @blasfunc
 using BenchmarkTools
 
-include("../src/getc2.jl")
 
 function gen_getc2_test_rand(::Type{T}, n) where T
     A = rand(T,n,n)

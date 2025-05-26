@@ -4,7 +4,6 @@ using LinearAlgebra.LAPACK: liblapack, chkstride1, chklapackerror
 using LinearAlgebra.BLAS: @blasfunc
 using BenchmarkTools
 
-include("ztsmqr.jl")
 
 function zttmqr(side, trans, m1, n1, m2, n2, k, ib, A1, lda1, A2, lda2, V, ldv, T, ldt, work, ldwork)
     # check input arguments

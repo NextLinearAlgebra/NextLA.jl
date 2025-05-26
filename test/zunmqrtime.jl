@@ -4,9 +4,6 @@ using JLD2
 using Plots
 using StatsPlots
 
-include("../src/zunmqr_v0.jl")
-include("../src/zunmqrwrap.jl")
-
 #BLAS.set_num_threads(1) # to make sequential
 BLAS.set_num_threads(Threads.nthreads())
 t = 40

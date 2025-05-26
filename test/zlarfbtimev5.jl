@@ -4,12 +4,6 @@ using Plots
 using StatsPlots
 using JLD2
 
-include("../src/zlarfbwrap.jl")
-include("../src/zlarfb_v0.jl")
-include("../src/zlarfb_v1.jl")
-include("../src/zlarfb_v2.jl")
-include("../src/zlarfb_v3.jl")
-
 #BLAS.set_num_threads(1) # to make sequential
 t = 40
 BLAS.set_num_threads(Threads.nthreads())

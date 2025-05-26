@@ -4,7 +4,6 @@ using LinearAlgebra.LAPACK: liblapack, chkstride1, chklapackerror
 using LinearAlgebra.BLAS: @blasfunc
 using BenchmarkTools
 
-include("zlarfg.jl")
 
 function lapack_getrf2!(::Type{T}, A::AbstractMatrix{T}, ipiv::AbstractVector{Int}) where {T<:Number}
     m,n = size(A)

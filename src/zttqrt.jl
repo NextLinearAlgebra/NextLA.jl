@@ -4,10 +4,6 @@ using LinearAlgebra.LAPACK: liblapack, chkstride1, chklapackerror
 using LinearAlgebra.BLAS: @blasfunc
 using BenchmarkTools
 
-include("zparfb.jl")
-include("zlarfg.jl")
-include("gerc.jl")
-include("zpemv.jl")
 
 function lapack_ttqrt!(::Type{T}, l::Int64, A::AbstractMatrix{T}, B::AbstractMatrix{T}, Tau::AbstractMatrix{T}) where {T<:Number}
     m, n = size(B)

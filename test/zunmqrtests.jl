@@ -1,8 +1,6 @@
 using Test
 using LinearAlgebra
 
-include("../src/zunmqr_v0.jl")
-include("../src/zunmqrwrap.jl")
 
 function gen_zunmqr_test_rand(::Type{T}, side, trans, m, n, k, ib) where {T <: Number}
     C = rand(T,m,n)

@@ -2,7 +2,6 @@ using BenchmarkTools
 using LinearAlgebra
 using JLD2
 
-include("ztsqrt.jl")
 
 #note n >= m
 function gen_tsqrt_time(::Type{T}, m, n, ib) where {T <: Number}

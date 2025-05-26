@@ -5,7 +5,6 @@ using LinearAlgebra.BLAS: @blasfunc
 using BenchmarkTools
 using Test
 
-include("../src/zttqrt.jl")
 
 # note i realize i can only get stuff 
 # where m = n due to def of tpqrt
