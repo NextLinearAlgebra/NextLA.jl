@@ -121,7 +121,7 @@ function unified_rec(func::Char, side::Char, uplo::Char,
         # GEMM update in mixed precision if deep enough
         if side == 'L'
             if func == 'S'
-                if depth >= 2
+                if depth < 2
                     # B2 .-= A21 * B1 in Float16
                     A16 = Float16.(copy(A21))
                     B1_16 = Float16.(copy(B1))
@@ -132,7 +132,7 @@ function unified_rec(func::Char, side::Char, uplo::Char,
                     GEMM_SUB!(B2, A21, B1)
                 end
             else  # func == 'M'
-                if depth >= 2
+                if depth < 2
                     # B1 .+= A12 * B2 in Float16
                     A16 = Float16.(copy(A12))
                     B2_16 = Float16.(copy(B2))
@@ -145,7 +145,7 @@ function unified_rec(func::Char, side::Char, uplo::Char,
             end
         else  # side == 'R'
             if func == 'S'
-                if depth >= 2
+                if depth < 2
                     # B2 .-= B1 * A12 in Float16
                     B1_16 = Float16.(copy(B1))
                     A16  = Float16.(copy(A12))
@@ -156,7 +156,7 @@ function unified_rec(func::Char, side::Char, uplo::Char,
                     GEMM_SUB!(B2, B1, A12)
                 end
             else  # func == 'M'
-                if depth >= 2
+                if depth < 2
                     # B2 .+= B1 * A21 in Float16
                     B1_16 = Float16.(copy(B1))
                     A16  = Float16.(copy(A21))
@@ -177,7 +177,7 @@ function unified_rec(func::Char, side::Char, uplo::Char,
 
         if side == 'L'
             if func == 'S'
-                if depth >= 2
+                if depth < 2
                     # B1 .-= A12 * B2 in Float16
                     A16 = Float16.(copy(A12))
                     B2_16 = Float16.(copy(B2))
@@ -188,7 +188,7 @@ function unified_rec(func::Char, side::Char, uplo::Char,
                     GEMM_SUB!(B1, A12, B2)
                 end
             else  # func == 'M'
-                if depth >= 2
+                if depth < 2
                     # B2 .+= A21 * B1 in Float16
                     A16 = Float16.(copy(A21))
                     B1_16 = Float16.(copy(B1))
@@ -201,7 +201,7 @@ function unified_rec(func::Char, side::Char, uplo::Char,
             end
         else  # side == 'R'
             if func == 'S'
-                if depth >= 2
+                if depth < 2
                     # B1 .-= B2 * A21 in Float16
                     B2_16 = Float16.(copy(B2))
                     A16  = Float16.(copy(A21))
@@ -212,7 +212,7 @@ function unified_rec(func::Char, side::Char, uplo::Char,
                     GEMM_SUB!(B1, B2, A21)
                 end
             else  # func == 'M'
-                if depth >= 2
+                if depth < 2
                     # B1 .+= B2 * A12 in Float16
                     B2_16 = Float16.(copy(B2))
                     A16  = Float16.(copy(A12))

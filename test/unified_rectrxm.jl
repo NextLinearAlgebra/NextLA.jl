@@ -1,6 +1,6 @@
 @testset "Accuracy Test for unified_rectrxm!" begin
     # Matrix sizes to test
-    sizes = [16, 32, 128, 256, 512, 1024, 2048] #, 4096] #, 250, 275, 300, 325, 350, 750] #512, 1024, 2048, 64, 8192, 
+    sizes = [16, 32, 128, 256, 512, 1024, 2048, 4096] #, 4096] #, 250, 275, 300, 325, 350, 750] #512, 1024, 2048, 64, 8192, 
 
     # Number of columns/rows in B to test
     m_sizes = [1, 8, 64, 256, 350]  #2, 4, 16, 32, 128, 256
