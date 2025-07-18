@@ -4,11 +4,13 @@ export LeftLowerTRMM!, LeftUpperTRMM!, RightLowerTRMM!, RightUpperTRMM!
 # where A is an NxN lower triangular matrix and B is an NxM matrix
 # A is limited to matrix size 16x16 due to shared memory constraints
 
-@kernel function LeftLowerTRMM_kernel!(A,B,
+@kernel function LeftLowerTRMM_kernel!(AccumType, A,B,
                             ::Val{BANK} = Val(1)) where BANK
     
     gi,gj = @index(Group, NTuple)
     i,j = @index(Local, NTuple)
+
+    # AccumType = Float32 # (I want this to be Float 64 if eltype(B) == Float64, Float32 otherwise)
 
     # kept at 16x16 due to shmem constraints
     TILE_DIM = @uniform @groupsize()[1]
@@ -19,8 +21,8 @@ export LeftLowerTRMM!, LeftUpperTRMM!, RightLowerTRMM!, RightUpperTRMM!
     tile2 = @localmem eltype(B) (TILE_DIM+BANK, TILE_DIM)
 
     #declaring a private variable to accumulate the result of submatrix multiplication
-    B_sub = @private eltype(B) 1
-    @inbounds B_sub[1] = -zero(eltype(B))
+    B_sub = @private AccumType 1
+    @inbounds B_sub[1] = -zero(AccumType)
 
     @uniform N = size(A, 1)
     @uniform R = size(A, 2)
@@ -49,9 +51,9 @@ export LeftLowerTRMM!, LeftUpperTRMM!, RightLowerTRMM!, RightUpperTRMM!
     @synchronize
 
     # calculate value of spot in output, use temporary value to allow for vectorization
-    out = zero(eltype(B))
+    out = zero(AccumType)
     @simd for k in 1:i
-        @inbounds out += tile1[i, k] * tile2[k, j]
+        @inbounds out += AccumType(tile1[i, k]) * AccumType(tile2[k, j])
     end
     B_sub[1] += out
 
@@ -63,7 +65,7 @@ export LeftLowerTRMM!, LeftUpperTRMM!, RightLowerTRMM!, RightUpperTRMM!
 
     # save if inbounds
     if I <= N && J <= M
-        @inbounds B[I, J] = B_sub[1]
+        @inbounds B[I, J] = eltype(B)(clamp(B_sub[1], floatmin(eltype(B)), floatmax(eltype(B))))
     end
     @synchronize
 
@@ -74,7 +76,7 @@ end
 
 
 # A is an NxN upper triangular matrix and B is an NxM matrix
-@kernel function LeftUpperTRMM_kernel!(A,B,
+@kernel function LeftUpperTRMM_kernel!(AccumType, A,B,
                             ::Val{BANK} = Val(1)) where BANK
     gi,gj = @index(Group, NTuple)
     i,j = @index(Local, NTuple)
@@ -88,8 +90,8 @@ end
     tile2 = @localmem eltype(B) (TILE_DIM+BANK, TILE_DIM)
 
     #declaring a private variable to accumulate the result of submatrix multiplication
-    B_sub = @private eltype(B) 1
-    @inbounds B_sub[1] = -zero(eltype(B))
+    B_sub = @private AccumType 1
+    @inbounds B_sub[1] = -zero(AccumType)
 
     @uniform N = size(A, 1)
     @uniform R = size(A, 2)
@@ -121,9 +123,9 @@ end
     J = (gj-1) * TILE_DIM + j
 
     # calculate value of spot in output, use temporary value to allow for vectorization
-    out = zero(eltype(B))
+    out = zero(AccumType)
     @simd for k in i:N
-        @inbounds out += tile1[i, k] * tile2[k, j]
+        @inbounds out += AccumType(tile1[i, k]) * AccumType(tile2[k, j])
     end
     B_sub[1] += out
 
@@ -135,7 +137,7 @@ end
 
     # save if inbounds
     if I <= N && J <= M
-        @inbounds B[I, J] = B_sub[1]
+        @inbounds B[I, J] = eltype(B)(clamp(B_sub[1], floatmin(eltype(B)), floatmax(eltype(B))))
     end
     @synchronize
 end
@@ -147,7 +149,7 @@ end
 
 
 
-@kernel function RightLowerTRMM_kernel!(A,B,
+@kernel function RightLowerTRMM_kernel!(AccumType, A,B,
                 ::Val{BANK} = Val(1)) where BANK
     gi,gj = @index(Group, NTuple)
     i,j = @index(Local, NTuple)
@@ -161,8 +163,8 @@ end
     tile2 = @localmem eltype(B) (TILE_DIM+BANK, TILE_DIM)
 
     #declaring a private variable to accumulate the result of submatrix multiplication
-    B_sub = @private eltype(B) 1
-    @inbounds B_sub[1] = -zero(eltype(B))
+    B_sub = @private AccumType 1
+    @inbounds B_sub[1] = -zero(AccumType)
 
     @uniform N = size(A, 1)
     @uniform M = size(B, 1)
@@ -190,9 +192,9 @@ end
 
 
     # calculate value of spot in output, use temporary value to allow for vectorization
-    out = zero(eltype(B))
+    out = zero(AccumType)
     @simd for k in j:N
-        @inbounds out += tile2[i, k] * tile1[k, j]
+        @inbounds out += AccumType(tile2[i, k]) * AccumType(tile1[k, j])
     end
     B_sub[1] += out
 
@@ -204,13 +206,13 @@ end
 
     # save if inbounds
     if I <= M && J <= N
-        @inbounds B[I, J] = B_sub[1]
+        @inbounds B[I, J] = eltype(B)(clamp(B_sub[1], floatmin(eltype(B)), floatmax(eltype(B))))
     end
     @synchronize
 
 end
 
-@kernel function RightUpperTRMM_kernel!(A,B,
+@kernel function RightUpperTRMM_kernel!(AccumType, A,B,
     ::Val{BANK} = Val(1)) where BANK
     gi,gj = @index(Group, NTuple)
     i,j = @index(Local, NTuple)
@@ -224,8 +226,8 @@ end
     tile2 = @localmem eltype(B) (TILE_DIM+BANK, TILE_DIM)
 
     #declaring a private variable to accumulate the result of submatrix multiplication
-    B_sub = @private eltype(B) 1
-    @inbounds B_sub[1] = -zero(eltype(B))
+    B_sub = @private AccumType 1
+    @inbounds B_sub[1] = -zero(AccumType)
 
     @uniform N = size(A, 1)
     @uniform M = size(B, 1)
@@ -253,9 +255,9 @@ end
 
 
     # calculate value of spot in output, use temporary value to allow for vectorization
-    out = zero(eltype(B))
+    out = zero(AccumType)
     @simd for k in 1:j
-        @inbounds out += tile2[i, k] * tile1[k, j]
+        @inbounds out += AccumType(tile2[i, k]) * AccumType(tile1[k, j])
     end
     B_sub[1] += out
 
@@ -267,7 +269,7 @@ end
 
     # save if inbounds
     if I <= M && J <= N
-        @inbounds B[I, J] = B_sub[1]
+        @inbounds B[I, J] = eltype(B)(clamp(B_sub[1], floatmin(eltype(B)), floatmax(eltype(B))))
     end
     @synchronize
 end
@@ -280,7 +282,8 @@ function LeftLowerTRMM!(A, B; n_threads = (16,16))
     backend = get_backend(A)
     Ndrange = max(size(A), size(B))
     Ndrange = (Ndrange[1]+ 16, Ndrange[2]+16)
-    LeftLowerTRMM_kernel!(backend, n_threads)(A, B, ndrange = Ndrange)
+    AccumType = eltype(B) === Float64 ? Float64 : Float32
+    LeftLowerTRMM_kernel!(backend, n_threads)(AccumType, A, B, ndrange = Ndrange)
     # need to specify ndrange as the larger of the 2 ARGUMENTS
     # LeftLowerTRMM_kernel!(backend, n_threads)(A, B, ndrange = max(size(A), size(B)))
 end
@@ -291,7 +294,8 @@ function LeftUpperTRMM!(A, B; n_threads = (16,16))
     Ndrange = max(size(A), size(B))
     Ndrange = (Ndrange[1]+ 16, Ndrange[2]+16)
     # could not use overloading with only 2 args
-    LeftUpperTRMM_kernel!(backend, n_threads)(A, B, ndrange = Ndrange)
+    AccumType = eltype(B) === Float64 ? Float64 : Float32
+    LeftUpperTRMM_kernel!(backend, n_threads)(AccumType, A, B, ndrange = Ndrange)
 end
 
 # wrapper function for the RLTRMM kernel
@@ -300,7 +304,8 @@ function RightLowerTRMM!(A, B; n_threads = (16,16))
     Ndrange = max(size(A), size(B))
     Ndrange = (Ndrange[1]+ 16, Ndrange[2]+16)
     # could not use overloading with only 2 args
-    RightLowerTRMM_kernel!(backend, n_threads)(A, B, ndrange = Ndrange)
+    AccumType = eltype(B) === Float64 ? Float64 : Float32
+    RightLowerTRMM_kernel!(backend, n_threads)(AccumType, A, B, ndrange = Ndrange)
 end
 
 function RightUpperTRMM!(A, B; n_threads = (16,16))
@@ -308,5 +313,6 @@ function RightUpperTRMM!(A, B; n_threads = (16,16))
     Ndrange = max(size(A), size(B))
     Ndrange = (Ndrange[1]+ 16, Ndrange[2]+16)
     # could not use overloading with only 2 args
-    RightUpperTRMM_kernel!(backend, n_threads)(A, B, ndrange = Ndrange)
+    AccumType = eltype(B) === Float64 ? Float64 : Float32
+    RightUpperTRMM_kernel!(backend, n_threads)(AccumType, A, B, ndrange = Ndrange)
 end

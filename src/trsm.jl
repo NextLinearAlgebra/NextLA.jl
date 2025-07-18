@@ -13,7 +13,8 @@ export LeftLowerTRSM!, LeftUpperTRSM!, RightLowerTRSM!, RightUpperTRSM!
 
     # Initialize diagonal and B column
     if row <= n
-        @inbounds diag[row] = A[row, row]
+        @inbounds d = A[row, row]
+        @inbounds diag[row] = iszero(d) ? eps(eltype(A)) : d
         @inbounds B_c[row] = B[row, col] / diag[row]
     end
 
@@ -44,7 +45,8 @@ end
 
     # Initialize diagonal and B column
     if row <= n
-        @inbounds diag[row] = A[row, row]
+        @inbounds d = A[row, row]
+        @inbounds diag[row] = iszero(d) ? eps(eltype(A)) : d
         @inbounds B_c[row] = B[row, col] / diag[row]
     end
 
@@ -75,7 +77,8 @@ end
 
     # Initialize diagonal and B row
     if col <= n
-        @inbounds diag[col] = A[col, col]
+        @inbounds d = A[col, col]
+        @inbounds diag[col] = iszero(d) ? eps(eltype(A)) : d
         @inbounds B_r[col] = B[row, col] / diag[col]
     end
 
@@ -106,7 +109,8 @@ end
 
     # Initialize diagonal and B row
     if col <= n
-        @inbounds diag[col] = A[col, col]
+        @inbounds d = A[col, col]
+        @inbounds diag[col] = iszero(d) ? eps(eltype(A)) : d
         @inbounds B_r[col] = B[row, col] / diag[col]
     end
     
