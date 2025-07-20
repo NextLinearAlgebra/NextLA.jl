@@ -3,19 +3,46 @@ using NextLA
 using LinearAlgebra, LinearAlgebra.LAPACK
 using Random
 
-# LAPACK-style test parameters for ZGEQRT  
 # Function signature: zgeqrt(m, n, ib, A, lda, T, ldt, tau, work)
 const GEQRT_TYPES = [ComplexF32, ComplexF64, Float32, Float64]
 const GEQRT_SIZES = [(0,0), (1,1), (2,1), (1,2), (4,3), (8,6), (15,10), (20,15)]
 const GEQRT_BLOCKSIZES = [1, 2, 4, 8]
 
-@testset "ZGEQRT LAPACK-style Tests" begin
+function generate_qr_test_matrix(::Type{T}, m, n, imat=1) where T
+    if m == 0 || n == 0
+        return zeros(T, m, n)
+    end
+    
+    # Use the matrix generation from runtests.jl
+    if imat == 1
+        # Well-conditioned random matrix
+        return matrix_generation(T, m, n, mode=:decay, cndnum=2.0)
+    elseif imat == 2
+        # Moderately ill-conditioned
+        return matrix_generation(T, m, n, mode=:decay, cndnum=1e2)
+    elseif imat == 3
+        # Severely ill-conditioned
+        return matrix_generation(T, m, n, mode=:one_large, cndnum=1e6)
+    elseif imat == 4
+        # Random matrix
+        return rand(T, m, n)
+    else
+        # Identity-like matrix
+        A = zeros(T, m, n)
+        k = min(m, n)
+        for i in 1:k
+            A[i, i] = one(T)
+        end
+        return A
+    end
+end
+
+@testset "ZGEQRT Tests" begin
     @testset "Blocked QR Factorization Tests" begin
         for (itype, T) in enumerate(GEQRT_TYPES)
             @testset "Type $T (itype=$itype)" begin
-                rtol = (T <: ComplexF32) ? 1e-5 : 1e-12
+                rtol = (T <: ComplexF32) || (T <: Float32) ? 1e-5 : 1e-12
                 atol = rtol
-                w
                 for (isize, (m, n)) in enumerate(GEQRT_SIZES)
                     @testset "Size m=$m, n=$n (isize=$isize)" begin
                         k = min(m, n)
@@ -33,7 +60,7 @@ const GEQRT_BLOCKSIZES = [1, 2, 4, 8]
                                         if imat == 1
                                             A_orig = rand(T, m, n)
                                         elseif imat == 2
-                                            A_orig = matrix_generation(real(T), m, n, mode=:decay, cndnum=1e3)
+                                            A_orig = matrix_generation(T, m, n, mode=:decay, cndnum=1e3)
                                         else
                                             A_orig = zeros(T, m, n)
                                             for i in 1:min(m,n)
@@ -67,63 +94,34 @@ const GEQRT_BLOCKSIZES = [1, 2, 4, 8]
                                                 @test all(isfinite.(tau_test))
                                                 @test size(A_test) == size(A_orig)
                                                 
-                                                # Extract R from factored matrix
-                                                R_test = triu(A_test[1:k, 1:n]) 
                                                 
                                                 # For small matrices, verify reconstruction
                                                 if m <= 20 && n <= 20
-                                                    try
-                                                        # Form Q using the blocked representation
-                                                        Q_test = Matrix{T}(I, m, m)
-                                                        
-                                                        # Apply the block reflectors manually
-                                                        # This is a simplified version - full implementation
-                                                        # would require zunmqr or equivalent
-                                                        for i = 1:ib:k
-                                                            sb = min(ib, k-i+1)
-                                                            if sb > 0
-                                                                # Extract block reflector data
-                                                                V_block = A_test[i:m, i:i+sb-1]
-                                                                T_block = T_test[1:sb, i:i+sb-1]
-                                                                
-                                                                # Apply to identity (simplified)
-                                                                # In practice, this would use zlarfb
-                                                            end
-                                                        end
-                                                        
-                                                        # Compare diagonal elements of R with reference
-                                                        R_ref = triu(A_ref[1:k, 1:n])
-                                                        for i in 1:min(k, n)
-                                                            # Check magnitude of diagonal elements
-                                                            @test abs(abs(R_test[i, i]) - abs(R_ref[i, i])) < rtol * max(1, abs(R_ref[i, i]))
-                                                        end
-                                                        
-                                                    catch e
-                                                        # If reconstruction fails, just check basic properties
-                                                        @test norm(R_test) > 0 || norm(A_orig) == 0
-                                                    end
-                                                end
+                                                    # Extract R from the factored matrix
+                                                    R_test = triu(A_test[1:k, 1:n])
+                                                    
+                                                    # Form Q using LAPACK's unmqr
+                                                    Q_test = Matrix{T}(I, m, m)
+                                                    LAPACK.ormqr!('L', 'N', A_test, tau_test, Q_test)
+                                                    
+                                                    # Test 3a: Reconstruction. A_orig should be Q * R.
+                                                    A_recon = Q_test[:, 1:k] * R_test
+                                                    _, R = qr(A_orig)
+                                                    reconstruction_tol = rtol * max(1, m, n) * norm(A_orig)
+                                                    @test A_orig ≈ A_recon rtol=reconstruction_tol
+                                                    @test norm(R - R_test) < reconstruction_tol
+        
+                                                    # Test 3b: Orthogonality of Q. Q' * Q should be Identity.
+                                                    orthog_error = norm(adjoint(Q_test) * Q_test - I)
+                                                    orthog_tol = rtol * m
+                                                    @test orthog_error < orthog_tol
                                                 
-                                                # Check T matrix structure (should be block upper triangular)
-                                                num_blocks = div(k + ib - 1, ib)
-                                                for block = 1:num_blocks
-                                                    start_col = (block - 1) * ib + 1
-                                                    end_col = min(block * ib, k)
-                                                    if start_col <= k && end_col <= k
-                                                        # Within each block, T should be upper triangular
-                                                        for i in 1:min(ib, end_col - start_col + 1)
-                                                            for j in 1:i-1
-                                                                if start_col + j - 1 <= k
-                                                                    idx_i = i
-                                                                    idx_j = start_col + j - 1
-                                                                    if idx_i <= size(T_test, 1) && idx_j <= size(T_test, 2)
-                                                                        @test abs(T_test[idx_i, idx_j]) < rtol * 10
-                                                                    end
-                                                                end
-                                                            end
-                                                        end
-                                                    end
+                                                    # Additional checks
+                                                    @test all(isfinite.(A_test))
+                                                    @test all(isfinite.(tau_test))
+                                                    @test size(A_test) == size(A_orig)
                                                 end
+
                                             end
                                         end
                                     end
@@ -155,11 +153,8 @@ const GEQRT_BLOCKSIZES = [1, 2, 4, 8]
         # Compare with Julia's QR
         Q_ref, R_ref = qr(A_original)
         R_ref_mat = Matrix(R_ref)
-        
-        # Diagonal elements should have the same magnitude
-        for i in 1:n
-            @test abs(abs(R_our[i, i]) - abs(R_ref_mat[i, i])) < 1e-10
-        end
+
+        @test norm(R_our - R_ref_mat) < 1e-10
     end
     
     @testset "Tall Matrix Tests" begin
@@ -173,19 +168,14 @@ const GEQRT_BLOCKSIZES = [1, 2, 4, 8]
         work = zeros(ComplexF64, ib * n)
         
         NextLA.zgeqrt(m, n, ib, A, lda, T, ldt, tau, work)
-        
-        # Extract R and compare with reference
-        R_our = A[1:n, 1:n]
-        
+        k = min(m, n)
+        R_our = triu(A[1:k, 1:k])
+
         Q_ref, R_ref = qr(A_original)
         R_ref_mat = Matrix(R_ref)
         
         # Check upper triangular structure
-        for i in 1:n
-            for j in 1:i-1
-                @test abs(R_our[i, j]) < 1e-12
-            end
-        end
+        @test norm(R_our - R_ref_mat) < 1e-10
     end
     
     @testset "Wide Matrix Tests" begin
@@ -199,14 +189,12 @@ const GEQRT_BLOCKSIZES = [1, 2, 4, 8]
         work = zeros(ComplexF64, ib * n)
         
         NextLA.zgeqrt(m, n, ib, A, lda, T, ldt, tau, work)
+
+        R_our = triu(A)
         
-        # For wide matrices, only m columns are factored
-        k = min(m, n)
-        for i in 1:k
-            for j in 1:i-1
-                @test abs(A[i, j]) < 1e-12
-            end
-        end
+        Q_ref, R_ref = qr(A_original)
+        R_ref_mat = Matrix(R_ref)
+        @test norm(R_our - R_ref_mat) < 1e-10
     end
     
     @testset "Edge Cases" begin

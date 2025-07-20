@@ -155,7 +155,7 @@ function zpamm_w(left, colmajor, forward, m, n, k, l, A1, A2, V, W)
             copyto!((@view W[k-l + i, 1:n]), (@view A2[i, 1:n]))
         end
 
-        LinearAlgebra.generic_trimatmul!((@view W[kp:kp+l-1, 1:n]), 'L', 'N', identity, (@view V[kp:kp+l-1, 1:l]), (@view W[kp:kp+l-1, 1:n]))
+        LinearAlgebra.generic_trimatmul!((@view W[kp:kp+l-1, 1:n]), 'U', 'N', identity, (@view V[kp:kp+l-1, 1:l]), (@view W[kp:kp+l-1, 1:n]))
         
         LinearAlgebra.generic_matmatmul!((@view W[kp:kp+l-1, 1:n]), 'N', 'N', (@view V[kp:kp+l-1, mp:mp+m-l-1]), (@view A2[mp:mp+m-l-1, 1:n]), plus)
 
@@ -219,7 +219,7 @@ function zpamm_a(left, colmajor, forward, m, n, k, l, A2, V, W)
 
             LinearAlgebra.generic_matmatmul!((@view A2[mp:mp+l-1, 1:n]), 'N', 'N', (@view V[mp:mp+l-1, kp:kp+k-l-1]), (@view W[kp:kp+k-l-1, 1:n]), minus)
 
-            LinearAlgebra.generic_trimatmul!((@view W[1:l, 1:n]), 'U', 'N', identity, (@view V[mp:mp+k-l-1, 1:k-l]), (@view W[1:l, 1:n]))
+            LinearAlgebra.generic_trimatmul!((@view W[1:l, 1:n]), 'U', 'N', identity, (@view V[mp:mp+l-1, 1:l]), (@view W[1:l, 1:n]))
 
             for i in 1:l 
                 LinearAlgebra.axpy!(-one0, (@view W[i, 1:n]), (@view A2[m-l+i, 1:n]))
@@ -295,7 +295,7 @@ function zpamm_a(left, colmajor, forward, m, n, k, l, A2, V, W)
 
             LinearAlgebra.generic_matmatmul!((@view A2[1:l, 1:n]), 'C', 'N', (@view V[1:k-l, 1:l]), (@view W[1:k-l, 1:n]), minus)
 
-            LinearAlgebra.generic_trimatmul!((@view W[kp:kp+l-1, 1:n]), 'L', 'N', adjoint, (@view V[kp:kp+l-1, 1:l]), (@view W[kp:kp+l-1, 1:n]))
+            LinearAlgebra.generic_trimatmul!((@view W[kp:kp+l-1, 1:n]), 'U', 'N', adjoint, (@view V[kp:kp+l-1, 1:l]), (@view W[kp:kp+l-1, 1:n]))
 
             for i in 1:l 
                 LinearAlgebra.axpy!(-one0, (@view W[k-l+i, 1:n]), (@view A2[i, 1:n]))
@@ -309,7 +309,7 @@ function zpamm_a(left, colmajor, forward, m, n, k, l, A2, V, W)
 
             LinearAlgebra.generic_matmatmul!((@view A2[1:m, 1:l]), 'N', 'N', (@view W[1:m, 1:k-l]), (@view V[1:k-l, 1:l]), minus)
 
-            LinearAlgebra.generic_mattrimul!((@view W[1:m, kp:kp+l-1]), 'U', 'N', identity, (@view W[1:m, kp:kp:kp+l-1]), (@view V[kp:kp+l-1, 1:l]))
+            LinearAlgebra.generic_mattrimul!((@view W[1:m, kp:kp+l-1]), 'U', 'N', identity, (@view W[1:m, kp:kp+l-1]), (@view V[kp:kp+l-1, 1:l]))
 
             for j in 1:l 
                 LinearAlgebra.axpy!(-one0, (@view W[1:m, k-l+j]), (@view A2[1:m, j]))
@@ -324,7 +324,7 @@ function zpamm_a(left, colmajor, forward, m, n, k, l, A2, V, W)
 
             LinearAlgebra.generic_matmatmul!((@view A2[1:m, 1:l]), 'N', 'C', (@view W[1:m, 1:k-l]), (@view V[1:l, 1:k-l]), minus)
 
-            LinearAlgebra.generic_mattrimul!((@view W[1:m, kp:kp+l-1]), 'L', 'N', adjoint, (@view W[1:m, kp:kp:kp+l-1]), (@view V[1:l, kp:kp+l-1]))
+            LinearAlgebra.generic_mattrimul!((@view W[1:m, kp:kp+l-1]), 'L', 'N', adjoint, (@view W[1:m, kp:kp+l-1]), (@view V[1:l, kp:kp+l-1]))
 
             for j in 1:l 
                 LinearAlgebra.axpy!(-one0, (@view W[1:m, k-l+j]), (@view A2[1:m, j]))

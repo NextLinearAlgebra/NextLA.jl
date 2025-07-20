@@ -4,21 +4,14 @@ using LinearAlgebra
 using Random
 using CUDA
 
-# LAPACK-style test parameters adapted for NextLA.axpy!(a, x, y)
-const NTYPES = 4
-const NSIZES = 7
+const AXPY_TYPES = [Float32, Float64, ComplexF32, ComplexF64]
+const AXPY_SIZES = [0, 1, 2, 3, 10, 100, 1023]
 
-# Test matrix types (following LAPACK conventions)
-const TEST_TYPES = [Float32, Float64, ComplexF32, ComplexF64]
-const TEST_SIZES = [0, 1, 2, 3, 10, 100, 1023]
-
-# Generate test matrices using LAPACK-style patterns
 function generate_test_vectors(::Type{T}, n, imat=1) where T
     if n == 0
         return T[], T[]
     end
     
-    # Different vector patterns following LAPACK conventions
     if imat == 1
         # Random vectors
         return rand(T, n), rand(T, n)
@@ -79,12 +72,12 @@ end
 
 @testset "AXPY Tests" begin
     @testset "Standard Test Suite" begin
-        for (itype, T) in enumerate(TEST_TYPES)
+        for (itype, T) in enumerate(AXPY_TYPES)
             @testset "Type $T (itype=$itype)" begin
                 rtol = (T <: Float32) || (T <: ComplexF32) ? 1e-6 : 1e-12
                 atol = rtol
                 
-                for (isize, n) in enumerate(TEST_SIZES)
+                for (isize, n) in enumerate(AXPY_SIZES)
                     @testset "Size n=$n (isize=$isize)" begin
                         # Test multiple matrix patterns
                         for imat in 1:4
@@ -104,7 +97,6 @@ end
                                     # NextLA call: axpy!(a, x, y)
                                     NextLA.axpy!(α, x, y_test)
 
-                                    # Comparison with LAPACK-style error checking
                                     if n == 0 || α == 0
                                         @test y_test == y_orig  # Should be unchanged
                                     else
@@ -113,7 +105,6 @@ end
                                         scaled_atol = atol * max(1, norm(y_orig), abs(α) * norm(x))
                                         @test y_test ≈ y_ref rtol=scaled_rtol atol=scaled_atol
                                         
-                                        # Additional LAPACK-style checks
                                         @test all(isfinite.(y_test))
                                         @test length(y_test) == length(y_ref)
                                         
@@ -133,8 +124,7 @@ end
     end
     
     @testset "Error Handling Tests" begin
-        # Test error conditions following LAPACK conventions
-        for T in TEST_TYPES
+        for T in AXPY_TYPES
             @testset "Type $T Error Handling" begin
                 n = 10
                 x = rand(T, n)
@@ -152,7 +142,6 @@ end
     end
     
     @testset "Numerical Stability Tests" begin
-        # Tests inspired by LAPACK's numerical stability checks
         for T in [Float64, ComplexF64]  # High precision types
             @testset "Type $T Stability" begin
                 rtol = eps(real(T)) * 100

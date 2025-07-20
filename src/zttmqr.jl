@@ -71,44 +71,48 @@ function zttmqr(side, trans, m1, n1, m2, n2, k, ib, A1, lda1, A2, lda2, V, ldv, 
     end
 
     if (side == 'L' && trans != 'N') || (side == 'R' && trans == 'N')
-        i1 = 1
+        i1 = 1  # Starting from 1 in Julia (0 in C)
         i3 = ib
-        istop = k
     else
-        i1 = (div(k-1,ib))*ib + 1
+        i1 = div(k-1, ib) * ib + 1  # Convert from 0-based to 1-based indexing
         i3 = -ib
-        istop = 1
-    end
+    end  
 
-    ic = 1
-    jc = 1
-    mi = m1
-    ni = n1
-    mi2 = m2
-    ni2 = n2    
-
-    for i in i1:i3:istop
+    # Main loop - replicate PLASMA's condition: i > -1 && i < k
+    i = i1
+    while i >= 1 && i <= k
         kb = min(ib, k-i+1)
+        ic = 1
+        jc = 1
+        mi = m1
+        ni = n1
+        mi2 = m2
+        ni2 = n2
+        l = 0
 
         if side == 'L'
-            # H or H^HY applied to C[i:m, 1:n]
-            mi = kb # m1 - i + 1
-            mi2 = min(i+kb - 1, m2)
+            # H or H^H applied to C[i:m, 1:n]
+            mi = kb
+            mi2 = min(i+kb-1, m2)
             ic = i
-            l = min(kb, max(0, m2-i+1))
-            ldvv = mi2
+            l = min(kb, max(0, m2-i))  # Julia 1-based: m2-i+1 (PLASMA has m2-i for 0-based)
+            ldvv = m2
         else 
             ni = kb
-            ni2 = min(i + kb - 1, n2)
+            ni2 = min(i+kb-1, n2)
             jc = i
-            l = min(kb, max(0, n2-i+1))
-            ldvv = ni2
+            l = min(kb, max(0, n2-i))  # Julia 1-based: n2-i+1 (PLASMA has n2-i for 0-based)
+            ldvv = n2
         end
 
-        
         # apply H or H^H 
         zparfb(side, trans, 'F', 'C', mi, ni, mi2, ni2, kb, l,
-        (@view A1[ic:ic+mi-1, jc:jc+ni-1]), lda1, (@view A2[1:mi2, 1:ni2]), lda2, 
-        (@view V[1:ldvv, i:i+kb-1]), ldvv, (@view T[1:kb, i:i+kb-1]), kb, work, ldwork)
+            (@view A1[ic:ic+mi-1, jc:jc+ni-1]), lda1, 
+            (@view A2[1:mi2, 1:ni2]), lda2, 
+            (@view V[1:ldvv, i:i+kb-1]), ldvv, 
+            (@view T[1:ldt, i:i+kb-1]), ldt, 
+            work, ldwork)
+        
+        i += i3
     end
 end

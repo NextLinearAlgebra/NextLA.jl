@@ -32,7 +32,7 @@ function zgeqr2(m,n, A, lda, tau, work)
             A[i,i] = one
 
             #LinearAlgebra.LAPACK.larf!('L', (@view A[i:m, i]), conj(tau[i]), (@view A[i:m, i+1:n]), work)
-            zlarf('L', m-i+1, n-i, (@view A[i:m, i]), 1, conj(tau[i]), (@view A[i:m, i+1:n]), lda, work)
+            zlarf('L', m-i+1, n-i, (@view A[i:m, i]), 1, conj(tau[i]), (@view A[i:m, i+1:n]), work)
             #zlarf('L', m-i+1, n-i, (@view av[i+a1:m+a1, i+a2]), 1, conj(tau[i]), (@view av[i+a1:m+a1, i+1+a2:n+a2]), lda, work)
 
             A[i,i] = alpha

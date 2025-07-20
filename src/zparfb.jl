@@ -1,52 +1,4 @@
-export zparfb, lapack_tprfb!
-
-function lapack_tprfb!(::Type{T}, side::AbstractChar, trans::AbstractChar, direct::AbstractChar, storev::AbstractChar,
-    l::Int64, V::AbstractMatrix{T}, Tee::AbstractMatrix{T}, A::AbstractMatrix{T}, B::AbstractMatrix{T}) where {T<: Number}
-
-    m,n = size(B)
-    ldt, k = size(Tee)
-    ldv = max(1, stride(V,2))
-    lda = max(1, stride(A,2))
-    ldb = max(1,m)
-
-    if side == 'L'
-        ldw = k
-        work = Array{T}(undef, (ldw,n))
-    else
-        ldw = m
-        work = Array{T}(undef, (ldw,k))
-    end
-
-    if m > 0 && n > 0
-        if T == ComplexF64
-            ccall((@blasfunc(ztprfb_), libblastrampoline), Cvoid,
-            (Ref{UInt8}, Ref{UInt8},Ref{UInt8},Ref{UInt8},
-                Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, 
-                Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}),
-            side, trans, direct, storev, m, n, k, l, V, ldv, Tee, ldt, A, lda, B, ldb, work, ldw)
-
-        elseif T == ComplexF32
-            ccall((@blasfunc(ctprfb_), libblastrampoline), Cvoid,
-            (Ref{UInt8}, Ref{UInt8},Ref{UInt8},Ref{UInt8},
-                Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, 
-                Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}),
-            side, trans, direct, storev, m, n, k, l, V, ldv, Tee, ldt, A, lda, B, ldb, work, ldw)
-
-        elseif T == Float64
-            ccall((@blasfunc(dtprfb_), libblastrampoline), Cvoid,
-            (Ref{UInt8}, Ref{UInt8},Ref{UInt8},Ref{UInt8},
-                Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, 
-                Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}),
-                side, trans, direct, storev, m, n, k, l, V, ldv, Tee, ldt, A, lda, B, ldb, work, ldw)
-        else # T == Float32
-            ccall((@blasfunc(stprfb_), libblastrampoline), Cvoid,
-            (Ref{UInt8}, Ref{UInt8},Ref{UInt8},Ref{UInt8},
-                Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, 
-                Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}),
-            side, trans, direct, storev, m, n, k, l, V, ldv, Tee, ldt, A, lda, B, ldb, work, ldw)
-        end
-    end
-end
+export zparfb
 
 function zparfb(side, trans, direct, storev, m1, n1, m2, n2, k, l, 
                 A1, lda1, A2, lda2, V,  ldv, T, ldt, work, ldwork)
@@ -161,34 +113,34 @@ function zparfb(side, trans, direct, storev, m1, n1, m2, n2, k, l,
     zpamm('W', side, storev, direct, m2, n2, k, l, A1, lda1, A2, lda2, V, ldv, work, ldwork)
 
     if colmajor && forward && left # colmajor, forward, left
-        LinearAlgebra.generic_trimatmul!((@view work[1:k, 1:n1]), 'U', 'N', tfun, (@view T[1:k, 1:k]), (@view work[1:k, 1:n1]))
+        LinearAlgebra.generic_trimatmul!((@view work[1:k, 1:n2]), 'U', 'N', tfun, (@view T[1:k, 1:k]), (@view work[1:k, 1:n2]))
 
         for i in 1:k
-            LinearAlgebra.axpy!(-one0, (@view work[i, 1:n1]), (@view A1[i, 1:n1]))
+            LinearAlgebra.axpy!(-one0, (@view work[i, 1:n2]), (@view A1[i, 1:n2]))
         end
     end
 
     if colmajor && forward && !left # colmajor, forward, right
-        LinearAlgebra.generic_mattrimul!((@view work[1:m1, 1:k]), 'U', 'N', tfun, (@view work[1:m1, 1:k]), (@view T[1:k, 1:k]))
+        LinearAlgebra.generic_mattrimul!((@view work[1:m2, 1:k]), 'U', 'N', tfun, (@view work[1:m2, 1:k]), (@view T[1:k, 1:k]))
 
         for j in 1:k
-            LinearAlgebra.axpy!(-one0, (@view work[1:m1, j]), (@view A1[1:m1, j]))
+            LinearAlgebra.axpy!(-one0, (@view work[1:m2, j]), (@view A1[1:m2, j]))
         end
     end
 
     if colmajor && !forward && left # colmajor, backward, left
-        LinearAlgebra.generic_trimatmul!((@view work[1:k, 1:n1]), 'L', 'N', tfun, (@view T[1:k, 1:k]), (@view work[1:k, 1:n1]))
+        LinearAlgebra.generic_trimatmul!((@view work[1:k, 1:n2]), 'L', 'N', tfun, (@view T[1:k, 1:k]), (@view work[1:k, 1:n2]))
 
         for i in 1:k
-            LinearAlgebra.axpy!(-one0, (@view work[i, 1:n1]), (@view A1[i, 1:n1]))
+            LinearAlgebra.axpy!(-one0, (@view work[i, 1:n2]), (@view A1[i, 1:n2]))
         end
     end
 
     if colmajor && !forward && !left # colmajor, backward, right
-        LinearAlgebra.generic_mattrimul!((@view work[1:m1, 1:k]), 'L', 'N', tfun, (@view work[1:m1, 1:k]), (@view T[1:k, 1:k]))
+        LinearAlgebra.generic_mattrimul!((@view work[1:m2, 1:k]), 'L', 'N', tfun, (@view work[1:m2, 1:k]), (@view T[1:k, 1:k]))
 
         for j in 1:k
-            LinearAlgebra.axpy!(-one0, (@view work[1:m1, j]), (@view A1[1:m1, j]))
+            LinearAlgebra.axpy!(-one0, (@view work[1:m2, j]), (@view A1[1:m2, j]))
         end
     end
 
@@ -202,18 +154,18 @@ function zparfb(side, trans, direct, storev, m1, n1, m2, n2, k, l,
     end
 
     if !colmajor && forward && !left # rowmajor, forward, right
-        LinearAlgebra.generic_mattrimul!((@view work[1:m1, 1:k]), 'U', 'N', tfun, (@view work[1:m1, 1:k]), (@view T[1:k, 1:k]))
+        LinearAlgebra.generic_mattrimul!((@view work[1:m2, 1:k]), 'U', 'N', tfun, (@view work[1:m2, 1:k]), (@view T[1:k, 1:k]))
 
         for j in 1:k
-            LinearAlgebra.axpy!(-one0, (@view work[1:m1, j]), (@view A1[1:m1, j]))
+            LinearAlgebra.axpy!(-one0, (@view work[1:m2, j]), (@view A1[1:m2, j]))
         end
     end
 
     if !colmajor && !forward && left # rowmajor, backward, left
-        LinearAlgebra.generic_trimatmul!((@view work[1:k, 1:n1]), 'L', 'N', tfun, (@view T[1:k, 1:k]), (@view work[1:k, 1:n1]))
+        LinearAlgebra.generic_trimatmul!((@view work[1:k, 1:n2]), 'L', 'N', tfun, (@view T[1:k, 1:k]), (@view work[1:k, 1:n2]))
 
         for i in 1:k
-            LinearAlgebra.axpy!(-one0, (@view work[i, 1:n1]), (@view A1[i, 1:n1]))
+            LinearAlgebra.axpy!(-one0, (@view work[i, 1:n2]), (@view A1[i, 1:n2]))
         end
     end
 

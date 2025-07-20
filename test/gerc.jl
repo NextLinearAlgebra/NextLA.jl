@@ -4,12 +4,6 @@ using LinearAlgebra
 using Random
 using CUDA
 
-# LAPACK-style test parameters for GERC (complex rank-1 update)
-# Adapted for NextLA.gerc!(alpha, x, y, A)
-const GERC_NTYPES = 2  # Only complex types
-const GERC_NSIZES = 8
-
-# Test matrix types (only complex for GERC)
 const GERC_TYPES = [ComplexF32, ComplexF64]
 const GERC_SIZES = [(0,0), (1,1), (2,1), (1,2), (3,3), (5,4), (10,8), (100,50)]
 
@@ -110,7 +104,7 @@ end
                                     # NextLA call: gerc!(alpha, x, y, A)
                                     NextLA.gerc!(α, x, y, A_test)
 
-                                    # Comparison with LAPACK-style error checking
+                                    # Comparison with error checking
                                     if m == 0 || n == 0 || α == 0
                                         @test A_test == A_orig  # Should be unchanged
                                     else
@@ -119,7 +113,7 @@ end
                                         scaled_atol = atol * max(1, norm(A_orig), abs(α) * norm(x) * norm(y))
                                         @test A_test ≈ A_ref rtol=scaled_rtol atol=scaled_atol
                                         
-                                        # Additional LAPACK-style checks
+                                        # Additional checks
                                         @test all(isfinite.(A_test))
                                         @test size(A_test) == size(A_ref)
                                         # Check the mathematical property: A = A_orig + α * x * conj(y)'

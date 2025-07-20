@@ -42,14 +42,9 @@ function zlarft(direct, storev, n, k, v, ldv, tau, t, ldt)
 
                     j = min(lastv, prevlastv)
 
-                    # t[1:i-1, i] = -tau[i] * v[i:j, 1:i-1]^H * v[i:j, i]
-                    if i == 1
-                        LinearAlgebra.generic_matvecmul!((@view t[1:i-1, i]), 'C', (@view v[i+1:j, 1:i-1]), 
-                        (@view v[i+1:j,i]), LinearAlgebra.MulAddMul(-tau[i], one))
-                    else
-                        LinearAlgebra.generic_matvecmul!((@view t[1:i-1, i]), 'C', (@view v[i+1:j, 1:i-1]), 
-                        (@view v[i+1:j,i]), LinearAlgebra.MulAddMul(-tau[i], one))
-                    end
+                    # t[1:i-1, i] = -tau[i] * v[i:j, 1:i-1]^H * v[i:j, i] 
+                    LinearAlgebra.generic_matvecmul!((@view t[1:i-1, i]), 'C', (@view v[i+1:j, 1:i-1]), 
+                    (@view v[i+1:j,i]), LinearAlgebra.MulAddMul(-tau[i], one))
 
                 else
                     lastv = n
@@ -69,13 +64,13 @@ function zlarft(direct, storev, n, k, v, ldv, tau, t, ldt)
                     j = min(lastv, prevlastv)
 
                     # t[1:i-1, i] = -tau[i] * v[1:i-1, i:j] * v[i,i:j]^H
-
-                    LinearAlgebra.generic_matmatmul!((@view t[1:i-1, i]), 'N', 'C', (@view v[1:i-1, i:j]), 
-                    (@view v[i, i:j]), LinearAlgebra.MulAddMul(-tau[i], one))
+                    if i-1 > 0
+                        LinearAlgebra.generic_matmatmul!((@view t[1:i-1, i]), 'N', 'C', (@view v[1:i-1, i:j]), 
+                        (@view v[i:i, i:j]), LinearAlgebra.MulAddMul(-tau[i], one))
+                    end
                 end
 
                 #t[1:i-1,i] = t[1:i-1, 1:i-1] * t[1:i-1,i]
-
                 LinearAlgebra.generic_trimatmul!((@view t[1:i-1,i]), 'U', 'N', identity, 
                 (@view t[1:i-1, 1:i-1]), (@view t[1:i-1, i]))
 
@@ -135,15 +130,14 @@ function zlarft(direct, storev, n, k, v, ldv, tau, t, ldt)
                         end
 
                         for j in i+1:k
-                            t[j,i] = -tau[i] * v[n-k+i, j]
+                            t[j,i] = -tau[i] * v[j, n-k+i]
                         end
                         
                         j = max(lastv, prevlastv)
 
                         #t[i+1:k, i] = -tau[i] * v[i+1:k , j:n-k+i] * v[i, j:n-k+i]^H
-
-                        LinearAlgebra.generic_matmatmul!((@view t[i+1:k, i]), 'N', 'C', (@view v[i+1:k, j:n-k+i]), 
-                        (@view v[i, j:n-k+i]), LinearAlgebra.MulAddMul(-tau[i], one))
+                        LinearAlgebra.generic_matmatmul!((@view t[i+1:k, i]), 'N', 'C', (@view v[i+1:k, j:n-k+i-1]), 
+                        (@view v[i:i, j:n-k+i-1]), LinearAlgebra.MulAddMul(-tau[i], one))
                     end
 
                     # t[i+1:k, i] = t[i+1:k, i+1:k] * t[i+1:k, i]

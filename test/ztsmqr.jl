@@ -1,307 +1,307 @@
 using Test
 using NextLA
 using LinearAlgebra
+using Random
 using CUDA
+using LinearAlgebra: libblastrampoline, BlasInt, require_one_based_indexing
+using LinearAlgebra.LAPACK: liblapack, chkstride1, chklapackerror
+using LinearAlgebra.BLAS: @blasfunc
+function lapack_tpmqrt!(::Type{T}, side::Char, trans::Char, l::Int64, V::AbstractMatrix{T}, 
+    Tau::AbstractMatrix{T}, A::AbstractMatrix{T}, B::AbstractMatrix{T}) where {T<: Number}
+    m1, n1 = size(A)
+    m, n = size(B)
+    nb, k = size(Tau)
+    minmn = min(m, n)
+
+    if nb > minmn
+        throw(ArgumentError("block size $nb > $minmn too large"))
+    end
+
+    ldv = max(1, stride(V,2))
+    ldt = max(1, stride(Tau,2))
+    lda = max(1, stride(A,2))
+    ldb = max(1, stride(B,2))
+    if side == 'L'
+        work = zeros(T, nb, n1)
+        ldwork = nb
+    else
+        work = zeros(T, m1, nb)
+        ldwork = m1
+    end
+
+    if trans == 'C' && T <: Real
+        trans = 'T'
+    end
+    
+    info = Ref{BlasInt}()
+  
+    if n > 0
+        if T == ComplexF64
+            ccall((@blasfunc(ztpmqrt_), libblastrampoline), Cvoid,
+            (Ref{UInt8}, Ref{UInt8}, Ref{BlasInt}, Ref{BlasInt}, 
+            Ref{BlasInt}, Ref{BlasInt},  Ref{BlasInt},
+            Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, 
+            Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, 
+            Ptr{T}, Ptr{BlasInt}),
+            side, trans, m, n, k, l, nb, V, ldv, Tau, ldt, A, lda,
+            B, ldb, work, info)
+
+            chklapackerror(info[])
+        elseif T == Float64
+                
+            ccall((@blasfunc(dtpmqrt_), libblastrampoline), Cvoid,
+            (Ref{UInt8}, Ref{UInt8}, Ref{BlasInt}, Ref{BlasInt}, 
+            Ref{BlasInt}, Ref{BlasInt},  Ref{BlasInt},
+            Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, 
+            Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, 
+            Ptr{T}, Ptr{BlasInt}),
+            side, trans, m, n, k, l, nb, V, ldv, Tau, ldt, A, lda,
+            B, ldb, work, info)
+
+            chklapackerror(info[])
+
+        elseif T == ComplexF32
+            ccall((@blasfunc(ctpmqrt_), libblastrampoline), Cvoid,
+            (Ref{UInt8}, Ref{UInt8}, Ref{BlasInt}, Ref{BlasInt}, 
+            Ref{BlasInt}, Ref{BlasInt},  Ref{BlasInt},
+            Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, 
+            Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, 
+            Ptr{T}, Ptr{BlasInt}),
+            side, trans, m, n, k, l, nb, V, ldv, Tau, ldt, A, lda,
+            B, ldb, work, info)
+
+            chklapackerror(info[])
+        else # T = Float32
+            ccall((@blasfunc(stpmqrt_), libblastrampoline), Cvoid,
+            (Ref{UInt8}, Ref{UInt8}, Ref{BlasInt}, Ref{BlasInt}, 
+            Ref{BlasInt}, Ref{BlasInt},  Ref{BlasInt},
+            Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, 
+            Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, 
+            Ptr{T}, Ptr{BlasInt}),
+            side, trans, m, n, k, l, nb, V, ldv, Tau, ldt, A, lda,
+            B, ldb, work, info)
+
+            chklapackerror(info[])
+        end
+    end
+end
+
+const ZTSMQR_TYPES = [ComplexF32, ComplexF64, Float32, Float64]
+# Format: (m1, n1, m2, n2, k, ib) where:
+# - For side='L': n1 == n2 and k <= m1
+# - For side='R': m1 == m2 and k <= n1
+# - ib is the block size (ib <= k)
+const ZTSMQR_SIZES = [
+    (6, 5, 4, 5, 3, 2),   # side='L': n1=n2=5, k=3<=m1=6, ib=2<=k=3
+    (8, 6, 8, 4, 4, 2),   # side='R': m1=m2=8, k=4<=n1=6, ib=2<=k=4
+    (10, 8, 6, 8, 5, 3),  # side='L': n1=n2=8, k=5<=m1=10, ib=3<=k=5
+    (12, 10, 12, 7, 6, 4) # side='R': m1=m2=12, k=6<=n1=10, ib=4<=k=6
+]
 
 @testset "ZTSMQR Tests" begin
-    @testset "Left No-Transpose Application Tests" begin
-        m1, n1, m2, n2, k, ib = 15, 12, 10, 12, 8, 4
-        
-        # Create triangular-pentagonal QR factorization data
-        A1 = triu(rand(ComplexF64, m1, k))
-        A2 = rand(ComplexF64, m2, k)
-        V = rand(ComplexF64, m2, k)
-        T = triu(rand(ComplexF64, ib, k))
-        
-        # Ensure proper structure
-        for i in 1:k
-            A1[i, i] += 1.0  # Make well-conditioned
-            V[i, i] = 1.0   # Standard Householder form
-        end
-        
-        # Test matrices
-        C1 = rand(ComplexF64, m1, n1)
-        C2 = rand(ComplexF64, m2, n2)
-        C1_original = copy(C1)
-        C2_original = copy(C2)
-        
-        lda1 = m1
-        lda2 = m2
-        ldv = m2
-        ldt = ib
-        work = zeros(ComplexF64, ib * max(n1, n2))
-        ldwork = ib
-        
-        # Apply our ZTSMQR
-        NextLA.ztsmqr('L', 'N', m1, n1, m2, n2, k, ib, 
-                      A1, lda1, A2, lda2, V, ldv, T, ldt, work, ldwork)
-        
-        # Basic checks
-        @test size(C1) == (m1, n1)
-        @test size(C2) == (m2, n2)
-        @test all(isfinite.(C1))
-        @test all(isfinite.(C2))
-        
-        # Verify orthogonal transformation property (norm preservation)
-        combined_norm_original = norm([C1_original; C2_original])
-        combined_norm_result = norm([C1; C2])
-        @test abs(combined_norm_result - combined_norm_original) < 1e-10
-    end
-    
-    @testset "Right Application Tests" begin
-        m1, n1, m2, n2, k, ib = 12, 15, 12, 10, 8, 4
-        
-        A1 = triu(rand(ComplexF64, n1, k))
-        A2 = rand(ComplexF64, n2, k)
-        V = rand(ComplexF64, n2, k)
-        T = triu(rand(ComplexF64, ib, k))
-        
-        for i in 1:k
-            A1[i, i] += 1.0
-            V[i, i] = 1.0
-        end
-        
-        C1 = rand(ComplexF64, m1, n1)
-        C2 = rand(ComplexF64, m2, n2)
-        C1_original = copy(C1)
-        C2_original = copy(C2)
-        
-        lda1 = n1
-        lda2 = n2
-        ldv = n2
-        ldt = ib
-        work = zeros(ComplexF64, max(m1, m2) * ib)
-        ldwork = max(m1, m2)
-        
-        NextLA.ztsmqr('R', 'N', m1, n1, m2, n2, k, ib,
-                      A1, lda1, A2, lda2, V, ldv, T, ldt, work, ldwork)
-        
-        @test all(isfinite.(C1))
-        @test all(isfinite.(C2))
-        
-        # Check norm preservation
-        combined_norm_original = norm([C1_original C2_original])
-        combined_norm_result = norm([C1 C2])
-        @test abs(combined_norm_result - combined_norm_original) < 1e-10
-    end
-    
-    @testset "Conjugate Transpose Tests" begin
-        m1, n1, m2, n2, k, ib = 15, 12, 10, 12, 6, 3
-        
-        A1 = triu(rand(ComplexF64, m1, k))
-        A2 = rand(ComplexF64, m2, k)
-        V = rand(ComplexF64, m2, k)
-        T = triu(rand(ComplexF64, ib, k))
-        
-        for i in 1:k
-            A1[i, i] += 1.0
-            V[i, i] = 1.0
-        end
-        
-        C1 = rand(ComplexF64, m1, n1)
-        C2 = rand(ComplexF64, m2, n2)
-        
-        lda1 = m1
-        lda2 = m2
-        ldv = m2
-        ldt = ib
-        work = zeros(ComplexF64, ib * max(n1, n2))
-        ldwork = ib
-        
-        NextLA.ztsmqr('L', 'C', m1, n1, m2, n2, k, ib,
-                      A1, lda1, A2, lda2, V, ldv, T, ldt, work, ldwork)
-        
-        @test all(isfinite.(C1))
-        @test all(isfinite.(C2))
-    end
-    
-    @testset "ComplexF32 Tests" begin
-        m1, n1, m2, n2, k, ib = 12, 10, 8, 10, 5, 2
-        
-        A1 = triu(rand(ComplexF32, m1, k))
-        A2 = rand(ComplexF32, m2, k)
-        V = rand(ComplexF32, m2, k)
-        T = triu(rand(ComplexF32, ib, k))
-        
-        for i in 1:k
-            A1[i, i] += ComplexF32(1.0)
-            V[i, i] = ComplexF32(1.0)
-        end
-        
-        C1 = rand(ComplexF32, m1, n1)
-        C2 = rand(ComplexF32, m2, n2)
-        C1_original = copy(C1)
-        C2_original = copy(C2)
-        
-        lda1 = m1
-        lda2 = m2
-        ldv = m2
-        ldt = ib
-        work = zeros(ComplexF32, ib * max(n1, n2))
-        ldwork = ib
-        
-        NextLA.ztsmqr('L', 'N', m1, n1, m2, n2, k, ib,
-                      A1, lda1, A2, lda2, V, ldv, T, ldt, work, ldwork)
-        
-        @test all(isfinite.(C1))
-        @test all(isfinite.(C2))
-        
-        # Check norm preservation (with relaxed tolerance for F32)
-        combined_norm_original = norm([C1_original; C2_original])
-        combined_norm_result = norm([C1; C2])
-        @test abs(combined_norm_result - combined_norm_original) < 1e-6
-    end
-    
-    @testset "Different Sizes" begin
-        test_cases = [
-            (10, 8, 6, 8, 4, 2),
-            (20, 15, 12, 15, 8, 4),
-            (15, 20, 10, 20, 6, 3)
-        ]
-        
-        for (m1, n1, m2, n2, k, ib) in test_cases
-            A1 = triu(rand(ComplexF64, m1, k))
-            A2 = rand(ComplexF64, m2, k)
-            V = rand(ComplexF64, m2, k)
-            T = triu(rand(ComplexF64, ib, k))
-            
-            # Make well-conditioned
-            for i in 1:k
-                A1[i, i] += 1.0
-                V[i, i] = 1.0
+    @testset "NextLA vs LAPACK comparison" begin
+        for (itype, T) in enumerate(ZTSMQR_TYPES)
+            @testset "Type $T (itype=$itype)" begin
+                rtol = (T <: ComplexF32) || (T <: Float32) ? 1e-5 : 1e-12
+                
+                for (isize, (m1, n1, m2, n2, k, ib)) in enumerate(ZTSMQR_SIZES)
+                    @testset "Size m1=$m1, n1=$n1, m2=$m2, n2=$n2, k=$k, ib=$ib" begin
+                        # Test different parameter combinations
+                        for side in ['L', 'R']
+                            # Skip invalid combinations based on LAPACK TSMQR constraints
+                            if side == 'L' && (n1 != n2 || k > m1)
+                                continue  # For side='L', n1 must equal n2 and k <= m1
+                            elseif side == 'R' && (m1 != m2 || k > n1)
+                                continue  # For side='R', m1 must equal m2 and k <= n1
+                            end
+                            
+                            for trans in ['N', 'C']
+                                @testset "side=$side, trans=$trans" begin
+                                    # Set up matrices according to LAPACK TSMQR specifications
+                                    
+                                    # A1 matrix (upper triangular part)
+                                    A1 = rand(T, m1, n1)
+                                    
+                                    # A2 matrix (lower part)
+                                    A2 = rand(T, m2, n2)
+                                    
+                                    # V matrix (Householder vectors)
+                                    if side == 'L'
+                                        V = rand(T, m2, k)
+                                        ldv = m2
+                                    else
+                                        V = rand(T, n2, k)
+                                        ldv = n2
+                                    end
+                                    
+                                    # T matrix (triangular factors)
+                                    T_mat = triu(rand(T, ib, k))
+                                    
+                                    # Work array
+                                    if side == 'L'
+                                        work = zeros(T, ib, n1)
+                                        ldwork = ib
+                                    else
+                                        work = zeros(T, m1, ib)
+                                        ldwork = m1
+                                    end
+                                    
+                                    # Make copies for testing
+                                    A1_orig = copy(A1)
+                                    A2_orig = copy(A2)
+                                    A1_nextla = copy(A1)
+                                    A2_nextla = copy(A2)
+                                    A1_lapack = copy(A1)
+                                    A2_lapack = copy(A2)
+                                    
+                                    # Test NextLA implementation
+                                    NextLA.ztsmqr(side, trans, m1, n1, m2, n2, k, ib,
+                                                  A1_nextla, m1, A2_nextla, m2, V, ldv, T_mat, ib, work, ldwork)
+                                    
+                                    # Test LAPACK reference
+                                    lapack_tpmqrt!(T, side, trans, 0, V, T_mat, A1_lapack, A2_lapack)
+                                    
+                                    # Compare results
+                                    @test norm(A1_nextla - A1_lapack) < rtol * max(1, norm(A1_lapack))
+                                    @test norm(A2_nextla - A2_lapack) < rtol * max(1, norm(A2_lapack))
+                                    
+                                    # Basic sanity checks
+                                    @test all(isfinite.(A1_nextla))
+                                    @test all(isfinite.(A2_nextla))
+                                    @test size(A1_nextla) == size(A1_orig)
+                                    @test size(A2_nextla) == size(A2_orig)
+                                    @test all(isfinite.(work))
+                                    
+                                    # Check that matrices have been modified (unless k=0)
+                                    if k > 0 && ib > 0 && norm(T_mat) > rtol
+                                        modification_occurred = !isapprox(A1_nextla, A1_orig, rtol=rtol) ||
+                                                                !isapprox(A2_nextla, A2_orig, rtol=rtol)
+                                        @test modification_occurred
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
             end
-            
-            C1 = rand(ComplexF64, m1, n1)
-            C2 = rand(ComplexF64, m2, n2)
-            C1_original = copy(C1)
-            C2_original = copy(C2)
-            
-            lda1 = m1
-            lda2 = m2
-            ldv = m2
-            ldt = ib
-            work = zeros(ComplexF64, ib * max(n1, n2))
-            ldwork = ib
-            
-            NextLA.ztsmqr('L', 'N', m1, n1, m2, n2, k, ib,
-                          A1, lda1, A2, lda2, V, ldv, T, ldt, work, ldwork)
-            
-            @test all(isfinite.(C1))
-            @test all(isfinite.(C2))
-            
-            # Check that transformation occurred
-            @test !isapprox(C1, C1_original, rtol=1e-10) || !isapprox(C2, C2_original, rtol=1e-10)
         end
     end
     
-    @testset "Edge Cases" begin
-        # Minimal sizes
-        m1, n1, m2, n2, k, ib = 2, 2, 2, 2, 1, 1
-        
-        A1 = triu(rand(ComplexF64, m1, k))
-        A2 = rand(ComplexF64, m2, k)
-        V = rand(ComplexF64, m2, k)
-        T = triu(rand(ComplexF64, ib, k))
-        
-        A1[1, 1] += 1.0
-        V[1, 1] = 1.0
-        
-        C1 = rand(ComplexF64, m1, n1)
-        C2 = rand(ComplexF64, m2, n2)
-        
-        lda1 = m1
-        lda2 = m2
-        ldv = m2
-        ldt = ib
-        work = zeros(ComplexF64, ib * max(n1, n2))
-        ldwork = ib
-        
-        NextLA.ztsmqr('L', 'N', m1, n1, m2, n2, k, ib,
-                      A1, lda1, A2, lda2, V, ldv, T, ldt, work, ldwork)
-        
-        @test all(isfinite.(C1))
-        @test all(isfinite.(C2))
-    end
-    
-    @testset "Orthogonality Property" begin
-        # Test that applying Q then Q^H gives back original
-        m1, n1, m2, n2, k, ib = 15, 12, 10, 12, 6, 3
-        
-        A1 = triu(rand(ComplexF64, m1, k))
-        A2 = rand(ComplexF64, m2, k)
-        V = rand(ComplexF64, m2, k)
-        T = triu(rand(ComplexF64, ib, k))
-        
-        for i in 1:k
-            A1[i, i] += 1.0
-            V[i, i] = 1.0
+    @testset "Error Handling Tests" begin
+        for T in ZTSMQR_TYPES
+            @testset "Type $T Error Handling" begin
+                # Test with valid parameters (should not error)
+                m1, n1, m2, n2, k, ib = 6, 5, 4, 5, 3, 2
+                A1 = randn(T, m1, n1)
+                A2 = randn(T, m2, n2)
+                V = randn(T, m2, k)
+                T_mat = triu(randn(T, ib, k))
+                work = zeros(T, ib, n1)
+                
+                @test_nowarn NextLA.ztsmqr('L', 'N', m1, n1, m2, n2, k, ib,
+                                           A1, m1, A2, m2, V, m2, T_mat, ib, work, ib)
+                
+                # Test edge cases
+                @test_nowarn NextLA.ztsmqr('L', 'N', 0, 0, 0, 0, 0, 0,
+                                           zeros(T, 0, 0), 1, zeros(T, 0, 0), 1, 
+                                           zeros(T, 0, 0), 1, zeros(T, 0, 0), 1, T[], 1)
+                
+                # Test with k=0
+                @test_nowarn NextLA.ztsmqr('L', 'N', 2, 2, 2, 2, 0, 0,
+                                           randn(T, 2, 2), 2, randn(T, 2, 2), 2,
+                                           zeros(T, 2, 0), 2, zeros(T, 0, 0), 1, T[], 1)
+            end
         end
-        
-        C1 = rand(ComplexF64, m1, n1)
-        C2 = rand(ComplexF64, m2, n2)
-        C1_original = copy(C1)
-        C2_original = copy(C2)
-        
-        lda1 = m1
-        lda2 = m2
-        ldv = m2
-        ldt = ib
-        work = zeros(ComplexF64, ib * max(n1, n2))
-        ldwork = ib
-        
-        # Apply Q
-        NextLA.ztsmqr('L', 'N', m1, n1, m2, n2, k, ib,
-                      A1, lda1, A2, lda2, V, ldv, T, ldt, work, ldwork)
-        
-        # Apply Q^H
-        NextLA.ztsmqr('L', 'C', m1, n1, m2, n2, k, ib,
-                      A1, lda1, A2, lda2, V, ldv, T, ldt, work, ldwork)
-        
-        # Should get back to original (approximately)
-        @test C1 ≈ C1_original rtol=1e-10
-        @test C2 ≈ C2_original rtol=1e-10
     end
     
+    @testset "Numerical Stability Tests" begin
+        for T in [ComplexF64]  # High precision type
+            @testset "Type $T Stability" begin
+                rtol = eps(real(T)) * 100
+                
+                # Test with different scales
+                scales = [eps(real(T)), one(real(T)), 1/eps(real(T))^(1/4)]
+                
+                for scale in scales
+                    m1, n1, m2, n2, k, ib = 8, 6, 5, 6, 4, 2
+                    A1 = T.(scale .* randn(ComplexF64, m1, n1))
+                    A2 = T.(scale .* randn(ComplexF64, m2, n2))
+                    V = T.(scale .* randn(ComplexF64, m2, k))
+                    T_mat = triu(T.(scale .* randn(ComplexF64, ib, k)))
+                    work = zeros(T, ib, n1)
+                    
+                    # Test calculation
+                    NextLA.ztsmqr('L', 'N', m1, n1, m2, n2, k, ib,
+                                  A1, m1, A2, m2, V, m2, T_mat, ib, work, ib)
+                    
+                    # Check that results are finite
+                    @test all(isfinite.(A1))
+                    @test all(isfinite.(A2))
+                    @test all(isfinite.(work))
+                end
+            end
+        end
+    end
+
     @testset "GPU Tests" begin
         if CUDA.functional()
-            m1, n1, m2, n2, k, ib = 12, 10, 8, 10, 5, 2
-            
-            # Create CPU data
-            A1_cpu = triu(rand(ComplexF32, m1, k))
-            A2_cpu = rand(ComplexF32, m2, k)
-            V_cpu = rand(ComplexF32, m2, k)
-            T_cpu = triu(rand(ComplexF32, ib, k))
-            
-            for i in 1:k
-                A1_cpu[i, i] += ComplexF32(1.0)
-                V_cpu[i, i] = ComplexF32(1.0)
+            for T in (ComplexF32,)
+                @testset "Type $T GPU" begin
+                    rtol = 1e-5
+                    
+                    # Test both sides
+                    test_cases = [
+                        ('L', 6, 5, 4, 5, 3, 2),
+                        ('R', 8, 6, 8, 4, 4, 2)
+                    ]
+                    
+                    for (side, m1, n1, m2, n2, k, ib) in test_cases
+                        A1_cpu = randn(T, m1, n1)
+                        A2_cpu = randn(T, m2, n2)
+                        
+                        if side == 'L'
+                            V_cpu = randn(T, m2, k)
+                            work_cpu = zeros(T, ib * n1)
+                            ldv = m2
+                            ldwork = ib
+                        else
+                            V_cpu = randn(T, n2, k)
+                            work_cpu = zeros(T, m1 * ib)
+                            ldv = n2
+                            ldwork = m1
+                        end
+                        
+                        T_cpu = triu(randn(T, ib, k))
+                        
+                        # Move to GPU
+                        A1_gpu = CuArray(A1_cpu)
+                        A2_gpu = CuArray(A2_cpu)
+                        V_gpu = CuArray(V_cpu)
+                        T_gpu = CuArray(T_cpu)
+                        work_gpu = CuArray(work_cpu)
+                        
+                        # Reference CPU calculation
+                        A1_ref = copy(A1_cpu)
+                        A2_ref = copy(A2_cpu)
+                        work_ref = copy(work_cpu)
+                        NextLA.ztsmqr(side, 'N', m1, n1, m2, n2, k, ib,
+                                      A1_ref, m1, A2_ref, m2, V_cpu, ldv, T_cpu, ib, work_ref, ldwork)
+                        
+                        # GPU calculation
+                        NextLA.ztsmqr(side, 'N', m1, n1, m2, n2, k, ib,
+                                      A1_gpu, m1, A2_gpu, m2, V_gpu, ldv, T_gpu, ib, work_gpu, ldwork)
+                        
+                        # Compare results
+                        @test norm(Array(A1_gpu) - A1_ref) < rtol * max(1, norm(A1_ref))
+                        @test norm(Array(A2_gpu) - A2_ref) < rtol * max(1, norm(A2_ref))
+                        @test norm(Array(work_gpu) - work_ref) < rtol * max(1, norm(work_ref))
+                        
+                        @test all(isfinite.(Array(A1_gpu)))
+                        @test all(isfinite.(Array(A2_gpu)))
+                        @test all(isfinite.(Array(work_gpu)))
+                    end
+                end
             end
-            
-            C1_cpu = rand(ComplexF32, m1, n1)
-            C2_cpu = rand(ComplexF32, m2, n2)
-            work_cpu = zeros(ComplexF32, ib * max(n1, n2))
-            
-            # Create GPU data
-            A1_gpu = CuArray(A1_cpu)
-            A2_gpu = CuArray(A2_cpu)
-            V_gpu = CuArray(V_cpu)
-            T_gpu = CuArray(T_cpu)
-            C1_gpu = CuArray(C1_cpu)
-            C2_gpu = CuArray(C2_cpu)
-            work_gpu = CuArray(work_cpu)
-            
-            # Apply on CPU
-            C1_cpu_result = copy(C1_cpu)
-            C2_cpu_result = copy(C2_cpu)
-            NextLA.ztsmqr('L', 'N', m1, n1, m2, n2, k, ib,
-                          A1_cpu, m1, A2_cpu, m2, V_cpu, m2, T_cpu, ib, work_cpu, ib)
-            
-            # Apply on GPU
-            NextLA.ztsmqr('L', 'N', m1, n1, m2, n2, k, ib,
-                          A1_gpu, m1, A2_gpu, m2, V_gpu, m2, T_gpu, ib, work_gpu, ib)
-            
-            @test Array(C1_gpu) ≈ C1_cpu_result rtol=1e-6
-            @test Array(C2_gpu) ≈ C2_cpu_result rtol=1e-6
         end
     end
 end

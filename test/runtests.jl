@@ -69,15 +69,8 @@ function matrix_generation(type, M, N; dist=:uniform, mode=:decay,
         error("Unsupported mode")
     end
 
-    # Step 2: Construct U, V orthogonal matrices
-    # For complex types, need to use complex random matrices
-    if type <: Complex
-        U, _ = qr(randn(rng, type, M, M))
-        V, _ = qr(randn(rng, type, N, N))
-    else
-        U, _ = qr(randn(rng, M, M))
-        V, _ = qr(randn(rng, N, N))
-    end
+    U, _ = qr(randn(rng, type, M, M))
+    V, _ = qr(randn(rng, type, N, N))
 
     # Step 3: Build A = U * Σ * V'
     Σ = Diagonal(σ)
@@ -95,33 +88,26 @@ function matrix_generation(type, M, N; dist=:uniform, mode=:decay,
     return A
 end
 
-
-#using Aqua
-#@testset "Project quality" begin
-#    Aqua.test_all(NextLA, ambiguities=false)
-#end
-
-# Existing tests
 include("NextLAMatrix.jl")
 include("lu.jl")
-#include("unified_rectrxm.jl")
-#include("trsm.jl")
-#include("lauum.jl")
+include("unified_rectrxm.jl")
+include("trsm.jl")
+include("lauum.jl")
 
-# Tests for functions from lines 89-104 in NextLA.jl
-#include("axpy.jl")
-#include("gerc.jl")
-#include("zlarfg.jl")
-#include("zlarf.jl")
-#include("zlarft.jl")
-#include("zlarfb.jl")
-#include("zgeqr2.jl")
-#include("zgeqrt.jl")
-#include("zunmqr.jl")
-#include("ztsqrt.jl")
-#include("ztsmqr.jl")
-#include("zparfb.jl")
-#include("zpamm.jl")
-#include("zpemv.jl")
-#include("zttqrt.jl")
-#include("zttmqr.jl")
+include("axpy.jl")
+include("gerc.jl")
+include("zlarfg.jl")
+include("zlarf.jl")
+#include("zlarft.jl") #TODO: implement sub-tests for zlarft  (indirect test in zgeqrt)
+#include("zlarfb.jl") #TODO: implement sub-tests for zlarfb (indirect test in zunmqr)
+include("zgeqr2.jl")
+include("zgeqrt.jl")
+include("zunmqr.jl")
+include("ztsqrt.jl")
+include("ztsmqr.jl")
+include("zparfb.jl")
+#include("zpamm.jl") #TODO: implement sub-tests for zpamm (indirect test in zparfb)
+#include("zpemv.jl") #TODO: implement sub-tests for zpemv (indirect test in zttqrt)
+include("zttqrt.jl")
+include("zttmqr.jl")
+

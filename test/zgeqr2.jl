@@ -3,13 +3,11 @@ using NextLA
 using LinearAlgebra, LinearAlgebra.LAPACK
 using Random
 
-# LAPACK-style test parameters for ZGEQR2
 
+const QR2_TYPES = [ComplexF32, ComplexF64, Float32, Float64]
+const QR2_SIZES = [(0,0), (1,1), (2,1), (1,2), (3,3), (5,3), (10,8), (20,15)]
 
-const QR_TYPES = [ComplexF32, ComplexF64, Float32, Float64]
-const QR_SIZES = [(0,0), (1,1), (2,1), (1,2), (3,3), (5,3), (10,8), (20,15)]
-
-# Generate test matrices using LAPACK-style patterns
+# Generate test matrices using patterns
 function generate_qr_test_matrix(::Type{T}, m, n, imat=1) where T
     if m == 0 || n == 0
         return zeros(T, m, n)
@@ -39,14 +37,14 @@ function generate_qr_test_matrix(::Type{T}, m, n, imat=1) where T
     end
 end
 
-@testset "ZGEQR2 LAPACK-style Tests" begin
+@testset "ZGEQR2 Tests" begin
     @testset "Unblocked QR Factorization Tests" begin
-        for (itype, T) in enumerate(QR_TYPES)
+        for (itype, T) in enumerate(QR2_TYPES)
             @testset "Type $T (itype=$itype)" begin
                 rtol = (T <: ComplexF32) || (T <: Float32) ? 1e-5 : 1e-12
                 atol = rtol
                 
-                for (isize, (m, n)) in enumerate(QR_SIZES)
+                for (isize, (m, n)) in enumerate(QR2_SIZES)
                     @testset "Size m=$m, n=$n (isize=$isize)" begin
                         k = min(m, n)
                         
@@ -115,8 +113,8 @@ end
         end
     end
     
-    @testset "LAPACK Error Handling Tests" begin
-        for T in QR_TYPES
+    @testset "Error Handling Tests" begin
+        for T in QR2_TYPES
             @testset "Type $T Error Handling" begin
                 # Test edge cases and error conditions
                 m, n = 5, 3

@@ -1,7 +1,7 @@
 function zlarfg(n, alpha, x, incx, tau)
     one = oneunit(eltype(alpha))
     zero0 = zero(eltype(alpha)) 
-
+    type = eltype(alpha)
     if n <= 0
         tau = zero0
         return alpha, tau
@@ -42,12 +42,18 @@ function zlarfg(n, alpha, x, incx, tau)
 
             #recompute 
             xnorm = norm(x)
+            if type <: Complex
+                alpha = alphr + im * alphi
+            end
             beta = -copysign(sqrt(alphr^2 + alphi^2 + xnorm^2), alphr)
         end
-
-        tau = (beta - alpha) / beta
+        if type <: Complex
+            tau = ( beta-alphr ) / beta - im * alphi / beta 
+        else
+            tau = ( beta - alphr ) / beta
+        end
         x .*= (one / (alpha-beta))
-
+        
         for j in 1:knt
             beta *= safmin
         end

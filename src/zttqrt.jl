@@ -1,40 +1,3 @@
-function lapack_ttqrt!(::Type{T}, l::Int64, A::AbstractMatrix{T}, B::AbstractMatrix{T}, Tau::AbstractMatrix{T}) where {T<:Number}
-    m, n = size(B)
-    nb = max(1, stride(Tau, 2))
-
-    lda = max(1, stride(A, 2))
-    ldb = max(1, stride(B, 2))
-    ldt = max(1, stride(Tau, 2))
-
-    work = Vector{T}(undef, nb * n)
-    info = Ref{BlasInt}(0)
-
-    if T == ComplexF64
-        ccall((@blasfunc(ztpqrt_), libblastrampoline), Cvoid,
-            (Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt},
-                Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}),
-            m, n, l, nb, A, lda, B, ldb, Tau, ldt, work, info)
-
-    elseif T == Float64
-        ccall((@blasfunc(dtpqrt_), libblastrampoline), Cvoid,
-            (Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt},
-                Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}),
-            m, n, l, nb, A, lda, B, ldb, Tau, ldt, work, info)
-
-    elseif T == ComplexF32
-        ccall((@blasfunc(ctpqrt_), libblastrampoline), Cvoid,
-            (Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt},
-                Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}),
-            m, n, l, nb, A, lda, B, ldb, Tau, ldt, work, info)
-
-    else # T = Float32
-        ccall((@blasfunc(stpqrt_), libblastrampoline), Cvoid,
-            (Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt},
-                Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}),
-            m, n, l, nb, A, lda, B, ldb, Tau, ldt, work, info)
-    end
-end
-
 function zttqrt(m, n, ib, A1, lda1, A2, lda2, T, ldt, tau, work)
     begin
         if m < 0
@@ -52,7 +15,7 @@ function zttqrt(m, n, ib, A1, lda1, A2, lda2, T, ldt, tau, work)
             return -3
         end
 
-        if lda1 < max(1, m) && m > 0
+        if lda1 < max(1, n) && n > 0
             throw(ArgumentError("illegal value of lda1"))
             return -5
         end
@@ -122,7 +85,7 @@ function zttqrt(m, n, ib, A1, lda1, A2, lda2, T, ldt, tau, work)
                 l = min(sb, max(0, mi - ii + 1))
                 ww = reshape(@view(work[1:sb*ni]), sb, ni) # k by n1 -- sb by ni
 
-                zparfb('L', 'C', 'F', 'C', ib, ni, mi, ni, sb, l, (@view A1[ii:ii+ib, ii+sb:ii+sb+ni-1]),
+                zparfb('L', 'C', 'F', 'C', ib, ni, mi, ni, sb, l, (@view A1[ii:ii+ib-1, ii+sb:ii+sb+ni-1]),
                     lda1, (@view A2[1:mi, ii+sb:ii+sb+ni-1]), lda2, (@view A2[1:mi, ii:ii+sb-1]), lda2,
                     (@view T[1:sb, ii:ii+sb-1]), ldt, ww, sb)
 
