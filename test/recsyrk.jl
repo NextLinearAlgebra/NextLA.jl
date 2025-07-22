@@ -84,14 +84,12 @@ function run_recsyrk_benchmark()
                 
                 push!(all_accuracy_results[order_name][name], -log10(max(relative_error, 1e-18)))
 
-                # NOTE: I'm using @elapsed for timing, as run_manual_benchmark was not provided.
-                # @elapsed measures time in seconds.
                 time_s = @elapsed begin
                     C_perf = SymmMixedPrec(copy(d_C_orig), 'L'; precisions=precisions)
                     recsyrk!(alpha, d_A, beta, C_perf; gemm_order=order_symbol)
-                    CUDA.synchronize() # Wait for GPU to finish
+                    CUDA.synchronize()
                 end
-                runtime_ms = time_s * 1000 # Convert to milliseconds
+                runtime_ms = time_s * 1000
                 push!(all_runtime_results[order_name][name], runtime_ms)
 
                 @printf("  %-22s | Rel. Error: %9.2e | Runtime: %8.3f ms\n", name, relative_error, runtime_ms)
@@ -100,7 +98,6 @@ function run_recsyrk_benchmark()
 
         println("\n--- Benchmarking standard CUBLAS.syrk! ---")
         
-        # --- FIX IS HERE: THIS BLOCK IS NOW FILLED IN ---
         for (name, T_prec) in Dict("CUBLAS F32" => Float32, "CUBLAS F64" => Float64)
             alpha, beta = T_prec(-1.0), T_prec(1.0)
             d_A_cublas = CuArray(randn(T_prec, n, m_fixed))
@@ -108,42 +105,65 @@ function run_recsyrk_benchmark()
             
             time_s = @elapsed begin
                 CUBLAS.syrk!('L', 'N', alpha, d_A_cublas, beta, d_C_cublas)
-                CUDA.synchronize() # Wait for GPU to finish
+                CUDA.synchronize()
             end
-            runtime_ms = time_s * 1000 # Convert to milliseconds
+            runtime_ms = time_s * 1000
             push!(cublas_runtime_results[name], runtime_ms)
             @printf("  %-22s | Runtime: %8.3f ms\n", name, runtime_ms)
         end
-        # --- END OF FIX ---
     end
+
+    # --- MODIFIED PLOTTING LOGIC STARTS HERE ---
 
     println("\n" * "="^60)
-    println("📊 Generating and saving comparison plots...")
+    println("📊 Generating and saving separate plots...")
 
-    acc_plot = plot(title="Accuracy Comparison", xlabel="Matrix Size (n)", ylabel="-log10(Relative Error)", legend=:outertopright, xaxis=:log2)
-    perf_plot = plot(title="Performance Comparison", xlabel="Matrix Size (n)", ylabel="Runtime (ms)", legend=:outertopright, xaxis=:log2, yaxis=:log10)
-    
-    for (order_name, results) in all_accuracy_results
-        for (name, acc_values) in results
+    # Loop through each algorithm order to create a separate set of plots
+    for (order_name, order_symbol) in gemm_orders
+        println("  -> Generating plots for $order_name...")
+
+        # Create a new accuracy plot for the current order
+        acc_plot = plot(
+            title="Accuracy ($order_name)",
+            xlabel="Matrix Size (n)",
+            ylabel="-log10(Relative Error)",
+            legend=:outertopright,
+            xaxis=:log2
+        )
+        
+        # Create a new performance plot for the current order
+        perf_plot = plot(
+            title="Performance ($order_name)",
+            xlabel="Matrix Size (n)",
+            ylabel="Runtime (ms)",
+            legend=:outertopright,
+            xaxis=:log2,
+            yaxis=:log10
+        )
+        
+        # Add accuracy results for THIS order to the accuracy plot
+        for (name, acc_values) in all_accuracy_results[order_name]
             if name != "Pure Float64"
-                plot!(acc_plot, n_values, acc_values, label="$order_name: $name", marker=:auto)
+                plot!(acc_plot, n_values, acc_values, label=name, marker=:auto)
             end
         end
-    end
-    savefig(acc_plot, "recsyrk_accuracy_comparison.png")
-    
-    for (order_name, results) in all_runtime_results
-        for (name, runtimes) in results
-            plot!(perf_plot, n_values, runtimes, label="$order_name: $name", marker=:auto)
+        
+        # Add runtime results for THIS order to the performance plot
+        for (name, runtimes) in all_runtime_results[order_name]
+            plot!(perf_plot, n_values, runtimes, label=name, marker=:auto)
         end
+        
+        # Add the CUBLAS baselines to EACH performance plot for comparison
+        for (name, runtimes) in cublas_runtime_results
+            plot!(perf_plot, n_values, runtimes, label=name, marker=:auto, linestyle=:dash, linewidth=2)
+        end
+        
+        # Save the plots with unique filenames
+        savefig(acc_plot, "recsyrk_accuracy_$(order_symbol).png")
+        savefig(perf_plot, "recsyrk_runtime_$(order_symbol).png")
     end
-    
-    for (name, runtimes) in cublas_runtime_results
-        plot!(perf_plot, n_values, runtimes, label=name, marker=:auto, linestyle=:dash, linewidth=2)
-    end
-    savefig(perf_plot, "recsyrk_runtime_comparison.png")
 
-    println("✅ Benchmark complete. Comparison plots saved to disk.")
+    println("✅ Benchmark complete. Separate plots saved to disk.")
     println("="^60)
 end
 
