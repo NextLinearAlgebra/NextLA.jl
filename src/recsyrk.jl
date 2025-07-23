@@ -1,13 +1,15 @@
 function GEMM_cublas!(C, A, B, alpha, beta)
-    TC = eltype(C)
+    TC = eltype(C) 
+    
+    A_converted = (eltype(A) == TC) ? A : TC.(A)
+    B_converted = (eltype(B) == TC) ? B : TC.(B)
 
     if TC == Float16
-        CUBLAS.gemmEx!('N', 'T', alpha, Float16.(A), Float16.(B), beta, C)
+        CUBLAS.gemmEx!('N', 'T', alpha, A_converted, B_converted, beta, C)
     else
-        CUBLAS.gemm!('N', 'T', alpha, TC.(A), TC.(B), beta, C)
+        CUBLAS.gemm!('N', 'T', alpha, A_converted, B_converted, beta, C)
     end
 end
-
 # recurisve syrk, no mixed prec, with C = alpha * A * A^T + beta * C
 function recsyrk!(
     alpha::Number, A::AbstractMatrix, beta::Number, C::AbstractMatrix, 
@@ -16,10 +18,11 @@ function recsyrk!(
     n = size(C, 1)
     if n <= threshold
         T_C = eltype(C)
+        A_converted = (eltype(A) == T_C) ? A : T_C.(A)
         if T_C == Float16
-            CUBLAS.gemmEx!('N', 'T', alpha, Float16.(A), Float16.(A), beta, C)
+            CUBLAS.gemmEx!('N', 'T', alpha, A_converted, A_converted, beta, C)
         else
-            CUBLAS.syrk!('L', 'N', alpha, T_C.(A), beta, C)
+            CUBLAS.syrk!('L', 'N', alpha, A_converted, beta, C)
         end
         return
     end
@@ -35,7 +38,6 @@ function recsyrk!(
     C22 = @view C[n1+1:end, n1+1:end]
 
     GEMM_cublas!(C21, A2, A1, alpha, beta)
-    CUBLAS.gemm!('N', 'T', alpha, A2, A1, beta, C21)
     recsyrk!(alpha, A1, beta, C11, threshold)
     recsyrk!(alpha, A2, beta, C22, threshold)
 end
