@@ -45,23 +45,7 @@ end
 
 function potrf_recursive!(A:: SymmMixedPrec)
     if A.BaseCase !== nothing
-        if eltype(A.BaseCase) == Float16
-            A_f32 = Float32.(A.BaseCase)
-
-            if A.base_scale !== nothing
-                A_f32 .*= A.base_scale
-            end
-
-            CUSOLVER.potrf!('L', A_f32)
-
-            if A.base_scale !== nothing
-                A_f32 ./= A.base_scale
-            end
-            
-            A.BaseCase .= Float16.(clamp.(A_f32, floatmin(Float16), floatmax(Float16)))
-        else
-            CUSOLVER.potrf!('L', A.BaseCase)
-        end
+        CUSOLVER.potrf!('L', A.BaseCase)
         return
     end
 

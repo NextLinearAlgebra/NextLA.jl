@@ -71,10 +71,14 @@ function run_recsyrk_benchmark()
             C_for_custom = copy(d_C_orig)
             C_custom_result = if name in ["Pure F16", "Pure F32", "Pure F64"]
                 # For pure precision tests, call the standard recursive function
+                alpha = T_out(alpha)
+                beta = T_out(beta)
                 recsyrk!(alpha, d_A, beta, C_for_custom, 256)
                 C_for_custom
             else
                 # For mixed precision, use the SymmMixedPrec structure
+                alpha = T_out(alpha)
+                beta = T_out(beta)
                 C_mixed = SymmMixedPrec(C_for_custom, 'L'; precisions=precisions)
                 recsyrk!(alpha, d_A, beta, C_mixed)
                 reconstruct_matrix(C_mixed)
@@ -89,6 +93,8 @@ function run_recsyrk_benchmark()
             # Performance test
             backend = KernelAbstractions.get_backend(d_A)
             time_ns = run_manual_benchmark(backend) do
+                alpha = T_out(alpha)
+                beta = T_out(beta)
                 if name in ["Pure F16", "Pure F32", "Pure F64"]
                     C_perf = copy(d_C_orig)
                     recsyrk!(alpha, d_A, beta, C_perf, 256)
