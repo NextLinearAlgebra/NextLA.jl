@@ -25,9 +25,10 @@ end
 
 
 function run_recsyrk_benchmark()
-    n_values = [256, 512, 1024, 2048, 4096, 8192, 16384]
-    m_fixed = 128
+    # Define the matrix sizes to test
+    n_values = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
 
+    # Define the different mixed-precision scenarios
     test_scenarios = Dict(
         "Pure F16"             => [Float16, Float16, Float16],
         "Pure F32"             => [Float32, Float32, Float32],
@@ -39,131 +40,111 @@ function run_recsyrk_benchmark()
         "[F16, F32, F32]"      => [Float16, Float32, Float32]
     )
     
-    gemm_orders = Dict(
-        "GEMM First"   => :first,
-        "GEMM Middle"  => :middle,
-        "GEMM End"     => :end
-    )
-
-    all_accuracy_results = Dict(order_name => Dict(name => Float64[] for name in keys(test_scenarios)) for order_name in keys(gemm_orders))
-    all_runtime_results = Dict(order_name => Dict(name => Float64[] for name in keys(test_scenarios)) for order_name in keys(gemm_orders))
+    # Simplified dictionaries to store results
+    accuracy_results = Dict(name => Float64[] for name in keys(test_scenarios))
+    runtime_results = Dict(name => Float64[] for name in keys(test_scenarios))
     
     cublas_runtime_results = Dict(
         "CUBLAS F32" => Float64[],
         "CUBLAS F64" => Float64[]
     )
 
-    println("🚀 Starting Comparative recsyrk! Benchmark...")
+    println("🚀 Starting recsyrk! Benchmark...")
 
     for n in n_values
         println("\n" * "-"^50)
-        println("Benchmarking C(n x n)=$n, A(n x m)=$m_fixed")
+        println("Benchmarking C(n x n)=$n, A(n x n)=$n")
         
-        for (order_name, order_symbol) in gemm_orders
-            println("\n--- Algorithm Order: $order_name ---")
-            
-            for (name, precisions) in test_scenarios
-                T_out = precisions[end]
-                alpha, beta = -1.0, 1.0
-    
-                d_A = CuArray(randn(T_out, n, m_fixed) .* 0.1f0)
-                d_C_orig = CuArray(zeros(T_out, n, n))
-    
-                d_A_fp64 = CuArray{Float64}(d_A)
-                d_C_ground_truth = CuArray(zeros(Float64, n, n))
-                CUBLAS.syrk!('L', 'N', Float64(alpha), d_A_fp64, Float64(beta), d_C_ground_truth)
+        for (name, precisions) in test_scenarios
+            T_out = precisions[end]
+            alpha, beta = -1.0, 1.0
 
-                C_for_custom = copy(d_C_orig)
+            d_A = CuArray(randn(T_out, n, n) .* 0.1f0)
+            d_C_orig = CuArray(zeros(T_out, n, n))
+
+            # Ground truth calculation
+            d_A_fp64 = CuArray{Float64}(d_A)
+            d_C_ground_truth = CuArray(zeros(Float64, n, n))
+            CUBLAS.syrk!('L', 'N', Float64(alpha), d_A_fp64, Float64(beta), d_C_ground_truth)
+
+            # --- Simplified Logic: Call the correct function based on the test case ---
+            C_for_custom = copy(d_C_orig)
+            C_custom_result = if name in ["Pure F16", "Pure F32", "Pure F64"]
+                # For pure precision tests, call the standard recursive function
+                recsyrk!(alpha, d_A, beta, C_for_custom; threshold=256)
+                C_for_custom
+            else
+                # For mixed precision, use the SymmMixedPrec structure
                 C_mixed = SymmMixedPrec(C_for_custom, 'L'; precisions=precisions)
-                recsyrk!(alpha, d_A, beta, C_mixed; gemm_order=order_symbol)
-                C_custom_result = reconstruct_matrix(C_mixed)
-
-                error_norm = norm(tril(CuArray{Float64}(C_custom_result)) - tril(d_C_ground_truth))
-                solution_norm = norm(tril(d_C_ground_truth))
-                relative_error = max(error_norm / solution_norm, 1e-20)
-                
-                push!(all_accuracy_results[order_name][name], -log10(max(relative_error, 1e-18)))
-
-                time_s = @elapsed begin
-                    C_perf = SymmMixedPrec(copy(d_C_orig), 'L'; precisions=precisions)
-                    recsyrk!(alpha, d_A, beta, C_perf; gemm_order=order_symbol)
-                    CUDA.synchronize()
-                end
-                runtime_ms = time_s * 1000
-                push!(all_runtime_results[order_name][name], runtime_ms)
-
-                @printf("  %-22s | Rel. Error: %9.2e | Runtime: %8.3f ms\n", name, relative_error, runtime_ms)
+                recsyrk!(alpha, d_A, beta, C_mixed)
+                reconstruct_matrix(C_mixed)
             end
+
+            error_norm = norm(tril(CuArray{Float64}(C_custom_result)) - tril(d_C_ground_truth))
+            solution_norm = norm(tril(d_C_ground_truth))
+            relative_error = max(error_norm / solution_norm, 1e-20)
+            
+            push!(accuracy_results[name], -log10(max(relative_error, 1e-18)))
+
+            # Performance test
+            backend = KernelAbstractions.get_backend(d_A)
+            time_ns = run_manual_benchmark(backend) do
+                if name in ["Pure F16", "Pure F32", "Pure F64"]
+                    C_perf = copy(d_C_orig)
+                    recsyrk!(alpha, d_A, beta, C_perf; threshold=256)
+                else
+                    C_perf_mixed = SymmMixedPrec(copy(d_C_orig), 'L'; precisions=precisions)
+                    recsyrk!(alpha, d_A, beta, C_perf_mixed)
+                end
+            end
+            runtime_ms = time_ns / 1_000_000
+            push!(runtime_results[name], runtime_ms)
+
+            @printf("  %-22s | Rel. Error: %9.2e | Runtime: %8.3f ms\n", name, relative_error, runtime_ms)
         end
 
         println("\n--- Benchmarking standard CUBLAS.syrk! ---")
         
         for (name, T_prec) in Dict("CUBLAS F32" => Float32, "CUBLAS F64" => Float64)
             alpha, beta = T_prec(-1.0), T_prec(1.0)
-            d_A_cublas = CuArray(randn(T_prec, n, m_fixed))
+            d_A_cublas = CuArray(randn(T_prec, n, n))
             d_C_cublas = CuArray(zeros(T_prec, n, n))
             
-            time_s = @elapsed begin
+            backend = KernelAbstractions.get_backend(d_A_cublas)
+            time_ns = run_manual_benchmark(backend) do
                 CUBLAS.syrk!('L', 'N', alpha, d_A_cublas, beta, d_C_cublas)
-                CUDA.synchronize()
             end
-            runtime_ms = time_s * 1000
+            runtime_ms = time_ns / 1_000_000
             push!(cublas_runtime_results[name], runtime_ms)
             @printf("  %-22s | Runtime: %8.3f ms\n", name, runtime_ms)
         end
     end
 
-    # --- MODIFIED PLOTTING LOGIC STARTS HERE ---
-
+    # --- Simplified Plotting Logic ---
     println("\n" * "="^60)
-    println("📊 Generating and saving separate plots...")
+    println("📊 Generating and saving plots...")
 
-    # Loop through each algorithm order to create a separate set of plots
-    for (order_name, order_symbol) in gemm_orders
-        println("  -> Generating plots for $order_name...")
-
-        # Create a new accuracy plot for the current order
-        acc_plot = plot(
-            title="Accuracy ($order_name)",
-            xlabel="Matrix Size (n)",
-            ylabel="-log10(Relative Error)",
-            legend=:outertopright,
-            xaxis=:log2
-        )
-        
-        # Create a new performance plot for the current order
-        perf_plot = plot(
-            title="Performance ($order_name)",
-            xlabel="Matrix Size (n)",
-            ylabel="Runtime (ms)",
-            legend=:outertopright,
-            xaxis=:log2,
-            yaxis=:log10
-        )
-        
-        # Add accuracy results for THIS order to the accuracy plot
-        for (name, acc_values) in all_accuracy_results[order_name]
-            if name != "Pure Float64"
-                plot!(acc_plot, n_values, acc_values, label=name, marker=:auto)
-            end
+    acc_plot = plot(title="Accuracy vs. Matrix Size", xlabel="Matrix Size (n)", ylabel="-log10(Relative Error)", legend=:outertopright, xaxis=:log2)
+    perf_plot = plot(title="Performance vs. Matrix Size", xlabel="Matrix Size (n)", ylabel="Runtime (ms)", legend=:outertopright, xaxis=:log2, yaxis=:log10)
+    
+    for (name, acc_values) in accuracy_results
+        if name != "Pure Float64"
+            plot!(acc_plot, n_values, acc_values, label=name, marker=:auto)
         end
-        
-        # Add runtime results for THIS order to the performance plot
-        for (name, runtimes) in all_runtime_results[order_name]
-            plot!(perf_plot, n_values, runtimes, label=name, marker=:auto)
-        end
-        
-        # Add the CUBLAS baselines to EACH performance plot for comparison
-        for (name, runtimes) in cublas_runtime_results
-            plot!(perf_plot, n_values, runtimes, label=name, marker=:auto, linestyle=:dash, linewidth=2)
-        end
-        
-        # Save the plots with unique filenames
-        savefig(acc_plot, "recsyrk_accuracy_$(order_symbol).png")
-        savefig(perf_plot, "recsyrk_runtime_$(order_symbol).png")
     end
+    
+    for (name, runtimes) in runtime_results
+        plot!(perf_plot, n_values, runtimes, label=name, marker=:auto)
+    end
+    
+    for (name, runtimes) in cublas_runtime_results
+        plot!(perf_plot, n_values, runtimes, label=name, marker=:auto, linestyle=:dash, linewidth=2)
+    end
+    
+    savefig(acc_plot, "recsyrk_accuracy.png")
+    savefig(perf_plot, "recsyrk_performance.png")
 
-    println("✅ Benchmark complete. Separate plots saved to disk.")
+    println("✅ Benchmark complete. Plots saved to disk.")
     println("="^60)
 end
 
