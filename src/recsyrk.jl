@@ -12,8 +12,7 @@ end
 
 # recurisve syrk with C = alpha * A * A^T + beta * C
 function recsyrk!(
-    alpha::Number, A::AbstractMatrix, beta::Number, C::SymmMixedPrec;
-    gemm_order::Symbol=:first # Default to GEMM First
+    alpha::Number, A::AbstractMatrix, beta::Number, C::SymmMixedPrec
 )
     # Base case remains unchanged
     if C.BaseCase !== nothing
@@ -30,20 +29,8 @@ function recsyrk!(
     A1 = @view A[1:n1, :]
     A2 = @view A[n1+1:end, :]
 
-    # Use the parameter to determine the order of operations
-    if gemm_order == :first
-        GEMM_cublas!(C.OffDiag, A2, A1, alpha, beta)
-        recsyrk!(alpha, A1, beta, C.A11; gemm_order=gemm_order)
-        recsyrk!(alpha, A2, beta, C.A22; gemm_order=gemm_order)
-    elseif gemm_order == :middle
-        recsyrk!(alpha, A1, beta, C.A11; gemm_order=gemm_order)
-        GEMM_cublas!(C.OffDiag, A2, A1, alpha, beta)
-        recsyrk!(alpha, A2, beta, C.A22; gemm_order=gemm_order)
-    elseif gemm_order == :end
-        recsyrk!(alpha, A1, beta, C.A11; gemm_order=gemm_order)
-        recsyrk!(alpha, A2, beta, C.A22; gemm_order=gemm_order)
-        GEMM_cublas!(C.OffDiag, A2, A1, alpha, beta)
-    else
-        error("Invalid gemm_order: Must be :first, :middle, or :end")
-    end
+    GEMM_cublas!(C.OffDiag, A2, A1, alpha, beta)
+    recsyrk!(alpha, A1, beta, C.A11)
+    recsyrk!(alpha, A2, beta, C.A22)
+
 end

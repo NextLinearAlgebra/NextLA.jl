@@ -43,12 +43,22 @@ function potrf_recursive!(A, block_size)
 end
 
 
-function potrf_recursive!(A:: SymmMixedPrec, block_size)
+function potrf_recursive!(A:: SymmMixedPrec)
     if A.BaseCase !== nothing
-        if eltype(A.BaseCase) == Float16 && A.base_scale !== nothing
-            A_f32 = Float32.(A.BaseCase) .* A.base_scale
+        if eltype(A.BaseCase) == Float16
+            A_f32 = Float32.(A.BaseCase)
+
+            if A.base_scale !== nothing
+                A_f32 .*= A.base_scale
+            end
+
             CUSOLVER.potrf!('L', A_f32)
-            A.BaseCase .= Float16.(clamp.(A_f32 ./ A.base_scale, floatmin(eltype(A.BaseCase)), floatmax(eltype(A.BaseCase))))
+
+            if A.base_scale !== nothing
+                A_f32 ./= A.base_scale
+            end
+            
+            A.BaseCase .= Float16.(clamp.(A_f32, floatmin(Float16), floatmax(Float16)))
         else
             CUSOLVER.potrf!('L', A.BaseCase)
         end
@@ -56,7 +66,7 @@ function potrf_recursive!(A:: SymmMixedPrec, block_size)
     end
 
     # Recursive POTRF on A11
-    potrf_recursive!(A.A11, block_size) # will this be in place or return a tri mixed prec or an abstract matrix?
+    potrf_recursive!(A.A11) 
 
     # TRSM: A21 = A21 * inv(L11ᵀ)
     # L11 = Matrix(A11)
@@ -73,27 +83,5 @@ function potrf_recursive!(A:: SymmMixedPrec, block_size)
     # A22 .= A22_mat
 
     # Recursive POTRF on trailing block
-    potrf_recursive!(A.A22, block_size)
+    potrf_recursive!(A.A22)
 end
-
-
-function test_potrf_recursive(n, block_size)
-    A = randn(n, n)
-    A = CuArray(A * A' + n * I)
-    A_orig = copy(A)
-
-    potrf_recursive!(A, block_size)
-
-    L = tril(A)
-    A_reconstructed = L * L'
-    residual = norm(A_orig - A_reconstructed)
-    rel_error = residual / norm(A_orig)
-
-    println("Matrix size: $n × $n")
-    println("Block cutoff size: $block_size")
-    println("Relative error: $rel_error")
-end
-
-
-
-
