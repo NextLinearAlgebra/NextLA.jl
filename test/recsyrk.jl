@@ -71,7 +71,7 @@ function run_recsyrk_benchmark()
             C_for_custom = copy(d_C_orig)
             C_custom_result = if name in ["Pure F16", "Pure F32", "Pure F64"]
                 # For pure precision tests, call the standard recursive function
-                recsyrk!(alpha, d_A, beta, C_for_custom; threshold=256)
+                recsyrk!(alpha, d_A, beta, C_for_custom, 256)
                 C_for_custom
             else
                 # For mixed precision, use the SymmMixedPrec structure
