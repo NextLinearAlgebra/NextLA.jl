@@ -91,7 +91,7 @@ function run_recsyrk_benchmark()
             time_ns = run_manual_benchmark(backend) do
                 if name in ["Pure F16", "Pure F32", "Pure F64"]
                     C_perf = copy(d_C_orig)
-                    recsyrk!(alpha, d_A, beta, C_perf; threshold=256)
+                    recsyrk!(alpha, d_A, beta, C_perf, 256)
                 else
                     C_perf_mixed = SymmMixedPrec(copy(d_C_orig), 'L'; precisions=precisions)
                     recsyrk!(alpha, d_A, beta, C_perf_mixed)
