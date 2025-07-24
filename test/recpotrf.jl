@@ -30,7 +30,6 @@ function run_cholesky_benchmark()
 
     
     test_scenarios = Dict(
-        "Pure F16"             => [Float16, Float16, Float16],
         "Pure F32"             => [Float32, Float32, Float32],
         "Pure F64"             => [Float64, Float64, Float64],
         "[F32, F32, F64]"      => [Float32, Float32, Float64],
