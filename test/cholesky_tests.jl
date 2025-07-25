@@ -12,10 +12,10 @@ function run_potrf_component_benchmark()
     # block_size = 
 
     test_scenarios = Dict(
-        "A (No Nesting)"   => potrf_recursive_A!,
-        "B (Nested TRSM)"  => potrf_recursive_B!,
-        "C (Nested SYRK)"  => potrf_recursive_C!,
-        "D (Fully Nested)" => potrf_recursive_D!,
+        "A both trsm and trmm"   => potrf_recursive_A!,
+        "B only syrk"  => potrf_recursive_B!,
+        "C only trsm"  => potrf_recursive_C!,
+        "D neither syrk or trsm" => potrf_recursive_D!,
     )
 
     accuracy_results = Dict(name => Float64[] for name in keys(test_scenarios))
@@ -23,7 +23,7 @@ function run_potrf_component_benchmark()
     cusolver_runtime_results = Float64[]
 
     for n in n_values
-        block_size = n / 4
+        block_size = 4096
         @printf("\n--- Matrix Size n = %d ---\n", n)
         
         A_cpu = randn(Float64, n, n)

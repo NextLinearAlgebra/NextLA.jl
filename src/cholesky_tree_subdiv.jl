@@ -84,7 +84,7 @@ function potrf_recursive_A!(A, block_size)
 
     # Recursive split
     n1 = 2^floor(Int, log2(n)) ÷ 2  # largest power-of-2 less than n
-    n2 = n - n1
+
 
     # View subblocks
     A11 = @view A[1:n1, 1:n1]
@@ -137,7 +137,7 @@ function potrf_recursive_B!(A, block_size)
     # TRSM: A21 = A21 * inv(L11ᵀ)
     # L11 = Matrix(A11)
     # A21_mat = Matrix(A21)
-    unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A11, A21)
+    # unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A11, A21)
     # CUBLAS.trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
     # A21 .= A21_mat
 
@@ -184,7 +184,7 @@ function potrf_recursive_C!(A, block_size)
     # SYRK: A22 -= A21 * A21ᵀ
     # A22_mat = Matrix(A22)
     # CUBLAS.gemm!('N', 'T', -1.0, A21, A21, 1.0, A22) #recursive syrk with mixed precision
-    recsyrk!(-1.0, A21, 1.0, A22, 256) 
+    # recsyrk!(-1.0, A21, 1.0, A22, 256) 
     # A22 .= A22_mat
 
     # Recursive POTRF on trailing block
@@ -218,13 +218,13 @@ function potrf_recursive_D!(A, block_size)
     # TRSM: A21 = A21 * inv(L11ᵀ)
     # L11 = Matrix(A11)
     # A21_mat = Matrix(A21)
-    unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A11, A21)
+    # unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A11, A21)
     # A21 .= A21_mat
 
     # SYRK: A22 -= A21 * A21ᵀ
     # A22_mat = Matrix(A22)
     # CUBLAS.gemm!('N', 'T', -1.0, A21, A21, 1.0, A22) #recursive syrk with mixed precision
-    recsyrk!(-1.0, A21, 1.0, A22, 256) 
+    # recsyrk!(-1.0, A21, 1.0, A22, 256) 
     # A22 .= A22_mat
 
     # Recursive POTRF on trailing block
