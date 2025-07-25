@@ -9,7 +9,7 @@ include("benchmark.jl")
 
 function run_potrf_component_benchmark()
     n_values = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
-    block_size = 256
+    block_size = 2048
 
     test_scenarios = Dict(
         "A (No Nesting)"   => potrf_recursive_A!,
