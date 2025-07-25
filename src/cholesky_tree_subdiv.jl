@@ -137,7 +137,7 @@ function potrf_recursive_B!(A, block_size)
     # TRSM: A21 = A21 * inv(L11ᵀ)
     # L11 = Matrix(A11)
     # A21_mat = Matrix(A21)
-    unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A11, A21)
+    unified_rectrxm!('R', 'L', 'N', 1.0, 'S', A11, A21)
     # CUBLAS.trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
     # A21 .= A21_mat
 
@@ -218,7 +218,7 @@ function potrf_recursive_D!(A, block_size)
     # TRSM: A21 = A21 * inv(L11ᵀ)
     # L11 = Matrix(A11)
     # A21_mat = Matrix(A21)
-    unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A11, A21)
+    unified_rectrxm!('R', 'L', 'N', 1.0, 'S', A11, A21)
     # A21 .= A21_mat
 
     # SYRK: A22 -= A21 * A21ᵀ
