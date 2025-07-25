@@ -351,7 +351,7 @@ function unified_rectrxm!(
         alpha::Number, 
         func::Char, 
         A::TriMixedPrec, 
-        B::AbstractMatrix
+        B::StridedMatrix
     )
     threshold = 16
 
@@ -368,17 +368,17 @@ function unified_rectrxm!(
         threshold = 256
         B .= alpha .* B
     end
-    unified_rec(func, side, uplo, A, B, threshold)
+    unified_rec_mixed(func, side, uplo, A, B, threshold)
     if func == 'M'
         B .= alpha .* B
     end
     return B
 end
 
-function unified_rec(
+function unified_rec_mixed(
     func::Char, side::Char, uplo::Char,
     A::TriMixedPrec{T_Base},
-    B::AbstractMatrix,
+    B::StridedMatrix,
     threshold::Int=256
 ) where {T_Base}
     if A.BaseCase !== nothing
@@ -430,7 +430,7 @@ function unified_rec(
         (side == 'L' && uplo == 'U' && func == 'M') || 
         (side == 'R' && uplo == 'L' && func == 'M')
         
-            unified_rec(func, side, uplo, A.A11, B1, threshold)
+            unified_rec_mixed(func, side, uplo, A.A11, B1, threshold)
 
             A_type = eltype(OffDiag_block)
             A_scale = A.offDiag_scale !== nothing ? A.offDiag_scale : 1.0f0
@@ -514,9 +514,9 @@ function unified_rec(
                 end
             end
 
-            unified_rec(func, side, uplo, A.A22, B2, threshold)
+            unified_rec_mixed(func, side, uplo, A.A22, B2, threshold)
         else 
-            unified_rec(func, side, uplo, A.A22, B2, threshold)
+            unified_rec_mixed(func, side, uplo, A.A22, B2, threshold)
 
             A_type = eltype(OffDiag_block)
             A_scale = A.offDiag_scale !== nothing ? A.offDiag_scale : 1.0f0
@@ -600,7 +600,7 @@ function unified_rec(
                 end
             end
             
-            unified_rec(func, side, uplo, A.A11, B1, threshold)
+            unified_rec_mixed(func, side, uplo, A.A11, B1, threshold)
         end
 
         return B

@@ -26,12 +26,11 @@ end
 
 
 function run_cholesky_benchmark()
-    n_values = [256, 512, 1024, 2048, 4096, 8192, 16384] 
-
+    n_values = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768] 
     
     test_scenarios = Dict(
-        "Pure F32"             => [Float32, Float32, Float32],
-        "Pure F64"             => [Float64, Float64, Float64],
+        "Pure F32"             => [Float32],
+        "Pure F64"             => [Float64],
         "[F32, F32, F64]"      => [Float32, Float32, Float64],
         "[F32, F32, F64, F64]" => [Float32, Float32, Float64, Float64],
         "[F64, F64, F32, F32]" => [Float64, Float64, Float32, Float32],
@@ -39,66 +38,84 @@ function run_cholesky_benchmark()
         "[F16, F32, F32]"      => [Float16, Float32, Float32]
     )
     
-    
     accuracy_results = Dict(name => Float64[] for name in keys(test_scenarios))
     runtime_results = Dict(name => Float64[] for name in keys(test_scenarios))
-    
-    
     cusolver_runtime_results = Dict(
         "CUSOLVER F32" => Float64[],
         "CUSOLVER F64" => Float64[]
     )
 
-    println("🚀 Starting Mixed-Precision Cholesky Benchmark...")
+    println("🚀 Starting Cholesky Benchmark...")
 
     for n in n_values
         println("\n" * "-"^50)
         println("Benchmarking Matrix Size (n x n) = $n x $n")
         
+        A_cpu = randn(Float64, n, n)
+        A_spd_fp64 = CuArray(A_cpu * A_cpu' + n * I)
+        
+        A_ground_truth = copy(A_spd_fp64)
+        CUSOLVER.potrf!('L', A_ground_truth)
+        L_truth = tril(A_ground_truth)
+        
+        backend = KernelAbstractions.get_backend(A_spd_fp64)
+
         for (name, precisions) in test_scenarios
-            A_cpu = randn(Float64, n, n)
-            A_spd_fp64 = CuArray(A_cpu * A_cpu' + n * I)
-            
-            A_ground_truth = copy(A_spd_fp64)
-            CUSOLVER.potrf!('L', A_ground_truth)
-            L_truth = tril(A_ground_truth)
+            local L_result, runtime_ms 
 
-            A_mixed_input = copy(A_spd_fp64)
-            A_mixed = SymmMixedPrec(A_mixed_input, 'L'; precisions=precisions)
-            potrf_recursive!(A_mixed)
-            A_reconstructed = reconstruct_matrix(A_mixed)
-            L_mixed = tril(A_reconstructed)
+            if name == "Pure F32" || name == "Pure F64"
+                T_prec = precisions[1] 
+                
+                A_pure_input = T_prec.(A_spd_fp64)
+                potrf_recursive_D!(A_pure_input, 256) 
+                L_result = tril(A_pure_input)
 
-            error_norm = norm(L_mixed - L_truth)
+                A_perf_template = T_prec.(A_spd_fp64) 
+                time_ns = run_manual_benchmark(backend) do
+                    A_to_factor = copy(A_perf_template) 
+                    potrf_recursive_D!(A_to_factor, 256)
+                end
+                runtime_ms = time_ns / 1_000_000
+            else
+                
+                A_mixed_input = copy(A_spd_fp64)
+                A_mixed = SymmMixedPrec(A_mixed_input, 'L'; precisions=precisions)
+                potrf_recursive!(A_mixed)
+                A_reconstructed = reconstruct_matrix(A_mixed)
+                L_result = tril(A_reconstructed)
+
+                A_perf_template = copy(A_spd_fp64)
+                time_ns = run_manual_benchmark(backend) do
+                    A_to_factor_input = copy(A_perf_template)
+                    A_perf_mixed = SymmMixedPrec(A_to_factor_input, 'L'; precisions=precisions)
+                    potrf_recursive!(A_perf_mixed) 
+                end
+                runtime_ms = time_ns / 1_000_000
+            end
+
+            error_norm = norm(L_result - L_truth)
             solution_norm = norm(L_truth)
             relative_error = max(error_norm / solution_norm, 1e-20)
+            
             push!(accuracy_results[name], -log10(max(relative_error, 1e-18)))
-
-            backend = KernelAbstractions.get_backend(A_spd_fp64)
-            time_ns = run_manual_benchmark(backend) do
-                A_perf_input = copy(A_spd_fp64)
-                A_perf_mixed = SymmMixedPrec(A_perf_input, 'L'; precisions=precisions)
-                potrf_recursive!(A_perf_mixed)
-            end
-            runtime_ms = time_ns / 1_000_000
             push!(runtime_results[name], runtime_ms)
 
-            @printf("  %-22s | Rel. Error: %9.2e | Runtime: %8.3f ms\n", name, relative_error, runtime_ms)
+            @printf("   %-22s | Rel. Error: %9.2e | Runtime: %8.3f ms\n", name, relative_error, runtime_ms)
         end
 
+        
         println("\n--- Benchmarking standard CUSOLVER.potrf! ---")
         for (name, T_prec) in Dict("CUSOLVER F32" => Float32, "CUSOLVER F64" => Float64)
             A_cpu_base = randn(T_prec, n, n)
             A_spd_base = CuArray(A_cpu_base * A_cpu_base' + n * I)
             
-            backend = KernelAbstractions.get_backend(A_spd_base)
             time_ns = run_manual_benchmark(backend) do
                 A_to_factor = copy(A_spd_base)
                 CUSOLVER.potrf!('L', A_to_factor)
             end
             runtime_ms = time_ns / 1_000_000
             push!(cusolver_runtime_results[name], runtime_ms)
-            @printf("  %-22s | Runtime: %8.3f ms\n", name, runtime_ms)
+            @printf("   %-22s | Runtime: %8.3f ms\n", name, runtime_ms)
         end
     end
     
