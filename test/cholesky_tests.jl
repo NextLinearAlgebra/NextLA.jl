@@ -15,7 +15,7 @@ function run_potrf_component_benchmark()
         "A both rectrsm and rectrmm"   => potrf_recursive_A!,
         "B only recsyrk"  => potrf_recursive_B!,
         "C only rectrsm"  => potrf_recursive_C!,
-        "D neither recsyrk or rectrsm" => potrf_recursive_D!,
+        "D neither recsyrk/rectrsm" => potrf_recursive_D!,
     )
 
     accuracy_results = Dict(name => Float64[] for name in keys(test_scenarios))
@@ -23,7 +23,7 @@ function run_potrf_component_benchmark()
     cusolver_runtime_results = Float64[]
 
     for n in n_values
-        block_size = 4096
+        i = 3
         @printf("\n--- Matrix Size n = %d ---\n", n)
         
         A_cpu = randn(Float64, n, n)
@@ -38,13 +38,13 @@ function run_potrf_component_benchmark()
             backend = KernelAbstractions.get_backend(A_spd_fp64_pristine)
             time_ns = run_manual_benchmark(backend) do
                 A_to_factor_inner = copy(A_spd_fp64_pristine)
-                potrf_func!(A_to_factor_inner, block_size)
+                potrf_func!(A_to_factor_inner, i)
             end
             runtime_ms = time_ns / 1_000_000
             push!(runtime_results[name], runtime_ms)
 
             A_final_result = copy(A_spd_fp64_pristine)
-            potrf_func!(A_final_result, block_size)
+            potrf_func!(A_final_result, i)
             
             L_result = tril(A_final_result) 
             error_norm = norm(L_result - L_truth)
