@@ -8,7 +8,7 @@ using KernelAbstractions
 include("benchmark.jl")
 
 function run_potrf_component_benchmark()
-    n_values = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
+    n_values = [4096, 8192, 16384, 32768, 65536] #256, 512, 1024, 2048, 
     # block_size = 
 
     test_scenarios = Dict(
