@@ -136,9 +136,8 @@ end
 
 
 # unified rec for transposed matrices
-# unified rec for transposed matrices
 function unified_rec(func::Char, side::Char, uplo::Char,
-    A::Transpose{T, M},  # This will be called for any Transpose object
+    A::Transpose{T, M},
     B::StridedMatrix{T}, threshold::Int=256;
     A_scale::Float32=1.0f0
 ) where {T <: AbstractFloat, M <: AbstractMatrix{T}}
@@ -147,7 +146,12 @@ function unified_rec(func::Char, side::Char, uplo::Char,
     n = size(A, 1)
 
     if n <= threshold
-        return unified_rec(func, side, uplo, copy(A), B, threshold; A_scale=A_scale)
+        if func == 'S'
+            CUBLAS.trsm!(side, uplo, 'N', 'N', one(T), copy(A), B)
+        else 
+            CUBLAS.trmm!(side, uplo, 'N', 'N', one(T), copy(A), B)
+        end
+        return B
     end
 
     mid = isinteger(log2(n)) ? div(n, 2) : 2^floor(Int, log2(n))
@@ -155,12 +159,12 @@ function unified_rec(func::Char, side::Char, uplo::Char,
     A11 = transpose(view(A_orig, 1:mid,     1:mid))
     A22 = transpose(view(A_orig, mid+1:n,   mid+1:n))
     A21 = transpose(view(A_orig, 1:mid,     mid+1:n)) 
-    A12 = transpose(view(A_orig, mid+1:n,   1:mid)) 
+    A12 = transpose(view(A_orig, mid+1:n,   1:mid))  
 
     if side == 'L'
         B1 = view(B, 1:mid, :)
         B2 = view(B, mid+1:n, :)
-    else # side == 'R'
+    else 
         B1 = view(B, :, 1:mid)
         B2 = view(B, :, mid+1:n)
     end
