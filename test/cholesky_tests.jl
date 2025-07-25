@@ -9,7 +9,7 @@ include("benchmark.jl")
 
 function run_potrf_component_benchmark()
     n_values = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
-    block_size = 2048
+    # block_size = 
 
     test_scenarios = Dict(
         "A (No Nesting)"   => potrf_recursive_A!,
@@ -23,6 +23,7 @@ function run_potrf_component_benchmark()
     cusolver_runtime_results = Float64[]
 
     for n in n_values
+        block_size = n / 4
         @printf("\n--- Matrix Size n = %d ---\n", n)
         
         A_cpu = randn(Float64, n, n)
