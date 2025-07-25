@@ -127,182 +127,69 @@ function unified_rectrxm!(
         threshold = 256
         B .= alpha .* B
     end
-    unified_rec(func, side, uplo, A, n, B, threshold)
+    unified_rec(func, side, uplo, A, B, threshold)
     if func == 'M'
         B .= alpha .* B
     end
     return B
 end
 
+
+# unified rec for transposed matrices
+# unified rec for transposed matrices
 function unified_rec(func::Char, side::Char, uplo::Char,
-    A::AbstractMatrix{T}, n,
-    B::AbstractMatrix{T}, threshold::Int=256,
-    depth::Int=1, diag::Bool=false) where T <: AbstractFloat
+    A::Transpose{T, M},  # This will be called for any Transpose object
+    B::StridedMatrix{T}, threshold::Int=256;
+    A_scale::Float32=1.0f0
+) where {T <: AbstractFloat, M <: AbstractMatrix{T}}
+
+    A_orig = parent(A)
+    n = size(A, 1)
 
     if n <= threshold
-        if func == 'S'
-            if side == 'L' && uplo == 'L'
-                LeftLowerTRSM!(A, B)
-            elseif side == 'L' && uplo == 'U'
-                LeftUpperTRSM!(A, B)
-            elseif side == 'R' && uplo == 'L'
-                RightLowerTRSM!(A, B)
-            else
-                RightUpperTRSM!(A, B)   
-            end
-        else
-            if side == 'L' && uplo == 'L'
-                LeftLowerTRMM!(A, B)
-            elseif side == 'L' && uplo == 'U'
-                LeftUpperTRMM!(A, B)
-            elseif side == 'R' && uplo == 'L'
-                RightLowerTRMM!(A, B)
-            else
-                RightUpperTRMM!(A, B)
-            end
-        end 
-        return B    
+        return unified_rec(func, side, uplo, copy(A), B, threshold; A_scale=A_scale)
     end
 
-    # split point
-    if isinteger(log2(n))
-        mid = div(n, 2)
-    else
-        mid = 2 ^ floor(Int, log2(n))
-    end
+    mid = isinteger(log2(n)) ? div(n, 2) : 2^floor(Int, log2(n))
 
-    mid_remainder = n - mid
-
-    # block views
-    A11 = view(A, 1:mid,       1:mid)
-    A22 = view(A, mid+1:n,     mid+1:n)
-    A21 = view(A, mid+1:n,     1:mid)
-    A12 = view(A, 1:mid,       mid+1:n)
+    A11 = transpose(view(A_orig, 1:mid,     1:mid))
+    A22 = transpose(view(A_orig, mid+1:n,   mid+1:n))
+    A21 = transpose(view(A_orig, 1:mid,     mid+1:n)) 
+    A12 = transpose(view(A_orig, mid+1:n,   1:mid)) 
 
     if side == 'L'
-        B1 = view(B, 1:mid,     :)
-        B2 = view(B, mid+1:n,   :)
-    else
-        B1 = view(B, :,         1:mid)
-        B2 = view(B, :,         mid+1:n)
+        B1 = view(B, 1:mid, :)
+        B2 = view(B, mid+1:n, :)
+    else # side == 'R'
+        B1 = view(B, :, 1:mid)
+        B2 = view(B, :, mid+1:n)
     end
 
-    # first half
-    if (side == 'L' && uplo == 'L' && func == 'S') || 
-        (side == 'R' && uplo == 'U' && func == 'S') || 
-        (side == 'L' && uplo == 'U' && func == 'M') || 
-        (side == 'R' && uplo == 'L' && func == 'M')
+    if (side == 'L' && uplo == 'L' && func == 'S') ||
+       (side == 'R' && uplo == 'U' && func == 'S') ||
+       (side == 'L' && uplo == 'U' && func == 'M') ||
+       (side == 'R' && uplo == 'L' && func == 'M')
 
-        unified_rec(func, side, uplo, A11, mid, B1, threshold, depth+1)
+        unified_rec(func, side, uplo, A11, B1, threshold; A_scale = A_scale)
 
-        # GEMM update in mixed precision if deep enough
         if side == 'L'
-            if func == 'S'
-                if depth < 2
-                    # B2 .-= A21 * B1 in Float16
-                    A16 = Float16.(copy(A21))
-                    B1_16 = Float16.(copy(B1))
-                    B2_16 = Float16.(copy(B2))
-                    GEMM_SUB!(B2_16, A16, B1_16)
-                    copy!(B2, B2_16)
-                else
-                    GEMM_SUB!(B2, A21, B1)
-                end
-            else  # func == 'M'
-                if depth < 2
-                    # B1 .+= A12 * B2 in Float16
-                    A16 = Float16.(copy(A12))
-                    B2_16 = Float16.(copy(B2))
-                    B1_16 = Float16.(copy(B1))
-                    GEMM_ADD!(A16, B2_16, B1_16)
-                    copy!(B1, B1_16)
-                else
-                    GEMM_ADD!(A12, B2, B1)
-                end
-            end
-        else  # side == 'R'
-            if func == 'S'
-                if depth < 2
-                    # B2 .-= B1 * A12 in Float16
-                    B1_16 = Float16.(copy(B1))
-                    A16  = Float16.(copy(A12))
-                    B2_16 = Float16.(copy(B2))
-                    GEMM_SUB!(B2_16, B1_16, A16)
-                    copy!(B2, B2_16)
-                else
-                    GEMM_SUB!(B2, B1, A12)
-                end
-            else  # func == 'M'
-                if depth < 2
-                    # B2 .+= B1 * A21 in Float16
-                    B1_16 = Float16.(copy(B1))
-                    A16  = Float16.(copy(A21))
-                    B2_16 = Float16.(copy(B2))
-                    GEMM_ADD!(B2_16, A16, B1_16)
-                    copy!(B1, B1_16)
-                else
-                    GEMM_ADD!(B2, A21, B1)
-                end
-            end
+            func == 'S' ? GEMM_SUB_cublas!(B2, A21, B1, A_scale) : GEMM_ADD_cublas!(A12, B2, B1, A_scale)
+        else 
+            func == 'S' ? GEMM_SUB_cublas!(B2, B1, A12, A_scale) : GEMM_ADD_cublas!(B2, A21, B1, A_scale)
         end
 
-        unified_rec(func, side, uplo, A22, mid_remainder, B2, threshold, depth+1)
+        unified_rec(func, side, uplo, A22, B2, threshold; A_scale = A_scale)
 
-    # second half
     else
-        unified_rec(func, side, uplo, A22, mid_remainder, B2, threshold, depth+1)
+        unified_rec(func, side, uplo, A22, B2, threshold; A_scale = A_scale)
 
         if side == 'L'
-            if func == 'S'
-                if depth < 2
-                    # B1 .-= A12 * B2 in Float16
-                    A16 = Float16.(copy(A12))
-                    B2_16 = Float16.(copy(B2))
-                    B1_16 = Float16.(copy(B1))
-                    GEMM_SUB!(B1_16, A16, B2_16)
-                    copy!(B1, B1_16)
-                else
-                    GEMM_SUB!(B1, A12, B2)
-                end
-            else  # func == 'M'
-                if depth < 2
-                    # B2 .+= A21 * B1 in Float16
-                    A16 = Float16.(copy(A21))
-                    B1_16 = Float16.(copy(B1))
-                    B2_16 = Float16.(copy(B2))
-                    GEMM_ADD!(A16, B1_16, B2_16)
-                    copy!(B2, B2_16)
-                else
-                    GEMM_ADD!(A21, B1, B2)
-                end
-            end
-        else  # side == 'R'
-            if func == 'S'
-                if depth < 2
-                    # B1 .-= B2 * A21 in Float16
-                    B2_16 = Float16.(copy(B2))
-                    A16  = Float16.(copy(A21))
-                    B1_16 = Float16.(copy(B1))
-                    GEMM_SUB!(B1_16, B2_16, A16)
-                    copy!(B1, B1_16)
-                else
-                    GEMM_SUB!(B1, B2, A21)
-                end
-            else  # func == 'M'
-                if depth < 2
-                    # B1 .+= B2 * A12 in Float16
-                    B2_16 = Float16.(copy(B2))
-                    A16  = Float16.(copy(A12))
-                    B1_16 = Float16.(copy(B1))
-                    GEMM_ADD!(B1_16, A16, B2_16)
-                    copy!(B2, B2_16)
-                else
-                    GEMM_ADD!(B1, A12, B2)
-                end
-            end
+            func == 'S' ? GEMM_SUB_cublas!(B1, A12, B2, A_scale) : GEMM_ADD_cublas!(B1, A21, B2, A_scale)
+        else 
+            func == 'S' ? GEMM_SUB_cublas!(B1, B2, A21, A_scale) : GEMM_ADD_cublas!(B1, A12, B2, A_scale)
         end
 
-        unified_rec(func, side, uplo, A11, mid, B1, threshold, depth+1)
+        unified_rec(func, side, uplo, A11, B1, threshold; A_scale = A_scale)
     end
 
     return B
@@ -420,8 +307,6 @@ function unified_rec(func::Char, side::Char, uplo::Char,
 
     return B
 end
-
-
 
 
 
