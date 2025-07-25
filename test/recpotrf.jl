@@ -37,7 +37,10 @@ function run_cholesky_benchmark()
         "[F32, F64, F64]"      => [Float32, Float64, Float64],
         "[F16, F32, F32]"      => [Float16, Float32, Float32],
         "[F32, F16, F32]"      => [Float32, Float16, Float32],
-        "[F16, F16, F32]"      => [Float16, Float16, Float32],
+        "[F16, F32, F64]"      => [Float16, Float32, Float64],
+        "[F16, F32]"      => [Float16, Float32],
+        "[F32, F64]"      => [Float32, Float64],
+        "[F16, F64]"      => [Float16, Float64],
     )
     
     accuracy_results = Dict(name => Float64[] for name in keys(test_scenarios))
@@ -69,13 +72,13 @@ function run_cholesky_benchmark()
                 T_prec = precisions[1] 
                 
                 A_pure_input = T_prec.(A_spd_fp64)
-                potrf_recursive_D!(A_pure_input, 256) 
+                potrf_recursive!(A_pure_input, 4096) 
                 L_result = tril(A_pure_input)
 
                 A_perf_template = T_prec.(A_spd_fp64) 
                 time_ns = run_manual_benchmark(backend) do
                     A_to_factor = copy(A_perf_template) 
-                    potrf_recursive_D!(A_to_factor, 256)
+                    potrf_recursive!(A_to_factor, 4096)
                 end
                 runtime_ms = time_ns / 1_000_000
             else

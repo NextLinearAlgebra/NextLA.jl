@@ -45,7 +45,7 @@ end
 
 function potrf_recursive!(A:: SymmMixedPrec)
     if A.BaseCase !== nothing
-        CUSOLVER.potrf!('L', A.BaseCase)
+        potrf_recursive_A!(A.BaseCase, 4096)
         return
     end
 
@@ -112,7 +112,7 @@ end
 
 
 
-# only nested rectrsm
+# only nested recsyrk
 function potrf_recursive_B!(A, block_size)
     n = size(A, 1)
 
@@ -137,7 +137,7 @@ function potrf_recursive_B!(A, block_size)
     # L11 = Matrix(A11)
     # A21_mat = Matrix(A21)
     # unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A11, A21)
-    # CUBLAS.trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
+    CUBLAS.trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
     # A21 .= A21_mat
 
     # SYRK: A22 -= A21 * A21ᵀ
@@ -153,7 +153,7 @@ end
 
 
 
-# only nested recsyrk
+# only nested rectrsm
 function potrf_recursive_C!(A, block_size)
     n = size(A, 1)
 
@@ -185,6 +185,7 @@ function potrf_recursive_C!(A, block_size)
     # A22_mat = Matrix(A22)
     # CUBLAS.gemm!('N', 'T', -1.0, A21, A21, 1.0, A22) #recursive syrk with mixed precision
     # recsyrk!(-1.0, A21, 1.0, A22, 256) 
+    CUBLAS.syrk!('L', 'N', -1.0, A21, 1.0, A22)
     # A22 .= A22_mat
 
     # Recursive POTRF on trailing block
@@ -217,13 +218,13 @@ function potrf_recursive_D!(A, block_size)
     # TRSM: A21 = A21 * inv(L11ᵀ)
     # L11 = Matrix(A11)
     # A21_mat = Matrix(A21)
-    # unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A11, A21)
+    unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A11, A21)
     # A21 .= A21_mat
 
     # SYRK: A22 -= A21 * A21ᵀ
     # A22_mat = Matrix(A22)
     # CUBLAS.gemm!('N', 'T', -1.0, A21, A21, 1.0, A22) #recursive syrk with mixed precision
-    # recsyrk!(-1.0, A21, 1.0, A22, 256) 
+    recsyrk!(-1.0, A21, 1.0, A22, 256) 
     # A22 .= A22_mat
 
     # Recursive POTRF on trailing block

@@ -12,10 +12,10 @@ function run_potrf_component_benchmark()
     # block_size = 
 
     test_scenarios = Dict(
-        "A both rectrsm and rectrmm"   => potrf_recursive_A!,
-        "B only syrk"  => potrf_recursive_B!,
-        "C only trsm"  => potrf_recursive_C!,
-        "D neither syrk or trsm" => potrf_recursive_D!,
+        "A: not nested"   => potrf_recursive_A!,
+        "B: only nested syrk"  => potrf_recursive_B!,
+        "C: only nested trsm"  => potrf_recursive_C!,
+        "D: fully nested" => potrf_recursive_D!,
     )
 
     accuracy_results = Dict(name => Float64[] for name in keys(test_scenarios))
