@@ -26,7 +26,7 @@ end
 
 
 function run_cholesky_benchmark()
-    n_values = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768] 
+    n_values = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536] 
     
     test_scenarios = Dict(
         "Pure F32"             => [Float32],
@@ -35,7 +35,9 @@ function run_cholesky_benchmark()
         "[F32, F32, F64, F64]" => [Float32, Float32, Float64, Float64],
         "[F64, F64, F32, F32]" => [Float64, Float64, Float32, Float32],
         "[F32, F64, F64]"      => [Float32, Float64, Float64],
-        "[F16, F32, F32]"      => [Float16, Float32, Float32]
+        "[F16, F32, F32]"      => [Float16, Float32, Float32],
+        "[F32, F16, F32]"      => [Float32, Float16, Float32],
+        "[F16, F16, F32]"      => [Float16, Float16, Float32],
     )
     
     accuracy_results = Dict(name => Float64[] for name in keys(test_scenarios))

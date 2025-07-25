@@ -73,11 +73,10 @@ end
 
 
 #no nested recursion at all
-function potrf_recursive_A!(A, i)
+function potrf_recursive_A!(A, block_size)
     n = size(A, 1)
 
-    # if n <= block_size
-    if i == 1
+    if n <= block_size
         # Base case: do regular Cholesky
         CUSOLVER.potrf!('L', A)
         return
@@ -93,7 +92,7 @@ function potrf_recursive_A!(A, i)
     A22 = @view A[n1+1:end, n1+1:end]
 
     # Recursive POTRF on A11
-    @inline potrf_recursive_A!(A11, i-1)
+    potrf_recursive_A!(A11, block_size)
 
     # TRSM: A21 = A21 * inv(L11ᵀ)
     # L11 = Matrix(A11)
@@ -108,16 +107,16 @@ function potrf_recursive_A!(A, i)
     # A22 .= A22_mat
 
     # Recursive POTRF on trailing block
-    @inline potrf_recursive_A!(A22, i-1)
+    potrf_recursive_A!(A22, block_size)
 end
 
 
 
 # only nested rectrsm
-function potrf_recursive_B!(A, i)
+function potrf_recursive_B!(A, block_size)
     n = size(A, 1)
 
-    if i == 1
+    if n <= block_size
         # Base case: do regular Cholesky
         CUSOLVER.potrf!('L', A)
         return
@@ -132,7 +131,7 @@ function potrf_recursive_B!(A, i)
     A22 = @view A[n1+1:end, n1+1:end]
 
     # Recursive POTRF on A11
-    @inline potrf_recursive_B!(A11, i-1)
+    potrf_recursive_B!(A11, block_size)
 
     # TRSM: A21 = A21 * inv(L11ᵀ)
     # L11 = Matrix(A11)
@@ -149,16 +148,16 @@ function potrf_recursive_B!(A, i)
     # A22 .= A22_mat
 
     # Recursive POTRF on trailing block
-    @inline potrf_recursive_B!(A22, i-1)
+    potrf_recursive_B!(A22, block_size)
 end
 
 
 
 # only nested recsyrk
-function potrf_recursive_C!(A, i)
+function potrf_recursive_C!(A, block_size)
     n = size(A, 1)
 
-    if i == 1
+    if n <= block_size
         # Base case: do regular Cholesky
         CUSOLVER.potrf!('L', A)
         return
@@ -173,7 +172,7 @@ function potrf_recursive_C!(A, i)
     A22 = @view A[n1+1:end, n1+1:end]
 
     # Recursive POTRF on A11
-    @inline potrf_recursive_C!(A11, i-1)
+    potrf_recursive_C!(A11, block_size)
 
     # TRSM: A21 = A21 * inv(L11ᵀ)
     # L11 = Matrix(A11)
@@ -189,16 +188,16 @@ function potrf_recursive_C!(A, i)
     # A22 .= A22_mat
 
     # Recursive POTRF on trailing block
-    @inline potrf_recursive_C!(A22, i-1)
+    potrf_recursive_C!(A22, block_size)
 end
 
 
 
 # full nested (both rectrsm and recsyrk)
-function potrf_recursive_D!(A, i)
+function potrf_recursive_D!(A, block_size)
     n = size(A, 1)
 
-    if i == 1
+    if n <= block_size
         # Base case: do regular Cholesky
         CUSOLVER.potrf!('L', A)
         return
@@ -213,7 +212,7 @@ function potrf_recursive_D!(A, i)
     A22 = @view A[n1+1:end, n1+1:end]
 
     # Recursive POTRF on A11
-    @inline potrf_recursive_D!(A11, i-1)
+    potrf_recursive_D!(A11, block_size)
 
     # TRSM: A21 = A21 * inv(L11ᵀ)
     # L11 = Matrix(A11)
@@ -228,5 +227,5 @@ function potrf_recursive_D!(A, i)
     # A22 .= A22_mat
 
     # Recursive POTRF on trailing block
-    @inline potrf_recursive_D!(A22, i-1)
+    potrf_recursive_D!(A22, block_size)
 end

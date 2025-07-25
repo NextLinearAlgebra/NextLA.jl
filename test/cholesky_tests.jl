@@ -23,7 +23,7 @@ function run_potrf_component_benchmark()
     cusolver_runtime_results = Float64[]
 
     for n in n_values
-        block_size = 3
+        block_size = 4096
         @printf("\n--- Matrix Size n = %d ---\n", n)
         
         A_cpu = randn(Float64, n, n)
