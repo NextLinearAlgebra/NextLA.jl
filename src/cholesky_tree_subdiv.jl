@@ -71,6 +71,34 @@ function potrf_recursive!(A:: SymmMixedPrec)
 end
 
 
+# recursive mixed prec, without transpose to 
+function potrf_recursive_T!(A:: SymmMixedPrec)
+    if A.BaseCase !== nothing
+        potrf_recursive_A!(A.BaseCase, 4096)
+        return
+    end
+
+    # Recursive POTRF on A11
+    potrf_recursive!(A.A11) 
+
+    # TRSM: A21 = A21 * inv(L11ᵀ)
+    # L11 = Matrix(A11)
+    # A21_mat = Matrix(A21)
+    # CUBLAS.trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
+    L11 = TriMixedPrec(A.A11)
+    unified_rectrxm!('R', 'L', 'N', 1.0, 'S', L11, A.OffDiag)
+    
+    # A21 .= A21_mat
+
+    # SYRK: A22 -= A21 * A21ᵀ
+    # A22_mat = Matrix(A22)
+    recsyrk!(-1.0, A.OffDiag, 1.0, A.A22)
+    # A22 .= A22_mat
+
+    # Recursive POTRF on trailing block
+    potrf_recursive!(A.A22)
+end
+
 
 #no nested recursion at all
 function potrf_recursive_A!(A, block_size)

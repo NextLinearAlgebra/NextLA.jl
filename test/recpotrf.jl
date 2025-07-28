@@ -26,25 +26,30 @@ end
 
 
 function run_cholesky_benchmark()
-    n_values = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536] 
-    
-    test_scenarios = Dict(
-        "Pure F32"             => [Float32],
-        "Pure F64"             => [Float64],
-        "[F32, F32, F64]"      => [Float32, Float32, Float64],
-        "[F32, F32, F64, F64]" => [Float32, Float32, Float64, Float64],
-        "[F64, F64, F32, F32]" => [Float64, Float64, Float32, Float32],
-        "[F32, F64, F64]"      => [Float32, Float64, Float64],
-        "[F16, F32, F32]"      => [Float16, Float32, Float32],
-        "[F32, F16, F32]"      => [Float32, Float16, Float32],
-        "[F16, F32, F64]"      => [Float16, Float32, Float64],
-        "[F16, F32]"      => [Float16, Float32],
+    n_values = [256, 512, 1024, 2048, 4096, 8192, 16384]
+
+    # 1. Restructure scenarios for easier iteration
+    pure_scenarios = Dict(
+        "Pure F32" => [Float32],
+        "Pure F64" => [Float64],
+    )
+    mixed_scenarios_base = Dict(
+        "[F32, F32, F64]" => [Float32, Float32, Float64],
+        "[F32, F64, F64]" => [Float32, Float64, Float64],
+        "[F16, F32, F32]" => [Float16, Float32, Float32],
+        "[F16, F32, F64]" => [Float16, Float32, Float64],
         "[F32, F64]"      => [Float32, Float64],
         "[F16, F64]"      => [Float16, Float64],
     )
-    
-    accuracy_results = Dict(name => Float64[] for name in keys(test_scenarios))
-    runtime_results = Dict(name => Float64[] for name in keys(test_scenarios))
+    # Recreate the full scenario list to initialize result dictionaries correctly
+    all_scenarios = copy(pure_scenarios)
+    for (name, prec) in mixed_scenarios_base
+        all_scenarios[name] = prec
+        all_scenarios[name * " (No T)"] = prec
+    end
+
+    accuracy_results = Dict(name => Float64[] for name in keys(all_scenarios))
+    runtime_results = Dict(name => Float64[] for name in keys(all_scenarios))
     cusolver_runtime_results = Dict(
         "CUSOLVER F32" => Float64[],
         "CUSOLVER F64" => Float64[]
@@ -53,7 +58,7 @@ function run_cholesky_benchmark()
     println("🚀 Starting Cholesky Benchmark...")
 
     for n in n_values
-        println("\n" * "-"^50)
+        println("\n" * "="^70)
         println("Benchmarking Matrix Size (n x n) = $n x $n")
         
         A_cpu = randn(Float64, n, n)
@@ -65,66 +70,81 @@ function run_cholesky_benchmark()
         
         backend = KernelAbstractions.get_backend(A_spd_fp64)
 
-        for (name, precisions) in test_scenarios
-            local L_result, runtime_ms 
+        # 2. Handle pure scenarios first
+        println("\n--- Pure Precision Scenarios ---")
+        for (name, precisions) in pure_scenarios
+            T_prec = precisions[1] 
+            A_pure_input = T_prec.(A_spd_fp64)
+            potrf_recursive!(A_pure_input, 4096) 
+            L_result = tril(A_pure_input)
 
-            if name == "Pure F32" || name == "Pure F64"
-                T_prec = precisions[1] 
-                
-                A_pure_input = T_prec.(A_spd_fp64)
-                potrf_recursive!(A_pure_input, 4096) 
-                L_result = tril(A_pure_input)
-
-                A_perf_template = T_prec.(A_spd_fp64) 
-                time_ns = run_manual_benchmark(backend) do
-                    A_to_factor = copy(A_perf_template) 
-                    potrf_recursive!(A_to_factor, 4096)
-                end
-                runtime_ms = time_ns / 1_000_000
-            else
-                
-                A_mixed_input = copy(A_spd_fp64)
-                A_mixed = SymmMixedPrec(A_mixed_input, 'L'; precisions=precisions)
-                potrf_recursive!(A_mixed)
-                A_reconstructed = reconstruct_matrix(A_mixed)
-                L_result = tril(A_reconstructed)
-
-                A_perf_template = copy(A_spd_fp64)
-                time_ns = run_manual_benchmark(backend) do
-                    A_to_factor_input = copy(A_perf_template)
-                    A_perf_mixed = SymmMixedPrec(A_to_factor_input, 'L'; precisions=precisions)
-                    potrf_recursive!(A_perf_mixed) 
-                end
-                runtime_ms = time_ns / 1_000_000
+            A_perf_template = T_prec.(A_spd_fp64) 
+            time_ns = run_manual_benchmark(backend) do
+                A_to_factor = copy(A_perf_template) 
+                potrf_recursive!(A_to_factor, 4096)
             end
-
+            runtime_ms = time_ns / 1_000_000
+            
             error_norm = norm(L_result - L_truth)
-            solution_norm = norm(L_truth)
-            relative_error = max(error_norm / solution_norm, 1e-20)
+            relative_error = max(error_norm / norm(L_truth), 1e-20)
             
             push!(accuracy_results[name], -log10(max(relative_error, 1e-18)))
             push!(runtime_results[name], runtime_ms)
-
-            @printf("   %-22s | Rel. Error: %9.2e | Runtime: %8.3f ms\n", name, relative_error, runtime_ms)
+            @printf("    %-25s | Rel. Error: %9.2e | Runtime: %8.3f ms\n", name, relative_error, runtime_ms)
         end
 
+        # 3. Loop through base mixed scenarios and run both versions
+        println("\n--- Mixed Precision (Transpose vs. No Transpose) ---")
+        @printf("    %-25s | T Runtime | No T Runtime | Speedup\n", "Scenario")
+        println("    " * "-"^65)
+
+        for (name, precisions) in mixed_scenarios_base
+            # --- Run Transpose Version ---
+            A_mixed_T = SymmMixedPrec(copy(A_spd_fp64), 'L'; precisions=precisions)
+            potrf_recursive!(A_mixed_T)
+            error_T = max(norm(tril(reconstruct_matrix(A_mixed_T)) - L_truth) / norm(L_truth), 1e-20)
+            time_ns_T = run_manual_benchmark(backend) do
+                A_perf_mixed = SymmMixedPrec(copy(A_spd_fp64), 'L'; precisions=precisions)
+                potrf_recursive!(A_perf_mixed)
+            end
+            runtime_T = time_ns_T / 1_000_000
+
+            # --- Run No-Transpose Version ---
+            A_mixed_noT = SymmMixedPrec(copy(A_spd_fp64), 'L'; precisions=precisions)
+            potrf_recursive_T!(A_mixed_noT)
+            error_no_T = max(norm(tril(reconstruct_matrix(A_mixed_noT)) - L_truth) / norm(L_truth), 1e-20)
+            time_ns_noT = run_manual_benchmark(backend) do
+                A_perf_mixed = SymmMixedPrec(copy(A_spd_fp64), 'L'; precisions=precisions)
+                potrf_recursive_T!(A_perf_mixed)
+            end
+            runtime_no_T = time_ns_noT / 1_000_000
+
+            # --- Store results for plotting ---
+            push!(runtime_results[name], runtime_T)
+            push!(runtime_results[name * " (No T)"], runtime_no_T)
+            push!(accuracy_results[name], -log10(max(error_T, 1e-18)))
+            push!(accuracy_results[name * " (No T)"], -log10(max(error_no_T, 1e-18)))
+
+            # --- Print side-by-side comparison ---
+            speedup = runtime_T > 0 && runtime_no_T > 0 ? runtime_T / runtime_no_T : 0.0
+            @printf("    %-25s | %9.3fms | %12.3fms | %7.2fx\n", name, runtime_T, runtime_no_T, speedup)
+        end
         
-        println("\n--- Benchmarking standard CUSOLVER.potrf! ---")
+        # --- CUSOLVER benchmarks ---
+        println("\n--- Standard CUSOLVER.potrf! ---")
         for (name, T_prec) in Dict("CUSOLVER F32" => Float32, "CUSOLVER F64" => Float64)
-            A_cpu_base = randn(T_prec, n, n)
-            A_spd_base = CuArray(A_cpu_base * A_cpu_base' + n * I)
-            
+            A_spd_base = CuArray(T_prec.(A_cpu * A_cpu' + n * I))
             time_ns = run_manual_benchmark(backend) do
-                A_to_factor = copy(A_spd_base)
-                CUSOLVER.potrf!('L', A_to_factor)
+                CUSOLVER.potrf!('L', copy(A_spd_base))
             end
             runtime_ms = time_ns / 1_000_000
             push!(cusolver_runtime_results[name], runtime_ms)
-            @printf("   %-22s | Runtime: %8.3f ms\n", name, runtime_ms)
+            @printf("    %-25s | Runtime: %8.3f ms\n", name, runtime_ms)
         end
     end
     
-    println("\n" * "="^60)
+    # ... Plotting code remains unchanged ...
+    println("\n" * "="^70)
     println("📊 Generating and saving plots...")
 
     acc_plot = plot(title="Cholesky Accuracy vs. Matrix Size", xlabel="Matrix Size (n)", ylabel="-log10(Relative Error)", legend=:outertopright, xaxis=:log2)
@@ -145,7 +165,7 @@ function run_cholesky_benchmark()
     savefig(perf_plot, "cholesky_performance.png")
 
     println("✅ Benchmark complete. Plots saved to disk.")
-    println("="^60)
+    println("="^70)
 end
 
 run_cholesky_benchmark()
