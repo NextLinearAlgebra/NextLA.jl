@@ -1,6 +1,6 @@
 # mixed precision triangular data structure utilizing a recursive data type 
 
-struct TriMixedPrec{T_Base} <: AbstractMatrix{T_Base}
+struct TriMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
     # T_Diag is the diagonal precision we seek ; T_OffDiag is the off diagonal precision we seek
 
     # A11 and A22 are the diagonal matrices - they are either another tri mixed precision matrix that will be further decomposed,

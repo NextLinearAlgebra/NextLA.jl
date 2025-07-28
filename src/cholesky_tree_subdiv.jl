@@ -1,8 +1,10 @@
 using LinearAlgebra
-using LinearAlgebra.BLAS
-include("rectrxm.jl")
 include("symmmixedprec.jl")
 include("recmixedprectri.jl")
+include("trsm.jl")
+include("trmm.jl")
+include("matmul.jl")
+include("rectrxm.jl")
 include("recsyrk.jl")
 
 function potrf_recursive!(A, block_size)
@@ -56,8 +58,7 @@ function potrf_recursive!(A:: SymmMixedPrec)
     # L11 = Matrix(A11)
     # A21_mat = Matrix(A21)
     # CUBLAS.trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
-    L11 = TriMixedPrec(A.A11)
-    unified_rectrxm!('R', 'L', 'T', 1.0, 'S', L11, A.OffDiag)
+    unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A.A11, A.OffDiag)
     
     # A21 .= A21_mat
 
@@ -85,8 +86,7 @@ function potrf_recursive_T!(A:: SymmMixedPrec)
     # L11 = Matrix(A11)
     # A21_mat = Matrix(A21)
     # CUBLAS.trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
-    L11 = TriMixedPrec(A.A11)
-    # unified_rectrxm!('R', 'L', 'N', 1.0, 'S', L11, A.OffDiag)
+    unified_rectrxm!('R', 'L', 'N', 1.0, 'S', A.A11, A.OffDiag)
     
     # A21 .= A21_mat
 

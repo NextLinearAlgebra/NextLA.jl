@@ -1,6 +1,9 @@
+abstract type AbstractMixedPrec{T} <: AbstractMatrix{T} end
+
+
 # mixed precision symmetric data structure utilizing a recursive data type 
 
-struct SymmMixedPrec{T_Base} <: AbstractMatrix{T_Base}
+struct SymmMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
     A11::Union{SymmMixedPrec{T_Base}, Nothing}
     A22::Union{SymmMixedPrec{T_Base}, Nothing}
 

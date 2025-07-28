@@ -350,7 +350,7 @@ function unified_rectrxm!(
         trans::Char, 
         alpha::Number, 
         func::Char, 
-        A::TriMixedPrec, 
+        A::AbstractMixedPrec, 
         B::StridedMatrix
     )
     threshold = 16
@@ -377,7 +377,7 @@ end
 
 function unified_rec_mixed(
     func::Char, side::Char, uplo::Char,
-    A::TriMixedPrec{T_Base},
+    A::AbstractMixedPrec{T_Base},
     B::StridedMatrix,
     threshold::Int=256
 ) where {T_Base}
