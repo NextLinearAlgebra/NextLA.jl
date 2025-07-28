@@ -85,7 +85,7 @@ function potrf_recursive_T!(A:: SymmMixedPrec)
     # L11 = Matrix(A11)
     # A21_mat = Matrix(A21)
     # CUBLAS.trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
-    # L11 = TriMixedPrec(A.A11)
+    L11 = TriMixedPrec(A.A11)
     # unified_rectrxm!('R', 'L', 'N', 1.0, 'S', L11, A.OffDiag)
     
     # A21 .= A21_mat
