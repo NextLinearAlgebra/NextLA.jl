@@ -95,7 +95,7 @@ function run_cholesky_benchmark()
 
         # 3. Loop through base mixed scenarios and run both versions
         println("\n--- Mixed Precision (Transpose vs. No Transpose) ---")
-        @printf("    %-25s | T Runtime | No T Runtime | Speedup\n", "Scenario")
+        @printf("    %-25s | T Runtime | No Trsm Runtime | Speedup\n", "Scenario")
         println("    " * "-"^65)
 
         for (name, precisions) in mixed_scenarios_base
