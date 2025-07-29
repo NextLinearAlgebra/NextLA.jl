@@ -1,5 +1,13 @@
 abstract type AbstractMixedPrec{T} <: AbstractMatrix{T} end
 
+struct TransposedMixedPrec{T, M <: AbstractMixedPrec{T}} <: AbstractMixedPrec{T}
+    parent::M
+end
+
+Base.transpose(A::AbstractMixedPrec) = TransposedMixedPrec(A)
+
+Base.parent(A::TransposedMixedPrec) = A.parent
+Base.size(A::TransposedMixedPrec) = reverse(size(parent(A)))
 
 # mixed precision symmetric data structure utilizing a recursive data type 
 
