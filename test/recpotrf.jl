@@ -39,8 +39,8 @@ function run_cholesky_benchmark()
         "[F32, F64, F64]" => [Float32, Float64, Float64],
         "[F16, F32, F32]" => [Float16, Float32, Float32],
         "[F16, F32, F64]" => [Float16, Float32, Float64],
-        "[F32, F64]"      => [Float32, Float64],
-        "[F16, F64]"      => [Float16, Float64],
+        "[F32, F64]"       => [Float32, Float64],
+        "[F16, F64]"       => [Float16, Float64],
     )
     # Recreate the full scenario list to initialize result dictionaries correctly
     all_scenarios = copy(pure_scenarios)
@@ -59,7 +59,7 @@ function run_cholesky_benchmark()
     println("🚀 Starting Cholesky Benchmark...")
 
     for n in n_values
-        println("\n" * "="^70)
+        println("\n" * "="^80)
         println("Benchmarking Matrix Size (n x n) = $n x $n")
         
         A_cpu = randn(Float64, n, n)
@@ -96,8 +96,9 @@ function run_cholesky_benchmark()
 
         # 3. Loop through base mixed scenarios and run both versions
         println("\n--- Mixed Precision (Transpose vs. No Transpose) ---")
-        @printf("    %-25s | T Runtime | No trans Runtime | Speedup\n", "Scenario")
-        println("    " * "-"^65)
+        # Updated header to include accuracy
+        @printf("    %-25s | T Error   | No T Error | T Runtime | No T Runtime | Speedup\n", "Scenario")
+        println("    " * "-"^90)
 
         for (name, precisions) in mixed_scenarios_base
             # --- Run Transpose Version ---
@@ -126,9 +127,10 @@ function run_cholesky_benchmark()
             push!(accuracy_results[name], -log10(max(error_T, 1e-18)))
             push!(accuracy_results[name * " (No T)"], -log10(max(error_no_T, 1e-18)))
 
-            # --- Print side-by-side comparison ---
+            # --- Print side-by-side comparison (with accuracy) ---
             speedup = runtime_T > 0 && runtime_no_T > 0 ? runtime_T / runtime_no_T : 0.0
-            @printf("    %-25s | %9.3fms | %12.3fms | %7.2fx\n", name, runtime_T, runtime_no_T, speedup)
+            # Updated printf to include error_T and error_no_T
+            @printf("    %-25s | %9.2e | %10.2e | %9.3fms | %12.3fms | %7.2fx\n", name, error_T, error_no_T, runtime_T, runtime_no_T, speedup)
         end
         
         # --- CUSOLVER benchmarks ---
@@ -145,7 +147,7 @@ function run_cholesky_benchmark()
     end
     
     # ... Plotting code remains unchanged ...
-    println("\n" * "="^70)
+    println("\n" * "="^80)
     println("📊 Generating and saving plots...")
 
     acc_plot = plot(title="Cholesky Accuracy vs. Matrix Size", xlabel="Matrix Size (n)", ylabel="-log10(Relative Error)", legend=:outertopright, xaxis=:log2)
@@ -166,7 +168,7 @@ function run_cholesky_benchmark()
     savefig(perf_plot, "cholesky_performance.png")
 
     println("✅ Benchmark complete. Plots saved to disk.")
-    println("="^70)
+    println("="^80)
 end
 
 run_cholesky_benchmark()

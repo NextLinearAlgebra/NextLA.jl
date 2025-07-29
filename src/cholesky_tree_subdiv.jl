@@ -58,7 +58,7 @@ function potrf_recursive!(A:: SymmMixedPrec)
     # L11 = Matrix(A11)
     # A21_mat = Matrix(A21)
     # CUBLAS.trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
-    unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A.A11, A.OffDiag)
+    unified_rectrxm!('R', 'L', 'T', 1.0, 'S', TriMixedPrec(A.A11), A.OffDiag)
     
     # A21 .= A21_mat
 
@@ -80,13 +80,13 @@ function potrf_recursive_T!(A:: SymmMixedPrec)
     end
 
     # Recursive POTRF on A11
-    potrf_recursive!(A.A11) 
+    potrf_recursive_T!(A.A11) 
 
     # TRSM: A21 = A21 * inv(L11ᵀ)
     # L11 = Matrix(A11)
     # A21_mat = Matrix(A21)
     # CUBLAS.trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
-    unified_rectrxm!('R', 'L', 'N', 1.0, 'S', A.A11, A.OffDiag)
+    unified_rectrxm!('R', 'L', 'N', 1.0, 'S', TriMixedPrec(A.A11), A.OffDiag)
     
     # A21 .= A21_mat
 
@@ -96,7 +96,7 @@ function potrf_recursive_T!(A:: SymmMixedPrec)
     # A22 .= A22_mat
 
     # Recursive POTRF on trailing block
-    potrf_recursive!(A.A22)
+    potrf_recursive_T!(A.A22)
 end
 
 
