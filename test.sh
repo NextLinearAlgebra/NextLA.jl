@@ -13,7 +13,7 @@ module load cuda/12.6
 
 echo "running code"
 
-julia --project=. test.jl "$1" "$2" "$3"
+julia --project=. test.jl "$1" "$2" "$3" "$4"
 
-echo "This is outer precision $2 and inner precision $3 saved to $1"
+echo "This is outer precision $2 and inner precision $3 using refinement solver $4 saved to $1"
 echo "finished"

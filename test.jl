@@ -3,10 +3,24 @@ using CUDA
 using LinearAlgebra
 using NPZ
 using DelimitedFiles
+using BenchmarkTools
 
 include("mirs_gesv.jl")
 
-function find_mismatch(name::String, outdir::String; iter::Int = 1000, working_precision::String="R_64F",irs_precision::String="R_16F")
+function run_irs!(X, A, B; irs_precision, refinement_solver)
+    CUDA.synchronize()
+    t = @elapsed begin
+        X, info, niters, flag = gesv!(X, A, B, 
+            irs_precision=irs_precision, 
+            refinement_solver=refinement_solver)
+    CUDA.synchronize()
+    end
+    return X, info, niters, flag, t
+end
+
+
+
+function find_mismatch(name::String, outdir::String; iter::Int = 1000, working_precision::String="R_64F",irs_precision::String="R_16F", refinement_solver::String="CLASSICAL")
     typemap = Dict(
         # "R_8F" => Float8, #not supported
         "R_16F" => Float16,
@@ -21,53 +35,58 @@ function find_mismatch(name::String, outdir::String; iter::Int = 1000, working_p
 
     tol = sqrt(eps(real(wp_type)))
 
-    A = convert(Matrix{wp_type}, mdopen(name).A)
+    A = CuArray(convert(Matrix{wp_type}, mdopen(name).A))
 
     if size(A, 1) != size(A, 2)
         return false, []
     end
-
-    A_gpu = CuArray(A)
 
     n = size(A, 1)
     
     counter = 0
 
     mismatch_data = Dict()
-    for key in ("B","X_sp","X_mp", "niters_mp", "niters_sp")
+    for key in ("B","X_sp","X_mp", "niters_sp", "niters_mp", "flag_sp", "flag_mp", "time_sp", "time_mp")
         mismatch_data[key] = nothing
     end
 
     found_one = false
 
-    convergence_results = Vector{Tuple{Bool, Bool, Int, Int, Int, Int}}()
+    convergence_results = Vector{Tuple{Bool, Bool, Int, Int, Int, Int, Float64, Float64}}()
 
+    #moved outside to limit memory usage
+    X_mp = CUDA.zeros(wp_type, n, 1)
+    X_sp = CUDA.zeros(wp_type, n, 1)
 
+    B = zeros(wp_type, n, 1)
+    B_gpu = CuArray(B)
     for i in 1:iter
-        println("Computing iteration $i")
+        println("Computing test $i")
 
-        # B_gpu = CuArray(rand(wp_type, n, 1))
-        B_gpu = CuArray(randn(wp_type, n, 1)) #move this outside
+        B .= randn(wp_type, n, 1) #move this outside
+        copyto!(B_gpu, B)    
 
-        X_gpu = similar(B_gpu)
+        #timing mixed precision
+        X_mp, info_mp, niters_mp, flag_mp, t_mp = run_irs!(X_mp, A, B_gpu;
+            irs_precision=irs_precision,
+            refinement_solver=refinement_solver)
 
-        A_mp = copy(A_gpu);  B_mp = copy(B_gpu); X_mp = copy(X_gpu)
-        A_sp = copy(A_gpu);  B_sp = copy(B_gpu);  X_sp = copy(X_gpu)
+        X_sp, info_sp, niters_sp, flag_sp, t_sp = run_irs!(X_sp, A, B_gpu;
+            irs_precision=working_precision,
+            refinement_solver=refinement_solver)
 
-       
-        X_result_mp, info_mp, niters_mp, flag_mp = gesv!(X_mp, A_mp, B_mp, irs_precision=irs_precision)
-        X_result_sp, info_sp, niters_sp, flag_sp = gesv!(X_sp, A_sp, B_sp, irs_precision=working_precision)
 
-        dR_sp = B_sp .- A_sp * X_sp
-        dR_mp = B_mp .- A_mp * X_mp
 
-        rel_norm_sp = norm(dR_sp)/norm(B_sp)
-        rel_norm_mp = norm(dR_mp)/norm(B_mp)
+        dR_sp = B_gpu .- A * X_sp
+        dR_mp = B_gpu .- A * X_mp
+
+        rel_norm_sp = norm(dR_sp)/norm(B)
+        rel_norm_mp = norm(dR_mp)/norm(B)
 
         conv_sp = rel_norm_sp <= tol
         conv_mp = rel_norm_mp <= tol
 
-        push!(convergence_results, (conv_sp, conv_mp, niters_sp, niters_mp, flag_mp, flag_sp))
+        push!(convergence_results, (conv_sp, conv_mp, niters_sp, niters_mp, flag_sp, flag_mp, t_sp, t_mp))
 
         if (conv_sp) != (conv_mp)
 
@@ -78,12 +97,16 @@ function find_mismatch(name::String, outdir::String; iter::Int = 1000, working_p
 
             f = !conv_sp ? "SF_MT" : "ST_MF"
 
-            mismatch_data["B"]    = Array(B_gpu)
+            mismatch_data["B"]    = Array(B)
             mismatch_data["X_sp"] = Array(X_sp)
             mismatch_data["X_mp"] = Array(X_mp)
             mismatch_data["niters_mp"] = niters_mp
             mismatch_data["niters_sp"] = niters_sp
-            
+            mismatch_data["flag_sp"] = flag_sp
+            mismatch_data["flag_mp"] = flag_mp
+            mismatch_data["time_sp"] = t_sp
+            mismatch_data["time_mp"] = t_mp
+             
             save_dir = joinpath(outdir, name, f)
             mkpath(save_dir)
             outpath = joinpath(save_dir, "$counter.npz")
@@ -97,7 +120,7 @@ function find_mismatch(name::String, outdir::String; iter::Int = 1000, working_p
 
         end
         
-        # for arr in (A_gpu, B_gpu, X_gpu, A_mp, B_mp, X_mp, A_sp, B_sp, X_sp)
+        # for arr in (A_gpu, B_gpu, X_gpu, A, B, X_mp, A, B, X_sp)
         #     finalize(arr)
         # end
 
@@ -115,7 +138,7 @@ end
 
 function main()
 
-    #args: "test_32_16" "R_32F" "R_16F" 
+    #args: "test_32_16" "R_32F" "R_16F" "CLASSICAL_GMRES"
     outdir = joinpath(@__DIR__, ARGS[1])
     mkpath(outdir)
 
@@ -136,7 +159,7 @@ function main()
         )
         
         #decrease number of iterations
-        found_mismatch, convergence_results = find_mismatch(matrix, outdir;  iter=10, working_precision=ARGS[2], irs_precision=ARGS[3])
+        found_mismatch, convergence_results = find_mismatch(matrix, outdir;  iter=10, working_precision=ARGS[2], irs_precision=ARGS[3], refinement_solver=ARGS[4])
 
         if !found_mismatch
             
@@ -149,11 +172,11 @@ function main()
         
         mkpath(joinpath(outdir, matrix))
 
-        results_array = reduce(hcat, [[t[i] for t in convergence_results] for i in 1:6])
+        results_array = reduce(hcat, [[t[i] for t in convergence_results] for i in 1:8])
 
         writedlm(
             joinpath(outdir, matrix, "convergence_results.csv"),
-            [["conv_sp" "conv_mp" "niters_sp" "niters_mp" "flag_mp" "flag_sp"]; results_array],
+            [["conv_sp" "conv_mp" "niters_sp" "niters_mp" "flag_sp" "flag_mp" "time_sp" "time_mp"]; results_array],
             ','
         )
         
