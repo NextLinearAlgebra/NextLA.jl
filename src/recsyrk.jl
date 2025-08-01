@@ -41,7 +41,6 @@ function _syrk_dispatch!(
 end
 
 
-
 function recsyrk!(
     alpha::Number, A::AbstractMatrix, beta::Number, C::AbstractMatrix,
     threshold::Int
@@ -65,10 +64,11 @@ function recsyrk!(
 
     _syrk_dispatch!(:GEMM, alpha, A2, A1, beta, C21)
 
-    recsyrk!(alpha, A1, beta, C11, threshold)
-    recsyrk!(alpha, A2, beta, C22, threshold)
+    @sync begin
+        @async recsyrk!(alpha, A1, beta, C11, threshold)
+        @async recsyrk!(alpha, A2, beta, C22, threshold)
+    end
 end
-
 
 
 function recsyrk!(
@@ -85,6 +85,8 @@ function recsyrk!(
 
     _syrk_dispatch!(:GEMM, alpha, A2, A1, beta, C.OffDiag)
 
-    recsyrk!(alpha, A1, beta, C.A11)
-    recsyrk!(alpha, A2, beta, C.A22)
+    @sync begin
+        @async recsyrk!(alpha, A1, beta, C.A11)
+        @async recsyrk!(alpha, A2, beta, C.A22)
+    end
 end

@@ -147,11 +147,36 @@ function unified_rec(func::Char, side::Char, uplo::Char,
 
     if n <= threshold
         if func == 'S'
-            CUBLAS.trsm!(side, uplo, 'N', 'N', one(T), copy(A), B)
+            if (eltype(A) == Float16)
+                if side == 'L' && uplo == 'L'
+                    LeftLowerTRSM!(A, B)
+                elseif side == 'L' && uplo == 'U'
+                    LeftUpperTRSM!(A, B)
+                elseif side == 'R' && uplo == 'L'
+                    RightLowerTRSM!(A, B)
+                else
+                    RightUpperTRSM!(A, B)   
+                end
+            else
+                CUBLAS.trsm!(side, uplo, 'N', 'N', one(T), copy(A), B)
+            end
         else 
-            CUBLAS.trmm!(side, uplo, 'N', 'N', one(T), copy(A), B)
+            if (eltype(A) == Float16)
+                if side == 'L' && uplo == 'L'
+                    LeftLowerTRMM!(A, B)
+                elseif side == 'L' && uplo == 'U'
+                    LeftUpperTRMM!(A, B)
+                elseif side == 'R' && uplo == 'L'
+                    RightLowerTRMM!(A, B)
+                else
+                    RightUpperTRMM!(A, B)
+                end
+            else
+                CUBLAS.trmm!(side, uplo, 'N', 'N', one(T), copy(A), B)
+            end
         end
         return B
+
     end
 
     mid = isinteger(log2(n)) ? div(n, 2) : 2^floor(Int, log2(n))

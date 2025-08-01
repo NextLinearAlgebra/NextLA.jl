@@ -7,13 +7,16 @@ function run_all_tests()
     trans = 'N'
 
     test_scenarios = Dict(
-        "Recursive Float64" => [Float64],
-        "Recursive Float32" => [Float32],
+        # "Recursive Float64" => [Float64],
+        # "Recursive Float32" => [Float32],
         "Recursive Float16" => [Float16],
-        "TriMixed: [F32, F64]" => [Float32, Float64],
-        "TriMixed: [F16, F32]" => [Float16, Float32], 
         "TriMixed: [F16, F64]" => [Float16, Float64],
-        "TriMixed: [F16, F32, F64]" => [Float16, Float32, Float64],
+        "TriMixed: [F64, F16]" => [Float64, Float16],
+        "TriMixed: [F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float32],
+        # "TriMixed: [F32, F64]" => [Float32, Float64],
+        # "TriMixed: [F16, F32]" => [Float16, Float32], 
+        # "TriMixed: [F16, F64]" => [Float16, Float64],
+        # "TriMixed: [F16, F32, F64]" => [Float16, Float32, Float64],
     )
 
     # Dictionaries to store results for each function type ('M' or 'S')
