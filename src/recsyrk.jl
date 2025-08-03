@@ -41,12 +41,11 @@ function _syrk_dispatch!(
 end
 
 
-function recsyrk!(
+function _recsyrk_impl!(
     alpha::Number, A::AbstractMatrix, beta::Number, C::AbstractMatrix,
-    threshold::Int; parallel::Bool=true # Add the parallel flag
+    threshold::Int; parallel::Bool
 )
     n = size(C, 1)
-
     if n <= threshold
         _syrk_dispatch!(:SYRK, alpha, A, A, beta, C)
         return
@@ -55,54 +54,60 @@ function recsyrk!(
     n1 = 2^floor(Int, log2(n)) ÷ 2
     m = size(A, 2)
 
-    A1 = @view A[1:n1, 1:m]
-    A2 = @view A[n1+1:end, 1:m]
-
-    C11 = @view C[1:n1, 1:n1]
-    C21 = @view C[n1+1:end, 1:n1]
-    C22 = @view C[n1+1:end, n1+1:end]
+    A1 = @view A[1:n1, 1:m]; A2 = @view A[n1+1:end, 1:m]
+    C11 = @view C[1:n1, 1:n1]; C21 = @view C[n1+1:end, 1:n1]; C22 = @view C[n1+1:end, n1+1:end]
 
     _syrk_dispatch!(:GEMM, alpha, A2, A1, beta, C21)
 
     if parallel
-        # If parallel, create tasks but then call recursively with parallel=false
         @sync begin
-            @async recsyrk!(alpha, A1, beta, C11, threshold, parallel=false)
-            @async recsyrk!(alpha, A2, beta, C22, threshold, parallel=false)
+            @async _recsyrk_impl!(alpha, A1, beta, C11, threshold, parallel=false)
+            @async _recsyrk_impl!(alpha, A2, beta, C22, threshold, parallel=false)
         end
     else
-        # If not parallel, just execute sequentially
-        recsyrk!(alpha, A1, beta, C11, threshold, parallel=false)
-        recsyrk!(alpha, A2, beta, C22, threshold, parallel=false)
+        _recsyrk_impl!(alpha, A1, beta, C11, threshold, parallel=false)
+        _recsyrk_impl!(alpha, A2, beta, C22, threshold, parallel=false)
     end
 end
 
-
-function recsyrk!(
+function _recsyrk_impl!(
     alpha::Number, A::AbstractMatrix, beta::Number, C::SymmMixedPrec;
-    parallel::Bool=true # Add the parallel flag
+    parallel::Bool
 )
     if C.BaseCase !== nothing
-        # Propagate the parallel flag down to the base implementation
-        recsyrk!(alpha, A, beta, C.BaseCase, 256, parallel=parallel)
+        recsyrk!(alpha, A, beta, C.BaseCase, 4096)
         return
     end
 
     n1 = size(C.A11, 1)
-    A1 = @view A[1:n1, :]
-    A2 = @view A[n1+1:end, :]
+    A1 = @view A[1:n1, :]; A2 = @view A[n1+1:end, :]
 
     _syrk_dispatch!(:GEMM, alpha, A2, A1, beta, C.OffDiag)
 
     if parallel
-        # If parallel, create tasks but then call recursively with parallel=false
         @sync begin
-            @async recsyrk!(alpha, A1, beta, C.A11, parallel=false)
-            @async recsyrk!(alpha, A2, beta, C.A22, parallel=false)
+            @async _recsyrk_impl!(alpha, A1, beta, C.A11, parallel=false)
+            @async _recsyrk_impl!(alpha, A2, beta, C.A22, parallel=false)
         end
     else
-        # If not parallel, just execute sequentially
-        recsyrk!(alpha, A1, beta, C.A11, parallel=false)
-        recsyrk!(alpha, A2, beta, C.A22, parallel=false)
+        _recsyrk_impl!(alpha, A1, beta, C.A11, parallel=false)
+        _recsyrk_impl!(alpha, A2, beta, C.A22, parallel=false)
     end
+end
+
+
+const PARALLEL_THRESHOLD = 4096
+
+function recsyrk!(
+    alpha::Number, A::AbstractMatrix, beta::Number, C::AbstractMatrix, threshold::Int=256
+)
+    should_parallelize = size(C, 1) > PARALLEL_THRESHOLD
+    _recsyrk_impl!(alpha, A, beta, C, threshold, parallel=should_parallelize)
+end
+
+function recsyrk!(
+    alpha::Number, A::AbstractMatrix, beta::Number, C::SymmMixedPrec
+)
+    should_parallelize = size(C.OffDiag, 2) > PARALLEL_THRESHOLD
+    _recsyrk_impl!(alpha, A, beta, C, parallel=should_parallelize)
 end
