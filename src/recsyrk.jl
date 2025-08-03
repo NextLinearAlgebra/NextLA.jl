@@ -99,15 +99,21 @@ end
 const PARALLEL_THRESHOLD = 4096
 
 function recsyrk!(
+    alpha::Number, A::AbstractMatrix, beta::Number, C::SymmMixedPrec
+)
+    if C.BaseCase !== nothing
+        recsyrk!(alpha, A, beta, C.BaseCase)
+        return
+    end
+    n_subproblem = size(C.A11, 1)
+    should_parallelize = n_subproblem > PARALLEL_THRESHOLD
+    _recsyrk_impl!(alpha, A, beta, C, parallel=should_parallelize)
+end
+
+
+function recsyrk!(
     alpha::Number, A::AbstractMatrix, beta::Number, C::AbstractMatrix, threshold::Int=256
 )
     should_parallelize = size(C, 1) > PARALLEL_THRESHOLD
     _recsyrk_impl!(alpha, A, beta, C, threshold, parallel=should_parallelize)
-end
-
-function recsyrk!(
-    alpha::Number, A::AbstractMatrix, beta::Number, C::SymmMixedPrec
-)
-    should_parallelize = size(C.OffDiag, 2) > PARALLEL_THRESHOLD
-    _recsyrk_impl!(alpha, A, beta, C, parallel=should_parallelize)
 end
