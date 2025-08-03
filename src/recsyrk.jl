@@ -43,7 +43,7 @@ end
 
 function recsyrk!(
     alpha::Number, A::AbstractMatrix, beta::Number, C::AbstractMatrix,
-    threshold::Int
+    threshold::Int; parallel::Bool=true # Add the parallel flag
 )
     n = size(C, 1)
 
@@ -64,18 +64,27 @@ function recsyrk!(
 
     _syrk_dispatch!(:GEMM, alpha, A2, A1, beta, C21)
 
-    @sync begin
-        @async recsyrk!(alpha, A1, beta, C11, threshold)
-        @async recsyrk!(alpha, A2, beta, C22, threshold)
+    if parallel
+        # If parallel, create tasks but then call recursively with parallel=false
+        @sync begin
+            @async recsyrk!(alpha, A1, beta, C11, threshold, parallel=false)
+            @async recsyrk!(alpha, A2, beta, C22, threshold, parallel=false)
+        end
+    else
+        # If not parallel, just execute sequentially
+        recsyrk!(alpha, A1, beta, C11, threshold, parallel=false)
+        recsyrk!(alpha, A2, beta, C22, threshold, parallel=false)
     end
 end
 
 
 function recsyrk!(
-    alpha::Number, A::AbstractMatrix, beta::Number, C::SymmMixedPrec
+    alpha::Number, A::AbstractMatrix, beta::Number, C::SymmMixedPrec;
+    parallel::Bool=true # Add the parallel flag
 )
     if C.BaseCase !== nothing
-        recsyrk!(alpha, A, beta, C.BaseCase, 256)
+        # Propagate the parallel flag down to the base implementation
+        recsyrk!(alpha, A, beta, C.BaseCase, 256, parallel=parallel)
         return
     end
 
@@ -85,8 +94,15 @@ function recsyrk!(
 
     _syrk_dispatch!(:GEMM, alpha, A2, A1, beta, C.OffDiag)
 
-    @sync begin
-        @async recsyrk!(alpha, A1, beta, C.A11)
-        @async recsyrk!(alpha, A2, beta, C.A22)
+    if parallel
+        # If parallel, create tasks but then call recursively with parallel=false
+        @sync begin
+            @async recsyrk!(alpha, A1, beta, C.A11, parallel=false)
+            @async recsyrk!(alpha, A2, beta, C.A22, parallel=false)
+        end
+    else
+        # If not parallel, just execute sequentially
+        recsyrk!(alpha, A1, beta, C.A11, parallel=false)
+        recsyrk!(alpha, A2, beta, C.A22, parallel=false)
     end
 end
