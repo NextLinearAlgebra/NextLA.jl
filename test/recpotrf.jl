@@ -61,7 +61,7 @@ function run_cholesky_benchmark()
         println("Benchmarking Matrix Size (n x n) = $n x $n")
         
         A_cpu = randn(Float64, n, n)
-        A_spd_fp64 = CuArray(A_cpu * A_cpu' + n * I)
+        A_spd_fp64 = CuArray(A_cpu * A_cpu' + (n*100) * I)
         
         A_ground_truth = copy(A_spd_fp64)
         CUSOLVER.potrf!('L', A_ground_truth)

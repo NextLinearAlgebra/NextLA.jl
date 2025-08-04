@@ -9,6 +9,8 @@ Base.transpose(A::AbstractMixedPrec) = TransposedMixedPrec(A)
 Base.parent(A::TransposedMixedPrec) = A.parent
 Base.size(A::TransposedMixedPrec) = reverse(size(parent(A)))
 
+Base.getindex(A::TransposedMixedPrec, i::Int, j::Int) = parent(A)[j, i]
+
 # mixed precision symmetric data structure utilizing a recursive data type 
 
 struct SymmMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}

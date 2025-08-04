@@ -115,6 +115,13 @@ function unified_rectrxm!(
         A::AbstractMatrix, 
         B::AbstractMatrix
     )
+    if eltype(A) == Float16
+        A_f32 = Float32.(A)
+        B_f32 = Float32.(B)
+        unified_rectrxm!(side, uplo, transpose, alpha, func, A_f32, B_f32)
+        copy!(B, B_f32)
+        return B
+    end
     threshold = 16
     n = size(A, 1)
 
@@ -126,6 +133,7 @@ function unified_rectrxm!(
     if func == 'S'
         threshold = 256
         B .= alpha .* B
+        
     end
     unified_rec(func, side, uplo, A, B, threshold)
     if func == 'M'
@@ -441,20 +449,26 @@ function unified_rec_mixed(
         B_type = eltype(B) 
 
         if eltype(A_block) == Float16 
-            B_quant, B_scale = quantize(B) 
+            B_f32 = Float32.(B)
 
-            unified_rec(func, side, uplo, A_block, B_quant, threshold; A_scale=A_scale)
+            unified_rec(func, side, uplo, Float32.(A_block), B_f32, threshold)
 
-            B_dequant = dequantize(B_quant, B_scale, B_type)
-            copy!(B, B_dequant)
+            copy!(B, B_f32)
+            # B_quant, B_scale = quantize(B)
 
-            if func == 'S'
-                B ./= A_scale
-            else
-                temp_B_f32 = Float32.(B) .* A_scale
-                clamp!(temp_B_f32, floatmin(eltype(B)), floatmax(eltype(B)))
-                copy!(B, temp_B_f32)
-            end
+            # unified_rec(func, side, uplo, A_block, B_quant, threshold; A_scale=A_scale)
+
+            # B_dequant = dequantize(B_quant, B_scale, B_type)
+            # copy!(B, B_dequant)
+            # unified_rec(func, side, uplo, A_block, B, threshold; A_scale=A_scale)
+
+            # if func == 'S'
+            #     B ./= A_scale
+            # else
+            #     temp_B_f32 = Float32.(B) .* A_scale
+            #     clamp!(temp_B_f32, floatmin(eltype(B)), floatmax(eltype(B)))
+            #     copy!(B, temp_B_f32)
+            # end
         else
             if eltype(A.BaseCase) == B_type
                 unified_rec(func, side, uplo, A.BaseCase, B, threshold)
@@ -675,15 +689,20 @@ function unified_rec_mixed(
     
     if A_orig.BaseCase !== nothing
         A_block = A_orig.BaseCase
-        A_block_transposed = transpose(A_block) 
         scale = A_orig.base_scale !== nothing ? A_orig.base_scale : 1.0f0
-        
-        if eltype(A_block) != eltype(B)
-            B_converted = eltype(A_block).(B)
-            unified_rec(func, side, uplo, A_block_transposed, B_converted, threshold; A_scale=scale)
-            B .= B_converted 
+        if eltype(A_block) == Float16
+            B_converted = Float32.(B)
+            unified_rec(func, side, uplo, transpose(Float32.(A)), B_converted, threshold; A_scale=scale)
+            copy!(B, B_converted)
         else
-            unified_rec(func, side, uplo, A_block_transposed, B, threshold; A_scale=scale)
+            A_block_transposed = transpose(A_block) 
+            if eltype(A_block) != eltype(B)
+                B_converted = eltype(A_block).(B)
+                unified_rec(func, side, uplo, A_block_transposed, B_converted, threshold; A_scale=scale)
+                copy!(B, B_converted)
+            else
+                unified_rec(func, side, uplo, A_block_transposed, B, threshold; A_scale=scale)
+            end
         end
         return B
     end
