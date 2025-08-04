@@ -160,34 +160,6 @@ end
 
 
 
-# function Base.transpose(A::TriMixedPrec{T_Base}) where {T_Base}
-#     new_uplo = A.uplo == 'U' ? 'L' : 'U'
-
-#     if A.BaseCase !== nothing
-#         return TriMixedPrec{T_Base}(
-#             nothing,
-#             nothing,
-#             nothing,
-#             nothing,
-#             A.base_scale,
-#             copy(transpose(A.BaseCase)), # Transpose the base matrix
-#             new_uplo,
-#             A.sz
-#         )
-#     end
-
-#     return TriMixedPrec{T_Base}(
-#         transpose(A.A11),      
-#         transpose(A.A22),        
-#         copy(transpose(A.OffDiag)),    
-#         A.offDiag_scale,
-#         nothing,
-#         nothing,
-#         new_uplo,
-#         A.sz
-#     )
-# end
-
 
 # constructor to convert a SymmMixedPrec into a TriMixedPrec
 function TriMixedPrec(A::SymmMixedPrec{T_Base}) where {T_Base}

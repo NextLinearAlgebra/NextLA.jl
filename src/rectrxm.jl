@@ -150,7 +150,6 @@ function unified_rec(func::Char, side::Char, uplo::Char,
     A_scale::Float32=1.0f0
 ) where {T <: AbstractFloat, M <: AbstractMatrix{T}}
 
-    A_orig = parent(A)
     n = size(A, 1)
 
     if n <= threshold
@@ -166,7 +165,7 @@ function unified_rec(func::Char, side::Char, uplo::Char,
                     RightUpperTRSM!(A, B)   
                 end
             else
-                CUBLAS.trsm!(side, uplo, 'N', 'N', one(T), copy(A), B)
+                CUBLAS.trsm!(side, uplo, 'T', 'N', one(T), parent(A), B)
             end
         else 
             if (eltype(A) == Float16)
@@ -180,12 +179,14 @@ function unified_rec(func::Char, side::Char, uplo::Char,
                     RightUpperTRMM!(A, B)
                 end
             else
-                CUBLAS.trmm!(side, uplo, 'N', 'N', one(T), copy(A), B)
+                CUBLAS.trmm!(side, uplo, 'T', 'N', one(T), parent(A), B)
             end
         end
         return B
 
     end
+
+    A_orig = parent(A)
 
     mid = isinteger(log2(n)) ? div(n, 2) : 2^floor(Int, log2(n))
 
@@ -252,7 +253,7 @@ function unified_rec(func::Char, side::Char, uplo::Char,
                     RightUpperTRSM!(A, B)   
                 end
             else
-                CUBLAS.trsm!(side, uplo, 'N', 'N', one(T), copy(A), B)
+                CUBLAS.trsm!(side, uplo, 'N', 'N', one(T), A, B)
             end
         else 
             if (eltype(A) == Float16)
@@ -266,7 +267,7 @@ function unified_rec(func::Char, side::Char, uplo::Char,
                     RightUpperTRMM!(A, B)
                 end
             else
-                CUBLAS.trmm!(side, uplo, 'N', 'N', one(T), copy(A), B)
+                CUBLAS.trmm!(side, uplo, 'N', 'N', one(T), A, B)
             end
         end
         # if func == 'S'
