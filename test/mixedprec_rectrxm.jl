@@ -13,6 +13,7 @@ function run_all_tests()
         "TriMixed: [F16, F64]" => [Float16, Float64],
         "TriMixed: [F64, F16]" => [Float64, Float16],
         "TriMixed: [F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float32],
+        "TriMixed: [F16, F16, F32]" => [Float16, Float16, Float32],
         "TriMixed: [F32, F64]" => [Float32, Float64],
         "TriMixed: [F16, F32]" => [Float16, Float32], 
         "TriMixed: [F16, F64]" => [Float16, Float64],
