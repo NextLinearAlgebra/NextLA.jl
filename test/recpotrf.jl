@@ -26,7 +26,7 @@ end
 
 
 function run_cholesky_benchmark()
-    n_values = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
+    n_values = [8192, 16384, 32768, 65536] #[256, 512, 1024, 2048, 4096, 
 
     # 1. Combine all scenarios into a single dictionary
     pure_scenarios = Dict(

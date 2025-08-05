@@ -1,6 +1,5 @@
 function run_all_tests()
     sizes = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536] 
-    m = 64
     uplo = 'U'
     side = 'L'
     alpha = 1.0f0 # Use Float32 for alpha
@@ -46,9 +45,9 @@ function run_all_tests()
             println("\n--- Testing Matrix Size: $n x $n ---")
 
             A_cpu = Matrix(UpperTriangular(rand(Float64, n, n)))
-            diag_strength = Float64(n)
+            diag_strength = Float64(n)*10
             A_cpu .+= Diagonal(fill(diag_strength, n))
-            B_cpu = rand(Float64, n, m)
+            B_cpu = rand(Float64, n, n)
             
             # --- Calculate Ground Truth Solution (FP64) ---
             A_sol_gpu = CuArray(A_cpu)

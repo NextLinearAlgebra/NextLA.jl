@@ -1,6 +1,6 @@
 using KernelAbstractions
 
-function run_manual_benchmark(func_to_benchmark, backend; min_time_s::Float64 = 2.0, min_iters::Int = 10)
+function run_manual_benchmark(func_to_benchmark, backend; min_time_s::Float64 = 1.0, min_iters::Int = 5)
     # warm up (for compiler)
     func_to_benchmark()
     KernelAbstractions.synchronize(backend)

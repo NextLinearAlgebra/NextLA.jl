@@ -115,13 +115,6 @@ function unified_rectrxm!(
         A::AbstractMatrix, 
         B::AbstractMatrix
     )
-    if eltype(A) == Float16
-        A_f32 = Float32.(A)
-        B_f32 = Float32.(B)
-        unified_rectrxm!(side, uplo, transpose, alpha, func, A_f32, B_f32)
-        copy!(B, B_f32)
-        return B
-    end
     threshold = 16
     n = size(A, 1)
 
@@ -453,11 +446,8 @@ function unified_rec_mixed(
         B_type = eltype(B) 
 
         if eltype(A_block) == Float16 
-            B_f32 = Float32.(B)
-
-            unified_rec(func, side, uplo, Float32.(A_block), B_f32, threshold)
-
-            copy!(B, B_f32)
+            
+            unified_rec(func, side, uplo, A_block, copy(B), threshold; A_scale=A_scale)
             # B_quant, B_scale = quantize(B)
 
             # unified_rec(func, side, uplo, A_block, B_quant, threshold; A_scale=A_scale)
