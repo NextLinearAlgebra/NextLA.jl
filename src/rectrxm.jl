@@ -446,8 +446,17 @@ function unified_rec_mixed(
         B_type = eltype(B) 
 
         if eltype(A_block) == Float16 
-            
-            unified_rec(func, side, uplo, A_block, copy(B), threshold; A_scale=A_scale)
+            if B_type == eltype(A_block)
+                unified_rec(func, side, uplo, A_block, B, threshold; A_scale=A_scale)
+            else 
+                B_quant, B_scale = quantize(B)
+
+                unified_rec(func, side, uplo, A_block, B_quant, threshold; A_scale=A_scale)
+
+                B_dequant = dequantize(B_quant, B_scale, B_type)
+                copy!(B, B_dequant)
+            end
+
             # B_quant, B_scale = quantize(B)
 
             # unified_rec(func, side, uplo, A_block, B_quant, threshold; A_scale=A_scale)
