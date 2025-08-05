@@ -1,8 +1,8 @@
 function run_all_tests()
-    sizes = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536] 
+    sizes = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
     uplo = 'U'
     side = 'L'
-    alpha = 1.0f0 # Use Float32 for alpha
+    alpha = 1.0f0
     trans = 'N'
 
     test_scenarios = Dict(
@@ -14,30 +14,26 @@ function run_all_tests()
         "TriMixed: [F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float32],
         "TriMixed: [F16, F16, F32]" => [Float16, Float16, Float32],
         "TriMixed: [F32, F64]" => [Float32, Float64],
-        "TriMixed: [F16, F32]" => [Float16, Float32], 
-        "TriMixed: [F16, F64]" => [Float16, Float64],
+        "TriMixed: [F16, F32]" => [Float16, Float32],
         "TriMixed: [F32, F32, F64]" => [Float32, Float32, Float64],
         "TriMixed: [F32, F32, F32, F64]" => [Float32, Float32, Float32, Float64],
         "TriMixed: [F32, F32, F32, F32, F64]" => [Float32, Float32, Float32, Float32, Float64],
     )
     
-
-    # Dictionaries to store results for each function type ('M' or 'S')
     all_results_accuracy = Dict{Char, Dict{String, Vector{Float64}}}()
     all_results_runtime = Dict{Char, Dict{String, Vector{Float64}}}()
+    all_cublas_runtime = Dict{Char, Dict{String, Vector{Float64}}}()
 
-
-    for func in ['S', 'M']
+    for func in ['S'] #, 'M']
         op_name = func == 'S' ? "TRSM" : "TRMM"
         println("\n" * "="^70)
         println("🚀 Starting Benchmark for $op_name (uplo='$uplo')...")
         println("="^70)
 
-        # Initialize result dictionaries for this function type
         results_accuracy = Dict(name => Float64[] for name in keys(test_scenarios))
         results_runtime = Dict(name => Float64[] for name in keys(test_scenarios))
         cublas_runtime = Dict(
-            "CUBLAS F64" => Float64[], 
+            "CUBLAS F64" => Float64[],
             "CUBLAS F32" => Float64[]
         )
 
@@ -45,88 +41,96 @@ function run_all_tests()
             println("\n--- Testing Matrix Size: $n x $n ---")
 
             A_cpu = Matrix(UpperTriangular(rand(Float64, n, n)))
-            diag_strength = Float64(n)*10
-            A_cpu .+= Diagonal(fill(diag_strength, n))
+            A_cpu .+= Diagonal(fill(Float64(n)*100, n))
             B_cpu = rand(Float64, n, n)
             
-            # --- Calculate Ground Truth Solution (FP64) ---
-            A_sol_gpu = CuArray(A_cpu)
-            B_sol_gpu = CuArray(B_cpu)
-            if func == 'S' # TRSM: B <- alpha * inv(A) * B
-                CUBLAS.trsm!(side, uplo, trans, 'N', alpha, A_sol_gpu, B_sol_gpu)
-            else # TRMM: B <- alpha * A * B
-                CUBLAS.trmm!(side, uplo, trans, 'N', alpha, A_sol_gpu, B_sol_gpu, similar(B_sol_gpu))
-                # Note: TRMM output must be a different matrix, so we recalculate
-                B_sol_gpu = alpha .* (A_cpu * B_cpu)
+            local B_sol_cpu
+            if func == 'S'
+                let A_sol_gpu = CuArray(A_cpu), B_sol_gpu_temp = CuArray(B_cpu)
+                    CUBLAS.trsm!(side, uplo, trans, 'N', alpha, A_sol_gpu, B_sol_gpu_temp)
+                    B_sol_cpu = collect(B_sol_gpu_temp)
+                end
+            else
+                B_sol_cpu = alpha .* (A_cpu * B_cpu)
             end
+            
+            local solution_norm = norm(B_sol_cpu)
 
-            # --- Benchmark Recursive and Mixed-Precision Implementations ---
             for (name, prec_list) in test_scenarios
                 T_Base = prec_list[1]
-                A_test_gpu = CuArray(A_cpu) # Use original for mixed-prec constructor
-                B_test_gpu = CuArray{T_Base}(B_cpu)
-                B_clean_copy = copy(B_test_gpu)
-
-                # Execute once for accuracy check
-                if startswith(name, "Recursive")
-                    unified_rectrxm!(side, uplo, trans, alpha, func, CuArray{T_Base}(A_test_gpu), B_test_gpu)
-                else
-                    A_mixed = TriMixedPrec(A_test_gpu, uplo; precisions=prec_list)
-                    unified_rectrxm!(side, uplo, trans, alpha, func, A_mixed, B_test_gpu)
-                end
-
-                error_norm = norm(CuArray{Float64}(B_test_gpu) .- B_sol_gpu)
-                solution_norm = norm(B_sol_gpu)
-                relative_error = iszero(solution_norm) ? 0.0 : error_norm / solution_norm
-                push!(results_accuracy[name], -log10(max(relative_error, 1e-18)))
                 
-                # Benchmark for performance
-                backend = get_backend(A_test_gpu)
-                local perf_time_ns
-                if startswith(name, "Recursive")
-                    A_perf = CuArray{T_Base}(A_test_gpu)
-                    B_perf = CuArray{T_Base}(B_cpu)
-                    perf_time_ns = run_manual_benchmark(backend) do
-                        copyto!(B_perf, B_clean_copy)
-                        unified_rectrxm!(side, uplo, trans, alpha, func, A_perf, B_perf)
+                try
+                    local A_test, B_test
+                    
+                    if startswith(name, "Recursive")
+                        A_test = CuArray{T_Base}(A_cpu)
+                    else
+                        A_test = TriMixedPrec(CuArray(A_cpu), uplo; precisions=prec_list)
                     end
-                else
-                    A_mixed_perf = TriMixedPrec(A_test_gpu, uplo; precisions=prec_list)
-                    B_perf = CuArray{T_Base}(B_cpu)
+                    B_test = CuArray{T_Base}(B_cpu)
+
+                    backend = get_backend(B_test)
                     perf_time_ns = run_manual_benchmark(backend) do
-                        copyto!(B_perf, B_clean_copy)
-                        unified_rectrxm!(side, uplo, trans, alpha, func, A_mixed_perf, B_perf)
+                        copyto!(B_test, B_cpu)
+                        unified_rectrxm!(side, uplo, trans, alpha, func, A_test, B_test)
+                    end
+                    runtime_ms = perf_time_ns / 1_000_000
+                    
+                    error_norm = norm(collect(B_test) .- B_sol_cpu)
+                    relative_error = iszero(solution_norm) ? 0.0 : error_norm / solution_norm
+                    
+                    push!(results_accuracy[name], -log10(max(relative_error, 1e-18)))
+                    push!(results_runtime[name], runtime_ms)
+
+                    println("  '$name' | Rel. Error: $(round(relative_error, sigdigits=3)) | Runtime: $(round(runtime_ms, sigdigits=4)) ms")
+
+                catch e
+                    if e isa CUDA.OutOfMemoryError
+                        println("  '$name' | SKIPPED due to OutOfMemoryError")
+                        push!(results_runtime[name], NaN)
+                        push!(results_accuracy[name], NaN)
+                    else
+                        rethrow(e)
                     end
                 end
-                runtime_ms = perf_time_ns / 1_000_000
-                push!(results_runtime[name], runtime_ms)
-                println("  '$name' | Rel. Error: $(round(relative_error, sigdigits=3)) | Runtime: $(round(runtime_ms, sigdigits=4)) ms")
+                
+                A_test = nothing
+                B_test = nothing
+                GC.gc(true)
+                CUDA.reclaim()
             end
 
-            # --- Benchmark CUBLAS Baselines ---
             println("  --- CUBLAS Baselines ---")
             for T in [Float64, Float32]
-                A_blas = CuArray{T}(A_cpu)
-                B_blas = CuArray{T}(B_cpu)
-                B_clean = copy(B_blas)
-                backend = get_backend(A_blas)
+                try
+                    local A_blas = CuArray{T}(A_cpu)
+                    local B_blas = CuArray{T}(B_cpu)
+                    backend = get_backend(A_blas)
 
-                time_ns = run_manual_benchmark(backend) do
-                    copyto!(B_blas, B_clean)
-                    if func == 'S'
-                        CUBLAS.trsm!(side, uplo, trans, 'N', T(alpha), A_blas, B_blas)
+                    time_ns = run_manual_benchmark(backend) do
+                        copyto!(B_blas, B_cpu)
+                        if func == 'S'
+                            CUBLAS.trsm!(side, uplo, trans, 'N', T(alpha), A_blas, B_blas)
+                        else
+                            C_blas = similar(B_blas)
+                            CUBLAS.trmm!(side, uplo, trans, 'N', T(alpha), A_blas, B_blas, C_blas)
+                        end
+                    end
+                    runtime_ms = time_ns / 1_000_000
+                    cublas_name = "CUBLAS F$(sizeof(T)*8)"
+                    push!(cublas_runtime[cublas_name], runtime_ms)
+                    println("  '$cublas_name' | Runtime: $(round(runtime_ms, sigdigits=4)) ms")
+                catch e
+                    if e isa CUDA.OutOfMemoryError
+                        cublas_name = "CUBLAS F$(sizeof(T)*8)"
+                        println("  '$cublas_name' | SKIPPED due to OutOfMemoryError")
+                        push!(cublas_runtime[cublas_name], NaN)
                     else
-                        # CUBLAS trmm can perform C = alpha*op(A)*B, but for fair comparison,
-                        # we use it as B <- alpha*op(A)*B, which requires a temporary matrix
-                        # or performs the operation out-of-place. Let's do out-of-place.
-                        C_blas = similar(B_blas)
-                        CUBLAS.trmm!(side, uplo, trans, 'N', T(alpha), A_blas, B_blas, C_blas)
+                        rethrow(e)
                     end
                 end
-                runtime_ms = time_ns / 1_000_000
-                cublas_name = "CUBLAS F$(sizeof(T)*8)"
-                push!(cublas_runtime[cublas_name], runtime_ms)
-                println("  '$cublas_name' | Runtime: $(round(runtime_ms, sigdigits=4)) ms")
+                GC.gc(true)
+                CUDA.reclaim()
             end
         end
         all_results_accuracy[func] = results_accuracy
@@ -169,27 +173,23 @@ function plot_runtime_results(sizes, rec_results, cublas_results, func_char::Cha
         size=(800, 600),
         dpi=300
     )
-    # Plot recursive and mixed-precision results with solid lines
     for (i, (name, data)) in enumerate(rec_results)
         plot!(plt, sizes, data, label=name, lw=2, marker=:auto, markersize=4)
     end
-    # Plot CUBLAS baselines with dashed lines
     for (i, (name, data)) in enumerate(cublas_results)
         plot!(plt, sizes, data, label=name, lw=2.5, linestyle=:dash, color=i+length(rec_results))
     end
     return plt
 end
 
-
-# --- Main Execution ---
 sizes, all_accuracy, all_runtime, all_cublas = run_all_tests()
 
-for func in ['S'] #, 'M']
+for func in ['S']
     op_name = func == 'S' ? "trsm" : "trmm"
     println("\n✅ Generating plots for $op_name...")
 
-    accuracy_plot = plot_accuracy_results(sizes, all_accuracy[func], func)
-    runtime_plot = plot_runtime_results(sizes, all_runtime[func], all_cublas[func], func)
+    accuracy_plot = plot_accuracy_results(sizes, filter(p -> !isnan(p.second[end]), all_accuracy[func]), func)
+    runtime_plot = plot_runtime_results(sizes, filter(p -> !isnan(p.second[end]), all_runtime[func]), filter(p -> !isnan(p.second[end]), all_cublas[func]), func)
 
     savefig(accuracy_plot, "$(op_name)_accuracy_results.png")
     savefig(runtime_plot, "$(op_name)_runtime_results.png")

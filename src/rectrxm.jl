@@ -149,15 +149,19 @@ function unified_rec(func::Char, side::Char, uplo::Char,
     if n <= threshold
         if func == 'S'
             if (eltype(A) == Float16)
-                if side == 'L' && uplo == 'L'
-                    LeftLowerTRSM!(A, B)
-                elseif side == 'L' && uplo == 'U'
-                    LeftUpperTRSM!(A, B)
-                elseif side == 'R' && uplo == 'L'
-                    RightLowerTRSM!(A, B)
-                else
-                    RightUpperTRSM!(A, B)   
-                end
+                B_temp = Float32.(B)
+                swapped_uplo = (uplo == 'U') ? 'L' : 'U'
+                CUBLAS.trsm!(side, swapped_uplo, 'T', 'N', one(T), Float32.(A_orig), B_temp)
+                copy!(B, B_temp) 
+                # if side == 'L' && uplo == 'L'
+                #     LeftLowerTRSM!(A, B)
+                # elseif side == 'L' && uplo == 'U'
+                #     LeftUpperTRSM!(A, B)
+                # elseif side == 'R' && uplo == 'L'
+                #     RightLowerTRSM!(A, B)
+                # else
+                #     RightUpperTRSM!(A, B)   
+                # end
             else
                 swapped_uplo = (uplo == 'U') ? 'L' : 'U'
                 CUBLAS.trsm!(side, swapped_uplo, 'T', 'N', one(T), A_orig, B)
@@ -239,15 +243,18 @@ function unified_rec(func::Char, side::Char, uplo::Char,
     if n <= threshold
         if func == 'S'
             if (eltype(A) == Float16)
-                if side == 'L' && uplo == 'L'
-                    LeftLowerTRSM!(A, B)
-                elseif side == 'L' && uplo == 'U'
-                    LeftUpperTRSM!(A, B)
-                elseif side == 'R' && uplo == 'L'
-                    RightLowerTRSM!(A, B)
-                else
-                    RightUpperTRSM!(A, B)   
-                end
+                B_temp = Float32.(B)
+                CUBLAS.trsm!(side, uplo, 'N', 'N', one(T), Float32.(A), B_temp)
+                copy!(B, B_temp) 
+                # if side == 'L' && uplo == 'L'
+                #     LeftLowerTRSM!(A, B)
+                # elseif side == 'L' && uplo == 'U'
+                #     LeftUpperTRSM!(A, B)
+                # elseif side == 'R' && uplo == 'L'
+                #     RightLowerTRSM!(A, B)
+                # else
+                #     RightUpperTRSM!(A, B)   
+                # end
             else
                 CUBLAS.trsm!(side, uplo, 'N', 'N', one(T), A, B)
             end
@@ -413,11 +420,6 @@ function unified_rectrxm!(
         B::StridedMatrix
     )
     threshold = 16
-
-    # We do not support transpose 'T' or 'C' yet for this mixed prec matrix
-    # @assert transpose == 'N' "Transpose on TriMixedPrec not yet supported."
-    
-
     if trans == 'T' || trans == 'C'
         A = transpose(A) 
         uplo = (uplo == 'L') ? 'U' : 'L'
@@ -457,21 +459,13 @@ function unified_rec_mixed(
                 copy!(B, B_dequant)
             end
 
-            # B_quant, B_scale = quantize(B)
-
-            # unified_rec(func, side, uplo, A_block, B_quant, threshold; A_scale=A_scale)
-
-            # B_dequant = dequantize(B_quant, B_scale, B_type)
-            # copy!(B, B_dequant)
-            # unified_rec(func, side, uplo, A_block, B, threshold; A_scale=A_scale)
-
-            # if func == 'S'
-            #     B ./= A_scale
-            # else
-            #     temp_B_f32 = Float32.(B) .* A_scale
-            #     clamp!(temp_B_f32, floatmin(eltype(B)), floatmax(eltype(B)))
-            #     copy!(B, temp_B_f32)
-            # end
+            if func == 'S'
+                B ./= A_scale
+            else
+                temp_B_f32 = Float32.(B) .* A_scale
+                clamp!(temp_B_f32, floatmin(eltype(B)), floatmax(eltype(B)))
+                copy!(B, temp_B_f32)
+            end
         else
             if eltype(A.BaseCase) == B_type
                 unified_rec(func, side, uplo, A.BaseCase, B, threshold)
