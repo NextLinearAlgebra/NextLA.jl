@@ -45,7 +45,7 @@ function run_all_tests()
             println("\n--- Testing Matrix Size: $n x $n ---")
 
             A_cpu = Matrix(UpperTriangular(rand(Float64, n, n)))
-            A_cpu .+= Diagonal(fill(Float64(n)*100, n))
+            A_cpu .+= Diagonal(fill(n, n))
             B_cpu = rand(Float64, n, n)
             
             # --- Calculate Ground Truth Solution (FP64) ---
