@@ -18,7 +18,10 @@ function run_all_tests()
         "TriMixed: [F16, F32]" => [Float16, Float32], 
         "TriMixed: [F16, F64]" => [Float16, Float64],
         "TriMixed: [F32, F32, F64]" => [Float32, Float32, Float64],
+        "TriMixed: [F32, F32, F32, F64]" => [Float32, Float32, Float32, Float64],
+        "TriMixed: [F32, F32, F32, F32, F64]" => [Float32, Float32, Float32, Float32, Float64],
     )
+    
 
     # Dictionaries to store results for each function type ('M' or 'S')
     all_results_accuracy = Dict{Char, Dict{String, Vector{Float64}}}()
@@ -43,7 +46,8 @@ function run_all_tests()
             println("\n--- Testing Matrix Size: $n x $n ---")
 
             A_cpu = Matrix(UpperTriangular(rand(Float64, n, n)))
-            A_cpu .+= Diagonal(fill(10.0, n))
+            diag_strength = Float64(n)
+            A_cpu .+= Diagonal(fill(diag_strength, n))
             B_cpu = rand(Float64, n, m)
             
             # --- Calculate Ground Truth Solution (FP64) ---
@@ -59,7 +63,7 @@ function run_all_tests()
 
             # --- Benchmark Recursive and Mixed-Precision Implementations ---
             for (name, prec_list) in test_scenarios
-                T_Base = prec_list[end]
+                T_Base = prec_list[1]
                 A_test_gpu = CuArray(A_cpu) # Use original for mixed-prec constructor
                 B_test_gpu = CuArray{T_Base}(B_cpu)
                 B_clean_copy = copy(B_test_gpu)
