@@ -64,8 +64,8 @@ function run_cholesky_benchmarks()
     for n in n_values
         A_cpu_rand = randn(Float64, n, n)
         A_gpu = CuArray(A_cpu_rand)
-        A_cpu_rand = nothing # 
-        A_spd_fp64 = A_gpu_rand * A_gpu_rand' + (n * 100) * I
+        A_cpu_rand = nothing 
+        A_spd_fp64 = A_gpu * A_gpu' + (n * 100) * I
         A_gpu = nothing
 
         println("\n" * "="^80)
