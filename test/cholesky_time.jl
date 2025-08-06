@@ -88,7 +88,7 @@ function run_cholesky_benchmarks()
         
         println("\n--- Standard CUSOLVER.potrf! ---")
         for (name, T_prec) in Dict("CUSOLVER F32" => Float32, "CUSOLVER F64" => Float64)
-            runtime_ms = get_runtime_cusolver(n, T_prec)
+            runtime_ms = get_runtime_cusolver(A_spd_fp64, n, T_prec)
             @printf("    %-25s | Runtime: %8.3f ms\n", name, runtime_ms)
         end
     end
