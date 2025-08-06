@@ -3,40 +3,30 @@ using Test, CUDA, LinearAlgebra, Printf, KernelAbstractions
 include("benchmark.jl") 
 
 
-function get_runtime_pure(n::Int, T_prec::DataType)
-    A_cpu = randn(Float64, n, n)
-    A_spd_fp64 = CuArray(A_cpu * A_cpu' + (n * 100) * I)
+function get_runtime_pure(A_spd_fp64, n::Int, T_prec::DataType)
     backend = KernelAbstractions.get_backend(A_spd_fp64)
     
     time_ns = run_manual_benchmark(backend) do
-        potrf_recursive!(T_prec.(A_spd_fp64), 4096)
+        potrf_recursive!(copy(A_spd_fp64), 4096)
     end
     
     return time_ns / 1_000_000
 end
 
 
-function get_runtime_mixed(n::Int, precisions::Vector)
-    A_cpu = randn(Float64, n, n)
-    A_spd_fp64 = CuArray(A_cpu * A_cpu' + (n * 100) * I)
+function get_runtime_mixed(A_spd_fp64, n::Int, precisions::Vector)
     backend = KernelAbstractions.get_backend(A_spd_fp64)
 
     time_ns = run_manual_benchmark(backend) do
-        potrf_recursive!(SymmMixedPrec(A_spd_fp64, 'L'; precisions=precisions))
+        A_to_factor = SymmMixedPrec(A_spd_fp64, 'L'; precisions=precisions)
+        potrf_recursive!(A_to_factor)
     end
     
     return time_ns / 1_000_000
 end
 
-"""
-    get_runtime_cusolver(n::Int, T_prec::DataType)
 
-Creates a matrix of size `n x n`, runs the standard CUSOLVER.potrf! 
-factorization using precision `T_prec`, and returns the runtime.
-"""
-function get_runtime_cusolver(n::Int, T_prec::DataType)
-    A_cpu = randn(Float64, n, n)
-    A_spd_fp64 = CuArray(A_cpu * A_cpu' + (n * 100) * I)
+function get_runtime_cusolver(A_spd_fp64, n::Int, T_prec::DataType)
     backend = KernelAbstractions.get_backend(A_spd_fp64)
     A_spd_base = (T_prec == Float64) ? A_spd_fp64 : T_prec.(A_spd_fp64)
 
@@ -54,7 +44,7 @@ Main function to orchestrate the Cholesky factorization benchmarks across
 different matrix sizes and precision scenarios.
 """
 function run_cholesky_benchmarks()
-    n_values = [1024, 2048, 4096, 8192, 16384, 32768, 65536] 
+    n_values = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536] 
 
     pure_scenarios = Dict(
         "Pure F32" => [Float32],
@@ -78,18 +68,21 @@ function run_cholesky_benchmarks()
     println("🚀 Starting Cholesky Benchmark...")
 
     for n in n_values
+        A_cpu = randn(Float64, n, n)
+        A_spd_fp64 = CuArray(A_cpu * A_cpu' + (n * 100) * I)
+
         println("\n" * "="^80)
         println("Benchmarking Matrix Size (n x n) = $n x $n")
         
         println("\n--- Pure Precision Scenarios ---")
         for (name, precisions) in pure_scenarios
-            runtime_ms = get_runtime_pure(n, precisions[1])
+            runtime_ms = get_runtime_pure(precisions[1].(A_spd_fp64), n, precisions[1])
             @printf("    %-25s | Runtime: %8.3f ms\n", name, runtime_ms)
         end
 
         println("\n--- Mixed Precision Scenarios ---")
         for (name, precisions) in mixed_scenarios
-            runtime_ms = get_runtime_mixed(n, precisions)
+            runtime_ms = get_runtime_mixed(A_spd_fp64, n, precisions)
             @printf("    %-25s | Runtime: %8.3f ms\n", name, runtime_ms)
         end
         
