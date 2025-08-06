@@ -2,7 +2,6 @@ using Test, CUDA, LinearAlgebra, Printf, KernelAbstractions
 
 include("benchmark.jl") 
 
-
 function get_runtime_pure(A_spd_fp64, n::Int, T_prec::DataType)
     backend = KernelAbstractions.get_backend(A_spd_fp64)
     
@@ -37,12 +36,7 @@ function get_runtime_cusolver(A_spd_fp64, n::Int, T_prec::DataType)
     return time_ns / 1_000_000
 end
 
-"""
-    run_cholesky_benchmarks()
 
-Main function to orchestrate the Cholesky factorization benchmarks across
-different matrix sizes and precision scenarios.
-"""
 function run_cholesky_benchmarks()
     n_values = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536] 
 
@@ -68,8 +62,11 @@ function run_cholesky_benchmarks()
     println("🚀 Starting Cholesky Benchmark...")
 
     for n in n_values
-        A_cpu = randn(Float64, n, n)
-        A_spd_fp64 = CuArray(A_cpu * A_cpu' + (n * 100) * I)
+        A_cpu_rand = randn(Float64, n, n)
+        A_gpu = CuArray(A_cpu_rand)
+        A_cpu_rand = nothing # 
+        A_spd_fp64 = A_gpu_rand * A_gpu_rand' + (n * 100) * I
+        A_gpu = nothing
 
         println("\n" * "="^80)
         println("Benchmarking Matrix Size (n x n) = $n x $n")
