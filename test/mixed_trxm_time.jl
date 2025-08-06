@@ -59,6 +59,9 @@ function run_benchmarks()
                 @printf "  %-40s | Runtime: %.4f ms\n" "'$name'" runtime_ms
             end
 
+            GC.gc(true)
+            CUDA.reclaim()
+
             println("  --- CUBLAS Baselines ---")
             for T in [Float64, Float32]
                 A_blas = CuArray{T}(A_cpu)
