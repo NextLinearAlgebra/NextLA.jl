@@ -74,7 +74,7 @@ function check_cholesky_accuracy()
         "[F16, F32]"                => [Float16, Float32],
     )
 
-    println("🔬 Starting Cholesky Accuracy Check...")
+    println("Starting Cholesky Accuracy Check...")
 
     for n in n_values
         println("\n" * "="^80)

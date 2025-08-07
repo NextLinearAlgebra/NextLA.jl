@@ -26,7 +26,7 @@ end
 
 function run_recsyrk_benchmark()
     # Define the matrix sizes to test
-    n_values = [256, 512, 1024, 2048] #, 4096, 8192, 16384, 32768]
+    n_values = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
 
     # Define the different mixed-precision scenarios
     test_scenarios = Dict(
@@ -38,6 +38,8 @@ function run_recsyrk_benchmark()
         "[F64, F64, F32, F32]" => [Float64, Float64, Float32, Float32],
         "[F32, F64, F64]"      => [Float32, Float64, Float64],
         "[F16, F16, F32]"      => [Float16, Float16, Float32],
+        "[F16, F16, F16, F32]"      => [Float16, Float16, Float16, Float32],
+        "[F16, F16, F16, F16, F32]"      => [Float16, Float16, Float16, Float16, Float32],
         "[F16, F32, F32]"      => [Float16, Float32, Float32]
     )
     
