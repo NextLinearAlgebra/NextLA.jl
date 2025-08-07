@@ -270,7 +270,7 @@ function unified_rec(func::Char, side::Char, uplo::Char,
                     RightUpperTRMM!(A, B)
                 end
             else
-                CUBLAS.trmm!(side, uplo, 'N', 'N', one(T), A, B)
+                CUBLAS.trmm!(side, uplo, 'N', 'N', one(T), A, B, B)
             end
         end
         # if func == 'S'

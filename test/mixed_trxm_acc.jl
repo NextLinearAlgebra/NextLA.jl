@@ -21,7 +21,7 @@ function check_accuracy()
         "TriMixed: [F32, F32, F32, F32, F64]" => [Float32, Float32, Float32, Float32, Float64],
     )
 
-    for func in ['S'] #, 'M']
+    for func in ['M']
         op_name = func == 'S' ? "TRSM" : "TRMM"
         println("\n" * "="^70)
         println("🔬 Starting Accuracy Check for $op_name (uplo='$uplo')...")
@@ -40,8 +40,7 @@ function check_accuracy()
             if func == 'S' # TRSM: B <- alpha * inv(A) * B
                 CUBLAS.trsm!(side, uplo, trans, 'N', alpha, A_sol_gpu, B_sol_gpu)
             else # TRMM: B <- alpha * A * B
-                # Note: TRMM output must be a different matrix, so we recalculate
-                B_sol_gpu = alpha .* (A_cpu * B_cpu)
+                CUBLAS.trmm!(side, uplo, trans, 'N', alpha, A_sol_gpu, B_sol_gpu, B_sol_gpu)
             end
 
             # --- Test Recursive and Mixed-Precision Implementations for Accuracy ---
