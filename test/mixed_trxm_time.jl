@@ -2,37 +2,52 @@ using Test, CUDA, LinearAlgebra, Printf, KernelAbstractions
 
 include("benchmark.jl")
 
+
+function benchmark_op(op, reset_op, backend)
+    reset_op()
+    op()
+    KernelAbstractions.synchronize(backend)
+
+    min_time_ns = Inf
+    for _ in 1:5
+        reset_op()
+        time = run_single_benchmark(op, backend)
+        min_time_ns = min(min_time_ns, time)
+    end
+    
+    return min_time_ns
+end
+
 function get_runtime_recursive(A_cpu, B_cpu, T_prec, op_char, side, uplo, trans, alpha)
     A_perf = CuArray{T_prec}(A_cpu)
     B_clean = CuArray{T_prec}(B_cpu)
     B_perf = copy(B_clean)
-    
     backend = KernelAbstractions.get_backend(A_perf)
     
-    time_ns = run_manual_benchmark(backend) do
-        copyto!(B_perf, B_clean) 
-        unified_rectrxm!(side, uplo, trans, alpha, op_char, A_perf, B_perf)
-    end
-    
-    return time_ns / 1_000_000
+    op = () -> unified_rectrxm!(side, uplo, trans, alpha, op_char, A_perf, B_perf)
+    reset_op = () -> copyto!(B_perf, B_clean)
+
+    min_time_ns = benchmark_op(op, reset_op, backend)
+    return min_time_ns / 1_000_000
 end
 
 
 function get_runtime_mixed(A_cpu, B_cpu, precisions, op_char, side, uplo, trans, alpha)
     T_base = precisions[1]
-    
-    A_mixed_perf = TriMixedPrec(CuArray(A_cpu), uplo; precisions=precisions)
+    A_gpu = CuArray(A_cpu)
     B_clean = CuArray{T_base}(B_cpu)
     B_perf = copy(B_clean)
-    
     backend = KernelAbstractions.get_backend(B_perf)
 
-    time_ns = run_manual_benchmark(backend) do
-        copyto!(B_perf, B_clean) 
+    op = () -> begin
+        A_mixed_perf = TriMixedPrec(A_gpu, uplo; precisions=precisions)
         unified_rectrxm!(side, uplo, trans, alpha, op_char, A_mixed_perf, B_perf)
     end
+    
+    reset_op = () -> copyto!(B_perf, B_clean)
 
-    return time_ns / 1_000_000
+    min_time_ns = benchmark_op(op, reset_op, backend)
+    return min_time_ns / 1_000_000
 end
 
 
@@ -40,11 +55,9 @@ function get_runtime_cublas(A_cpu, B_cpu, T_prec, op_char, side, uplo, trans, al
     A_blas = CuArray{T_prec}(A_cpu)
     B_blas_clean = CuArray{T_prec}(B_cpu)
     B_blas = copy(B_blas_clean)
-    
     backend = KernelAbstractions.get_backend(A_blas)
 
-    time_ns = run_manual_benchmark(backend) do
-        copyto!(B_blas, B_blas_clean)
+    op = () -> begin
         if op_char == 'S'
             CUBLAS.trsm!(side, uplo, trans, 'N', T_prec(alpha), A_blas, B_blas)
         else
@@ -52,8 +65,10 @@ function get_runtime_cublas(A_cpu, B_cpu, T_prec, op_char, side, uplo, trans, al
             CUBLAS.trmm!(side, uplo, trans, 'N', T_prec(alpha), A_blas, B_blas, C_blas)
         end
     end
+    reset_op = () -> copyto!(B_blas, B_blas_clean)
 
-    return time_ns / 1_000_000
+    min_time_ns = benchmark_op(op, reset_op, backend)
+    return min_time_ns / 1_000_000
 end
 
 

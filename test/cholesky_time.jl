@@ -2,40 +2,59 @@ using Test, CUDA, LinearAlgebra, Printf, KernelAbstractions
 
 include("benchmark.jl") 
 
-function get_runtime_pure(A_spd_fp64, n::Int, T_prec::DataType)
-    backend = KernelAbstractions.get_backend(A_spd_fp64)
-    
-    time_ns = run_manual_benchmark(backend) do
-        potrf_recursive!(copy(A_spd_fp64), 4096)
+
+function benchmark_op(op, reset_op, backend)
+    # 1. Warm-up
+    reset_op()
+    op()
+    KernelAbstractions.synchronize(backend)
+
+    min_time_ns = Inf
+    for _ in 1:5
+        reset_op()
+        time = run_single_benchmark(op, backend)
+        min_time_ns = min(min_time_ns, time)
     end
     
-    return time_ns / 1_000_000
+    return min_time_ns
 end
 
+function get_runtime_pure(A_clean, n::Int, T_prec::DataType)
+    A_perf = copy(A_clean)
+    backend = KernelAbstractions.get_backend(A_perf)
+
+    op = () -> potrf_recursive!(A_perf, 4096)
+    reset_op = () -> copyto!(A_perf, A_clean)
+
+    min_time_ns = benchmark_op(op, reset_op, backend)
+    return min_time_ns / 1_000_000
+end
 
 function get_runtime_mixed(A_spd_fp64, n::Int, precisions::Vector)
     backend = KernelAbstractions.get_backend(A_spd_fp64)
 
-    time_ns = run_manual_benchmark(backend) do
+    op = () -> begin
         A_to_factor = SymmMixedPrec(A_spd_fp64, 'L'; precisions=precisions)
         potrf_recursive!(A_to_factor)
     end
     
-    return time_ns / 1_000_000
-end
+    reset_op = () -> () 
 
+    min_time_ns = benchmark_op(op, reset_op, backend)
+    return min_time_ns / 1_000_000
+end
 
 function get_runtime_cusolver(A_spd_fp64, n::Int, T_prec::DataType)
-    backend = KernelAbstractions.get_backend(A_spd_fp64)
-    A_spd_base = (T_prec == Float64) ? A_spd_fp64 : T_prec.(A_spd_fp64)
+    A_clean = (T_prec == Float64) ? A_spd_fp64 : T_prec.(A_spd_fp64)
+    A_perf = copy(A_clean)
+    backend = KernelAbstractions.get_backend(A_perf)
 
-    time_ns = run_manual_benchmark(backend) do
-        CUSOLVER.potrf!('L', copy(A_spd_base))
-    end
+    op = () -> CUSOLVER.potrf!('L', A_perf)
+    reset_op = () -> copyto!(A_perf, A_clean)
     
-    return time_ns / 1_000_000
+    min_time_ns = benchmark_op(op, reset_op, backend)
+    return min_time_ns / 1_000_000
 end
-
 
 function run_cholesky_benchmarks()
     n_values = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536] 

@@ -26,3 +26,15 @@ function run_manual_benchmark(func_to_benchmark, backend; min_time_s::Float64 = 
 
     return best_time_ns
 end
+
+function run_single_benchmark(func_to_benchmark, backend)
+    KernelAbstractions.synchronize(backend)
+    start_time = time_ns()
+
+    func_to_benchmark()
+
+    KernelAbstractions.synchronize(backend)
+    end_time = time_ns()
+
+    return end_time - start_time
+end

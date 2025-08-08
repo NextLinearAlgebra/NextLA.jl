@@ -2,22 +2,46 @@ using Test, CUDA, LinearAlgebra, Printf, Plots, KernelAbstractions
 
 include("benchmark.jl")
 
-function get_syrk_runtime_pure(d_A, d_C_orig, T_prec, alpha, beta)
-    backend = KernelAbstractions.get_backend(d_A)
-    time_ns = run_manual_benchmark(backend) do
-        C_perf = copy(d_C_orig)
-        recsyrk!(T_prec(alpha), d_A, T_prec(beta), C_perf, 256)
+function benchmark_op(op, reset_op, backend)
+    # 1. Warm-up
+    reset_op()
+    op()
+    KernelAbstractions.synchronize(backend)
+
+    min_time_ns = Inf
+    for _ in 1:5
+        reset_op()
+        time = run_single_benchmark(op, backend)
+        min_time_ns = min(min_time_ns, time)
     end
-    return time_ns / 1_000_000
+    
+    return min_time_ns
 end
+
+function get_syrk_runtime_pure(d_A, C_clean, T_prec, alpha, beta)
+    backend = KernelAbstractions.get_backend(d_A)
+    C_perf = copy(C_clean)
+
+    op = () -> recsyrk!(T_prec(alpha), d_A, T_prec(beta), C_perf, 256)
+    reset_op = () -> copyto!(C_perf, C_clean)
+
+    min_time_ns = benchmark_op(op, reset_op, backend)
+    return min_time_ns / 1_000_000
+end
+
 
 function get_syrk_runtime_mixed(d_A, d_C_orig, T_out, precisions, alpha, beta)
     backend = KernelAbstractions.get_backend(d_A)
-    time_ns = run_manual_benchmark(backend) do
+    
+    op = () -> begin
         C_perf_mixed = SymmMixedPrec(copy(d_C_orig), 'L'; precisions=precisions)
         recsyrk!(T_out(alpha), d_A, T_out(beta), C_perf_mixed)
     end
-    return time_ns / 1_000_000
+    
+    reset_op = () -> ()
+
+    min_time_ns = benchmark_op(op, reset_op, backend)
+    return min_time_ns / 1_000_000
 end
 
 function get_syrk_runtime_cublas(n::Int, T_prec, alpha, beta)
@@ -31,6 +55,19 @@ function get_syrk_runtime_cublas(n::Int, T_prec, alpha, beta)
     return time_ns / 1_000_000
 end
 
+function get_syrk_runtime_cublas(n::Int, T_prec, alpha, beta)
+    d_A_cublas = CuArray(randn(T_prec, n, n))
+    d_C_cublas = CuArray(zeros(T_prec, n, n))
+    d_C_clean = copy(d_C_cublas) 
+    
+    backend = KernelAbstractions.get_backend(d_A_cublas)
+
+    op = () -> CUBLAS.syrk!('L', 'N', T_prec(alpha), d_A_cublas, T_prec(beta), d_C_cublas)
+    reset_op = () -> copyto!(d_C_cublas, d_C_clean)
+    
+    min_time_ns = benchmark_op(op, reset_op, backend)
+    return min_time_ns / 1_000_000
+end
 
 
 function run_recsyrk_performance_benchmark()
