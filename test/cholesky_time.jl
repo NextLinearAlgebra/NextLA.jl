@@ -1,6 +1,7 @@
 using Test, CUDA, LinearAlgebra, Printf, KernelAbstractions
 
 include("benchmark.jl") 
+include("flops.jl")
 
 
 function benchmark_op(op, reset_op, backend)
@@ -27,7 +28,12 @@ function get_runtime_pure(A_clean, n::Int, T_prec::DataType)
     reset_op = () -> copyto!(A_perf, A_clean)
 
     min_time_ns = benchmark_op(op, reset_op, backend)
-    return min_time_ns / 1_000_000
+    runtime_ms = min_time_ns / 1_000_000
+
+    flops = flops_potrf(T_prec, n)
+    gflops = calculate_gflops(flops, min_time_ns)
+
+    return runtime_ms, gflops
 end
 
 function get_runtime_mixed(A_spd_fp64, n::Int, precisions::Vector)
@@ -41,7 +47,13 @@ function get_runtime_mixed(A_spd_fp64, n::Int, precisions::Vector)
     reset_op = () -> () 
 
     min_time_ns = benchmark_op(op, reset_op, backend)
-    return min_time_ns / 1_000_000
+    runtime_ms = min_time_ns / 1_000_000
+
+    T_flops = precisions[1]
+    flops = flops_potrf(T_flops, n)
+    gflops = calculate_gflops(flops, min_time_ns)
+
+    return runtime_ms, gflops
 end
 
 function get_runtime_cusolver(A_spd_fp64, n::Int, T_prec::DataType)
@@ -53,7 +65,12 @@ function get_runtime_cusolver(A_spd_fp64, n::Int, T_prec::DataType)
     reset_op = () -> copyto!(A_perf, A_clean)
     
     min_time_ns = benchmark_op(op, reset_op, backend)
-    return min_time_ns / 1_000_000
+    runtime_ms = min_time_ns / 1_000_000
+
+    flops = flops_potrf(T_prec, n)
+    gflops = calculate_gflops(flops, min_time_ns)
+
+    return runtime_ms, gflops
 end
 
 function run_cholesky_benchmarks()
@@ -92,20 +109,20 @@ function run_cholesky_benchmarks()
         
         println("\n--- Pure Precision Scenarios ---")
         for (name, precisions) in pure_scenarios
-            runtime_ms = get_runtime_pure(precisions[1].(A_spd_fp64), n, precisions[1])
-            @printf("    %-25s | Runtime: %8.3f ms\n", name, runtime_ms)
+            runtime_ms, gflops = get_runtime_pure(precisions[1].(A_spd_fp64), n, precisions[1])
+            @printf("    %-25s | Runtime: %8.3f ms | GFLOPS: %8.2f\n", name, runtime_ms, gflops)
         end
 
         println("\n--- Mixed Precision Scenarios ---")
         for (name, precisions) in mixed_scenarios
-            runtime_ms = get_runtime_mixed(A_spd_fp64, n, precisions)
-            @printf("    %-25s | Runtime: %8.3f ms\n", name, runtime_ms)
+            runtime_ms, gflops = get_runtime_mixed(A_spd_fp64, n, precisions)
+            @printf("    %-25s | Runtime: %8.3f ms | GFLOPS: %8.2f\n", name, runtime_ms, gflops)
         end
         
         println("\n--- Standard CUSOLVER.potrf! ---")
         for (name, T_prec) in Dict("CUSOLVER F32" => Float32, "CUSOLVER F64" => Float64)
-            runtime_ms = get_runtime_cusolver(A_spd_fp64, n, T_prec)
-            @printf("    %-25s | Runtime: %8.3f ms\n", name, runtime_ms)
+            runtime_ms, gflops = get_runtime_cusolver(A_spd_fp64, n, T_prec)
+            @printf("    %-25s | Runtime: %8.3f ms | GFLOPS: %8.2f\n", name, runtime_ms, gflops)
         end
     end
     

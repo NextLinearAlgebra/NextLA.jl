@@ -1,6 +1,7 @@
 using Test, CUDA, LinearAlgebra, Printf, Plots, KernelAbstractions
 
 include("benchmark.jl")
+include("flops.jl")
 
 function benchmark_op(op, reset_op, backend)
     # 1. Warm-up
@@ -18,7 +19,7 @@ function benchmark_op(op, reset_op, backend)
     return min_time_ns
 end
 
-function get_syrk_runtime_pure(d_A, C_clean, T_prec, alpha, beta)
+function get_syrk_runtime_pure(d_A, C_clean, n::Int, T_prec, alpha, beta)
     backend = KernelAbstractions.get_backend(d_A)
     C_perf = copy(C_clean)
 
@@ -26,11 +27,15 @@ function get_syrk_runtime_pure(d_A, C_clean, T_prec, alpha, beta)
     reset_op = () -> copyto!(C_perf, C_clean)
 
     min_time_ns = benchmark_op(op, reset_op, backend)
-    return min_time_ns / 1_000_000
+    runtime_ms = min_time_ns / 1_000_000
+
+    flops = flops_syrk(T_prec, n, n)
+    gflops = calculate_gflops(flops, min_time_ns)
+
+    return runtime_ms, gflops
 end
 
-
-function get_syrk_runtime_mixed(d_A, d_C_orig, T_out, precisions, alpha, beta)
+function get_syrk_runtime_mixed(d_A, d_C_orig, n::Int, T_out, precisions, alpha, beta)
     backend = KernelAbstractions.get_backend(d_A)
     
     op = () -> begin
@@ -41,18 +46,12 @@ function get_syrk_runtime_mixed(d_A, d_C_orig, T_out, precisions, alpha, beta)
     reset_op = () -> ()
 
     min_time_ns = benchmark_op(op, reset_op, backend)
-    return min_time_ns / 1_000_000
-end
+    runtime_ms = min_time_ns / 1_000_000
 
-function get_syrk_runtime_cublas(n::Int, T_prec, alpha, beta)
-    d_A_cublas = CuArray(randn(T_prec, n, n))
-    d_C_cublas = CuArray(zeros(T_prec, n, n))
-    
-    backend = KernelAbstractions.get_backend(d_A_cublas)
-    time_ns = run_manual_benchmark(backend) do
-        CUBLAS.syrk!('L', 'N', T_prec(alpha), d_A_cublas, T_prec(beta), d_C_cublas)
-    end
-    return time_ns / 1_000_000
+    flops = flops_syrk(T_out, n, n)
+    gflops = calculate_gflops(flops, min_time_ns)
+
+    return runtime_ms, gflops
 end
 
 function get_syrk_runtime_cublas(n::Int, T_prec, alpha, beta)
@@ -66,7 +65,12 @@ function get_syrk_runtime_cublas(n::Int, T_prec, alpha, beta)
     reset_op = () -> copyto!(d_C_cublas, d_C_clean)
     
     min_time_ns = benchmark_op(op, reset_op, backend)
-    return min_time_ns / 1_000_000
+    runtime_ms = min_time_ns / 1_000_000
+
+    flops = flops_syrk(T_prec, n, n)
+    gflops = calculate_gflops(flops, min_time_ns)
+
+    return runtime_ms, gflops
 end
 
 
@@ -104,9 +108,9 @@ function run_recsyrk_performance_benchmark()
             T_prec = precisions[end]
             d_A = CuArray(randn(T_prec, n, n) .* 0.1f0)
             d_C_orig = CuArray(zeros(T_prec, n, n))
-            runtime_ms = get_syrk_runtime_pure(d_A, d_C_orig, T_prec, alpha, beta)
+            runtime_ms, gflops = get_syrk_runtime_pure(d_A, d_C_orig, n, T_prec, alpha, beta)
             push!(runtime_results[name], runtime_ms)
-            @printf("    %-28s | Runtime: %8.3f ms\n", name, runtime_ms)
+            @printf("    %-28s | Runtime: %8.3f ms | GFLOPS: %8.2f\n", name, runtime_ms, gflops)
         end
 
         println("\n--- Mixed Precision Scenarios ---")
@@ -115,23 +119,22 @@ function run_recsyrk_performance_benchmark()
             d_A = CuArray(randn(T_out, n, n) .* 0.1f0)
             d_C_orig = CuArray(zeros(T_out, n, n))
             
-            runtime_ms = get_syrk_runtime_mixed(d_A, d_C_orig, T_out, precisions, alpha, beta)
+            runtime_ms, gflops = get_syrk_runtime_mixed(d_A, d_C_orig, n, T_out, precisions, alpha, beta)
             push!(runtime_results[name], runtime_ms)
-            @printf("    %-28s | Runtime: %8.3f ms\n", name, runtime_ms)
+            @printf("    %-28s | Runtime: %8.3f ms | GFLOPS: %8.2f\n", name, runtime_ms, gflops)
         end
 
         println("\n--- Benchmarking standard CUBLAS.syrk! ---")
         for (name, T_prec) in Dict("CUBLAS F32" => Float32, "CUBLAS F64" => Float64)
             alpha, beta = -1.0, 1.0
-            runtime_ms = get_syrk_runtime_cublas(n, T_prec, alpha, beta)
+            runtime_ms, gflops = get_syrk_runtime_cublas(n, T_prec, alpha, beta)
             push!(cublas_runtime_results[name], runtime_ms)
-            @printf("    %-28s | Runtime: %8.3f ms\n", name, runtime_ms)
+            @printf("    %-28s | Runtime: %8.3f ms | GFLOPS: %8.2f\n", name, runtime_ms, gflops)
         end
         
-        GC.gc(true); CUDA.reclaim() # Manual GC call after each matrix size
+        GC.gc(true); CUDA.reclaim()
     end
 
-    # --- Plotting Performance Results ---
     println("\n" * "="^60)
     println("📊 Generating and saving performance plot...")
 

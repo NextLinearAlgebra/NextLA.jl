@@ -1,6 +1,8 @@
 using Test, CUDA, LinearAlgebra, Printf, KernelAbstractions
 
 include("benchmark.jl")
+include("flops.jl")
+
 
 
 function benchmark_op(op, reset_op, backend)
@@ -18,7 +20,7 @@ function benchmark_op(op, reset_op, backend)
     return min_time_ns
 end
 
-function get_runtime_recursive(A_cpu, B_cpu, T_prec, op_char, side, uplo, trans, alpha)
+function get_runtime_recursive(A_cpu, B_cpu, n::Int, T_prec, op_char, side, uplo, trans, alpha)
     A_perf = CuArray{T_prec}(A_cpu)
     B_clean = CuArray{T_prec}(B_cpu)
     B_perf = copy(B_clean)
@@ -28,11 +30,15 @@ function get_runtime_recursive(A_cpu, B_cpu, T_prec, op_char, side, uplo, trans,
     reset_op = () -> copyto!(B_perf, B_clean)
 
     min_time_ns = benchmark_op(op, reset_op, backend)
-    return min_time_ns / 1_000_000
+    runtime_ms = min_time_ns / 1_000_000
+    
+    flops = flops_trsm(T_prec, n, n)
+    gflops = calculate_gflops(flops, min_time_ns)
+    
+    return runtime_ms, gflops
 end
 
-
-function get_runtime_mixed(A_cpu, B_cpu, precisions, op_char, side, uplo, trans, alpha)
+function get_runtime_mixed(A_cpu, B_cpu, n::Int, precisions, op_char, side, uplo, trans, alpha)
     T_base = precisions[1]
     A_gpu = CuArray(A_cpu)
     B_clean = CuArray{T_base}(B_cpu)
@@ -47,11 +53,15 @@ function get_runtime_mixed(A_cpu, B_cpu, precisions, op_char, side, uplo, trans,
     reset_op = () -> copyto!(B_perf, B_clean)
 
     min_time_ns = benchmark_op(op, reset_op, backend)
-    return min_time_ns / 1_000_000
+    runtime_ms = min_time_ns / 1_000_000
+
+    flops = flops_trsm(T_base, n, n)
+    gflops = calculate_gflops(flops, min_time_ns)
+
+    return runtime_ms, gflops
 end
 
-
-function get_runtime_cublas(A_cpu, B_cpu, T_prec, op_char, side, uplo, trans, alpha)
+function get_runtime_cublas(A_cpu, B_cpu, n::Int, T_prec, op_char, side, uplo, trans, alpha)
     A_blas = CuArray{T_prec}(A_cpu)
     B_blas_clean = CuArray{T_prec}(B_cpu)
     B_blas = copy(B_blas_clean)
@@ -68,7 +78,12 @@ function get_runtime_cublas(A_cpu, B_cpu, T_prec, op_char, side, uplo, trans, al
     reset_op = () -> copyto!(B_blas, B_blas_clean)
 
     min_time_ns = benchmark_op(op, reset_op, backend)
-    return min_time_ns / 1_000_000
+    runtime_ms = min_time_ns / 1_000_000
+
+    flops = flops_trsm(T_prec, n, n)
+    gflops = calculate_gflops(flops, min_time_ns)
+
+    return runtime_ms, gflops
 end
 
 
@@ -110,21 +125,21 @@ function run_tr_benchmarks()
             
             println("\n--- Custom & Mixed Precision Scenarios ---")
             for (name, precisions) in test_scenarios
-                local runtime_ms
+                local runtime_ms, gflops
                 if startswith(name, "Recursive")
                     T_prec = precisions[1]
-                    runtime_ms = get_runtime_recursive(A_cpu, B_cpu, T_prec, op_char, side, uplo, trans, alpha)
+                    runtime_ms, gflops = get_runtime_recursive(A_cpu, B_cpu, n, T_prec, op_char, side, uplo, trans, alpha)
                 else 
-                    runtime_ms = get_runtime_mixed(A_cpu, B_cpu, precisions, op_char, side, uplo, trans, alpha)
+                    runtime_ms, gflops = get_runtime_mixed(A_cpu, B_cpu, n, precisions, op_char, side, uplo, trans, alpha)
                 end
-                @printf("    %-45s | Runtime: %8.3f ms\n", name, runtime_ms)
+                @printf("    %-45s | Runtime: %8.3f ms | GFLOPS: %8.2f\n", name, runtime_ms, gflops)
             end
 
             println("\n--- Standard CUBLAS Baselines ---")
             for T_prec in [Float64, Float32]
-                runtime_ms = get_runtime_cublas(A_cpu, B_cpu, T_prec, op_char, side, uplo, trans, alpha)
+                runtime_ms, gflops = get_runtime_cublas(A_cpu, B_cpu, n, T_prec, op_char, side, uplo, trans, alpha)
                 cublas_name = "CUBLAS F$(sizeof(T_prec)*8)"
-                @printf("    %-45s | Runtime: %8.3f ms\n", cublas_name, runtime_ms)
+                @printf("    %-45s | Runtime: %8.3f ms | GFLOPS: %8.2f\n", cublas_name, runtime_ms, gflops)
             end
             
             A_cpu, B_cpu = (nothing, nothing)
