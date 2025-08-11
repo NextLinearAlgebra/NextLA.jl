@@ -29,12 +29,12 @@ function get_accuracy_pure(A_spd_fp64::CuMatrix, T_prec::DataType)
     A_to_factor = T_prec.(A_spd_fp64)
     
     potrf_recursive!(A_to_factor, 4096)
-    L_result = tril(A_to_factor)
+    # L_result = tril(A_to_factor)
     
-    A_reconstructed = L_result * L_result'
+    A_reconstructed = Float64.(tril(A_to_factor) * tril(A_to_factor)')
     
-    error_norm = norm(Float64.(A_reconstructed) - Float64.(A_spd_fp64))
-    orig_norm = norm(Float64.(A_spd_fp64))
+    error_norm = norm(A_reconstructed - A_spd_fp64)
+    orig_norm = norm(A_spd_fp64)
     
     return max(error_norm / orig_norm, 1e-20)
 end
@@ -45,23 +45,41 @@ function get_accuracy_mixed(A_spd_fp64::CuMatrix, precisions::Vector)
 
     potrf_recursive!(A_mixed_input)
 
-    L_result = tril(reconstruct_matrix(A_mixed_input))
+    # L_result = tril(reconstruct_matrix(A_mixed_input))
     
-    A_reconstructed = L_result * L_result'
+    A_reconstructed = Float64.(tril(reconstruct_matrix(A_mixed_input)) * tril(reconstruct_matrix(A_mixed_input))')
     
-    error_norm = norm(Float64.(A_reconstructed) - Float64.(A_spd_fp64))
-    orig_norm = norm(Float64.(A_spd_fp64))
+    error_norm = norm(A_reconstructed - A_spd_fp64)
+    orig_norm = norm(A_spd_fp64)
+    
+    return max(error_norm / orig_norm, 1e-20)
+end
+
+function get_accuracy_cusolver(A_spd_fp64::CuMatrix, T_prec::DataType)
+    A_to_factor = T_prec.(A_spd_fp64)
+    
+    CUSOLVER.potrf!('L', A_to_factor)
+    # L_result = tril(A_to_factor)
+    
+    A_reconstructed = Float64.(tril(A_to_factor) * tril(A_to_factor)')
+    
+    error_norm = norm(A_reconstructed - A_spd_fp64)
+    orig_norm = norm(A_spd_fp64)
     
     return max(error_norm / orig_norm, 1e-20)
 end
 
 
 function check_cholesky_accuracy()
-    n_values = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
+    n_values = [4096, 8192, 16384, 32768, 65536] #256, 512, 1024, 2048, 
 
     pure_scenarios = Dict(
         "Pure F32" => [Float32],
         "Pure F64" => [Float64],
+    )
+    cusolver_scenarios = Dict(
+        "CUSOLVER F32" => Float32,
+        "CUSOLVER F64" => Float64,
     )
     mixed_scenarios = Dict(
         "[F32, F64, F64, F64]"      => [Float32, Float64, Float64, Float64],
@@ -93,6 +111,11 @@ function check_cholesky_accuracy()
         A_spd_fp64 = A_gpu_rand * A_gpu_rand' + (n*100) * I
         A_gpu_rand = nothing
         
+        println("\n--- CUSOLVER Library Scenarios ---")
+        for (name, T_prec) in cusolver_scenarios
+            relative_error = get_accuracy_cusolver(A_spd_fp64, T_prec)
+            @printf("      %-25s | Rel. Error: %9.2e\n", name, relative_error)
+        end
         
         println("\n--- Pure Precision Scenarios ---")
         for (name, precisions) in pure_scenarios
