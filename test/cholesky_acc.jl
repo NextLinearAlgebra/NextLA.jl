@@ -25,30 +25,34 @@ function reconstruct_matrix(A::SymmMixedPrec{T_Base}) where {T_Base}
 end
 
 
-function get_accuracy_pure(A_spd_fp64::CuMatrix, L_truth::CuMatrix, T_prec::DataType)
+function get_accuracy_pure(A_spd_fp64::CuMatrix, T_prec::DataType)
     A_to_factor = T_prec.(A_spd_fp64)
     
-    potrf_recursive!(A_to_factor, 4096) 
+    potrf_recursive!(A_to_factor, 4096)
     L_result = tril(A_to_factor)
     
-    error_norm = norm(Float64.(L_result) - Float64.(L_truth))
-    truth_norm = norm(Float64.(L_truth))
+    A_reconstructed = L_result * L_result'
     
-    return max(error_norm / truth_norm, 1e-20)
+    error_norm = norm(Float64.(A_reconstructed) - Float64.(A_spd_fp64))
+    orig_norm = norm(Float64.(A_spd_fp64))
+    
+    return max(error_norm / orig_norm, 1e-20)
 end
 
 
-function get_accuracy_mixed(A_spd_fp64::CuMatrix, L_truth::CuMatrix, precisions::Vector)
+function get_accuracy_mixed(A_spd_fp64::CuMatrix, precisions::Vector)
     A_mixed_input = SymmMixedPrec(copy(A_spd_fp64), 'L'; precisions=precisions)
 
     potrf_recursive!(A_mixed_input)
 
     L_result = tril(reconstruct_matrix(A_mixed_input))
     
-    error_norm = norm(Float64.(L_result) - Float64.(L_truth))
-    truth_norm = norm(Float64.(L_truth))
+    A_reconstructed = L_result * L_result'
     
-    return max(error_norm / truth_norm, 1e-20)
+    error_norm = norm(Float64.(A_reconstructed) - Float64.(A_spd_fp64))
+    orig_norm = norm(Float64.(A_spd_fp64))
+    
+    return max(error_norm / orig_norm, 1e-20)
 end
 
 
@@ -68,6 +72,7 @@ function check_cholesky_accuracy()
         "[F16, F16, F32]"           => [Float16, Float16, Float32],
         "[F16, F16, F16, F32]"      => [Float16, Float16, Float16, Float32],
         "[F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float32],
+        "[F16, F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float16, Float32],
         "[F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float32, Float64],
         "[F16, F32, F64]"           => [Float16, Float32, Float64],
         "[F32, F64]"                => [Float32, Float64],
@@ -86,23 +91,20 @@ function check_cholesky_accuracy()
         A_cpu_rand = nothing
         
         A_spd_fp64 = A_gpu_rand * A_gpu_rand' + (n*100) * I
-        A_gpu_rand = nothing 
+        A_gpu_rand = nothing
         
-        A_ground_truth = copy(A_spd_fp64)
-        CUSOLVER.potrf!('L', A_ground_truth)
-        L_truth = tril(A_ground_truth)
         
         println("\n--- Pure Precision Scenarios ---")
         for (name, precisions) in pure_scenarios
-            T_prec = precisions[1] 
-            relative_error = get_accuracy_pure(A_spd_fp64, L_truth, T_prec)
-            @printf("    %-25s | Rel. Error: %9.2e\n", name, relative_error)
+            T_prec = precisions[1]
+            relative_error = get_accuracy_pure(A_spd_fp64, T_prec)
+            @printf("      %-25s | Rel. Error: %9.2e\n", name, relative_error)
         end
 
         println("\n--- Mixed Precision Scenarios ---")
         for (name, precisions) in mixed_scenarios
-            relative_error = get_accuracy_mixed(A_spd_fp64, L_truth, precisions)
-            @printf("    %-25s | Rel. Error: %9.2e\n", name, relative_error)
+            relative_error = get_accuracy_mixed(A_spd_fp64, precisions)
+            @printf("      %-25s | Rel. Error: %9.2e\n", name, relative_error)
         end
     end
     
