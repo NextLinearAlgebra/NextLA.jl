@@ -76,6 +76,7 @@ function check_cholesky_accuracy()
     pure_scenarios = Dict(
         "Pure F32" => [Float32],
         "Pure F64" => [Float64],
+        "Pure F16" => [Float16]
     )
     cusolver_scenarios = Dict(
         "CUSOLVER F32" => Float32,

@@ -79,6 +79,7 @@ function run_cholesky_benchmarks()
     pure_scenarios = Dict(
         "Pure F32" => [Float32],
         "Pure F64" => [Float64],
+        "Pure F16" => [Float16],
     )
     mixed_scenarios = Dict(
         "[F32, F64, F64, F64]"      => [Float32, Float64, Float64, Float64],

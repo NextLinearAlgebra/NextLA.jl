@@ -6,6 +6,7 @@ include("trmm.jl")
 include("matmul.jl")
 include("rectrxm.jl")
 include("recsyrk.jl")
+include("cholesky.jl")
 
 function potrf_recursive!(A, block_size)
     n = size(A, 1)
@@ -14,22 +15,11 @@ function potrf_recursive!(A, block_size)
     # println("[TRACE] potrf_recursive! called on $(n)x$(n) matrix of type $(eltype(A))")
 
     if n <= block_size
-        # println("  -> Base Case reached for $(n)x$(n) matrix. Checking before CUSOLVER...")
-        
-        # Check if the matrix is valid BEFORE the final factorization
-        diag_A_before = diag(A)
-        if any(x -> isnan(x) || x <= 0, diag_A_before)
-            println("  !!! WARNING: Matrix has non-positive or NaN diagonal elements BEFORE potrf!")
-            println("      Problematic values: ", filter(x -> isnan(x) || x <= 0, diag_A_before))
+        if eltype(A) == Float16
+            cholesky_lower!(A)
+        else
+            CUSOLVER.potrf!('L', A)
         end
-
-        CUSOLVER.potrf!('L', A)
-
-        diag_A_after = diag(A)
-        if any(isnan, diag_A_after)
-             println("  !!! PROBLEM: CUSOLVER.potrf! produced NaNs in base case.")
-        end
-
         return
     end
 
@@ -46,18 +36,11 @@ function potrf_recursive!(A, block_size)
     potrf_recursive!(A11, block_size)
 
     # TRSM: A21 = A21 * inv(L11ᵀ)
-    # L11 = Matrix(A11)
-    # A21_mat = Matrix(A21)
     CUBLAS.trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
-    # A21 .= A21_mat
 
     # SYRK: A22 -= A21 * A21ᵀ
-    # A22_mat = Matrix(A22)
-    # CUBLAS.gemm!('N', 'T', -1.0, A21, A21, 1.0, A22) #recursive syrk with mixed precision 
     CUBLAS.syrk!('L', 'N', -1.0, A21, 1.0, A22)
-    # A22 .= A22_mat
-
-    # Recursive POTRF on trailing block
+    
     potrf_recursive!(A22, block_size)
 end
 
@@ -85,17 +68,7 @@ end
 
 function potrf_recursive!(A:: SymmMixedPrec)
     if A.BaseCase !== nothing
-        # diag_base = diag(A.BaseCase)
-        # if any(isnan, diag_base) || any(x -> x <= 0, diag_base)
-        #     println("!!! PROBLEM at size $(n)x$(n): BaseCase is invalid BEFORE final potrf!")
-        #     println("    Problematic diagonal values: ", filter(x -> isnan(x) || x <= 0, diag_base))
-        # end
         potrf_recursive!(A.BaseCase, 4096)
-        # diag_base = diag(A.BaseCase)
-        # if any(isnan, diag_base) || any(x -> x <= 0, diag_base)
-        #     println("!!! PROBLEM at size $(n)x$(n): BaseCase is invalid AFTER final potrf!")
-        #     println("    Problematic diagonal values: ", filter(x -> isnan(x) || x <= 0, diag_base))
-        # end
         return
     end
 
@@ -103,25 +76,10 @@ function potrf_recursive!(A:: SymmMixedPrec)
     potrf_recursive!(A.A11) 
 
     # TRSM: A21 = A21 * inv(L11ᵀ)
-    # L11 = Matrix(A11)
-    # A21_mat = Matrix(A21)
-    # CUBLAS.trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
     unified_rectrxm!('R', 'L', 'T', 1.0, 'S', TriMixedPrec(A.A11), A.OffDiag)
-    # if any(isnan, A.OffDiag)
-    #     println("!!! PROBLEM at size $(n)x$(n): NaN appeared in A.OffDiag AFTER TRSM.")
-    # end
-    
-    # A21 .= A21_mat
 
     # SYRK: A22 -= A21 * A21ᵀ
-    # A22_mat = Matrix(A22)
     recsyrk!(-1.0, A.OffDiag, 1.0, A.A22)
-
-    # a22_dense_for_check = reconstruct_matrix(A.A22)
-    # if any(isnan, a22_dense_for_check)
-    #     println("!!! PROBLEM at size $(n)x$(n): NaN appeared in A.A22 immediately AFTER SYRK.")
-    # end
-    # A22 .= A22_mat
 
     # Recursive POTRF on trailing block
     potrf_recursive!(A.A22)
