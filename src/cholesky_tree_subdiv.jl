@@ -36,10 +36,12 @@ function potrf_recursive!(A, block_size)
     potrf_recursive!(A11, block_size)
 
     # TRSM: A21 = A21 * inv(L11ᵀ)
-    CUBLAS.trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
+    # CUBLAS.trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
+    unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A11, A21)
 
     # SYRK: A22 -= A21 * A21ᵀ
-    CUBLAS.syrk!('L', 'N', -1.0, A21, 1.0, A22)
+    # CUBLAS.syrk!('L', 'N', -1.0, A21, 1.0, A22)
+    recsyrk!(-1.0, A21, 1.0, A22)
     
     potrf_recursive!(A22, block_size)
 end

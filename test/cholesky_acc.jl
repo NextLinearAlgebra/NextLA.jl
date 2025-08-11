@@ -26,12 +26,19 @@ end
 
 
 function get_accuracy_pure(A_spd_fp64::CuMatrix, T_prec::DataType)
-    A_to_factor = T_prec.(A_spd_fp64)
+    local A_to_factor, scale_factor
+    
+    if T_prec == Float16
+        scale_factor = maximum(abs, A_spd_fp64)
+        A_to_factor = Float16.(A_spd_fp64 ./ scale_factor)
+    else
+        scale_factor = 1.0
+        A_to_factor = T_prec.(A_spd_fp64)
+    end
     
     potrf_recursive!(A_to_factor, 4096)
-    # L_result = tril(A_to_factor)
     
-    A_reconstructed = Float64.(tril(A_to_factor) * tril(A_to_factor)')
+    A_reconstructed = Float64.(tril(A_to_factor) * tril(A_to_factor)' * scale_factor)
     
     error_norm = norm(A_reconstructed - A_spd_fp64)
     orig_norm = norm(A_spd_fp64)

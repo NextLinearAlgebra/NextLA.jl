@@ -58,7 +58,7 @@ end
 
 function test_cholesky_lower(N)
     println("Testing lower Cholesky for N = $N")
-    A = rand(Float64, N, N)
+    A = rand(Float16, N, N)
     A = A * A' + N * I
 
     A_gpu = CuArray(A)
@@ -72,4 +72,4 @@ function test_cholesky_lower(N)
     println((t1, t2))
 end
 
-# test_cholesky_lower(256)
+test_cholesky_lower(256)
