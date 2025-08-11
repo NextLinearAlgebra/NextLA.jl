@@ -58,12 +58,14 @@ function run_recsyrk_accuracy_benchmark()
             d_A = CuArray(randn(T_out, n, n) .* 0.1f0)
             d_C_orig = CuArray(zeros(T_out, n, n))
 
-            d_A_fp64 = CuArray{Float64}(d_A)
-            d_C_ground_truth = CuArray(zeros(Float64, n, n))
-            CUBLAS.syrk!('L', 'N', Float64(alpha), d_A_fp64, Float64(beta), d_C_ground_truth)
+            h_A_fp64 = Array{Float64}(d_A)
+            h_C_ground_truth = zeros(Float64, n, n)
+            
+            LinearAlgebra.BLAS.syrk!('L', 'N', Float64(alpha), h_A_fp64, Float64(beta), h_C_ground_truth)
+            h_A_fp64 = nothing
 
             C_for_custom = copy(d_C_orig)
-            C_custom_result = if name in ["Pure F16", "Pure F32", "Pure F64"]
+            C_custom_result_gpu = if name in ["Pure F16", "Pure F32", "Pure F64"]
                 recsyrk!(T_out(alpha), d_A, T_out(beta), C_for_custom, 256)
                 C_for_custom
             else
@@ -72,13 +74,23 @@ function run_recsyrk_accuracy_benchmark()
                 reconstruct_matrix(C_mixed)
             end
 
-            error_norm = norm(tril(CuArray{Float64}(C_custom_result)) - tril(d_C_ground_truth))
-            solution_norm = norm(tril(d_C_ground_truth))
+            h_C_custom_result = Array(C_custom_result_gpu)
+
+            error_norm = norm(tril(h_C_custom_result) - tril(h_C_ground_truth))
+            solution_norm = norm(tril(h_C_ground_truth))
             relative_error = max(error_norm / solution_norm, 1e-20)
             
             push!(accuracy_results[name], -log10(max(relative_error, 1e-18)))
 
-            @printf("    %-28s | Rel. Error: %9.2e\n", name, relative_error)
+            @printf("     %-28s | Rel. Error: %9.2e\n", name, relative_error)
+
+            d_A = nothing
+            d_C_orig = nothing
+            C_for_custom = nothing
+            C_custom_result_gpu = nothing
+            h_C_custom_result = nothing
+            h_C_ground_truth = nothing
+            GC.gc(true); CUDA.reclaim()
         end
     end
 
@@ -89,7 +101,7 @@ function run_recsyrk_accuracy_benchmark()
     
     for (name, acc_values) in accuracy_results
         if name != "Pure Float64" 
-            plot!(acc_plot, n_values, acc_values, label=name, marker=:auto)
+            plot!(acc_plot, n_values[1:length(acc_values)], acc_values, label=name, marker=:auto)
         end
     end
     

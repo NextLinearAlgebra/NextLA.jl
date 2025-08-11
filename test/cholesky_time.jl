@@ -74,7 +74,7 @@ function get_runtime_cusolver(A_spd_fp64, n::Int, T_prec::DataType)
 end
 
 function run_cholesky_benchmarks()
-    n_values = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536] 
+    n_values = [4096, 8192, 16384, 32768, 65536] #256, 512, 1024, 2048, 
 
     pure_scenarios = Dict(
         "Pure F32" => [Float32],

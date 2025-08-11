@@ -75,7 +75,7 @@ end
 
 
 function run_recsyrk_performance_benchmark()
-    n_values = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
+    n_values = [4096, 8192, 16384, 32768, 65536] #256, 512, 1024, 2048, 
     
     pure_scenarios = Dict(
         "Pure F16" => [Float16, Float16, Float16],
