@@ -16,7 +16,9 @@ function potrf_recursive!(A, block_size)
 
     if n <= block_size
         if eltype(A) == Float16
-            cholesky_lower!(A)
+            A_f32 = Float32.(A)
+            CUSOLVER.potrf!('L', A_f32)
+            A .= Float16.(A_f32)
         else
             CUSOLVER.potrf!('L', A)
         end
