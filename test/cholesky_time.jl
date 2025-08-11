@@ -20,7 +20,17 @@ function benchmark_op(op, reset_op, backend)
     return min_time_ns
 end
 
-function get_runtime_pure(A_clean, n::Int, T_prec::DataType)
+function get_runtime_pure(A_spd_fp64, n::Int, T_prec::DataType)
+    local A_clean
+    
+    # Apply scaling only for Float16 to prevent Inf/NaN during timing.
+    if T_prec == Float16
+        scale_factor = maximum(abs, A_spd_fp64)
+        A_clean = Float16.(A_spd_fp64 ./ scale_factor)
+    else
+        A_clean = T_prec.(A_spd_fp64)
+    end
+
     A_perf = copy(A_clean)
     backend = KernelAbstractions.get_backend(A_perf)
 
@@ -115,7 +125,7 @@ function run_cholesky_benchmarks()
         
         println("\n--- Pure Precision Scenarios ---")
         for (name, precisions) in pure_scenarios
-            runtime_ms, gflops = get_runtime_pure(precisions[1].(A_spd_fp64), n, precisions[1])
+            runtime_ms, gflops = get_runtime_pure(A_spd_fp64, n, precisions[1])
             @printf("    %-25s | Runtime: %8.3f ms | GFLOPS: %8.2f\n", name, runtime_ms, gflops)
         end
 

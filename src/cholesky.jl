@@ -72,4 +72,4 @@ function test_cholesky_lower(N)
     println((t1, t2))
 end
 
-test_cholesky_lower(256)
+# test_cholesky_lower(256)
