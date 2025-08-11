@@ -68,6 +68,7 @@ function check_cholesky_accuracy()
         "[F16, F16, F32]"           => [Float16, Float16, Float32],
         "[F16, F16, F16, F32]"      => [Float16, Float16, Float16, Float32],
         "[F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float32],
+        "[F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float32, Float64],
         "[F16, F32, F64]"           => [Float16, Float32, Float64],
         "[F32, F64]"                => [Float32, Float64],
         "[F16, F64]"                => [Float16, Float64],

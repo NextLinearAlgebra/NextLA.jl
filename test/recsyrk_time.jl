@@ -90,6 +90,7 @@ function run_recsyrk_performance_benchmark()
         "[F16, F16, F32]"           => [Float16, Float16, Float32],
         "[F16, F16, F16, F32]"      => [Float16, Float16, Float16, Float32],
         "[F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float32],
+        "[F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float32, Float64],
         "[F16, F32, F32]"           => [Float16, Float32, Float32]
     )
 
