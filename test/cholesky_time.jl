@@ -25,7 +25,7 @@ function get_runtime_pure(A_spd_fp64, n::Int, T_prec::DataType)
     
     if T_prec == Float16
         scale_factor = maximum(abs, A_spd_fp64)
-        A_clean = Float16.(A_spd_fp64 ./ scale_factor) + 1000*I
+        A_clean = Float16.(A_spd_fp64 ./ scale_factor) + 100*I
     else
         A_clean = T_prec.(A_spd_fp64)
     end
@@ -113,10 +113,10 @@ function run_cholesky_benchmarks()
     println("🚀 Starting Cholesky Benchmark...")
 
     for n in n_values
-        A_cpu_rand = randn(Float64, n, n)
+        A_cpu_rand = randn(Float64, n, n) * .01
         A_gpu = CuArray(A_cpu_rand)
         A_cpu_rand = nothing 
-        A_spd_fp64 = A_gpu * A_gpu' + (n * 100) * I
+        A_spd_fp64 = A_gpu * A_gpu' + (n * 10) * I
         A_gpu = nothing
 
         println("\n" * "="^80)

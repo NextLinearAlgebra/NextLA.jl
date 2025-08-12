@@ -47,13 +47,10 @@ function get_accuracy_pure(A_spd_fp64::CuMatrix, T_prec::DataType)
         scale_factor = 1.0
         A_to_factor = T_prec.(A_spd_fp64)
     end
-    print("got here to step 1")
     
     potrf_recursive!(A_to_factor, 4096)
     A_tri = tril(A_to_factor)
-    print("trilled!")
-    A_reconstructed = Float64.(A_tri * A_tri' * scale_factor)
-    print("got here to refactored!")
+    A_reconstructed = Float64.(A_tri * Transpose(A_tri) * scale_factor)
     A_to_factor = nothing
     A_tri = nothing
     GC.gc(true); CUDA.reclaim()
@@ -63,11 +60,8 @@ function get_accuracy_pure(A_spd_fp64::CuMatrix, T_prec::DataType)
         orig_norm = norm(A_spd_fp64 + scale_factor*100*I)
     else
         orig_norm = norm(A_spd_fp64)
-        print("got here to orig norm")
         A_reconstructed .-= A_spd_fp64
-        print("got here to sub")
         error_norm = norm(A_reconstructed)
-        print("got here to error norm")
     end
     
     return max(error_norm / orig_norm, 1e-20)
