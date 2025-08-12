@@ -1,14 +1,26 @@
 using Test, CUDA, LinearAlgebra, Printf, KernelAbstractions
 
-
 function reconstruct_matrix(A::SymmMixedPrec{T_Base}) where {T_Base}
     if A.BaseCase !== nothing
-        return copy(A.BaseCase)
+        if A.base_scale !== nothing
+            print("this is the base scale:", A.base_scale)
+            return copy(A.BaseCase) .* A.base_scale
+        else
+            return copy(A.BaseCase)
+        end
     end
     
     C11 = reconstruct_matrix(A.A11)
     C22 = reconstruct_matrix(A.A22)
-    C21 = A.OffDiag
+    
+    local C21
+    if A.offDiag_scale !== nothing
+        print("this is the off diag scale:", A.offDiag_scale)
+        C21 = A.OffDiag .* A.offDiag_scale
+    else
+        C21 = A.OffDiag
+    end
+
     n1, m1 = size(C11)
     n2, m2 = size(C22)
     n = n1 + n2
@@ -39,13 +51,16 @@ function get_accuracy_pure(A_spd_fp64::CuMatrix, T_prec::DataType)
     potrf_recursive!(A_to_factor, 4096)
     
     A_reconstructed = Float64.(tril(A_to_factor) * tril(A_to_factor)' * scale_factor)
+    A_to_factor = nothing
+    GC.gc(true); CUDA.reclaim()
     
     if T_prec == Float16
         error_norm = norm(A_reconstructed - (A_spd_fp64 + scale_factor*1000*I))
         orig_norm = norm(A_spd_fp64 + scale_factor*1000*I)
     else
-        error_norm = norm(A_reconstructed - A_spd_fp64)
         orig_norm = norm(A_spd_fp64)
+        A_reconstructed .-= A_spd_fp64
+        error_norm = norm(A_reconstructed)
     end
     
     return max(error_norm / orig_norm, 1e-20)
