@@ -42,7 +42,7 @@ function get_accuracy_pure(A_spd_fp64::CuMatrix, T_prec::DataType)
     
     if T_prec == Float16
         scale_factor = maximum(abs, A_spd_fp64)
-        A_to_factor = Float16.(A_spd_fp64 ./ scale_factor) + 1000*I
+        A_to_factor = Float16.(A_spd_fp64 ./ scale_factor) + 100*I
     else
         scale_factor = 1.0
         A_to_factor = T_prec.(A_spd_fp64)
@@ -50,15 +50,17 @@ function get_accuracy_pure(A_spd_fp64::CuMatrix, T_prec::DataType)
     print("got here to step 1")
     
     potrf_recursive!(A_to_factor, 4096)
-    
-    A_reconstructed = Float64.(tril(A_to_factor) * tril(A_to_factor)' * scale_factor)
+    A_tri = tril(A_to_factor)
+    print("trilled!")
+    A_reconstructed = Float64.(A_tri * A_tri' * scale_factor)
     print("got here to refactored!")
     A_to_factor = nothing
+    A_tri = nothing
     GC.gc(true); CUDA.reclaim()
     
     if T_prec == Float16
-        error_norm = norm(A_reconstructed - (A_spd_fp64 + scale_factor*1000*I))
-        orig_norm = norm(A_spd_fp64 + scale_factor*1000*I)
+        error_norm = norm(A_reconstructed - (A_spd_fp64 + scale_factor*100*I))
+        orig_norm = norm(A_spd_fp64 + scale_factor*100*I)
     else
         orig_norm = norm(A_spd_fp64)
         print("got here to orig norm")
@@ -140,7 +142,7 @@ function check_cholesky_accuracy()
         println("\n" * "="^80)
         println("Checking Accuracy for Matrix Size (n x n) = $n x $n")
         
-        A_cpu_rand = randn(Float64, n, n)* 0.1
+        A_cpu_rand = randn(Float64, n, n)* 0.01
         A_gpu_rand = CuArray(A_cpu_rand)
         A_cpu_rand = nothing
         
