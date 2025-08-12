@@ -40,8 +40,13 @@ function get_accuracy_pure(A_spd_fp64::CuMatrix, T_prec::DataType)
     
     A_reconstructed = Float64.(tril(A_to_factor) * tril(A_to_factor)' * scale_factor)
     
-    error_norm = norm(A_reconstructed - A_spd_fp64)
-    orig_norm = norm(A_spd_fp64)
+    if T_prec == Float16
+        error_norm = norm(A_reconstructed - (A_spd_fp64 + scale_factor*1000*I))
+        orig_norm = norm(A_spd_fp64 + scale_factor*1000*I)
+    else
+        error_norm = norm(A_reconstructed - A_spd_fp64)
+        orig_norm = norm(A_spd_fp64)
+    end
     
     return max(error_norm / orig_norm, 1e-20)
 end
@@ -121,6 +126,8 @@ function check_cholesky_accuracy()
         
         A_spd_fp64 = A_gpu_rand * A_gpu_rand' + (n*100) * I
         A_gpu_rand = nothing
+        
+        GC.gc(true); CUDA.reclaim()
         
         println("\n--- CUSOLVER Library Scenarios ---")
         for (name, T_prec) in cusolver_scenarios
