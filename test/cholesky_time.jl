@@ -23,10 +23,9 @@ end
 function get_runtime_pure(A_spd_fp64, n::Int, T_prec::DataType)
     local A_clean
     
-    # Apply scaling only for Float16 to prevent Inf/NaN during timing.
     if T_prec == Float16
         scale_factor = maximum(abs, A_spd_fp64)
-        A_clean = Float16.(A_spd_fp64 ./ scale_factor)
+        A_clean = Float16.(A_spd_fp64 ./ scale_factor) + 1000*I
     else
         A_clean = T_prec.(A_spd_fp64)
     end
