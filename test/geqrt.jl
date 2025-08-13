@@ -3,10 +3,10 @@ using NextLA
 using LinearAlgebra, LinearAlgebra.LAPACK
 using Random
 
-# Function signature: zgeqrt(m, n, ib, A, lda, T, ldt, tau, work)
+# Function signature: geqrt(m, n, ib, A, lda, T, ldt, tau, work)
 const GEQRT_TYPES = [ComplexF32, ComplexF64, Float32, Float64]
-const GEQRT_SIZES = [(0,0), (1,1), (2,1), (1,2), (4,3), (8,6), (15,10), (20,15)]
-const GEQRT_BLOCKSIZES = [1, 2, 4, 8]
+const GEQRT_SIZES = [(0,0), (100,100), (200,100), (100,200), (400,300), (800,600), (150,100), (200,150)]
+const GEQRT_BLOCKSIZES = [100, 200, 400, 800]
 
 function generate_qr_test_matrix(::Type{T}, m, n, imat=1) where T
     if m == 0 || n == 0
@@ -37,7 +37,7 @@ function generate_qr_test_matrix(::Type{T}, m, n, imat=1) where T
     end
 end
 
-@testset "ZGEQRT Tests" begin
+@testset "GEQRT Tests" begin
     @testset "Blocked QR Factorization Tests" begin
         for (itype, T) in enumerate(GEQRT_TYPES)
             @testset "Type $T (itype=$itype)" begin
@@ -80,7 +80,7 @@ end
                                         tau_test = zeros(T, k)
                                         work_test = zeros(T, ib * n)  # Work array
                                         
-                                        NextLA.zgeqrt(m, n, ib, A_test, lda, T_test, ldt, tau_test, work_test)
+                                        NextLA.geqrt(m, n, ib, A_test, lda, T_test, ldt, tau_test, work_test)
 
                                         # --- Comparisons ---
                                         if m == 0 || n == 0
@@ -96,7 +96,7 @@ end
                                                 
                                                 
                                                 # For small matrices, verify reconstruction
-                                                if m <= 20 && n <= 20
+                                                if m <= 200 && n <= 200
                                                     # Extract R from the factored matrix
                                                     R_test = triu(A_test[1:k, 1:n])
                                                     
@@ -145,7 +145,7 @@ end
         tau = zeros(ComplexF64, n)
         work = zeros(ComplexF64, ib * n)
         
-        NextLA.zgeqrt(n, n, ib, A, lda, T, ldt, tau, work)
+        NextLA.geqrt(n, n, ib, A, lda, T, ldt, tau, work)
         
         # For square matrices, check complete factorization
         R_our = triu(A)
@@ -167,7 +167,7 @@ end
         tau = zeros(ComplexF64, n)
         work = zeros(ComplexF64, ib * n)
         
-        NextLA.zgeqrt(m, n, ib, A, lda, T, ldt, tau, work)
+        NextLA.geqrt(m, n, ib, A, lda, T, ldt, tau, work)
         k = min(m, n)
         R_our = triu(A[1:k, 1:k])
 
@@ -188,7 +188,7 @@ end
         tau = zeros(ComplexF64, m)
         work = zeros(ComplexF64, ib * n)
         
-        NextLA.zgeqrt(m, n, ib, A, lda, T, ldt, tau, work)
+        NextLA.geqrt(m, n, ib, A, lda, T, ldt, tau, work)
 
         R_our = triu(A)
         
@@ -208,13 +208,13 @@ end
         tau = zeros(ComplexF64, min(m, n))
         work = zeros(ComplexF64, ib * n)
         
-        NextLA.zgeqrt(m, n, ib, A, lda, T, ldt, tau, work)
+        NextLA.geqrt(m, n, ib, A, lda, T, ldt, tau, work)
         
         # Compare with unblocked version
         A_unblocked = copy(A_original)
         tau_unblocked = zeros(ComplexF64, min(m, n))
         work_unblocked = zeros(ComplexF64, n)
-        NextLA.zgeqr2(m, n, A_unblocked, lda, tau_unblocked, work_unblocked)
+        NextLA.geqr2(m, n, A_unblocked, lda, tau_unblocked, work_unblocked)
         
         @test A ≈ A_unblocked rtol=1e-10
         
@@ -227,7 +227,7 @@ end
         tau = zeros(ComplexF64, min(m, n))
         work = zeros(ComplexF64, ib * n)
         
-        NextLA.zgeqrt(m, n, ib, A, lda, T, ldt, tau, work)
+        NextLA.geqrt(m, n, ib, A, lda, T, ldt, tau, work)
         
         # Should not crash
         @test all(isfinite.(A))
@@ -237,16 +237,16 @@ end
     
     @testset "Error Handling" begin
         # Test negative dimensions
-        @test_throws ArgumentError NextLA.zgeqrt(-1, 5, 2, zeros(ComplexF64, 5, 5), 5, zeros(ComplexF64, 2, 5), 2, zeros(ComplexF64, 5), zeros(ComplexF64, 10))
-        @test_throws ArgumentError NextLA.zgeqrt(5, -1, 2, zeros(ComplexF64, 5, 5), 5, zeros(ComplexF64, 2, 5), 2, zeros(ComplexF64, 5), zeros(ComplexF64, 10))
+        @test_throws ArgumentError NextLA.geqrt(-1, 5, 2, zeros(ComplexF64, 5, 5), 5, zeros(ComplexF64, 2, 5), 2, zeros(ComplexF64, 5), zeros(ComplexF64, 10))
+        @test_throws ArgumentError NextLA.geqrt(5, -1, 2, zeros(ComplexF64, 5, 5), 5, zeros(ComplexF64, 2, 5), 2, zeros(ComplexF64, 5), zeros(ComplexF64, 10))
         
         # Test invalid block size
-        @test_throws ArgumentError NextLA.zgeqrt(5, 5, -1, zeros(ComplexF64, 5, 5), 5, zeros(ComplexF64, 2, 5), 2, zeros(ComplexF64, 5), zeros(ComplexF64, 10))
-        @test_throws ArgumentError NextLA.zgeqrt(5, 5, 0, zeros(ComplexF64, 5, 5), 5, zeros(ComplexF64, 2, 5), 2, zeros(ComplexF64, 5), zeros(ComplexF64, 10))
+        @test_throws ArgumentError NextLA.geqrt(5, 5, -1, zeros(ComplexF64, 5, 5), 5, zeros(ComplexF64, 2, 5), 2, zeros(ComplexF64, 5), zeros(ComplexF64, 10))
+        @test_throws ArgumentError NextLA.geqrt(5, 5, 0, zeros(ComplexF64, 5, 5), 5, zeros(ComplexF64, 2, 5), 2, zeros(ComplexF64, 5), zeros(ComplexF64, 10))
         
         # Test invalid leading dimensions
-        @test_throws ArgumentError NextLA.zgeqrt(5, 5, 2, zeros(ComplexF64, 5, 5), 3, zeros(ComplexF64, 2, 5), 2, zeros(ComplexF64, 5), zeros(ComplexF64, 10))
-        @test_throws ArgumentError NextLA.zgeqrt(5, 5, 2, zeros(ComplexF64, 5, 5), 5, zeros(ComplexF64, 2, 5), 1, zeros(ComplexF64, 5), zeros(ComplexF64, 10))
+        @test_throws ArgumentError NextLA.geqrt(5, 5, 2, zeros(ComplexF64, 5, 5), 3, zeros(ComplexF64, 2, 5), 2, zeros(ComplexF64, 5), zeros(ComplexF64, 10))
+        @test_throws ArgumentError NextLA.geqrt(5, 5, 2, zeros(ComplexF64, 5, 5), 5, zeros(ComplexF64, 2, 5), 1, zeros(ComplexF64, 5), zeros(ComplexF64, 10))
     end
     
     @testset "Consistency Tests" begin
@@ -261,14 +261,14 @@ end
         ldt = ib
         tau1 = zeros(ComplexF64, min(m, n))
         work1 = zeros(ComplexF64, ib * n)
-        NextLA.zgeqrt(m, n, ib, A1, lda, T1, ldt, tau1, work1)
+        NextLA.geqrt(m, n, ib, A1, lda, T1, ldt, tau1, work1)
         
         # Second application
         A2 = copy(A)
         T2 = zeros(ComplexF64, ib, min(m, n))
         tau2 = zeros(ComplexF64, min(m, n))
         work2 = zeros(ComplexF64, ib * n)
-        NextLA.zgeqrt(m, n, ib, A2, lda, T2, ldt, tau2, work2)
+        NextLA.geqrt(m, n, ib, A2, lda, T2, ldt, tau2, work2)
         
         @test A1 ≈ A2 rtol=1e-12
         @test T1 ≈ T2 rtol=1e-12
@@ -297,10 +297,10 @@ end
             A_cpu_result = copy(A_cpu)
             T_cpu_result = copy(T_cpu)
             tau_cpu_result = copy(tau_cpu)
-            NextLA.zgeqrt(m, n, ib, A_cpu_result, lda, T_cpu_result, ldt, tau_cpu_result, work_cpu)
+            NextLA.geqrt(m, n, ib, A_cpu_result, lda, T_cpu_result, ldt, tau_cpu_result, work_cpu)
             
             # Apply on GPU
-            NextLA.zgeqrt(m, n, ib, A_gpu, lda, T_gpu, ldt, tau_gpu, work_gpu)
+            NextLA.geqrt(m, n, ib, A_gpu, lda, T_gpu, ldt, tau_gpu, work_gpu)
             
             @test Array(A_gpu) ≈ A_cpu_result rtol=1e-6
             @test Array(T_gpu) ≈ T_cpu_result rtol=1e-6

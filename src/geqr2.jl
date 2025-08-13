@@ -1,4 +1,4 @@
-function zgeqr2(m,n, A, lda, tau, work)
+function geqr2(m,n, A, lda, tau, work)
     if m < 0
         throw(ArgumentError("illegal value of m"))
         return -1
@@ -24,7 +24,7 @@ function zgeqr2(m,n, A, lda, tau, work)
 
     for i in 1:k
         # generate elementary reflector H(i) to anniliate A(i+1:m, i)
-        A[i,i], tau[i] = zlarfg(m-i+1, A[i, i], (@view A[min(i+1,m):m, i]), 1, tau[i])
+        A[i,i], tau[i] = larfg(m-i+1, A[i, i], (@view A[min(i+1,m):m, i]), 1, tau[i])
         
         if i < n
             # apply H(i)^H to A(i:m, i+1:n) from left
@@ -32,7 +32,7 @@ function zgeqr2(m,n, A, lda, tau, work)
             A[i,i] = one
 
             #LinearAlgebra.LAPACK.larf!('L', (@view A[i:m, i]), conj(tau[i]), (@view A[i:m, i+1:n]), work)
-            zlarf('L', m-i+1, n-i, (@view A[i:m, i]), 1, conj(tau[i]), (@view A[i:m, i+1:n]), work)
+            larf('L', m-i+1, n-i, (@view A[i:m, i]), 1, conj(tau[i]), (@view A[i:m, i+1:n]), work)
             #zlarf('L', m-i+1, n-i, (@view av[i+a1:m+a1, i+a2]), 1, conj(tau[i]), (@view av[i+a1:m+a1, i+1+a2:n+a2]), lda, work)
 
             A[i,i] = alpha

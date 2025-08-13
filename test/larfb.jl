@@ -4,8 +4,8 @@ using LinearAlgebra
 using Random
 using CUDA
 
-const ZLARFB_TYPES = [ComplexF32, ComplexF64, Float32, Float64]
-const ZLARFB_SIZES = [1, 2, 3, 5, 10]
+const LARFB_TYPES = [ComplexF32, ComplexF64, Float32, Float64]
+const LARFB_SIZES = [100, 200, 300, 500, 1000]
 
 # Generate test matrices using patterns
 function generate_test_matrices(::Type{T}, m, n, k, side, storev, imat=1) where T
@@ -65,14 +65,14 @@ function generate_test_matrices(::Type{T}, m, n, k, side, storev, imat=1) where 
     end
 end
 
-@testset "ZLARFB Tests" begin
+@testset "LARFB Tests" begin
     @testset "CPU Tests - Block Reflector Application" begin
-        for (itype, T) in enumerate(ZLARFB_TYPES)
+        for (itype, T) in enumerate(LARFB_TYPES)
             @testset "Type $T (itype=$itype)" begin
                 rtol = (T <: Union{ComplexF32, Float32}) ? 1e-5 : 1e-12
                 atol = rtol
-                for (isize, m) in enumerate(ZLARFB_SIZES[1:4])  # Limit size for comprehensive testing
-                    for n in ZLARFB_SIZES[1:3]
+                for (isize, m) in enumerate(LARFB_SIZES[1:4])  # Limit size for comprehensive testing
+                    for n in LARFB_SIZES[1:3]
                         @testset "Size m=$m, n=$n" begin
                             # Test different parameter combinations
                             for side in ['L', 'R']
@@ -94,16 +94,16 @@ end
                                                         ldc = m
                                                         ldwork = size(work, 1)
                                                         
-                                                        # NextLA call: zlarfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, work, ldwork)
-                                                        NextLA.zlarfb(side, trans, direct, storev, m, n, k, V, ldv, T_mat, ldt, C_test, ldc, work, ldwork)
+                                                        # NextLA call: larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, work, ldwork)
+                                                        NextLA.larfb(side, trans, direct, storev, m, n, k, V, ldv, T_mat, ldt, C_test, ldc, work, ldwork)
                                                         
                                                         # Basic checks
                                                         @test all(isfinite.(C_test))
                                                         @test size(C_test) == (m, n)
                                                         @test all(isfinite.(work))
                                                         
-                                                        NextLA.zlarfb('L', 'N', direct, storev, m, n, k, V, ldv, T_mat, ldt, C_ref, ldc, work, ldwork)
-                                                        NextLA.zlarfb('L', 'C', direct, storev, m, n, k, V, ldv, T_mat, ldt, C_ref, ldc, work, ldwork)
+                                                        NextLA.larfb('L', 'N', direct, storev, m, n, k, V, ldv, T_mat, ldt, C_ref, ldc, work, ldwork)
+                                                        NextLA.larfb('L', 'C', direct, storev, m, n, k, V, ldv, T_mat, ldt, C_ref, ldc, work, ldwork)
 
                                                         # Mathematical validation
                                                         @test norm(C_ref - C_orig) / norm(C_orig) < rtol
@@ -129,24 +129,24 @@ end
     
     @testset "Error Handling Tests" begin
         # Test error conditions following conventions
-        for T in ZLARFB_TYPES
+        for T in LARFB_TYPES
             @testset "Type $T Error Handling" begin
                 # Test with valid parameters (should not error)
-                m, n, k = 5, 4, 3
+                m, n, k = 500, 400, 300
                 V = randn(T, m, k)
                 T_mat = triu(randn(T, k, k))
                 C = randn(T, m, n)
                 work = zeros(T, n, k)
                 
-                @test_nowarn NextLA.zlarfb('L', 'N', 'F', 'C', m, n, k, V, m, T_mat, k, C, m, work, n)
+                @test_nowarn NextLA.larfb('L', 'N', 'F', 'C', m, n, k, V, m, T_mat, k, C, m, work, n)
                 
                 # Test edge cases
-                @test_nowarn NextLA.zlarfb('L', 'N', 'F', 'C', 0, 0, 0, zeros(T, 0, 0), 1, zeros(T, 0, 0), 1, zeros(T, 0, 0), 1, zeros(T, 0, 0), 1)  # m = n = k = 0
-                @test_nowarn NextLA.zlarfb('L', 'N', 'F', 'C', 1, 1, 0, zeros(T, 1, 0), 1, zeros(T, 0, 0), 1, randn(T, 1, 1), 1, zeros(T, 1, 0), 1)  # k = 0
+                @test_nowarn NextLA.larfb('L', 'N', 'F', 'C', 0, 0, 0, zeros(T, 0, 0), 1, zeros(T, 0, 0), 1, zeros(T, 0, 0), 1, zeros(T, 0, 0), 1)  # m = n = k = 0
+                @test_nowarn NextLA.larfb('L', 'N', 'F', 'C', 1, 1, 0, zeros(T, 1, 0), 1, zeros(T, 0, 0), 1, randn(T, 1, 1), 1, zeros(T, 1, 0), 1)  # k = 0
                 
                 # Test different side/storev combinations
-                @test_nowarn NextLA.zlarfb('R', 'N', 'F', 'C', m, n, k, randn(T, n, k), n, T_mat, k, copy(C), m, zeros(T, m, k), m)  # Right side
-                @test_nowarn NextLA.zlarfb('L', 'C', 'B', 'R', m, n, k, randn(T, k, m), k, T_mat, k, copy(C), m, zeros(T, n, k), n)  # Row-wise storage
+                @test_nowarn NextLA.larfb('R', 'N', 'F', 'C', m, n, k, randn(T, n, k), n, T_mat, k, copy(C), m, zeros(T, m, k), m)  # Right side
+                @test_nowarn NextLA.larfb('L', 'C', 'B', 'R', m, n, k, randn(T, k, m), k, T_mat, k, copy(C), m, zeros(T, n, k), n)  # Row-wise storage
             end
         end
     end
@@ -160,14 +160,14 @@ end
                 scales = [eps(real(T)), one(real(T)), 1/eps(real(T))^(1/4)]
                 
                 for scale in scales
-                    m, n, k = 8, 6, 4
+                    m, n, k = 800, 600, 400
                     V = T.(scale .* randn(ComplexF64, m, k))
                     T_mat = triu(T.(scale .* randn(ComplexF64, k, k)))
                     C = T.(scale .* randn(ComplexF64, m, n))
                     work = zeros(T, n, k)
                     
                     # Test calculation
-                    NextLA.zlarfb('L', 'N', 'F', 'C', m, n, k, V, m, T_mat, k, C, m, work, n)
+                    NextLA.larfb('L', 'N', 'F', 'C', m, n, k, V, m, T_mat, k, C, m, work, n)
                     
                     # Check that results are finite
                     @test all(isfinite.(C))
@@ -180,7 +180,7 @@ end
                             work_test = zeros(T, side == 'L' ? n : m, k)
                             V_test = side == 'L' ? V : T.(scale .* randn(ComplexF64, n, k))
                             
-                            NextLA.zlarfb(side, trans, 'F', 'C', m, n, k, V_test, size(V_test, 1), T_mat, k, C_test, m, work_test, size(work_test, 1))
+                            NextLA.larfb(side, trans, 'F', 'C', m, n, k, V_test, size(V_test, 1), T_mat, k, C_test, m, work_test, size(work_test, 1))
                             
                             @test all(isfinite.(C_test))
                             @test all(isfinite.(work_test))
@@ -219,10 +219,10 @@ end
                                             # Reference CPU calculation
                                             C_ref = copy(C_cpu)
                                             work_ref = copy(work_cpu)
-                                            NextLA.zlarfb(side, trans, 'F', 'C', m, n, k, V_cpu, size(V_cpu, 1), T_cpu, k, C_ref, m, work_ref, size(work_ref, 1))
+                                            NextLA.larfb(side, trans, 'F', 'C', m, n, k, V_cpu, size(V_cpu, 1), T_cpu, k, C_ref, m, work_ref, size(work_ref, 1))
                                             
                                             # GPU calculation
-                                            NextLA.zlarfb(side, trans, 'F', 'C', m, n, k, V_gpu, size(V_gpu, 1), T_gpu, k, C_gpu, m, work_gpu, size(work_gpu, 1))
+                                            NextLA.larfb(side, trans, 'F', 'C', m, n, k, V_gpu, size(V_gpu, 1), T_gpu, k, C_gpu, m, work_gpu, size(work_gpu, 1))
                                             
                                             # Compare results
                                             @test norm(Array(C_gpu) - C_ref) < rtol * max(1, norm(C_ref))
@@ -266,10 +266,10 @@ end
                                         # Reference CPU calculation
                                         C_ref = copy(C_cpu)
                                         work_ref = copy(work_cpu)
-                                        NextLA.zlarfb(side, 'N', 'F', 'C', m, n, k, V_cpu, size(V_cpu, 1), T_cpu, k, C_ref, m, work_ref, size(work_ref, 1))
+                                        NextLA.larfb(side, 'N', 'F', 'C', m, n, k, V_cpu, size(V_cpu, 1), T_cpu, k, C_ref, m, work_ref, size(work_ref, 1))
                                         
                                         # ROCm calculation
-                                        NextLA.zlarfb(side, 'N', 'F', 'C', m, n, k, V_rocm, size(V_rocm, 1), T_rocm, k, C_rocm, m, work_rocm, size(work_rocm, 1))
+                                        NextLA.larfb(side, 'N', 'F', 'C', m, n, k, V_rocm, size(V_rocm, 1), T_rocm, k, C_rocm, m, work_rocm, size(work_rocm, 1))
                                         
                                         # Compare results
                                         @test norm(Array(C_rocm) - C_ref) < rtol * max(1, norm(C_ref))

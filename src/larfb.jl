@@ -1,5 +1,5 @@
 """
-    zlarfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, work, ldwork)
+    larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, work, ldwork)
 
 Applies complex block reflector H or its transpose H^H to m-by-n matrix C from either the left or the right
 Implemented with Julia internal functions for matrix multiplication
@@ -39,7 +39,7 @@ Implemented with Julia internal functions for matrix multiplication
     - if side = 'L', ldwork >= max(1,n)
     - if side = 'R', ldwork >= max(1,m)
 """
-function zlarfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, work, ldwork)
+function larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, work, ldwork)
     
     if m <= 0 || n <= 0
         return

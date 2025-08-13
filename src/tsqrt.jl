@@ -1,4 +1,4 @@
-function ztsqrt(m, n, ib, A1, lda1, A2, lda2, T, ldt, tau, work)
+function tsqrt(m, n, ib, A1, lda1, A2, lda2, T, ldt, tau, work)
     # check input Arguments
 
     if m < 0
@@ -45,7 +45,7 @@ function ztsqrt(m, n, ib, A1, lda1, A2, lda2, T, ldt, tau, work)
 
         for i in 1:sb
             # generate elementary reflector H[ii*ib + i] to annilate A[ii*ib, + i:m, ii*ib + i]
-            A1[ii+i-1, ii+i-1], tau[ii+i-1] = zlarfg(m+1, A1[ii+i-1, ii+i-1], (@view A2[1:m, ii+i-1]), 1, tau[ii+i-1])
+            A1[ii+i-1, ii+i-1], tau[ii+i-1] = larfg(m+1, A1[ii+i-1, ii+i-1], (@view A2[1:m, ii+i-1]), 1, tau[ii+i-1])
 
             if ii+i <= n
                 # apply H[ii*ib + i] to A[ii*ib + i:m, ii*ib + i + 1 : ii*ib + ib] from left
@@ -71,7 +71,7 @@ function ztsqrt(m, n, ib, A1, lda1, A2, lda2, T, ldt, tau, work)
         if n >= ii+sb
             ww = reshape(@view(work[1: ib*(n-(ii+sb)+1)]), ib, n-(ii+sb)+1)
 
-            ztsmqr('L', 'C', sb, n-(ii+sb) + 1, m, n-(ii+sb) + 1, ib, ib, 
+            tsmqr('L', 'C', sb, n-(ii+sb) + 1, m, n-(ii+sb) + 1, ib, ib, 
             (@view A1[ii:ii+sb-1, ii+sb: n]), sb, (@view A2[1:m, ii+sb:n]), m, 
             (@view A2[1:m, ii:ii+sb-1]), m, (@view T[1:ib, ii:ii+ib-1]), ib, ww, sb)
         end

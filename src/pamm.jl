@@ -1,4 +1,4 @@
-function zpamm(op, side, storev, direct, m, n, k, l, A1, lda1, A2, lda2, V, ldv, W, ldw)
+function pamm(op, side, storev, direct, m, n, k, l, A1, lda1, A2, lda2, V, ldv, W, ldw)
     # Input validation
     op ∉ ('W', 'A') && throw(ArgumentError("illegal value of op"))
     side ∉ ('L', 'R') && throw(ArgumentError("illegal value of side"))
@@ -40,15 +40,15 @@ function zpamm(op, side, storev, direct, m, n, k, l, A1, lda1, A2, lda2, V, ldv,
     
 
     if op == 'W'
-        zpamm_w(left, colmajor, forward, m,n,k,l, A1, A2, V, W)
+        pamm_w(left, colmajor, forward, m,n,k,l, A1, A2, V, W)
     else
-        zpamm_a(left, colmajor, forward, m,n,k,l, A2, V, W)
+        pamm_a(left, colmajor, forward, m,n,k,l, A2, V, W)
     end
     
     return 
 end
 
-function zpamm_w(left, colmajor, forward, m, n, k, l, A1, A2, V, W)
+function pamm_w(left, colmajor, forward, m, n, k, l, A1, A2, V, W)
     # W = A1 + op(V) * A2 or W = A1 + A2 * op(V)
     one0 = oneunit(eltype(A1))
     zero0 = zero(eltype(A1))
@@ -206,7 +206,7 @@ function zpamm_w(left, colmajor, forward, m, n, k, l, A1, A2, V, W)
 end
 
 
-function zpamm_a(left, colmajor, forward, m, n, k, l, A2, V, W)
+function pamm_a(left, colmajor, forward, m, n, k, l, A2, V, W)
         # A2 = A2 + op(V) * W or A2 = A2 + W * op(V)
         one0 = oneunit(eltype(A2))
         minus = LinearAlgebra.MulAddMul(one0*(-1),one0)

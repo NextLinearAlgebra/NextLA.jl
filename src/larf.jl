@@ -1,4 +1,4 @@
-function zlarf(side, m, n, v, incv, tau, c, work)
+function larf(side, m, n, v, incv, tau, c, work)
     lastv = 0
     lastc = 0
     one = oneunit(eltype(c))

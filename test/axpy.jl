@@ -150,7 +150,7 @@ end
                 scales = [eps(real(T)), one(real(T)), 1/eps(real(T))^(1/4)]
                 
                 for scale in scales
-                    n = 100
+                    n = 1000
                     α = T(scale)
                     x = T.(scale .* randn(n))
                     y_orig = T.(scale .* randn(n))

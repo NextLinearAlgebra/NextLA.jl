@@ -1,4 +1,4 @@
-function zttmqr(side, trans, m1, n1, m2, n2, k, ib, A1, lda1, A2, lda2, V, ldv, T, ldt, work, ldwork)
+function ttmqr(side, trans, m1, n1, m2, n2, k, ib, A1, lda1, A2, lda2, V, ldv, T, ldt, work, ldwork)
     # check input arguments
     if side != 'L' && side != 'R'
         throw(ArgumentError("illegal value of side"))
@@ -106,7 +106,7 @@ function zttmqr(side, trans, m1, n1, m2, n2, k, ib, A1, lda1, A2, lda2, V, ldv, 
         end
 
         # apply H or H^H 
-        zparfb(side, trans, 'F', 'C', mi, ni, mi2, ni2, kb, l,
+        parfb(side, trans, 'F', 'C', mi, ni, mi2, ni2, kb, l,
             (@view A1[ic:ic+mi-1, jc:jc+ni-1]), lda1, 
             (@view A2[1:mi2, 1:ni2]), lda2, 
             (@view V[1:ldvv, i:i+kb-1]), ldvv, 

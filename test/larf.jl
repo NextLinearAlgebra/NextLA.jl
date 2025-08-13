@@ -5,8 +5,8 @@ using Random
 using CUDA
 
 # Test matrix types 
-const ZLARF_TYPES = [ComplexF32, ComplexF64, Float32, Float64]
-const ZLARF_SIZES = [1, 2, 3, 5, 10, 50]
+const LARF_TYPES = [ComplexF32, ComplexF64, Float32, Float64]
+const LARF_SIZES = [100, 200, 300, 500, 100, 500]
 
 # Generate test matrices using LAPACK-style patterns
 function generate_test_data(::Type{T}, m, n, side, imat=1) where T
@@ -100,9 +100,9 @@ function check_householder_application(side, m, n, v, tau, C_orig, C_new, rtol)
     return true
 end
 
-@testset "ZLARF Tests" begin
+@testset "LARF Tests" begin
     @testset "Standard Test Suite" begin
-        for T in ZLARF_TYPES
+        for T in LARF_TYPES
             @testset "Type $T" begin
                 rtol = (T <: ComplexF32) || (T <: Float32) ? 1e-5 : 1e-12
                 atol = rtol
@@ -110,8 +110,8 @@ end
                 # Test both left and right applications
                 for side in ['L', 'R']
                     @testset "Side $side" begin
-                        for m in ZLARF_SIZES
-                            for n in ZLARF_SIZES
+                        for m in LARF_SIZES
+                            for n in LARF_SIZES
                                 @testset "Size m=$m, n=$n" begin
                                     # Test multiple matrix patterns
                                     for imat in 1:5
@@ -123,8 +123,8 @@ end
                                             work_size = side == 'L' ? n : m
                                             work = zeros(T, work_size, 1)
                                             
-                                            # NextLA call: zlarf(side, m, n, v, incv, tau, c, ldc, work)
-                                            NextLA.zlarf(side, m, n, v, 1, tau, C_test, work)
+                                            # NextLA call: larf(side, m, n, v, incv, tau, c, ldc, work)
+                                            NextLA.larf(side, m, n, v, 1, tau, C_test, work)
                                             
                                             # Basic checks
                                             @test all(isfinite.(C_test))
@@ -149,21 +149,21 @@ end
     
     @testset "Error Handling Tests" begin
         # Test error conditions following LAPACK conventions
-        for T in ZLARF_TYPES
+        for T in LARF_TYPES
             @testset "Type $T Error Handling" begin
                 # Test with valid parameters (should not error)
-                m, n = 5, 4
+                m, n = 500, 400
                 C = randn(T, m, n)
                 v = randn(T, max(m, n))
                 tau = T(0.5)
                 work = zeros(T, max(m, n), 1)
                 
-                @test_nowarn NextLA.zlarf('L', m, n, v, 1, tau, C, work)
-                @test_nowarn NextLA.zlarf('R', m, n, v, 1, tau, C, work)
+                @test_nowarn NextLA.larf('L', m, n, v, 1, tau, C, work)
+                @test_nowarn NextLA.larf('R', m, n, v, 1, tau, C, work)
                 
                 # Test edge cases
-                @test_nowarn NextLA.zlarf('L', 1, 1, T[T(1)], 1, T(0), T[T(1);;], T[T(0);;])
-                @test_nowarn NextLA.zlarf('R', 1, 1, T[T(1)], 1, T(0), T[T(1);;], T[T(0);;])
+                @test_nowarn NextLA.larf('L', 1, 1, T[T(1)], 1, T(0), T[T(1);;], T[T(0);;])
+                @test_nowarn NextLA.larf('R', 1, 1, T[T(1)], 1, T(0), T[T(1);;], T[T(0);;])
             end
         end
     end
@@ -179,7 +179,7 @@ end
                 
                 for scale in scales
                     for side in ['L', 'R']
-                        m, n = 10, 8
+                        m, n = 100, 80
                         C = T.(scale .* randn(T, m, n))
                         v = T.(scale .* randn(T, side == 'L' ? m : n))
                         tau = T(scale * randn(T))
@@ -188,7 +188,7 @@ end
                         C_orig = copy(C)
                         
                         # Test calculation
-                        NextLA.zlarf(side, m, n, v, 1, tau, C, work)
+                        NextLA.larf(side, m, n, v, 1, tau, C, work)
                         
                         # Check that results are finite
                         @test all(isfinite.(C))
@@ -223,10 +223,10 @@ end
                             # Reference CPU calculation
                             C_ref = copy(C_cpu)
                             work_ref = copy(work_cpu)
-                            NextLA.zlarf(side, m, n, v_cpu, 1, tau_cpu, C_ref, m, work_ref)
+                            NextLA.larf(side, m, n, v_cpu, 1, tau_cpu, C_ref, m, work_ref)
                             
                             # Our implementation on GPU
-                            NextLA.zlarf(side, m, n, v_gpu, 1, tau_cpu, C_gpu, m, work_gpu)
+                            NextLA.larf(side, m, n, v_gpu, 1, tau_cpu, C_gpu, m, work_gpu)
                             
                             # Compare results
                             @test norm(Array(C_gpu) - C_ref) < rtol * max(1, norm(C_ref))

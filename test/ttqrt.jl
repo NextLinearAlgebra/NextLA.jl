@@ -42,27 +42,27 @@ function lapack_tpqrt!(::Type{T}, m::Int64, n::Int64, l::Int64, nb::Int64,
     chklapackerror(info[])
 end
 
-const ZTTQRT_TYPES = [ComplexF32, ComplexF64, Float32, Float64]
+const TTQRT_TYPES = [ComplexF32, ComplexF64, Float32, Float64]
 # Format: (m, n, ib) where:
 # - m: number of rows in A2 matrix (M >= 0)
 # - n: number of columns in A1 and A2 (N >= 0)
 # - ib: block size (IB >= 1)
-const ZTTQRT_SIZES = [
-    (8, 6, 2),   # m=8, n=6, ib=2
-    (10, 8, 3),  # m=10, n=8, ib=3
-    (12, 10, 4), # m=12, n=10, ib=4
-    (6, 6, 2),   # m=6, n=6, ib=2 (square case)
-    (15, 12, 3), # m=15, n=12, ib=3
-    (20, 16, 4)  # m=20, n=16, ib=4
+const TTQRT_SIZES = [
+    (800, 600, 200),   # m=8, n=6, ib=2
+    (1000, 800, 300),  # m=10, n=8, ib=3
+    (1200, 1000, 400), # m=12, n=10, ib=4
+    (600, 600, 200),   # m=6, n=6, ib=2 (square case)
+    (1500, 1200, 300), # m=15, n=12, ib=3
+    (200, 160, 40)  # m=20, n=16, ib=4
 ]
 
-@testset "ZTTQRT Tests" begin
+@testset "TTQRT Tests" begin
     @testset "NextLA vs LAPACK comparison" begin
-        for (itype, T) in enumerate(ZTTQRT_TYPES)
+        for (itype, T) in enumerate(TTQRT_TYPES)
             @testset "Type $T (itype=$itype)" begin
                 rtol = (T <: ComplexF32) || (T <: Float32) ? 1e-5 : 1e-12
                 
-                for (isize, (m, n, ib)) in enumerate(ZTTQRT_SIZES)
+                for (isize, (m, n, ib)) in enumerate(TTQRT_SIZES)
                     @testset "Size m=$m, n=$n, ib=$ib" begin
                         # Test parameter validation
                         if ib > n || ib <= 0
@@ -86,7 +86,7 @@ const ZTTQRT_SIZES = [
                         work_nextla = copy(work)
 
 
-                        NextLA.zttqrt(n, n, ib, A1_nextla, n, A2_nextla, m, T_mat_nextla, ib, tau, work_nextla)
+                        NextLA.ttqrt(n, n, ib, A1_nextla, n, A2_nextla, m, T_mat_nextla, ib, tau, work_nextla)
 
                         lapack_tpqrt!(T, n, n, n, ib, A1, n, A2, n, T_mat, ib, work)
 
@@ -113,24 +113,24 @@ const ZTTQRT_SIZES = [
     end
     
     @testset "Error Handling Tests" begin
-        for T in ZTTQRT_TYPES
+        for T in TTQRT_TYPES
             @testset "Type $T Error Handling" begin
                 # Test with valid parameters (should not error)
-                m, n, ib = 6, 5, 2
+                m, n, ib = 600, 500, 200
                 A1 = triu(randn(T, n, n))
                 A2 = randn(T, m, n)
                 T_matrix = zeros(T, ib, n)
                 tau = zeros(T, n)
                 work = zeros(T, ib * n)
                 
-                @test_nowarn NextLA.zttqrt(m, n, ib, A1, n, A2, m, T_matrix, ib, tau, work)
+                @test_nowarn NextLA.ttqrt(m, n, ib, A1, n, A2, m, T_matrix, ib, tau, work)
                 
                 # Test edge cases
-                @test_nowarn NextLA.zttqrt(0, 0, 0, zeros(T, 0, 0), 1, zeros(T, 0, 0), 1, 
+                @test_nowarn NextLA.ttqrt(0, 0, 0, zeros(T, 0, 0), 1, zeros(T, 0, 0), 1, 
                                          zeros(T, 0, 0), 1, T[], T[])
                 
                 # Test with minimal size
-                @test_nowarn NextLA.zttqrt(1, 1, 1, ones(T, 1, 1), 1, ones(T, 1, 1), 1,
+                @test_nowarn NextLA.ttqrt(1, 1, 1, ones(T, 1, 1), 1, ones(T, 1, 1), 1,
                                          zeros(T, 1, 1), 1, zeros(T, 1), zeros(T, 1))
             end
         end
@@ -145,7 +145,7 @@ const ZTTQRT_SIZES = [
                 scales = [eps(real(T)), one(real(T)), 1/eps(real(T))^(1/4)]
                 
                 for scale in scales
-                    m, n, ib = 8, 6, 2
+                    m, n, ib = 800, 600, 200
                     A1 = triu(T.(scale .* randn(ComplexF64, n, n)))
                     A2 = T.(scale .* randn(ComplexF64, m, n))
                     T_matrix = zeros(T, ib, n)
@@ -160,7 +160,7 @@ const ZTTQRT_SIZES = [
                     end
                     
                     # Test calculation
-                    NextLA.zttqrt(m, n, ib, A1, n, A2, m, T_matrix, ib, tau, work)
+                    NextLA.ttqrt(m, n, ib, A1, n, A2, m, T_matrix, ib, tau, work)
                     
                     # Check that results are finite
                     @test all(isfinite.(A1))
@@ -213,10 +213,10 @@ const ZTTQRT_SIZES = [
                         T_ref = copy(T_cpu)
                         tau_ref = copy(tau_cpu)
                         work_ref = copy(work_cpu)
-                        NextLA.zttqrt(m, n, ib, A1_ref, n, A2_ref, m, T_ref, ib, tau_ref, work_ref)
+                        NextLA.ttqrt(m, n, ib, A1_ref, n, A2_ref, m, T_ref, ib, tau_ref, work_ref)
                         
                         # GPU calculation
-                        NextLA.zttqrt(m, n, ib, A1_gpu, n, A2_gpu, m, T_gpu, ib, tau_gpu, work_gpu)
+                        NextLA.ttqrt(m, n, ib, A1_gpu, n, A2_gpu, m, T_gpu, ib, tau_gpu, work_gpu)
                         
                         # Compare results
                         @test norm(Array(A1_gpu) - A1_ref) < rtol * max(1, norm(A1_ref))

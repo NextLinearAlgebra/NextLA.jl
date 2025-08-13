@@ -7,7 +7,7 @@ using LinearAlgebra: libblastrampoline, BlasInt, require_one_based_indexing
 using LinearAlgebra.LAPACK: liblapack, chkstride1, chklapackerror
 using LinearAlgebra.BLAS: @blasfunc
 
-# LAPACK ZTPQRT wrapper for reference testing
+# LAPACK TPQRT wrapper for reference testing
 function lapack_tpqrt!(::Type{T}, m::Int64, n::Int64, l::Int64, nb::Int64, 
     A::AbstractMatrix{T}, lda::Int64, B::AbstractMatrix{T}, ldb::Int64, 
     Tau::AbstractMatrix{T}, ldt::Int64, work) where {T<:Number}
@@ -43,17 +43,17 @@ function lapack_tpqrt!(::Type{T}, m::Int64, n::Int64, l::Int64, nb::Int64,
     chklapackerror(info[])
 end
 
-# TSQRT test parameters for NextLA.ztsqrt
+# TSQRT test parameters for NextLA.tsqrt
 const TSQRT_TYPES = [ComplexF32, ComplexF64, Float32, Float64]
 const TSQRT_SIZES = [
-    (10, 8, 3),    # m, n, ib
-    (15, 12, 4),   
-    (20, 16, 5),
-    (25, 20, 6),
-    (30, 24, 8)
+    (100, 80, 30),    # m, n, ib
+    (150, 120, 40),   
+    (200, 160, 50),
+    (250, 200, 60),
+    (300, 240, 80)
 ]
 
-@testset "ZTSQRT Tests" begin
+@testset "TSQRT Tests" begin
     @testset "NextLA vs LAPACK comparison" begin
         for (itype, T) in enumerate(TSQRT_TYPES)
             @testset "Type $T (itype=$itype)" begin
@@ -85,7 +85,7 @@ const TSQRT_SIZES = [
                         work_nextla = zeros(T, ib * n)
                         
                         # Test NextLA implementation
-                        NextLA.ztsqrt(m, n, ib, A1_nextla, lda1, A2_nextla, lda2, T_nextla, ldt, tau_nextla, work_nextla)
+                        NextLA.tsqrt(m, n, ib, A1_nextla, lda1, A2_nextla, lda2, T_nextla, ldt, tau_nextla, work_nextla)
                         
                         # Test LAPACK implementation 
                         work_lapack = zeros(T, ib * n)
@@ -125,7 +125,7 @@ const TSQRT_SIZES = [
             @testset "Type $T QR Properties" begin
                 rtol = (T <: ComplexF32) || (T <: Float32) ? 1e-5 : 1e-12
                 
-                m, n, ib = 20, 15, 4
+                m, n, ib = 200, 150, 40
                 
                 # Generate well-conditioned test matrices
                 A1 = triu(rand(T, n, n))
@@ -146,7 +146,7 @@ const TSQRT_SIZES = [
                 tau_result = zeros(T, n)
                 work = zeros(T, ib * n)
                 
-                NextLA.ztsqrt(m, n, ib, A1_result, n, A2_result, m, T_result, ib, tau_result, work)
+                NextLA.tsqrt(m, n, ib, A1_result, n, A2_result, m, T_result, ib, tau_result, work)
                 
                 # Check that A1 (now R) is upper triangular
                 for i in 1:n
@@ -181,22 +181,22 @@ const TSQRT_SIZES = [
         for T in TSQRT_TYPES
             @testset "Type $T Error Handling" begin
                 # Test with valid parameters (should not error)
-                m, n, ib = 10, 8, 3
+                m, n, ib = 100, 80, 30
                 A1 = triu(randn(T, n, n))
                 A2 = randn(T, m, n)
                 T_mat = zeros(T, ib, n)
                 tau = zeros(T, n)
                 work = zeros(T, ib * n)
                 
-                @test_nowarn NextLA.ztsqrt(m, n, ib, A1, n, A2, m, T_mat, ib, tau, work)
+                @test_nowarn NextLA.tsqrt(m, n, ib, A1, n, A2, m, T_mat, ib, tau, work)
                 
                 # Test with invalid parameters
-                @test_throws ArgumentError NextLA.ztsqrt(-1, n, ib, A1, n, A2, m, T_mat, ib, tau, work)
-                @test_throws ArgumentError NextLA.ztsqrt(m, -1, ib, A1, n, A2, m, T_mat, ib, tau, work)
-                @test_throws ArgumentError NextLA.ztsqrt(m, n, -1, A1, n, A2, m, T_mat, ib, tau, work)
+                @test_throws ArgumentError NextLA.tsqrt(-1, n, ib, A1, n, A2, m, T_mat, ib, tau, work)
+                @test_throws ArgumentError NextLA.tsqrt(m, -1, ib, A1, n, A2, m, T_mat, ib, tau, work)
+                @test_throws ArgumentError NextLA.tsqrt(m, n, -1, A1, n, A2, m, T_mat, ib, tau, work)
                 
                 # Test edge cases
-                @test_nowarn NextLA.ztsqrt(0, 0, 0, zeros(T, 0, 0), 1, zeros(T, 0, 0), 1, zeros(T, 0, 0), 1, T[], T[])
+                @test_nowarn NextLA.tsqrt(0, 0, 0, zeros(T, 0, 0), 1, zeros(T, 0, 0), 1, zeros(T, 0, 0), 1, T[], T[])
             end
         end
     end
@@ -210,7 +210,7 @@ const TSQRT_SIZES = [
                 scales = [eps(real(T))^(1/4), one(real(T)), 1/eps(real(T))^(1/4)]
                 
                 for scale in scales
-                    m, n, ib = 15, 12, 4
+                    m, n, ib = 150, 120, 40
                     A1 = triu(T(scale) .* randn(T, n, n))
                     A2 = T(scale) .* randn(T, m, n)
 
@@ -224,7 +224,7 @@ const TSQRT_SIZES = [
                     work = zeros(T, ib * n)
                     
                     # Test calculation
-                    NextLA.ztsqrt(m, n, ib, A1, n, A2, m, T_mat, ib, tau, work)
+                    NextLA.tsqrt(m, n, ib, A1, n, A2, m, T_mat, ib, tau, work)
                     
                     # Check that results are finite
                     @test all(isfinite.(A1))
@@ -241,8 +241,8 @@ const TSQRT_SIZES = [
             @testset "Type $T Block Sizes" begin
                 rtol = (T <: ComplexF32) || (T <: Float32) ? 1e-5 : 1e-12
                 
-                m, n = 20, 16
-                block_sizes = [1, 2, 3, 4, 5, 8]
+                m, n = 200, 160
+                block_sizes = [10, 20, 30, 40, 50, 80]
                 
                 for ib in block_sizes
                     A1 = triu(rand(T, n, n))
@@ -257,7 +257,7 @@ const TSQRT_SIZES = [
                     tau = zeros(T, n)
                     work = zeros(T, ib * n)
                     
-                    NextLA.ztsqrt(m, n, ib, A1, n, A2, m, T_mat, ib, tau, work)
+                    NextLA.tsqrt(m, n, ib, A1, n, A2, m, T_mat, ib, tau, work)
                     
                     # Should complete without errors
                     @test all(isfinite.(A1))
@@ -282,7 +282,7 @@ const TSQRT_SIZES = [
                 rtol = (T <: ComplexF32) || (T <: Float32) ? 1e-5 : 1e-12
                 
                 # Single column
-                m, n, ib = 5, 1, 1
+                m, n, ib = 50, 10, 10
                 A1 = triu(rand(T, n, n))
                 A2 = rand(T, m, n)
                 A1[1, 1] += one(T)  # Ensure well-conditioned
@@ -291,7 +291,7 @@ const TSQRT_SIZES = [
                 tau = zeros(T, n)
                 work = zeros(T, ib * n)
                 
-                NextLA.ztsqrt(m, n, ib, A1, n, A2, m, T_mat, ib, tau, work)
+                NextLA.tsqrt(m, n, ib, A1, n, A2, m, T_mat, ib, tau, work)
                 
                 @test all(isfinite.(A1))
                 @test all(isfinite.(A2))
@@ -299,7 +299,7 @@ const TSQRT_SIZES = [
                 @test all(isfinite.(tau))
                 
                 # Minimal size
-                m, n, ib = 2, 2, 1
+                m, n, ib = 20, 20, 10
                 A1 = triu(rand(T, n, n))
                 A2 = rand(T, m, n)
                 A1 += I  # Make well-conditioned
@@ -308,7 +308,7 @@ const TSQRT_SIZES = [
                 tau = zeros(T, n)
                 work = zeros(T, ib * n)
                 
-                NextLA.ztsqrt(m, n, ib, A1, n, A2, m, T_mat, ib, tau, work)
+                NextLA.tsqrt(m, n, ib, A1, n, A2, m, T_mat, ib, tau, work)
                 
                 @test all(isfinite.(A1))
                 @test all(isfinite.(A2))
@@ -324,7 +324,7 @@ const TSQRT_SIZES = [
                 @testset "Type $T GPU" begin
                     rtol = 1e-5
                     
-                    m, n, ib = 12, 10, 3
+                    m, n, ib = 120, 100, 30
                     
                     # Create CPU data
                     A1_cpu = triu(rand(T, n, n))
@@ -347,10 +347,10 @@ const TSQRT_SIZES = [
                     A2_cpu_result = copy(A2_cpu)
                     T_cpu_result = copy(T_cpu)
                     tau_cpu_result = copy(tau_cpu)
-                    NextLA.ztsqrt(m, n, ib, A1_cpu_result, n, A2_cpu_result, m, T_cpu_result, ib, tau_cpu_result, work_cpu)
+                    NextLA.tsqrt(m, n, ib, A1_cpu_result, n, A2_cpu_result, m, T_cpu_result, ib, tau_cpu_result, work_cpu)
                     
                     # Apply on GPU
-                    NextLA.ztsqrt(m, n, ib, A1_gpu, n, A2_gpu, m, T_gpu, ib, tau_gpu, work_gpu)
+                    NextLA.tsqrt(m, n, ib, A1_gpu, n, A2_gpu, m, T_gpu, ib, tau_gpu, work_gpu)
                     
                     # Compare results
                     @test Array(A1_gpu) ≈ A1_cpu_result rtol=rtol

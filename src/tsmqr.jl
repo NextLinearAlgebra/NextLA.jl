@@ -1,4 +1,4 @@
-function ztsmqr(side, trans, m1, n1, m2, n2, k, ib, 
+function tsmqr(side, trans, m1, n1, m2, n2, k, ib, 
     A1, lda1, A2, lda2, V, ldv, T, ldt, work, ldwork)
 
     #check input arguments
@@ -103,7 +103,7 @@ function ztsmqr(side, trans, m1, n1, m2, n2, k, ib,
         end
 
         # apply H or H^H 
-        zparfb(side, trans, 'F', 'C', mi, ni, m2, n2, kb, 0,
+        parfb(side, trans, 'F', 'C', mi, ni, m2, n2, kb, 0,
         (@view A1[ic:ic+mi-1, jc:jc+ni-1]), lda1, (@view A2[1:m2, 1:n2]), lda2, 
         (@view V[1:ldvv, i:i+kb-1]), ldvv, (@view T[1:kb, i:i+kb-1]), kb, work, ldwork)
     end

@@ -5,7 +5,7 @@ using Random
 
 
 const QR2_TYPES = [ComplexF32, ComplexF64, Float32, Float64]
-const QR2_SIZES = [(0,0), (1,1), (2,1), (1,2), (3,3), (5,3), (10,8), (20,15)]
+const QR2_SIZES = [(0,0), (100,100), (200,100), (100,200), (300,300), (500,300), (100,80), (200,150)]
 
 # Generate test matrices using patterns
 function generate_qr_test_matrix(::Type{T}, m, n, imat=1) where T
@@ -37,7 +37,7 @@ function generate_qr_test_matrix(::Type{T}, m, n, imat=1) where T
     end
 end
 
-@testset "ZGEQR2 Tests" begin
+@testset "GEQR2 Tests" begin
     @testset "Unblocked QR Factorization Tests" begin
         for (itype, T) in enumerate(QR2_TYPES)
             @testset "Type $T (itype=$itype)" begin
@@ -63,7 +63,7 @@ end
                                 lda = max(1, m)
                                 tau_test = zeros(T, k)
                                 work_test = zeros(T, n)  # Work array size n for geqr2
-                                NextLA.zgeqr2(m, n, A_test, lda, tau_test, work_test)
+                                NextLA.geqr2(m, n, A_test, lda, tau_test, work_test)
 
                                 # --- Comparisons ---
                                 if m == 0 || n == 0
@@ -117,19 +117,19 @@ end
         for T in QR2_TYPES
             @testset "Type $T Error Handling" begin
                 # Test edge cases and error conditions
-                m, n = 5, 3
+                m, n = 500, 300
                 A = rand(T, m, n)
                 lda = m
                 tau = zeros(T, min(m, n))
                 work = zeros(T, n)
                 
                 # Valid call should not error
-                @test_nowarn NextLA.zgeqr2(m, n, copy(A), lda, copy(tau), copy(work))
+                @test_nowarn NextLA.geqr2(m, n, copy(A), lda, copy(tau), copy(work))
                 
                 # Zero dimensions should not error
-                @test_nowarn NextLA.zgeqr2(0, 0, zeros(T, 0, 0), 1, T[], T[])
-                @test_nowarn NextLA.zgeqr2(0, 3, zeros(T, 0, 3), 1, T[], zeros(T, 3))
-                @test_nowarn NextLA.zgeqr2(5, 0, zeros(T, 5, 0), 5, T[], T[])
+                @test_nowarn NextLA.geqr2(0, 0, zeros(T, 0, 0), 1, T[], T[])
+                @test_nowarn NextLA.geqr2(0, 300, zeros(T, 0, 300), 1, T[], zeros(T, 300))
+                @test_nowarn NextLA.geqr2(500, 0, zeros(T, 500, 0), 500, T[], T[])
             end
         end
     end
@@ -153,10 +153,10 @@ end
                     
                     # CPU reference
                     A_cpu_result = copy(A_cpu)
-                    NextLA.zgeqr2(m, n, A_cpu_result, m, tau_cpu, work_cpu)
+                    NextLA.geqr2(m, n, A_cpu_result, m, tau_cpu, work_cpu)
                     
                     # GPU test
-                    NextLA.zgeqr2(m, n, A_gpu, m, tau_gpu, work_gpu)
+                    NextLA.geqr2(m, n, A_gpu, m, tau_gpu, work_gpu)
                     
                     # Compare results
                     @test Array(A_gpu) ≈ A_cpu_result rtol=rtol

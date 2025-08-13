@@ -57,27 +57,27 @@ function lapack_tprfb!(::Type{T}, side::AbstractChar, trans::AbstractChar, direc
 end
 
 
-# LAPACK-style test parameters for NextLA.zparfb
-const ZPARFB_TYPES = [ComplexF32, ComplexF64, Float32, Float64]
+# LAPACK-style test parameters for NextLA.parfb
+const PARFB_TYPES = [ComplexF32, ComplexF64, Float32, Float64]
 # Format: (m1, n1, m2, n2, k, l) where:
 # - For side='L': n1 == n2 (same number of columns)
 # - For side='R': m1 == m2 (same number of rows)
 # - l <= k (lower triangular part constraint)
-const ZPARFB_SIZES = [
-    (5, 4, 3, 4, 2, 1),   # side='L': n1=n2=4, side='R': m1=5≠m2=3 (only works for side='L')
-    (6, 5, 6, 5, 3, 2),   # side='L': n1=n2=5, side='R': m1=m2=6 (works for both sides)
-    (8, 6, 4, 6, 3, 2),   # side='L': n1=n2=6, side='R': m1=8≠m2=4 (only works for side='L')
-    (10, 8, 10, 7, 4, 3)  # side='L': n1=8≠n2=7, side='R': m1=m2=10 (only works for side='R')
+const PARFB_SIZES = [
+    (500, 400, 300, 400, 200, 100),   # side='L': n1=n2=4, side='R': m1=5≠m2=3 (only works for side='L')
+    (600, 500, 600, 500, 300, 200),   # side='L': n1=n2=5, side='R': m1=m2=6 (works for both sides)
+    (800, 600, 400, 600, 300, 200),   # side='L': n1=n2=6, side='R': m1=8≠m2=4 (only works for side='L')
+    (100, 80, 100, 70, 40, 30)  # side='L': n1=8≠n2=7, side='R': m1=m2=10 (only works for side='R')
 ]
 
-@testset "ZPARFB Tests" begin
+@testset "PARFB Tests" begin
     @testset "Standard Test Suite" begin
-        for (itype, T) in enumerate(ZPARFB_TYPES)
+        for (itype, T) in enumerate(PARFB_TYPES)
             @testset "Type $T (itype=$itype)" begin
                 rtol = (T <: ComplexF32) || (T<:Float32) ? 1e-5 : 1e-12
                 atol = rtol
                 
-                for (isize, (m1, n1, m2, n2, k, l)) in enumerate(ZPARFB_SIZES)
+                for (isize, (m1, n1, m2, n2, k, l)) in enumerate(PARFB_SIZES)
                     @testset "Size m1=$m1, n1=$n1, m2=$m2, n2=$n2, k=$k, l=$l" begin
                         # Test different parameter combinations
                         for side in ['L', 'R']
@@ -153,8 +153,8 @@ const ZPARFB_SIZES = [
                                             
                                             work_l = lapack_tprfb!(T, side, trans, direct, storev, l, V, Tee, A1_l, A2_l)
                                             
-                                            # NextLA call: zparfb(side, trans, direct, storev, m1, n1, m2, n2, k, l, A1, lda1, A2, lda2, V, ldv, T, ldt, work, ldwork)
-                                            NextLA.zparfb(side, trans, direct, storev, m1, n1, m2, n2, k, l,
+                                            # NextLA call: parfb(side, trans, direct, storev, m1, n1, m2, n2, k, l, A1, lda1, A2, lda2, V, ldv, T, ldt, work, ldwork)
+                                            NextLA.parfb(side, trans, direct, storev, m1, n1, m2, n2, k, l,
                                                         A1_test, lda1, A2_test, lda2, V_test, ldv, T_test, ldt, work, ldw)
 
                                                 
@@ -199,38 +199,38 @@ const ZPARFB_SIZES = [
     end
 
     @testset "Error Handling Tests" begin
-        for T in ZPARFB_TYPES
+        for T in PARFB_TYPES
             @testset "Type $T Error Handling" begin
                 # Test with valid parameters (should not error)
                 # Use side='L' case: n1 == n2
-                m1, n1, m2, n2, k, l = 6, 5, 4, 5, 3, 2
+                m1, n1, m2, n2, k, l = 600, 500, 400, 500, 300, 200
                 A1 = randn(T, m1, n1)
                 A2 = randn(T, m2, n2)
                 V = randn(T, m2, k)  # For side='L', V has m2 rows
                 T_mat = triu(randn(T, k, k))
                 work = zeros(T, k, n1)
                 
-                @test_nowarn NextLA.zparfb('L', 'N', 'F', 'C', m1, n1, m2, n2, k, l,
+                @test_nowarn NextLA.parfb('L', 'N', 'F', 'C', m1, n1, m2, n2, k, l,
                                           A1, m1, A2, m2, V, m2, T_mat, k, work, k)
                 
                 # Test with valid parameters for side='R' case: m1 == m2
-                m1, n1, m2, n2, k, l = 6, 5, 6, 4, 3, 2
+                m1, n1, m2, n2, k, l = 600, 500, 600, 400, 300, 200
                 A1 = randn(T, m1, n1)
                 A2 = randn(T, m2, n2)
                 V = randn(T, n2, k)  # For side='R', V has n2 rows
                 T_mat = triu(randn(T, k, k))
                 work = zeros(T, m1, k)
                 
-                @test_nowarn NextLA.zparfb('R', 'N', 'F', 'C', m1, n1, m2, n2, k, l,
+                @test_nowarn NextLA.parfb('R', 'N', 'F', 'C', m1, n1, m2, n2, k, l,
                                           A1, m1, A2, m2, V, n2, T_mat, k, work, m1)
                 
                 # Test edge cases
-                @test_nowarn NextLA.zparfb('L', 'N', 'F', 'C', 0, 0, 0, 0, 0, 0,
+                @test_nowarn NextLA.parfb('L', 'N', 'F', 'C', 0, 0, 0, 0, 0, 0,
                                           zeros(T, 0, 0), 1, zeros(T, 0, 0), 1, zeros(T, 0, 0), 1,
                                           zeros(T, 0, 0), 1, T[], 1)
                 
                 # Test with k=0 (valid for both sides)
-                @test_nowarn NextLA.zparfb('L', 'N', 'F', 'C', 2, 2, 2, 2, 0, 0,
+                @test_nowarn NextLA.parfb('L', 'N', 'F', 'C', 2, 2, 2, 2, 0, 0,
                                           randn(T, 2, 2), 2, randn(T, 2, 2), 2, zeros(T, 2, 0), 2,
                                           zeros(T, 0, 0), 1, T[], 1)
             end
@@ -247,7 +247,7 @@ const ZPARFB_SIZES = [
                 
                 for scale in scales
                     # Use valid dimensions: side='L' case with n1==n2
-                    m1, n1, m2, n2, k, l = 8, 6, 5, 6, 3, 2
+                    m1, n1, m2, n2, k, l = 800, 600, 500, 600, 300, 200
                     A1 = T.(scale .* randn(ComplexF64, m1, n1))
                     A2 = T.(scale .* randn(ComplexF64, m2, n2))
                     V = T.(scale .* randn(ComplexF64, m2, k))  # For side='L', V has m2 rows
@@ -261,7 +261,7 @@ const ZPARFB_SIZES = [
                     end
                     
                     # Test calculation
-                    NextLA.zparfb('L', 'N', 'F', 'C', m1, n1, m2, n2, k, l,
+                    NextLA.parfb('L', 'N', 'F', 'C', m1, n1, m2, n2, k, l,
                                   A1, m1, A2, m2, V, m2, T_mat, k, work, k)
                     
                     # Check that results are finite
@@ -323,11 +323,11 @@ const ZPARFB_SIZES = [
                         A1_ref = copy(A1_cpu)
                         A2_ref = copy(A2_cpu)
                         work_ref = copy(work_cpu)
-                        NextLA.zparfb(side, 'N', 'F', 'C', m1, n1, m2, n2, k, l,
+                        NextLA.parfb(side, 'N', 'F', 'C', m1, n1, m2, n2, k, l,
                                       A1_ref, m1, A2_ref, m2, V_cpu, ldv, T_cpu, k, work_ref, ldwork)
                         
                         # Our implementation on GPU
-                        NextLA.zparfb(side, 'N', 'F', 'C', m1, n1, m2, n2, k, l,
+                        NextLA.parfb(side, 'N', 'F', 'C', m1, n1, m2, n2, k, l,
                                       A1_gpu, m1, A2_gpu, m2, V_gpu, ldv, T_gpu, k, work_gpu, ldwork)
                         
                         # Compare results

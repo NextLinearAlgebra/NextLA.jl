@@ -4,9 +4,9 @@ using LinearAlgebra
 using Random
 using CUDA
 
-# Test matrix types (complex types for zlarft)
-const ZLARFT_TYPES = [ComplexF32, ComplexF64, Float32, Float64]
-const ZLARFT_SIZES = [0, 1, 2, 3, 5, 10]
+# Test matrix types (complex types for larft)
+const LARFT_TYPES = [ComplexF32, ComplexF64, Float32, Float64]
+const LARFT_SIZES = [0, 100, 200, 300, 500, 1000]
 
 function generate_test_matrix(::Type{T}, m::Int, k::Int; imat::Int=1, storev::Char='C') where T
     if m == 0 || k == 0
@@ -61,14 +61,14 @@ function generate_test_matrix(::Type{T}, m::Int, k::Int; imat::Int=1, storev::Ch
     end
 end
 
-@testset "ZLARFT Tests" begin
+@testset "LARFT Tests" begin
     @testset "Standard Test Suite" begin
-        for (itype, T) in enumerate(ZLARFT_TYPES)
+        for (itype, T) in enumerate(LARFT_TYPES)
             @testset "Type $T (itype=$itype)" begin
                 rtol = (T <: ComplexF32) || (T <: Float32) ? 1e-5 : 1e-12
                 atol = rtol
                 
-                for (isize, n) in enumerate(ZLARFT_SIZES)
+                for (isize, n) in enumerate(LARFT_SIZES)
                     @testset "Size n=$n (isize=$isize)" begin
                         for k in [0, 1, min(n, 3)]
                             @testset "k=$k" begin
@@ -86,8 +86,8 @@ end
                                                     T_mat = zeros(T, k, k)
                                                     ldt = k
                                                     
-                                                    # NextLA call: zlarft(direct, storev, n, k, v, ldv, tau, t, ldt)
-                                                    NextLA.zlarft(direct, storev, n, k, V, ldv, tau, T_mat, ldt)
+                                                    # NextLA call: larft(direct, storev, n, k, v, ldv, tau, t, ldt)
+                                                    NextLA.larft(direct, storev, n, k, V, ldv, tau, T_mat, ldt)
                                                     
                                                     # Basic checks
                                                     @test all(isfinite.(T_mat))
@@ -151,20 +151,20 @@ end
     
     @testset "Error Handling Tests" begin
         # Test error conditions 
-        for T in ZLARFT_TYPES
+        for T in LARFT_TYPES
             @testset "Type $T Error Handling" begin
                 # Test with valid parameters (should not error)
-                n, k = 5, 3
+                n, k = 500, 300
                 V = randn(T, n, k)
                 tau = randn(T, k)
                 T_mat = zeros(T, k, k)
                 
-                @test_nowarn NextLA.zlarft('F', 'C', n, k, V, n, tau, T_mat, k)
+                @test_nowarn NextLA.larft('F', 'C', n, k, V, n, tau, T_mat, k)
                 
                 # Test edge cases
-                @test_nowarn NextLA.zlarft('F', 'C', 0, 0, zeros(T, 0, 0), 1, T[], zeros(T, 0, 0), 1)  # n = 0, k = 0
-                @test_nowarn NextLA.zlarft('F', 'C', 1, 0, zeros(T, 1, 0), 1, T[], zeros(T, 0, 0), 1)  # k = 0
-                @test_nowarn NextLA.zlarft('F', 'C', 0, 1, zeros(T, 0, 1), 1, T[T(0)], zeros(T, 1, 1), 1)  # n = 0
+                @test_nowarn NextLA.larft('F', 'C', 0, 0, zeros(T, 0, 0), 1, T[], zeros(T, 0, 0), 1)  # n = 0, k = 0
+                @test_nowarn NextLA.larft('F', 'C', 1, 0, zeros(T, 1, 0), 1, T[], zeros(T, 0, 0), 1)  # k = 0
+                @test_nowarn NextLA.larft('F', 'C', 0, 1, zeros(T, 0, 1), 1, T[T(0)], zeros(T, 1, 1), 1)  # n = 0
             end
         end
     end
@@ -178,13 +178,13 @@ end
                 scales = [eps(real(T)), one(real(T)), 1/eps(real(T))^(1/4)]
                 
                 for scale in scales
-                    n, k = 10, 5
+                    n, k = 1000, 500
                     V = T.(scale .* randn(ComplexF64, n, k))
                     tau = T.(scale .* randn(ComplexF64, k))
                     T_mat = zeros(T, k, k)
                     
                     # Test calculation
-                    NextLA.zlarft('F', 'C', n, k, V, n, tau, T_mat, k)
+                    NextLA.larft('F', 'C', n, k, V, n, tau, T_mat, k)
                     
                     # Check that results are finite
                     @test all(isfinite.(T_mat))
@@ -217,10 +217,10 @@ end
                         
                         # Reference CPU calculation
                         T_ref = zeros(T, k, k)
-                        NextLA.zlarft('F', 'C', n, k, V_cpu, n, tau_cpu, T_ref, k)
+                        NextLA.larft('F', 'C', n, k, V_cpu, n, tau_cpu, T_ref, k)
                         
                         # Our implementation on GPU
-                        NextLA.zlarft('F', 'C', n, k, V_gpu, n, tau_gpu, T_gpu, k)
+                        NextLA.larft('F', 'C', n, k, V_gpu, n, tau_gpu, T_gpu, k)
                         
                         # Compare results
                         @test norm(Array(T_gpu) - T_ref) < rtol * max(1, norm(T_ref))

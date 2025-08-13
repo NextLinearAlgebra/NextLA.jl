@@ -1,4 +1,4 @@
-function zlarfg(n, alpha, x, incx, tau)
+function larfg(n, alpha, x, incx, tau)
     one = oneunit(eltype(alpha))
     zero0 = zero(eltype(alpha)) 
     type = eltype(alpha)

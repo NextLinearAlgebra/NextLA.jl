@@ -3,9 +3,9 @@ using NextLA
 using LinearAlgebra
 using CUDA
 
-@testset "ZPEMV Tests" begin
+@testset "PEMV Tests" begin
     @testset "Column Storage No-Transpose Tests" begin
-        m, n, l = 20, 15, 8
+        m, n, l = 200, 150, 80
         alpha = 2.5 + 1.5im
         beta = 1.2 - 0.8im
         
@@ -16,8 +16,8 @@ using CUDA
         Y_original = copy(Y)
         work = zeros(ComplexF64, m)
         
-        # Apply our ZPEMV
-        NextLA.zpemv('C', 'C', m, n, l, alpha, A, lda, X, beta, Y, work)
+        # Apply our PEMV
+        NextLA.pemv('C', 'C', m, n, l, alpha, A, lda, X, beta, Y, work)
         
         # Verify using manual computation
         # For column storage with conjugate transpose, this should compute:
@@ -28,7 +28,7 @@ using CUDA
     end
     
     @testset "Row Storage No-Transpose Tests" begin
-        m, n, l = 15, 20, 10
+        m, n, l = 150, 200, 100
         alpha = 1.8 + 2.2im
         beta = 0.5 + 1.0im
         
@@ -39,8 +39,8 @@ using CUDA
         Y_original = copy(Y)
         work = zeros(ComplexF64, n)
         
-        # Apply our ZPEMV
-        NextLA.zpemv('N', 'R', m, n, l, alpha, A, lda, X, beta, Y, work)
+        # Apply our PEMV
+        NextLA.pemv('N', 'R', m, n, l, alpha, A, lda, X, beta, Y, work)
         
         # For row storage with no transpose:
         # Y := alpha * A^T * X + beta * Y
@@ -50,7 +50,7 @@ using CUDA
     end
     
     @testset "ComplexF32 Tests" begin
-        m, n, l = 12, 15, 6
+        m, n, l = 120, 150, 60
         alpha = ComplexF32(2.0 + 1.0im)
         beta = ComplexF32(0.8 - 0.5im)
         
@@ -61,7 +61,7 @@ using CUDA
         Y_original = copy(Y)
         work = zeros(ComplexF32, m)
         
-        NextLA.zpemv('C', 'C', m, n, l, alpha, A, lda, X, beta, Y, work)
+        NextLA.pemv('C', 'C', m, n, l, alpha, A, lda, X, beta, Y, work)
         
         Y_expected = alpha * A' * X + beta * Y_original
         
@@ -85,7 +85,7 @@ using CUDA
             Y_original = copy(Y)
             work = zeros(ComplexF64, m)
             
-            NextLA.zpemv('C', 'C', m, n, l, alpha, A, lda, X, beta, Y, work)
+            NextLA.pemv('C', 'C', m, n, l, alpha, A, lda, X, beta, Y, work)
             
             Y_expected = alpha * A' * X + beta * Y_original
             @test Y ≈ Y_expected rtol=1e-12
@@ -93,7 +93,7 @@ using CUDA
     end
     
     @testset "Zero Alpha Tests" begin
-        m, n, l = 15, 12, 8
+        m, n, l = 150, 120, 80
         alpha = ComplexF64(0.0)
         beta = 2.0 + 1.5im
         
@@ -104,7 +104,7 @@ using CUDA
         Y_original = copy(Y)
         work = zeros(ComplexF64, m)
         
-        NextLA.zpemv('C', 'C', m, n, l, alpha, A, lda, X, beta, Y, work)
+        NextLA.pemv('C', 'C', m, n, l, alpha, A, lda, X, beta, Y, work)
         
         # With alpha = 0, result should be beta * Y_original
         Y_expected = beta * Y_original
@@ -112,7 +112,7 @@ using CUDA
     end
     
     @testset "Zero Beta Tests" begin
-        m, n, l = 15, 12, 8
+        m, n, l = 150, 120, 80
         alpha = 2.0 + 1.5im
         beta = ComplexF64(0.0)
         
@@ -123,7 +123,7 @@ using CUDA
         Y_original = copy(Y)
         work = zeros(ComplexF64, m)
         
-        NextLA.zpemv('C', 'C', m, n, l, alpha, A, lda, X, beta, Y, work)
+        NextLA.pemv('C', 'C', m, n, l, alpha, A, lda, X, beta, Y, work)
         
         # With beta = 0, result should be alpha * A' * X
         Y_expected = alpha * A' * X
@@ -142,7 +142,7 @@ using CUDA
         Y_original = copy(Y)
         work = zeros(ComplexF64, m)
         
-        NextLA.zpemv('C', 'C', m, n, l, alpha, A, lda, X, beta, Y, work)
+        NextLA.pemv('C', 'C', m, n, l, alpha, A, lda, X, beta, Y, work)
         
         # Function should return early, Y might be unchanged or zeroed
         # Check that it doesn't crash and produces finite results
@@ -162,7 +162,7 @@ using CUDA
         work = ComplexF64[]
         
         # Should return early without error
-        NextLA.zpemv('C', 'C', m, n, l, alpha, A, lda, X, beta, Y, work)
+        NextLA.pemv('C', 'C', m, n, l, alpha, A, lda, X, beta, Y, work)
         @test length(Y) == 0
         
         # n = 0 case
@@ -174,7 +174,7 @@ using CUDA
         Y_original = copy(Y)
         work = zeros(ComplexF64, m)
         
-        NextLA.zpemv('C', 'C', m, n, l, alpha, A, lda, X, beta, Y, work)
+        NextLA.pemv('C', 'C', m, n, l, alpha, A, lda, X, beta, Y, work)
         # Should return early
         @test all(isfinite.(Y))
     end
@@ -189,24 +189,24 @@ using CUDA
         work = zeros(ComplexF64, m)
         
         # Invalid trans
-        @test_throws ArgumentError NextLA.zpemv('X', 'C', m, n, l, alpha, A, m, X, beta, Y, work)
+        @test_throws ArgumentError NextLA.pemv('X', 'C', m, n, l, alpha, A, m, X, beta, Y, work)
         
         # Invalid storev
-        @test_throws ArgumentError NextLA.zpemv('C', 'X', m, n, l, alpha, A, m, X, beta, Y, work)
+        @test_throws ArgumentError NextLA.pemv('C', 'X', m, n, l, alpha, A, m, X, beta, Y, work)
         
         # Invalid trans/storev combination
-        @test_throws ArgumentError NextLA.zpemv('N', 'C', m, n, l, alpha, A, m, X, beta, Y, work)
-        @test_throws ArgumentError NextLA.zpemv('C', 'R', m, n, l, alpha, A, m, X, beta, Y, work)
+        @test_throws ArgumentError NextLA.pemv('N', 'C', m, n, l, alpha, A, m, X, beta, Y, work)
+        @test_throws ArgumentError NextLA.pemv('C', 'R', m, n, l, alpha, A, m, X, beta, Y, work)
         
         # Negative dimensions
-        @test_throws ArgumentError NextLA.zpemv('C', 'C', -1, n, l, alpha, A, m, X, beta, Y, work)
-        @test_throws ArgumentError NextLA.zpemv('C', 'C', m, -1, l, alpha, A, m, X, beta, Y, work)
+        @test_throws ArgumentError NextLA.pemv('C', 'C', -1, n, l, alpha, A, m, X, beta, Y, work)
+        @test_throws ArgumentError NextLA.pemv('C', 'C', m, -1, l, alpha, A, m, X, beta, Y, work)
         
         # Invalid l (l > min(m,n))
-        @test_throws ArgumentError NextLA.zpemv('C', 'C', m, n, min(m,n)+1, alpha, A, m, X, beta, Y, work)
+        @test_throws ArgumentError NextLA.pemv('C', 'C', m, n, min(m,n)+1, alpha, A, m, X, beta, Y, work)
         
         # Invalid lda
-        @test_throws ArgumentError NextLA.zpemv('C', 'C', m, n, l, alpha, A, m-1, X, beta, Y, work)
+        @test_throws ArgumentError NextLA.pemv('C', 'C', m, n, l, alpha, A, m-1, X, beta, Y, work)
     end
     
     @testset "Consistency with BLAS" begin
@@ -223,7 +223,7 @@ using CUDA
         work = zeros(ComplexF64, m)
         
         # Our implementation
-        NextLA.zpemv('C', 'C', m, n, l, alpha, A, lda, X, beta, Y1, work)
+        NextLA.pemv('C', 'C', m, n, l, alpha, A, lda, X, beta, Y1, work)
         
         # BLAS reference
         LinearAlgebra.BLAS.gemv!('C', alpha, A, X, beta, Y2)
@@ -252,10 +252,10 @@ using CUDA
             
             # Apply on CPU
             Y_cpu_result = copy(Y_cpu)
-            NextLA.zpemv('C', 'C', m, n, l, alpha, A_cpu, lda, X_cpu, beta, Y_cpu_result, work_cpu)
+            NextLA.pemv('C', 'C', m, n, l, alpha, A_cpu, lda, X_cpu, beta, Y_cpu_result, work_cpu)
             
             # Apply on GPU
-            NextLA.zpemv('C', 'C', m, n, l, alpha, A_gpu, lda, X_gpu, beta, Y_gpu, work_gpu)
+            NextLA.pemv('C', 'C', m, n, l, alpha, A_gpu, lda, X_gpu, beta, Y_gpu, work_gpu)
             
             @test Array(Y_gpu) ≈ Y_cpu_result rtol=1e-6
         end

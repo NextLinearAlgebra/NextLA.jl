@@ -1,4 +1,4 @@
-function zpemv(trans, storev, m, n, l, alpha, A, lda, X, beta, Y, work)
+function pemv(trans, storev, m, n, l, alpha, A, lda, X, beta, Y, work)
     begin
         if trans != 'N' && trans != 'T' && trans != 'C'
             throw(ArgumentError("illegal value of trans"))

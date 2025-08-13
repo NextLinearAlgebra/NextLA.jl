@@ -1,4 +1,4 @@
-function zlarft(direct, storev, n, k, v, ldv, tau, t, ldt)
+function larft(direct, storev, n, k, v, ldv, tau, t, ldt)
     if n == 0
         return
     end

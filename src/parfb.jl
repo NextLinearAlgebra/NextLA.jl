@@ -1,6 +1,6 @@
-export zparfb
+export parfb
 
-function zparfb(side, trans, direct, storev, m1, n1, m2, n2, k, l, 
+function parfb(side, trans, direct, storev, m1, n1, m2, n2, k, l, 
                 A1, lda1, A2, lda2, V,  ldv, T, ldt, work, ldwork)
 
     if side != 'L' && side != 'R'
@@ -110,7 +110,7 @@ function zparfb(side, trans, direct, storev, m1, n1, m2, n2, k, l,
     else
         colmajor = false
     end
-    zpamm('W', side, storev, direct, m2, n2, k, l, A1, lda1, A2, lda2, V, ldv, work, ldwork)
+    pamm('W', side, storev, direct, m2, n2, k, l, A1, lda1, A2, lda2, V, ldv, work, ldwork)
 
     if colmajor && forward && left # colmajor, forward, left
         LinearAlgebra.generic_trimatmul!((@view work[1:k, 1:n2]), 'U', 'N', tfun, (@view T[1:k, 1:k]), (@view work[1:k, 1:n2]))
@@ -178,7 +178,7 @@ function zparfb(side, trans, direct, storev, m1, n1, m2, n2, k, l,
     end
 
 
-    zpamm('A', side, storev, direct, m2, n2, k, l, A1, lda1, A2, lda2, V, ldv, work, ldwork)
+    pamm('A', side, storev, direct, m2, n2, k, l, A1, lda1, A2, lda2, V, ldv, work, ldwork)
 
     return
 end

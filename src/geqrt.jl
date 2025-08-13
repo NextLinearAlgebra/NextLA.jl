@@ -1,4 +1,4 @@
-function zgeqrt(m,n,ib, A, lda, T, ldt, tau, work)
+function geqrt(m,n,ib, A, lda, T, ldt, tau, work)
     if m < 0
         throw(ArgumentError("illegal value of m"))
         return -1
@@ -39,8 +39,8 @@ function zgeqrt(m,n,ib, A, lda, T, ldt, tau, work)
 
         # compute qr for A[i:m, i:i+sb-1]
         
-        zgeqr2(m-i+1, sb, av, lda, tauv, work)
-        zlarft('F', 'C', m-i+1, sb, av, lda, tauv, tv, ldt)
+        geqr2(m-i+1, sb, av, lda, tauv, work)
+        larft('F', 'C', m-i+1, sb, av, lda, tauv, tv, ldt)
 
         if n >= i + sb
             # update by apply H^H to A[i:m, i+sb:n] from left
@@ -49,7 +49,7 @@ function zgeqrt(m,n,ib, A, lda, T, ldt, tau, work)
             #ww = reshape(wwork, n-i-sb+1, sb)
             ww = reshape((@view work[1: (n-i-sb+1)*sb]), n-i-sb+1, sb)
 
-            zlarfb('L', 'C', 'F', 'C', m-i+1, n-i-sb+1, sb, av, 
+            larfb('L', 'C', 'F', 'C', m-i+1, n-i-sb+1, sb, av, 
                 m-i+1, tv, sb, (@view A[i:m, i+sb:n]), lda, ww, n-i-sb+1)
         end
     end

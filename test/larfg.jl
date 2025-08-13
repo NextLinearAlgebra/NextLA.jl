@@ -49,7 +49,7 @@ for (larfg, elty) in
                         
                         # Test NextLA implementation
                         x_nextla = copy(x_orig)
-                        alpha_nextla, tau_nextla = NextLA.zlarfg(n, alpha_orig, x_nextla, 1, zero(T))
+                        alpha_nextla, tau_nextla = NextLA.larfg(n, alpha_orig, x_nextla, 1, zero(T))
                         
                         # Test LAPACK reference
                         if n > 0
@@ -85,17 +85,17 @@ for (larfg, elty) in
         for T in [ComplexF32, ComplexF64]
             @testset "Type $T edge cases" begin
                 # Test n=0 case
-                alpha_nextla, tau_nextla = NextLA.zlarfg(0, T(1), T[], 1, zero(T))
+                alpha_nextla, tau_nextla = NextLA.larfg(0, T(1), T[], 1, zero(T))
                 @test tau_nextla == 0
                 @test alpha_nextla == T(1)
                 
                 # Test n=1 case
-                alpha_nextla, tau_nextla = NextLA.zlarfg(1, T(2), T[], 1, zero(T))
+                alpha_nextla, tau_nextla = NextLA.larfg(1, T(2), T[], 1, zero(T))
                 @test abs(tau_nextla) < 1e-10
                 @test abs(alpha_nextla - T(2)) < 1e-10
                 
                 # Test zero vector
-                alpha_nextla, tau_nextla = NextLA.zlarfg(3, T(0), T[0, 0], 1, zero(T))
+                alpha_nextla, tau_nextla = NextLA.larfg(3, T(0), T[0, 0], 1, zero(T))
                 @test isfinite(alpha_nextla)
                 @test isfinite(tau_nextla)
             end

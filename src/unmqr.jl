@@ -1,5 +1,5 @@
 """
-	zunmqr(side, trans, m, n, k, ib, A, lda, T, ldt, C, ldc, work, ldwork)
+	unmqr(side, trans, m, n, k, ib, A, lda, T, ldt, C, ldc, work, ldwork)
 
 Overwrites the general m-by-n tile C with
 					side = 'L'		side = 'R'
@@ -44,7 +44,7 @@ as returned by zgeqrt. Q is of order m if side = 'L" and of order n if side = 'R
 	ldwork >= max(1,ib) if side = 'L'
 	ldwork >= max(1,m) if side = 'R'
 """
-function zunmqr(side, trans, m, n, k, ib, A, lda, T, ldt, C, ldc, work, ldwork)
+function unmqr(side, trans, m, n, k, ib, A, lda, T, ldt, C, ldc, work, ldwork)
 	if side != 'L' && side != 'R'
         throw(ArgumentError("illegal value of side"))
 		return -1
@@ -146,6 +146,6 @@ function zunmqr(side, trans, m, n, k, ib, A, lda, T, ldt, C, ldc, work, ldwork)
 
         cv = @view C[ic:m, jc:n]
 
-        zlarfb(side, trans, 'F', 'C', mi, ni, kb, (@view A[i:lda, i:i+kb-1]), lda-i+1, (@view T[1:kb, i:i+kb-1]), kb, cv, ldc, (@view wwork[:, 1:kb]), ldw)
+        larfb(side, trans, 'F', 'C', mi, ni, kb, (@view A[i:lda, i:i+kb-1]), lda-i+1, (@view T[1:kb, i:i+kb-1]), kb, cv, ldc, (@view wwork[:, 1:kb]), ldw)
 	end
 end
