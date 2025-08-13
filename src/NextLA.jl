@@ -77,7 +77,6 @@ function lamch(::Type{T}, cmach) where {T <: Number}
 	end
 end
 
-# Write your package code here.
 include("NextLAMatrix.jl")
 include("lu.jl")
 include("trmm.jl")
