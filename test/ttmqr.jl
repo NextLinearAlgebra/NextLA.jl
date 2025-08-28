@@ -140,7 +140,7 @@ const TTMQR_SIZES = [
                                 
                                     T_mat = triu(rand(T, ib, k))
             
-                                    work = zeros(T, ib, n2)
+                                    work = zeros(T, ib * n2)
             
                                     A1_nextla = copy(A1)
                                     A2_nextla = copy(A2)
@@ -149,9 +149,19 @@ const TTMQR_SIZES = [
                                     T_mat_nextla = copy(T_mat)
                                     work_nextla = copy(work)
             
-                                    work = zeros(T, ib, n2)
-                                    NextLA.ttmqr('L', 'N', n2, n2, n2, n2, k, ib,
-                                                A1_nextla, n2, A2_nextla, n2, V, n2, T_mat_nextla, ib, work_nextla, ib)
+                                    NextLA.ttmqr!('L', 'N', n2, n2, n2, n2, k, ib,
+                                                A1_nextla, A2_nextla, V, T_mat_nextla, work_nextla)
+                                    
+                                    # --- Test Helper Function ---
+                                    A1_helper = copy(A1_orig)
+                                    A2_helper = copy(A2_orig)
+                                    T_mat_helper = copy(T_mat)
+                                    NextLA.ttmqr!('L', 'N', A1_helper, A2_helper, V, T_mat_helper, ib)
+
+                                    # Verify helper gives same results as kernel
+                                    @test A1_helper ≈ A1_nextla rtol=rtol
+                                    @test A2_helper ≈ A2_nextla rtol=rtol
+                                    
                                     lapack_tpmqrt!(T, 'L', 'N', 0, V, T_mat, A1_orig, A2_orig)
                                     @test norm(A1_nextla - A1_orig) < rtol * norm(A1_orig)
                                 end
@@ -172,20 +182,20 @@ const TTMQR_SIZES = [
                 C2 = randn(T, m2, n2)
                 V = randn(T, m2, k)
                 T_mat = triu(randn(T, ib, k))
-                work = zeros(T, ib, n1)
+                work = zeros(T, ib * n1)
                 
-                @test_nowarn NextLA.ttmqr('L', 'N', m1, n1, m2, n2, k, ib,
-                                           C1, m1, C2, m2, V, m2, T_mat, ib, work, ib)
+                @test_nowarn NextLA.ttmqr!('L', 'N', m1, n1, m2, n2, k, ib,
+                                           C1, C2, V, T_mat, work)
                 
                 # Test edge cases
-                @test_nowarn NextLA.ttmqr('L', 'N', 0, 0, 0, 0, 0, 0,
-                                           zeros(T, 0, 0), 1, zeros(T, 0, 0), 1, 
-                                           zeros(T, 0, 0), 1, zeros(T, 0, 0), 1, T[], 1)
+                @test_nowarn NextLA.ttmqr!('L', 'N', 0, 0, 0, 0, 0, 0,
+                                           zeros(T, 0, 0), zeros(T, 0, 0), 
+                                           zeros(T, 0, 0), zeros(T, 0, 0), T[])
                 
                 # Test with k=0
-                @test_nowarn NextLA.ttmqr('L', 'N', 2, 2, 2, 2, 0, 0,
-                                           randn(T, 2, 2), 2, randn(T, 2, 2), 2,
-                                           zeros(T, 2, 0), 2, zeros(T, 0, 0), 1, T[], 1)
+                @test_nowarn NextLA.ttmqr!('L', 'N', 2, 2, 2, 2, 0, 0,
+                                           randn(T, 2, 2), randn(T, 2, 2),
+                                           zeros(T, 2, 0), zeros(T, 0, 0), T[])
             end
         end
     end
@@ -204,11 +214,11 @@ const TTMQR_SIZES = [
                     C2 = T.(scale .* randn(ComplexF64, m2, n2))
                     V = T.(scale .* randn(ComplexF64, m2, k))
                     T_mat = triu(T.(scale .* randn(ComplexF64, ib, k)))
-                    work = zeros(T, ib, n1)
+                    work = zeros(T, ib * n1)
                     
                     # Test calculation
-                    NextLA.ttmqr('L', 'N', m1, n1, m2, n2, k, ib,
-                                  C1, m1, C2, m2, V, m2, T_mat, ib, work, ib)
+                    NextLA.ttmqr!('L', 'N', m1, n1, m2, n2, k, ib,
+                                  C1, C2, V, T_mat, work)
                     
                     # Check that results are finite
                     @test all(isfinite.(C1))
@@ -237,14 +247,10 @@ const TTMQR_SIZES = [
                         
                         if side == 'L'
                             V_cpu = randn(T, m2, k)
-                            work_cpu = zeros(T, ib, n1)
-                            ldv = m2
-                            ldwork = ib
+                            work_cpu = zeros(T, ib * n1)
                         else
                             V_cpu = randn(T, n2, k)
-                            work_cpu = zeros(T, m1, ib)
-                            ldv = n2
-                            ldwork = m1
+                            work_cpu = zeros(T, ib * m1)
                         end
                         
                         T_cpu = triu(randn(T, ib, k))
@@ -260,12 +266,12 @@ const TTMQR_SIZES = [
                         C1_ref = copy(C1_cpu)
                         C2_ref = copy(C2_cpu)
                         work_ref = copy(work_cpu)
-                        NextLA.ttmqr(side, 'N', m1, n1, m2, n2, k, ib,
-                                      C1_ref, m1, C2_ref, m2, V_cpu, ldv, T_cpu, ib, work_ref, ldwork)
+                        NextLA.ttmqr!(side, 'N', m1, n1, m2, n2, k, ib,
+                                      C1_ref, C2_ref, V_cpu, T_cpu, work_ref)
                         
                         # GPU calculation
-                        NextLA.ttmqr(side, 'N', m1, n1, m2, n2, k, ib,
-                                      C1_gpu, m1, C2_gpu, m2, V_gpu, ldv, T_gpu, ib, work_gpu, ldwork)
+                        NextLA.ttmqr!(side, 'N', m1, n1, m2, n2, k, ib,
+                                      C1_gpu, C2_gpu, V_gpu, T_gpu, work_gpu)
                         
                         # Compare results
                         @test norm(Array(C1_gpu) - C1_ref) < rtol * max(1, norm(C1_ref))

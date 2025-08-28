@@ -1,4 +1,4 @@
-function axpy!(a, x, y)
+function axpy!(a::T, x::AbstractVector{T}, y::AbstractVector{T}) where {T}
     n = length(x)
 
     if n <= 0
@@ -12,6 +12,4 @@ function axpy!(a, x, y)
     for i in 1:n
         y[i] = y[i] + a*x[i]
     end
-
-    return
 end

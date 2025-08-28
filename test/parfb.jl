@@ -57,7 +57,7 @@ function lapack_tprfb!(::Type{T}, side::AbstractChar, trans::AbstractChar, direc
 end
 
 
-# LAPACK-style test parameters for NextLA.parfb
+# LAPACK-style test parameters for NextLA.parfb!
 const PARFB_TYPES = [ComplexF32, ComplexF64, Float32, Float64]
 # Format: (m1, n1, m2, n2, k, l) where:
 # - For side='L': n1 == n2 (same number of columns)
@@ -132,13 +132,11 @@ const PARFB_SIZES = [
                                             Tee = rand(T, k, k)
                                             ldt = k
                                             
-                                            # Work array dimensions based on SIDE
+                                            # Work array dimensions based on SIDE (2D workspace)
                                             if side == 'L'
-                                                work = rand(T, k, n1)  # WORK is K-by-N when SIDE='L'
-                                                ldw = k
+                                                work = rand(T, k, n2)  # WORK is K-by-n2 when SIDE='L'
                                             else
-                                                work = rand(T, m1, k)  # WORK is M-by-K when SIDE='R'
-                                                ldw = m1
+                                                work = rand(T, m2, k)  # WORK is m2-by-K when SIDE='R'
                                             end
                                             
                                             # Make copies for testing
@@ -153,9 +151,9 @@ const PARFB_SIZES = [
                                             
                                             work_l = lapack_tprfb!(T, side, trans, direct, storev, l, V, Tee, A1_l, A2_l)
                                             
-                                            # NextLA call: parfb(side, trans, direct, storev, m1, n1, m2, n2, k, l, A1, lda1, A2, lda2, V, ldv, T, ldt, work, ldwork)
-                                            NextLA.parfb(side, trans, direct, storev, m1, n1, m2, n2, k, l,
-                                                        A1_test, lda1, A2_test, lda2, V_test, ldv, T_test, ldt, work, ldw)
+                                            # NextLA call with simplified signature (no ld*), workspace as matrix
+                                            NextLA.parfb!(side, trans, direct, storev, m1, n1, m2, n2, k, l,
+                                                        A1_test, A2_test, V_test, T_test, work)
 
                                                 
 
@@ -208,10 +206,10 @@ const PARFB_SIZES = [
                 A2 = randn(T, m2, n2)
                 V = randn(T, m2, k)  # For side='L', V has m2 rows
                 T_mat = triu(randn(T, k, k))
-                work = zeros(T, k, n1)
+                work = zeros(T, k, n2)
                 
-                @test_nowarn NextLA.parfb('L', 'N', 'F', 'C', m1, n1, m2, n2, k, l,
-                                          A1, m1, A2, m2, V, m2, T_mat, k, work, k)
+                @test_nowarn NextLA.parfb!('L', 'N', 'F', 'C', m1, n1, m2, n2, k, l,
+                                          A1, A2, V, T_mat, work)
                 
                 # Test with valid parameters for side='R' case: m1 == m2
                 m1, n1, m2, n2, k, l = 600, 500, 600, 400, 300, 200
@@ -219,20 +217,18 @@ const PARFB_SIZES = [
                 A2 = randn(T, m2, n2)
                 V = randn(T, n2, k)  # For side='R', V has n2 rows
                 T_mat = triu(randn(T, k, k))
-                work = zeros(T, m1, k)
+                work = zeros(T, m2, k)
                 
-                @test_nowarn NextLA.parfb('R', 'N', 'F', 'C', m1, n1, m2, n2, k, l,
-                                          A1, m1, A2, m2, V, n2, T_mat, k, work, m1)
+                @test_nowarn NextLA.parfb!('R', 'N', 'F', 'C', m1, n1, m2, n2, k, l,
+                                          A1, A2, V, T_mat, work)
                 
                 # Test edge cases
-                @test_nowarn NextLA.parfb('L', 'N', 'F', 'C', 0, 0, 0, 0, 0, 0,
-                                          zeros(T, 0, 0), 1, zeros(T, 0, 0), 1, zeros(T, 0, 0), 1,
-                                          zeros(T, 0, 0), 1, T[], 1)
+                @test_nowarn NextLA.parfb!('L', 'N', 'F', 'C', 0, 0, 0, 0, 0, 0,
+                                          zeros(T, 0, 0), zeros(T, 0, 0), zeros(T, 0, 0), zeros(T, 0, 0), zeros(T, 0, 0))
                 
                 # Test with k=0 (valid for both sides)
-                @test_nowarn NextLA.parfb('L', 'N', 'F', 'C', 2, 2, 2, 2, 0, 0,
-                                          randn(T, 2, 2), 2, randn(T, 2, 2), 2, zeros(T, 2, 0), 2,
-                                          zeros(T, 0, 0), 1, T[], 1)
+                @test_nowarn NextLA.parfb!('L', 'N', 'F', 'C', 2, 2, 2, 2, 0, 0,
+                                          randn(T, 2, 2), randn(T, 2, 2), zeros(T, 2, 0), zeros(T, 0, 0), zeros(T, 0, 0))
             end
         end
     end
@@ -252,7 +248,7 @@ const PARFB_SIZES = [
                     A2 = T.(scale .* randn(ComplexF64, m2, n2))
                     V = T.(scale .* randn(ComplexF64, m2, k))  # For side='L', V has m2 rows
                     T_mat = triu(T.(scale .* randn(ComplexF64, k, k)))
-                    work = zeros(T, k, n1)
+                    work = zeros(T, k, n2)
                     
                     # Set up proper Householder structure
                     for i in 1:k
@@ -261,8 +257,8 @@ const PARFB_SIZES = [
                     end
                     
                     # Test calculation
-                    NextLA.parfb('L', 'N', 'F', 'C', m1, n1, m2, n2, k, l,
-                                  A1, m1, A2, m2, V, m2, T_mat, k, work, k)
+                    NextLA.parfb!('L', 'N', 'F', 'C', m1, n1, m2, n2, k, l,
+                                  A1, A2, V, T_mat, work)
                     
                     # Check that results are finite
                     @test all(isfinite.(A1))
@@ -294,14 +290,10 @@ const PARFB_SIZES = [
                         # Set V dimensions based on side
                         if side == 'L'
                             V_cpu = randn(T, m2, k)
-                            work_cpu = zeros(T, k * n1)
-                            ldv = m2
-                            ldwork = k
+                            work_cpu = zeros(T, k, n2)
                         else  # side == 'R'
                             V_cpu = randn(T, n2, k)
-                            work_cpu = zeros(T, m1 * k)
-                            ldv = n2
-                            ldwork = m1
+                            work_cpu = zeros(T, m2, k)
                         end
                         
                         T_cpu = triu(randn(T, k, k))
@@ -323,17 +315,17 @@ const PARFB_SIZES = [
                         A1_ref = copy(A1_cpu)
                         A2_ref = copy(A2_cpu)
                         work_ref = copy(work_cpu)
-                        NextLA.parfb(side, 'N', 'F', 'C', m1, n1, m2, n2, k, l,
-                                      A1_ref, m1, A2_ref, m2, V_cpu, ldv, T_cpu, k, work_ref, ldwork)
+                        NextLA.parfb!(side, 'N', 'F', 'C', m1, n1, m2, n2, k, l,
+                                      A1_ref, A2_ref, V_cpu, T_cpu, work_ref)
                         
                         # Our implementation on GPU
-                        NextLA.parfb(side, 'N', 'F', 'C', m1, n1, m2, n2, k, l,
-                                      A1_gpu, m1, A2_gpu, m2, V_gpu, ldv, T_gpu, k, work_gpu, ldwork)
+                        NextLA.parfb!(side, 'N', 'F', 'C', m1, n1, m2, n2, k, l,
+                                      A1_gpu, A2_gpu, V_gpu, T_gpu, work_gpu)
                         
                         # Compare results
                         @test norm(Array(A1_gpu) - A1_ref) < rtol * max(1, norm(A1_ref))
                         @test norm(Array(A2_gpu) - A2_ref) < rtol * max(1, norm(A2_ref))
-                        @test norm(Array(work_gpu) - work_ref) < rtol * max(1, norm(work_ref))
+                        @test norm(Array(work_gpu) - Array(work_ref)) < rtol * max(1, norm(Array(work_ref)))
                         
                         @test all(isfinite.(Array(A1_gpu)))
                         @test all(isfinite.(Array(A2_gpu)))
