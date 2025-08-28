@@ -86,8 +86,8 @@ end
                                                     T_mat = zeros(T, k, k)
                                                     ldt = k
                                                     
-                                                    # NextLA call: larft(direct, storev, n, k, v, ldv, tau, t, ldt)
-                                                    NextLA.larft(direct, storev, n, k, V, ldv, tau, T_mat, ldt)
+                                                    # NextLA call: larft!(direct, storev, n, k, V, tau, T_mat)
+                                                    NextLA.larft!(direct, storev, n, k, V, tau, T_mat)
                                                     
                                                     # Basic checks
                                                     @test all(isfinite.(T_mat))
@@ -159,12 +159,12 @@ end
                 tau = randn(T, k)
                 T_mat = zeros(T, k, k)
                 
-                @test_nowarn NextLA.larft('F', 'C', n, k, V, n, tau, T_mat, k)
+                @test_nowarn NextLA.larft!('F', 'C', n, k, V, tau, T_mat)
                 
                 # Test edge cases
-                @test_nowarn NextLA.larft('F', 'C', 0, 0, zeros(T, 0, 0), 1, T[], zeros(T, 0, 0), 1)  # n = 0, k = 0
-                @test_nowarn NextLA.larft('F', 'C', 1, 0, zeros(T, 1, 0), 1, T[], zeros(T, 0, 0), 1)  # k = 0
-                @test_nowarn NextLA.larft('F', 'C', 0, 1, zeros(T, 0, 1), 1, T[T(0)], zeros(T, 1, 1), 1)  # n = 0
+                @test_nowarn NextLA.larft!('F', 'C', 0, 0, zeros(T, 0, 0), T[], zeros(T, 0, 0))  # n = 0, k = 0
+                @test_nowarn NextLA.larft!('F', 'C', 1, 0, zeros(T, 1, 0), T[], zeros(T, 0, 0))  # k = 0
+                @test_nowarn NextLA.larft!('F', 'C', 0, 1, zeros(T, 0, 1), T[T(0)], zeros(T, 1, 1))  # n = 0
             end
         end
     end
@@ -217,10 +217,10 @@ end
                         
                         # Reference CPU calculation
                         T_ref = zeros(T, k, k)
-                        NextLA.larft('F', 'C', n, k, V_cpu, n, tau_cpu, T_ref, k)
+                        NextLA.larft!('F', 'C', n, k, V_cpu, tau_cpu, T_ref)
                         
                         # Our implementation on GPU
-                        NextLA.larft('F', 'C', n, k, V_gpu, n, tau_gpu, T_gpu, k)
+                        NextLA.larft!('F', 'C', n, k, V_gpu, tau_gpu, T_gpu)
                         
                         # Compare results
                         @test norm(Array(T_gpu) - T_ref) < rtol * max(1, norm(T_ref))

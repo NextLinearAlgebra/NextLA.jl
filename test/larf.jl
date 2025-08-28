@@ -121,10 +121,17 @@ end
                                             
                                             # Determine work array size
                                             work_size = side == 'L' ? n : m
-                                            work = zeros(T, work_size, 1)
+                                            work = zeros(T, work_size)
                                             
-                                            # NextLA call: larf(side, m, n, v, incv, tau, c, ldc, work)
-                                            NextLA.larf(side, m, n, v, 1, tau, C_test, work)
+                                            # NextLA call: larf!(side, m, n, v, incv, tau, c, ldc, work)
+                                            NextLA.larf!(side, m, n, v, 1, tau, C_test, work)
+                                            
+                                            # --- Test Helper Function ---
+                                            C_helper = copy(C_orig)
+                                            NextLA.larf!(side, v, 1, tau, C_helper)
+                                            
+                                            # Verify helper gives same results as kernel (in-place)
+                                            @test C_helper ≈ C_test rtol=rtol
                                             
                                             # Basic checks
                                             @test all(isfinite.(C_test))
@@ -156,14 +163,14 @@ end
                 C = randn(T, m, n)
                 v = randn(T, max(m, n))
                 tau = T(0.5)
-                work = zeros(T, max(m, n), 1)
+                work = zeros(T, max(m, n))
                 
-                @test_nowarn NextLA.larf('L', m, n, v, 1, tau, C, work)
-                @test_nowarn NextLA.larf('R', m, n, v, 1, tau, C, work)
+                @test_nowarn NextLA.larf!('L', m, n, v, 1, tau, C, work)
+                @test_nowarn NextLA.larf!('R', m, n, v, 1, tau, C, work)
                 
                 # Test edge cases
-                @test_nowarn NextLA.larf('L', 1, 1, T[T(1)], 1, T(0), T[T(1);;], T[T(0);;])
-                @test_nowarn NextLA.larf('R', 1, 1, T[T(1)], 1, T(0), T[T(1);;], T[T(0);;])
+                @test_nowarn NextLA.larf!('L', 1, 1, T[T(1)], 1, T(0), T[T(1);;], T[0])
+                @test_nowarn NextLA.larf!('R', 1, 1, T[T(1)], 1, T(0), T[T(1);;], T[0])
             end
         end
     end
@@ -183,12 +190,12 @@ end
                         C = T.(scale .* randn(T, m, n))
                         v = T.(scale .* randn(T, side == 'L' ? m : n))
                         tau = T(scale * randn(T))
-                        work = zeros(T, max(m, n), 1)
+                        work = zeros(T, max(m, n))
                         
                         C_orig = copy(C)
                         
                         # Test calculation
-                        NextLA.larf(side, m, n, v, 1, tau, C, work)
+                        NextLA.larf!(side, m, n, v, 1, tau, C, work)
                         
                         # Check that results are finite
                         @test all(isfinite.(C))
@@ -213,7 +220,7 @@ end
                             C_cpu = T.(randn(T, m, n))
                             v_cpu = T.(randn(T, max(m, n)))
                             tau_cpu = T(randn(T))
-                            work_cpu = zeros(T, max(m, n), 1)
+                            work_cpu = zeros(T, max(m, n))
                             
                             # Move data to GPU
                             C_gpu = CuArray(C_cpu)
@@ -223,10 +230,10 @@ end
                             # Reference CPU calculation
                             C_ref = copy(C_cpu)
                             work_ref = copy(work_cpu)
-                            NextLA.larf(side, m, n, v_cpu, 1, tau_cpu, C_ref, m, work_ref)
+                            NextLA.larf!(side, m, n, v_cpu, 1, tau_cpu, C_ref, work_ref)
                             
                             # Our implementation on GPU
-                            NextLA.larf(side, m, n, v_gpu, 1, tau_cpu, C_gpu, m, work_gpu)
+                            NextLA.larf!(side, m, n, v_gpu, 1, tau_cpu, C_gpu, work_gpu)
                             
                             # Compare results
                             @test norm(Array(C_gpu) - C_ref) < rtol * max(1, norm(C_ref))

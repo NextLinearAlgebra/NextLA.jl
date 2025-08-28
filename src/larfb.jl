@@ -1,5 +1,5 @@
 """
-    larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, work, ldwork)
+    larfb!(side, trans, direct, storev, m, n, k, v, ldv, t, c, work)
 
 Applies complex block reflector H or its transpose H^H to m-by-n matrix C from either the left or the right
 Implemented with Julia internal functions for matrix multiplication
@@ -29,23 +29,18 @@ Implemented with Julia internal functions for matrix multiplication
     - if storev = 'C' and side = 'R', ldv >= max(1,n)
     - if storev = 'R', ldv >= k
 - 't': dimension (ldv, k), the triangular k-by-k matrix t in representation of the block reflector
-- 'ldt': the leading dimension of array t, ldt >= k
 - 'c': 
     - on entry m-by-n matrix
     - on exit, overwritten by H*C or H^H*C or C*H or C*H^H
-- 'ldc': the leading dimension of c. ldc >= max(1,m)
 - 'work': dimension (ldwork, k)
-- 'ldwork': 
-    - if side = 'L', ldwork >= max(1,n)
-    - if side = 'R', ldwork >= max(1,m)
 """
-function larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, work, ldwork)
-    
+function larfb!(side::Char, trans::Char, direct::Char, storev::Char, m::Integer, n::Integer, k::Integer, V::AbstractMatrix{T}, ldv::Integer, T_mat::AbstractMatrix{T}, C::AbstractMatrix{T}, work::AbstractMatrix{T}) where {T}
+
     if m <= 0 || n <= 0
         return
     end
 
-    one = oneunit(eltype(c))
+    one = oneunit(eltype(C))
     plus = LinearAlgebra.MulAddMul(one, one)
     minus = LinearAlgebra.MulAddMul(one*(-1),one)
 
@@ -62,10 +57,10 @@ function larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, wor
                                               (C2)
                 """
 
-                c1 = @view c[1:k,:] 
-                c2 = @view c[k+1:m,:]
-                v1 = @view v[1:k,:]
-                v2 = @view v[k+1:m,:]
+                c1 = @view C[1:k,:] 
+                c2 = @view C[k+1:m,:]
+                v1 = @view V[1:k,:]
+                v2 = @view V[k+1:m,:]
             
                 work .= c1'
 
@@ -80,9 +75,9 @@ function larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, wor
                 # W = W * T^H or W*T
 
                 if trans == 'N' # W = W*T^H
-                    LinearAlgebra.generic_mattrimul!(work, 'U', 'N', adjoint, work, t)
+                    LinearAlgebra.generic_mattrimul!(work, 'U', 'N', adjoint, work, T_mat)
                 else
-                    LinearAlgebra.generic_mattrimul!(work, 'U', 'N', identity, work, t)
+                    LinearAlgebra.generic_mattrimul!(work, 'U', 'N', identity, work, T_mat)
                 end
 
                 if m > k 
@@ -100,10 +95,10 @@ function larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, wor
                     """
                     Form C*H or C*H^H where C = (c1 c2)
                     """
-                    c1 = @view c[:, 1:k]
-                    c2 = @view c[:, k+1:n]
-                    v1 = @view v[1:k,:]
-                    v2 = @view v[k+1:n,:]
+                    c1 = @view C[:, 1:k]
+                    c2 = @view C[:, k+1:n]
+                    v1 = @view V[1:k,:]
+                    v2 = @view V[k+1:n,:]
 
                     work .= c1
 
@@ -119,9 +114,9 @@ function larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, wor
                     #w = w*t or w*t^H
 
                     if trans == 'C' # W = W*T^H
-                        LinearAlgebra.generic_mattrimul!(work, 'U', 'N', adjoint, work, t)
+                        LinearAlgebra.generic_mattrimul!(work, 'U', 'N', adjoint, work, T_mat)
                     else
-                        LinearAlgebra.generic_mattrimul!(work, 'U', 'N', identity, work, t)
+                        LinearAlgebra.generic_mattrimul!(work, 'U', 'N', identity, work, T_mat)
                     end
 
                     if n > k
@@ -146,10 +141,10 @@ function larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, wor
                 Form H*C or H^H*C where C = (c1)
                                             (c2)
                 """
-                c1 = @view c[1:m-k,:]
-                c2 = @view c[m-k+1:m,:]
-                v1 = @view v[1:ldv-k,:]
-                v2 = @view v[ldv-k+1:ldv,:]
+                c1 = @view C[1:m-k,:]
+                c2 = @view C[m-k+1:m,:]
+                v1 = @view V[1:ldv-k,:]
+                v2 = @view V[ldv-k+1:ldv,:]
                 
                 work .= c2'
 
@@ -163,10 +158,10 @@ function larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, wor
 
                 if trans == 'N'
                     #work = work*(t')
-                    LinearAlgebra.generic_mattrimul!(work, 'L', 'N', adjoint, work, t)
+                    LinearAlgebra.generic_mattrimul!(work, 'L', 'N', adjoint, work, T_mat)
                 else
                     #work = work*t
-                    LinearAlgebra.generic_mattrimul!(work, 'L', 'N', identity, work, t)
+                    LinearAlgebra.generic_mattrimul!(work, 'L', 'N', identity, work, T_mat)
                 end
 
                 #c1 = c1 - v1*w^H
@@ -180,7 +175,7 @@ function larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, wor
                 #c2 = c2 - w^H
                 for j in 1:k
                     for i in 1:n
-                        c[m-k+j,i] = c[m-k+j,i] - conj(work[i,j])
+                        C[m-k+j,i] = C[m-k+j,i] - conj(work[i,j])
                     end
                 end
             else 
@@ -188,10 +183,10 @@ function larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, wor
                     """
                     Form C*H or C*H^H where C = (c1 c2)
                     """
-                    c1 = @view c[:,1:n-k]
-                    c2 = @view c[:,n-k+1:n]
-                    v1 = @view v[1:ldv-k,:]
-                    v2 = @view v[ldv-k+1:ldv,:]
+                    c1 = @view C[:,1:n-k]
+                    c2 = @view C[:,n-k+1:n]
+                    v1 = @view V[1:ldv-k,:]
+                    v2 = @view V[ldv-k+1:ldv,:]
 
                     work .= c2
 
@@ -205,10 +200,10 @@ function larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, wor
 
                     if trans == 'C'
                         #work = work*(t')
-                        LinearAlgebra.generic_mattrimul!(work, 'L', 'N', adjoint, work, t)
+                        LinearAlgebra.generic_mattrimul!(work, 'L', 'N', adjoint, work, T_mat)
                     else
                         #work = work*t
-                        LinearAlgebra.generic_mattrimul!(work, 'L', 'N', identity, work, t)
+                        LinearAlgebra.generic_mattrimul!(work, 'L', 'N', identity, work, T_mat)
                     end
                     
                     #c1 = c1 - w*v1^H
@@ -237,10 +232,10 @@ function larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, wor
                                                 (c2)
                     """
 
-                    v1 = @view v[:, 1:k]
-                    v2 = @view v[:, k+1:m]
-                    c1 = @view c[1:k, :]
-                    c2 = @view c[k+1:m, :]
+                    v1 = @view V[:, 1:k]
+                    v2 = @view V[:, k+1:m]
+                    c1 = @view C[1:k, :]
+                    c2 = @view C[k+1:m, :]
 
                     work .= c1'
 
@@ -254,10 +249,10 @@ function larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, wor
 
                     if trans == 'N'
                         #work = work*(t')
-                        LinearAlgebra.generic_mattrimul!(work, 'U', 'N', adjoint, work, t)
+                        LinearAlgebra.generic_mattrimul!(work, 'U', 'N', adjoint, work, T_mat)
                     else
                         #work = work*t
-                        LinearAlgebra.generic_mattrimul!(work, 'U', 'N', identity, work, t)
+                        LinearAlgebra.generic_mattrimul!(work, 'U', 'N', identity, work, T_mat)
                     end
 
                     #c2 = c2 - v2^h*w^h
@@ -276,10 +271,10 @@ function larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, wor
                         Form C*H or C*H^H where C = (c1 c2)
                         """
                         
-                        v1 = @view v[:, 1:k]
-                        v2 = @view v[:, k+1:n]
-                        c1 = @view c[:, 1:k]
-                        c2 = @view c[:, k+1:n]
+                        v1 = @view V[:, 1:k]
+                        v2 = @view V[:, k+1:n]
+                        c1 = @view C[:, 1:k]
+                        c2 = @view C[:, k+1:n]
 
                         work .= c1
 
@@ -293,10 +288,10 @@ function larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, wor
 
                         if trans == 'C'
                             #work = work*(t')
-                            LinearAlgebra.generic_mattrimul!(work, 'U', 'N', adjoint, work, t)
+                            LinearAlgebra.generic_mattrimul!(work, 'U', 'N', adjoint, work, T_mat)
                         else
                             #work = work*t
-                            LinearAlgebra.generic_mattrimul!(work, 'U', 'N', identity, work, t)
+                            LinearAlgebra.generic_mattrimul!(work, 'U', 'N', identity, work, T_mat)
                         end
 
                         #c2 = c2 - w*v2
@@ -320,10 +315,10 @@ function larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, wor
                     Form H*C or H^H*C where C = (c1)
                                                 (c2)
                     """
-                    v1 = @view v[:, 1:m-k]
-                    v2 = @view v[:, m-k+1:m]
-                    c1 = @view c[1:m-k,:]
-                    c2 = @view c[m-k+1:m,:]
+                    v1 = @view V[:, 1:m-k]
+                    v2 = @view V[:, m-k+1:m]
+                    c1 = @view C[1:m-k,:]
+                    c2 = @view C[m-k+1:m,:]
 
                     work .= c2'
 
@@ -337,10 +332,10 @@ function larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, wor
 
                     if trans == 'N'
                         #work = work*(t')
-                        LinearAlgebra.generic_mattrimul!(work, 'L', 'N', adjoint, work, t)
+                        LinearAlgebra.generic_mattrimul!(work, 'L', 'N', adjoint, work, T_mat)
                     else
                         #work = work*t
-                        LinearAlgebra.generic_mattrimul!(work, 'L', 'N', identity, work, t)
+                        LinearAlgebra.generic_mattrimul!(work, 'L', 'N', identity, work, T_mat)
                     end
 
                     #c1 = c1 - v1^h * w^h
@@ -358,10 +353,10 @@ function larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, wor
                         """
                         Form C*H or C*H^H where C = (c1 c2)
                         """
-                        v1 = @view v[:, 1:n-k]
-                        v2 = @view v[:, n-k+1:n]
-                        c1 = @view c[:, 1:n-k]
-                        c2 = @view c[:,n-k+1:n]
+                        v1 = @view V[:, 1:n-k]
+                        v2 = @view V[:, n-k+1:n]
+                        c1 = @view C[:, 1:n-k]
+                        c2 = @view C[:,n-k+1:n]
 
                         work .= c2
                         
@@ -375,10 +370,10 @@ function larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, wor
 
                         if trans == 'C'
                             #work = work*(t')
-                            LinearAlgebra.generic_mattrimul!(work, 'L', 'N', adjoint, work, t)
+                            LinearAlgebra.generic_mattrimul!(work, 'L', 'N', adjoint, work, T_mat)
                         else
                             #work = work*t
-                            LinearAlgebra.generic_mattrimul!(work, 'L', 'N', identity, work, t)
+                            LinearAlgebra.generic_mattrimul!(work, 'L', 'N', identity, work, T_mat)
                         end
 
                         #c1 = c1 - w*v1
@@ -395,6 +390,74 @@ function larfb(side, trans, direct, storev, m, n, k, v, ldv, t, ldt, c, ldc, wor
             end
         end
     end
-
-    return
 end 
+
+"""
+    larfb!(side, trans, direct, storev, V, T, C)
+
+Apply a complex block reflector H or its conjugate transpose H^H to a matrix C.
+
+This is a high-level interface that automatically computes required dimensions
+and allocates workspace for the block reflector application.
+
+The block reflector H has the form:
+H = I - V * T * V^H
+
+where V contains k elementary reflector vectors and T is an upper triangular
+block reflector coefficient matrix.
+
+# Arguments
+- `side`: Character specifying which side to apply the reflector
+  - 'L': Apply H from the left (H*C or H^H*C)  
+  - 'R': Apply H from the right (C*H or C*H^H)
+- `trans`: Character specifying which form to apply
+  - 'N': Apply H (no conjugate transpose)
+  - 'C': Apply H^H (conjugate transpose)
+- `direct`: Character indicating how H is formed from elementary reflectors
+  - 'F': H = H(1) H(2) ... H(k) (Forward - first k reflectors)
+  - 'B': H = H(k) ... H(2) H(1) (Backward - last k reflectors)  
+- `storev`: Character indicating how reflector vectors are stored in V
+  - 'C': Reflector vectors stored columnwise in V
+  - 'R': Reflector vectors stored rowwise in V
+- `V`: Matrix containing the elementary reflector vectors
+- `T`: Upper triangular k×k matrix with block reflector coefficients
+- `C`: m×n matrix to be transformed in-place
+
+# Algorithm
+Applies the block reflector efficiently by:
+1. Computing W = C^H * V (or W = C * V for right multiplication)  
+2. Multiplying by the triangular matrix T: W := W * T (or W * T^H)
+3. Applying rank-k update: C := C - V * W^H (or C - W * V^H)
+
+The algorithm exploits the triangular structure of the reflector matrix
+to minimize computational cost.
+
+# Example
+```julia
+m, n, k = 8, 6, 4
+C = complex.(randn(m, n), randn(m, n))
+V = complex.(randn(m, k), randn(m, k))  # k reflector vectors  
+T = triu(complex.(randn(k, k), randn(k, k)))  # Upper triangular
+larfb!('L', 'N', 'F', 'C', V, T, C)  # Apply H*C
+```
+"""
+function larfb!(side::Char, trans::Char, direct::Char, storev::Char, V::AbstractMatrix{T}, T_mat::AbstractMatrix{T}, C::AbstractMatrix{T}) where {T}
+    # Determine dimensions
+    m, n = size(C)
+    k = size(T, 1)
+    
+    # Set leading dimensions
+    ldv = size(V, 1) 
+    
+    # Allocate workspace
+    if side == 'L'
+        ldwork = n
+        work = similar(C, k, n)
+    else
+        ldwork = m
+        work = similar(C, m, k)
+    end
+    
+    # Call the underlying kernel
+    larfb!(side, trans, direct, storev, m, n, k, V, ldv, T_mat, C, work)
+end

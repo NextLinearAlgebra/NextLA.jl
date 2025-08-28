@@ -19,13 +19,8 @@ using CUDA
         V_original = copy(V)
         W_original = copy(W)
         
-        lda1 = k
-        lda2 = m
-        ldv = m
-        ldw = n
-        
-        # Apply our PAMM
-        NextLA.pamm('W', 'L', 'C', 'F', m, n, k, l, A1, lda1, A2, lda2, V, ldv, W, ldw)
+    # Apply our PAMM
+    NextLA.pamm!('W', 'L', 'C', 'F', m, n, k, l, A1, A2, V, W)
         
         # Basic checks
         @test size(W) == (n, l)
@@ -43,12 +38,7 @@ using CUDA
         V = rand(ComplexF64, n, l)
         W = rand(ComplexF64, m, l)
         
-        lda1 = k
-        lda2 = n
-        ldv = n
-        ldw = m
-        
-        NextLA.pamm('W', 'R', 'C', 'F', m, n, k, l, A1, lda1, A2, lda2, V, ldv, W, ldw)
+    NextLA.pamm!('W', 'R', 'C', 'F', m, n, k, l, A1, A2, V, W)
         
         @test size(W) == (m, l)
         @test all(isfinite.(W))
@@ -64,13 +54,8 @@ using CUDA
         
         A2_original = copy(A2)
         
-        lda1 = k
-        lda2 = m
-        ldv = m
-        ldw = n
-        
         # Apply A operation
-        NextLA.pamm('A', 'L', 'C', 'F', m, n, k, l, A1, lda1, A2, lda2, V, ldv, W, ldw)
+    NextLA.pamm!('A', 'L', 'C', 'F', m, n, k, l, A1, A2, V, W)
         
         @test size(A2) == (m, k)
         @test all(isfinite.(A2))
@@ -87,12 +72,7 @@ using CUDA
         V = rand(ComplexF64, m, l)
         W = rand(ComplexF64, n, l)
         
-        lda1 = k
-        lda2 = m
-        ldv = m
-        ldw = n
-        
-        NextLA.pamm('W', 'L', 'C', 'B', m, n, k, l, A1, lda1, A2, lda2, V, ldv, W, ldw)
+    NextLA.pamm!('W', 'L', 'C', 'B', m, n, k, l, A1, A2, V, W)
         
         @test all(isfinite.(W))
     end
@@ -105,12 +85,7 @@ using CUDA
         V = rand(ComplexF64, l, m)  # Row-wise storage
         W = rand(ComplexF64, l, n)  # Row-wise storage
         
-        lda1 = k
-        lda2 = m
-        ldv = l
-        ldw = l
-        
-        NextLA.pamm('W', 'L', 'R', 'F', m, n, k, l, A1, lda1, A2, lda2, V, ldv, W, ldw)
+    NextLA.pamm!('W', 'L', 'R', 'F', m, n, k, l, A1, A2, V, W)
         
         @test all(isfinite.(W))
     end
@@ -125,12 +100,7 @@ using CUDA
         
         W_original = copy(W)
         
-        lda1 = k
-        lda2 = m
-        ldv = m
-        ldw = n
-        
-        NextLA.pamm('W', 'L', 'C', 'F', m, n, k, l, A1, lda1, A2, lda2, V, ldv, W, ldw)
+    NextLA.pamm!('W', 'L', 'C', 'F', m, n, k, l, A1, A2, V, W)
         
         @test all(isfinite.(W))
         @test !isapprox(W, W_original, rtol=1e-6)
@@ -157,7 +127,7 @@ using CUDA
             ldv = m
             ldw = n
             
-            NextLA.pamm('W', 'L', 'C', 'F', m, n, k, l, A1, lda1, A2, lda2, V, ldv, W, ldw)
+            NextLA.pamm!('W', 'L', 'C', 'F', m, n, k, l, A1, lda1, A2, lda2, V, ldv, W, ldw)
             
             @test all(isfinite.(W))
             @test size(W) == (n, l)
@@ -178,7 +148,7 @@ using CUDA
         ldv = m
         ldw = n
         
-        NextLA.pamm('W', 'L', 'C', 'F', m, n, k, l, A1, lda1, A2, lda2, V, ldv, W, ldw)
+        NextLA.pamm!('W', 'L', 'C', 'F', m, n, k, l, A1, lda1, A2, lda2, V, ldv, W, ldw)
         
         @test all(isfinite.(W))
         
@@ -189,7 +159,7 @@ using CUDA
         V = rand(ComplexF64, m, l)
         W = rand(ComplexF64, n, l)
         
-        NextLA.pamm('W', 'L', 'C', 'F', m, n, k, l, A1, lda1, A2, lda2, V, ldv, W, ldw)
+        NextLA.pamm!('W', 'L', 'C', 'F', m, n, k, l, A1, lda1, A2, lda2, V, ldv, W, ldw)
         
         @test all(isfinite.(W))
     end
@@ -229,16 +199,11 @@ using CUDA
         V = rand(ComplexF64, m, l)
         W = rand(ComplexF64, n, l)
         
-        lda1 = k
-        lda2 = m
-        ldv = m
-        ldw = n
-        
         # Apply W operation
-        NextLA.pamm('W', 'L', 'C', 'F', m, n, k, l, A1, lda1, A2_w, lda2, V, ldv, W, ldw)
+            NextLA.pamm!('W', 'L', 'C', 'F', m, n, k, l, A1, A2_w, V, W)
         
         # Apply A operation with same input
-        NextLA.pamm('A', 'L', 'C', 'F', m, n, k, l, A1, lda1, A2_a, lda2, V, ldv, W, ldw)
+            NextLA.pamm!('A', 'L', 'C', 'F', m, n, k, l, A1, A2_a, V, W)
         
         # Results should be finite and well-defined
         @test all(isfinite.(W))
@@ -256,22 +221,17 @@ using CUDA
             W_cpu = rand(ComplexF32, n, l)
             
             lda1 = k
-            lda2 = m
-            ldv = m
-            ldw = n
-            
-            # Create GPU data
             A1_gpu = CuArray(A1_cpu)
-            A2_gpu = CuArray(A2_cpu)
-            V_gpu = CuArray(V_cpu)
+            W_cpu_result = copy(W_cpu)
+            NextLA.pamm!('W', 'L', 'C', 'F', m, n, k, l, A1_cpu, A2_cpu, V_cpu, W_cpu_result)
             W_gpu = CuArray(W_cpu)
             
             # Apply on CPU
             W_cpu_result = copy(W_cpu)
-            NextLA.pamm('W', 'L', 'C', 'F', m, n, k, l, A1_cpu, lda1, A2_cpu, lda2, V_cpu, ldv, W_cpu_result, ldw)
+            NextLA.pamm!('W', 'L', 'C', 'F', m, n, k, l, A1_cpu, lda1, A2_cpu, lda2, V_cpu, ldv, W_cpu_result, ldw)
             
             # Apply on GPU
-            NextLA.pamm('W', 'L', 'C', 'F', m, n, k, l, A1_gpu, lda1, A2_gpu, lda2, V_gpu, ldv, W_gpu, ldw)
+            NextLA.pamm!('W', 'L', 'C', 'F', m, n, k, l, A1_gpu, A2_gpu, V_gpu, W_gpu)
             
             @test Array(W_gpu) ≈ W_cpu_result rtol=1e-6
         end
