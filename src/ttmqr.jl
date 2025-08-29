@@ -109,9 +109,10 @@ Helper function for triangular-trapezoidal matrix transformation.
 - Modified `A1` and `A2`
 """
 function ttmqr!(side::Char, trans::Char, A1::AbstractMatrix{T}, A2::AbstractMatrix{T},
-         V::AbstractMatrix{T}, T_matrix::AbstractMatrix{T}, ib::Integer) where T
+         V::AbstractMatrix{T}, T_matrix::AbstractMatrix{T}) where T
     m1, n1 = size(A1)
     m2, n2 = size(A2)
+    ib = size(T_matrix, 1)
     # Use the common number of reflectors available in V and T
     k = size(T_matrix, 2)
 

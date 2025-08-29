@@ -89,7 +89,7 @@ const TSQRT_SIZES = [
                         A2_helper = copy(A2)
                         T_helper = zeros(T, ib, n)
                         tau_helper = zeros(T, n)
-                        NextLA.tsqrt!(A1_helper, A2_helper, T_helper, tau_helper, ib)
+                        NextLA.tsqrt!(A1_helper, A2_helper, T_helper, tau_helper)
 
                         # Verify helper gives same results as kernel
                         @test A1_helper ≈ A1_nextla rtol=rtol

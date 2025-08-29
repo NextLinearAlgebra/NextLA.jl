@@ -93,9 +93,10 @@ Helper for triangular-triangular QR factorization.
 - `T`: Block reflector matrix  
 - `tau`: Scalar factors
 """
-function ttqrt!(ib::Integer, A::AbstractMatrix{T}, B::AbstractMatrix{T}, T_mat::AbstractMatrix{T}, tau::AbstractVector{T}) where {T}
+function ttqrt!(A::AbstractMatrix{T}, B::AbstractMatrix{T}, T_mat::AbstractMatrix{T}, tau::AbstractVector{T}) where {T}
     m, n = size(A)
     m2, n2 = size(B)
+    ib = size(T_mat, 1)
     @assert m2 == m && n2 == n "A and B must have same dimensions"
 
     work = zeros(T, ib * n)

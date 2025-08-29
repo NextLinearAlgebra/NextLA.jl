@@ -411,7 +411,7 @@ V = complex.(randn(m, k), randn(m, k))
 A1_new, A2_new = pamm('A', 'L', 'C', 'F', A1, A2, V)
 ```
 """
-function pamm(op::Char, side::Char, storev::Char, direct::Char, A1::AbstractMatrix{T}, A2::AbstractMatrix{T}, V::AbstractMatrix{T}) where {T}
+function pamm!(op::Char, side::Char, storev::Char, direct::Char, A1::AbstractMatrix{T}, A2::AbstractMatrix{T}, V::AbstractMatrix{T}) where {T}
     # Determine dimensions
     m, k = size(A1)
     n = size(A2, 2)

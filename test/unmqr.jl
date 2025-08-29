@@ -37,7 +37,7 @@ const UNMQR_TESTTYPES = [ComplexF32, ComplexF64, Float32, Float64]
 
             # --- Test Helper Function ---
             C_helper = copy(C_original)
-            NextLA.unmqr!('L', 'N', A_qr, T, C_helper, ib)
+            NextLA.unmqr!('L', 'N', A_qr, T, C_helper)
             
             # Verify helper gives same results as kernel (in-place)
             @test C_helper ≈ C rtol=rtol
@@ -86,7 +86,7 @@ const UNMQR_TESTTYPES = [ComplexF32, ComplexF64, Float32, Float64]
 
             # --- Test Helper Function ---
             C_helper = copy(C_original)
-            NextLA.unmqr!('L', 'C', A_qr, T, C_helper, ib)
+            NextLA.unmqr!('L', 'C', A_qr, T, C_helper)
             
             # Verify helper gives same results as kernel (in-place)
             @test C_helper ≈ C rtol=rtol

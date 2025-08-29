@@ -191,9 +191,10 @@ Uses the blocked compact WY representation to apply Q efficiently through
 matrix-matrix operations rather than individual elementary reflectors.
 """
 function unmqr!(side::Char, trans::Char, A::AbstractMatrix{T}, T_matrix::AbstractMatrix{T}, 
-               C::AbstractMatrix{T}, ib::Integer) where {T}
+               C::AbstractMatrix{T}) where {T}
     m, n = size(C)
-    k = size(T_matrix, 2)
+    ib, k = size(T_matrix)
+
     
     # Validate input dimensions
     if ib <= 0

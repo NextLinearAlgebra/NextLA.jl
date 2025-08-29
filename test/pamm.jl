@@ -165,7 +165,7 @@ using CUDA
     end
     
     @testset "Wrapper Function Tests" begin
-        # Test pamm_w wrapper
+    # Test pamm! simplified wrapper
         m, n, k, l = 150, 120, 80, 50
         
         A1 = rand(ComplexF64, k, m)
@@ -175,16 +175,16 @@ using CUDA
         
         W_original = copy(W)
         
-        NextLA.pamm_w(true, true, true, m, n, k, l, A1, A2, V, W)
+    NextLA.pamm!('W', 'L', 'C', 'F', A1, A2, V)
         
         @test all(isfinite.(W))
         @test !isapprox(W, W_original, rtol=1e-12)
         
-        # Test pamm_a wrapper
+    # Test pamm! simplified wrapper for 'A'
         A2_test = rand(ComplexF64, m, k)
         A2_original = copy(A2_test)
         
-        NextLA.pamm_a(true, true, true, m, n, k, l, A2_test, V, W)
+    NextLA.pamm!('A', 'L', 'C', 'F', A1, A2_test, V)
         
         @test all(isfinite.(A2_test))
     end
@@ -220,20 +220,19 @@ using CUDA
             V_cpu = rand(ComplexF32, m, l)
             W_cpu = rand(ComplexF32, n, l)
             
-            lda1 = k
+            # Prepare GPU data
             A1_gpu = CuArray(A1_cpu)
-            W_cpu_result = copy(W_cpu)
-            NextLA.pamm!('W', 'L', 'C', 'F', m, n, k, l, A1_cpu, A2_cpu, V_cpu, W_cpu_result)
+            A2_gpu = CuArray(A2_cpu)
+            V_gpu = CuArray(V_cpu)
             W_gpu = CuArray(W_cpu)
             
-            # Apply on CPU
-            W_cpu_result = copy(W_cpu)
-            NextLA.pamm!('W', 'L', 'C', 'F', m, n, k, l, A1_cpu, lda1, A2_cpu, lda2, V_cpu, ldv, W_cpu_result, ldw)
+            # Apply on CPU (full signature)
+            NextLA.pamm!('W', 'L', 'C', 'F', m, n, k, l, A1_cpu, A2_cpu, V_cpu, W_cpu)
             
-            # Apply on GPU
+            # Apply on GPU (full signature)
             NextLA.pamm!('W', 'L', 'C', 'F', m, n, k, l, A1_gpu, A2_gpu, V_gpu, W_gpu)
             
-            @test Array(W_gpu) ≈ W_cpu_result rtol=1e-6
+            @test Array(W_gpu) ≈ W_cpu rtol=1e-6
         end
     end
 end
