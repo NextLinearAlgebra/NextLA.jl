@@ -186,10 +186,11 @@ efficiently. The compact WY representation enables high-performance
 matrix-matrix operations instead of multiple vector operations.
 """
 function tsmqr!(side::Char, trans::Char, A1::AbstractMatrix{T}, A2::AbstractMatrix{T}, 
-               V::AbstractMatrix{T}, T_matrix::AbstractMatrix{T}, ib::Integer) where {T}
+               V::AbstractMatrix{T}, T_matrix::AbstractMatrix{T}) where {T}
     m1, n1 = size(A1)
     m2, n2 = size(A2)
     k = size(V, 2)
+    ib = size(T_matrix, 1)
     
     # Validate input dimensions
     if side == 'L' && n2 != n1

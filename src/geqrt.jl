@@ -81,8 +81,9 @@ Helper function for blocked QR factorization. Computes A = Q*R where Q is orthog
 - `T`: Upper triangular block reflector matrix (ib × n)
 - `tau`: Vector of scalar factors for elementary reflectors (length n)
 """
-function geqrt!(ib::Integer, A::AbstractMatrix{T}, T_matrix::AbstractMatrix{T}, tau::AbstractVector{T}) where {T}
+function geqrt!(A::AbstractMatrix{T}, T_matrix::AbstractMatrix{T}, tau::AbstractVector{T}) where {T}
     m, n = size(A)
+    ib = size(T_matrix, 1)
     work = zeros(T, ib * n)
 
     geqrt!(m, n, ib, A, T_matrix, tau, work)

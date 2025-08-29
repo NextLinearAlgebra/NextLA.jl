@@ -208,7 +208,7 @@ Y_new = pemv('N', 'C', A, X, Y, 2.0, 1.0)
 ```
 """
 
-function pemv(trans::Char, storev::Char, alpha::T, A::AbstractMatrix{T}, x::AbstractVector{T}, beta::T, y::AbstractVector{T}) where {T}
+function pemv!(trans::Char, storev::Char, alpha::T, A::AbstractMatrix{T}, x::AbstractVector{T}, beta::T, y::AbstractVector{T}) where {T}
     # Determine dimensions
     m, n = size(A)
     l = min(m, n)  # Default panel size

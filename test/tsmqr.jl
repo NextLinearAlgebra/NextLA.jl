@@ -149,7 +149,7 @@ const TSMQR_SIZES = [
                                     # --- Test Helper Function ---
                                     A1_helper = copy(A1)
                                     A2_helper = copy(A2)
-                                    NextLA.tsmqr!(side, trans, A1_helper, A2_helper, V, T_mat, ib)
+                                    NextLA.tsmqr!(side, trans, A1_helper, A2_helper, V, T_mat)
                                     
                                     # Verify helper gives same results as kernel
                                     @test A1_helper ≈ A1_nextla rtol=rtol

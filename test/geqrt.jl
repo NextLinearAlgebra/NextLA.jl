@@ -55,7 +55,7 @@ const GEQRT_BLOCKSIZES = [100, 200, 400, 800]
                                         A_helper = copy(A_orig)
                                         T_helper = zeros(T, max(1, ib), k)
                                         tau_helper = zeros(T, k)
-                                        NextLA.geqrt!(ib, A_helper, T_helper, tau_helper)
+                                        NextLA.geqrt!(A_helper, T_helper, tau_helper)
                                         
                                         # Verify helper gives same results as kernel (in-place)
                                         if k > 0
