@@ -91,7 +91,7 @@ const TTQRT_SIZES = [
                         # --- Test Helper Function ---
                         A1_helper = copy(A1_orig)
                         A2_helper = copy(A2_orig)
-                        NextLA.ttqrt!(A1_helper, A2_helper, T_mat_nextla, tau)
+                        NextLA.ttqrt!(A1_helper, A2_helper, T_mat_nextla)
                         
                         # Verify helper gives same results as kernel
                         @test A1_helper ≈ A1_nextla rtol=rtol
