@@ -54,14 +54,12 @@ const GEQRT_BLOCKSIZES = [100, 200, 400, 800]
                                         # --- Test Helper Function ---
                                         A_helper = copy(A_orig)
                                         T_helper = zeros(T, max(1, ib), k)
-                                        tau_helper = zeros(T, k)
-                                        NextLA.geqrt!(A_helper, T_helper, tau_helper)
+                                        NextLA.geqrt!(A_helper, T_helper)
                                         
                                         # Verify helper gives same results as kernel (in-place)
                                         if k > 0
                                             @test A_helper ≈ A_test rtol=rtol atol=atol
                                             @test T_helper[1:ib, 1:k] ≈ T_test[1:ib, 1:k] rtol=rtol atol=atol
-                                            @test tau_helper ≈ tau_test rtol=rtol atol=atol
                                         end
 
                                         # --- Comparisons ---

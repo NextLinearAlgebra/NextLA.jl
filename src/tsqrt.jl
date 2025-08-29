@@ -151,22 +151,22 @@ A1_qr, A2_qr, T, tau = tsqrt!(copy(A1), copy(A2), ib)
 Uses blocked algorithm for efficiency with large matrices. The compact WY
 representation (stored in T) enables efficient application of the Q factor.
 """
-function tsqrt!(A1::AbstractMatrix{T}, A2::AbstractMatrix{T}, T_matrix::AbstractMatrix{T}, tau::AbstractVector{T}) where {T}
+function tsqrt!(A1::AbstractMatrix{T}, A2::AbstractMatrix{T}, T_matrix::AbstractMatrix{T}) where{T}
     n, n2 = size(A1)
-    if n != n2
-        throw(ArgumentError("A1 must be square, got size $(size(A1))"))
+    
+    m, n3 = size(A2) 
+    if n2 != n3
+        throw(ArgumentError("A1 and A2 must have same number of columns, got $n2 and $n3"))
     end
 
-    m, n3 = size(A2) 
-    if n != n3
-        throw(ArgumentError("A1 and A2 must have same number of columns, got $n and $n3"))
-    end
-    
-    ib = size(T_matrix, 1)
+    ib, nb = size(T_matrix)
+
     if ib <= 0
         throw(ArgumentError("Block size ib must be positive, got $ib"))
     end
     
+
+    tau = Vector{T}(undef, n)
     work = zeros(T, ib * n)
     
     # Call the core computational routine

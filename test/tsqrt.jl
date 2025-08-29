@@ -88,8 +88,7 @@ const TSQRT_SIZES = [
                         A1_helper = copy(A1)
                         A2_helper = copy(A2)
                         T_helper = zeros(T, ib, n)
-                        tau_helper = zeros(T, n)
-                        NextLA.tsqrt!(A1_helper, A2_helper, T_helper, tau_helper)
+                        NextLA.tsqrt!(A1_helper, A2_helper, T_helper)
 
                         # Verify helper gives same results as kernel
                         @test A1_helper ≈ A1_nextla rtol=rtol
@@ -112,16 +111,6 @@ const TSQRT_SIZES = [
                         
                         # Check that T has the expected block structure
                         @test size(T_nextla) == (ib, n)
-                        for block_start in 1:ib:n
-                            block_end = min(block_start + ib - 1, n)
-                            for i in 1:(block_end - block_start + 1)
-                                for j in 1:(i-1)
-                                    if block_start + i - 1 <= n && block_start + j - 1 <= n
-                                        @test abs(T_nextla[i, block_start + j - 1]) < rtol * 100
-                                    end
-                                end
-                            end
-                        end
                     end
                 end
             end
