@@ -9,31 +9,6 @@ import LinearAlgebra: BLAS, LAPACK
 import LinearAlgebra.BLAS: @blasfunc
 using Random: Random
 using KernelAbstractions
-using StaticArrays
-
-DEV = :NVIDIA
-
-if DEV == :NVIDIA
-	using CUDA
-	ArrayKA = CUDA.CuArray
-	Backend = CUDA.CUDABackend()
-elseif DEV == :AMD
-	using AMDGPU
-	ArrayKA = AMDGPU.ROCArray
-	Backend = AMDGPU.ROCBackend()
-elseif DEV == :oneAPI
-	using oneAPI
-	ArrayKA = oneAPI.oneArray
-	Backend = oneAPI.oneAPIBackend()
-elseif DEV == :Metal
-	using Metal
-	ArrayKA = Metal.MtlArray
-	Backend = Metal.MetalBackend()
-else
-	DEV == :CPU
-	ArrayKA = Array
-	Backend = CPU()
-end
 
 """
 	lamch(::Type{T}, cmach) where{T<: Number}
