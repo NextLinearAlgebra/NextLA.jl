@@ -189,8 +189,7 @@ function tsmqr!(side::Char, trans::Char, A1::AbstractMatrix{T}, A2::AbstractMatr
                V::AbstractMatrix{T}, T_matrix::AbstractMatrix{T}) where {T}
     m1, n1 = size(A1)
     m2, n2 = size(A2)
-    k = size(V, 2)
-    ib = size(T_matrix, 1)
+    ib, k = size(T_matrix)
     
     # Validate input dimensions
     if side == 'L' && n2 != n1

@@ -218,7 +218,7 @@ function unmqr!(side::Char, trans::Char, A::AbstractMatrix{T}, T_matrix::Abstrac
     end
     
     # Set leading dimensions
-    lda = max(1, size(A, 1))
+    lda = max(1, stride(A, 2))
     
     # Allocate workspace based on side (matrix workspace expected by low-level)
     if side == 'L'
