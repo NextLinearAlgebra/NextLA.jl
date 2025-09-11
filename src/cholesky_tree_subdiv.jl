@@ -1,4 +1,5 @@
 using LinearAlgebra
+using StochasticRounding
 include("symmmixedprec.jl")
 include("recmixedprectri.jl")
 include("trsm.jl")
@@ -8,6 +9,38 @@ include("rectrxm.jl")
 include("recsyrk.jl")
 include("cholesky.jl")
 
+
+
+function potrf!(A::CUDA.StridedCuArray{T}) where T
+    if eltype(A) == Float16
+        A_f32 = Float32.(A)
+        CUSOLVER.potrf!('L', A_f32)
+        A .= Float16.(A_f32)
+    else
+        CUSOLVER.potrf!('L', A)
+    end
+end
+
+function potrf!(A::AMDGPU.StridedROCArray{T}) where T
+    if eltype(A) == Float16
+        A_f32 = Float32.(A)
+        ROCSOLVER.potrf!('L', A_f32)
+        A .= Float16.(A_f32)
+    else
+        ROCSOLVER.potrf!('L', A)
+    end
+end
+
+function potrf!(A::oneAPI.oneDeviceArray{T}) where T
+    if eltype(A) == Float16
+        A_f32 = Float32.(A)
+        oneMKL.potrf!('L', A_f32)
+        A .= Float16.(A_f32)
+    else
+        oneMKL.potrf!('L', A)
+    end
+end
+
 function potrf_recursive!(A, block_size)
     n = size(A, 1)
 
@@ -15,21 +48,12 @@ function potrf_recursive!(A, block_size)
     # println("[TRACE] potrf_recursive! called on $(n)x$(n) matrix of type $(eltype(A))")
 
     if n <= block_size
-        if eltype(A) == Float16
-            A_f32 = Float32.(A)
-            CUSOLVER.potrf!('L', A_f32)
-            A .= Float16.(A_f32)
-        else
-            CUSOLVER.potrf!('L', A)
-        end
+        potrf!(A)
         return
     end
 
-    # Recursive split
-    n1 = 2^floor(Int, log2(n)) ÷ 2  # largest power-of-2 less than n
+    n1 = 2^floor(Int, log2(n)) ÷ 2  
     
-
-    # View subblocks
     A11 = @view A[1:n1, 1:n1]
     A21 = @view A[n1+1:end, 1:n1]
     A22 = @view A[n1+1:end, n1+1:end]

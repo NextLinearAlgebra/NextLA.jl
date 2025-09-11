@@ -1,6 +1,13 @@
+using AMDGPU
+using CUDA
+using oneAPI
+using StochasticRounding
+
+
+
 function _syrk_dispatch!(
     op::Symbol,
-    alpha::Number, A::AbstractMatrix, B::AbstractMatrix, beta::Number, C::AbstractMatrix
+    alpha::Number, A::CUDA.StridedCuArray, B::CUDA.StridedCuArray, beta::Number, C::CUDA.StridedCuArray
 )
     TC = eltype(C)
     TA = eltype(A)
@@ -8,27 +15,35 @@ function _syrk_dispatch!(
     if op === :SYRK
         if TA == TC && TC in (Float32, Float64)
             CUBLAS.syrk!('L', 'N', TC(alpha), A, TC(beta), C)
-
         elseif TA == Float16 && TC in (Float16, Float32)
             CUBLAS.gemmEx!('N', 'T', alpha, A, A, beta, C)
         else
-            A_converted = TC.(A)
-            if TC in (Float32, Float64)
-                CUBLAS.syrk!('L', 'N', TC(alpha), A_converted, TC(beta), C)
-            else 
-                CUBLAS.gemmEx!('N', 'T', alpha, A_converted, A_converted, beta, C)
+            compute_type = Float32
+            
+            C_temp = (TC == compute_type) ? C : compute_type.(C)
+
+            if TA == Float32
+                CUBLAS.syrk!('L', 'N', compute_type(alpha), A, compute_type(beta), C_temp)
+            elseif TA == Float16
+                CUBLAS.gemmEx!('N', 'T', alpha, A, A, beta, C_temp)
+            else
+                A_temp = compute_type.(A)
+                CUBLAS.syrk!('L', 'N', compute_type(alpha), A_temp, compute_type(beta), C_temp)
+            end
+            
+            if C !== C_temp
+                copy!(C, C_temp)
             end
         end
 
     elseif op === :GEMM
         TB = eltype(B)
-
         if TA == TB == TC && TC in (Float32, Float64)
             CUBLAS.gemm!('N', 'T', TC(alpha), A, B, TC(beta), C)
-
         elseif TA == Float16 && TB == Float16 && TC in (Float16, Float32)
             CUBLAS.gemmEx!('N', 'T', alpha, A, B, beta, C)
         else
+            # print("type a:", eltype(A), "type b:", eltype(B), "type c:", eltype(C))
             A_final = (TA == TC) ? A : TC.(A)
             B_final = (TB == TC) ? B : TC.(B)
             if TC in (Float32, Float64)
@@ -36,6 +51,66 @@ function _syrk_dispatch!(
             else 
                 CUBLAS.gemmEx!('N', 'T', alpha, A_final, B_final, beta, C)
             end
+        end
+    end
+end
+
+function _syrk_dispatch!(
+    op::Symbol,
+    alpha::Number, A::AMDGPU.StridedROCArray, B::AMDGPU.StridedROCArray, beta::Number, C::AMDGPU.StridedROCArray
+)
+    TC = eltype(C)
+    TA = eltype(A)
+
+    if op === :SYRK
+        if TA == TC && TC in (Float32, Float64)
+            ROCBLAS.syrk!('L', 'N', TC(alpha), A, TC(beta), C)
+        elseif TA == Float16 && TC in (Float16, Float32)
+            ROCBLAS.gemm_ex!('N', 'T', alpha, A, A, beta, C)
+        else
+            A_converted = TC.(A)
+            ROCBLAS.syrk!('L', 'N', TC(alpha), A_converted, TC(beta), C)
+        end
+    elseif op === :GEMM
+        TB = eltype(B)
+        if TA == TB == TC && TC in (Float32, Float64)
+            ROCBLAS.gemm!('N', 'T', TC(alpha), A, B, TC(beta), C)
+        elseif TA == Float16 && TB == Float16 && TC in (Float16, Float32)
+            ROCBLAS.gemm_ex!('N', 'T', alpha, A, B, beta, C)
+        else
+            A_final = (TA == TC) ? A : TC.(A)
+            B_final = (TB == TC) ? B : TC.(B)
+            ROCBLAS.gemm!('N', 'T', TC(alpha), A_final, B_final, TC(beta), C)
+        end
+    end
+end
+
+function _syrk_dispatch!(
+    op::Symbol,
+    alpha::Number, A::oneAPI.oneDeviceArray, B::oneAPI.oneDeviceArray, beta::Number, C::oneAPI.oneDeviceArray
+)
+    TC = eltype(C)
+    TA = eltype(A)
+
+    if op === :SYRK
+        if TA == TC && TC in (Float32, Float64)
+            oneMKL.syrk!('L', 'N', TC(alpha), A, TC(beta), C)
+        elseif TA == Float16 && TC in (Float16, Float32)
+            oneMKL.gemm!('N', 'T', alpha, A, A, beta, C)
+        else
+            A_converted = TC.(A)
+            oneMKL.syrk!('L', 'N', TC(alpha), A_converted, TC(beta), C)
+        end
+    elseif op === :GEMM
+        TB = eltype(B)
+        if TA == TB == TC && TC in (Float32, Float64)
+            oneMKL.gemm!('N', 'T', TC(alpha), A, B, TC(beta), C)
+        elseif TA == Float16 && TB == Float16 && TC in (Float16, Float32)
+            oneMKL.gemm!('N', 'T', alpha, A, B, beta, C)
+        else
+            A_final = (TA == TC) ? A : TC.(A)
+            B_final = (TB == TC) ? B : TC.(B)
+            oneMKL.gemm!('N', 'T', TC(alpha), A_final, B_final, TC(beta), C)
         end
     end
 end

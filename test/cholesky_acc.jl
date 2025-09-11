@@ -99,7 +99,7 @@ end
 
 
 function check_cholesky_accuracy()
-    n_values = [4096, 8192, 16384, 32768, 65536] #256, 512, 1024, 2048, 
+    n_values = [1000, 4096, 5000, 8192, 9999, 16384, 32768, 65536] #256, 512, 1024, 2048, 
 
     pure_scenarios = Dict(
         "Pure F32" => [Float32],

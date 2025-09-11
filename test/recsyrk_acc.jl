@@ -26,7 +26,7 @@ end
 
 
 function run_recsyrk_accuracy_benchmark()
-    n_values = [65536] #256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 
+    n_values = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
 
     test_scenarios = Dict(
         "Pure F16"                  => [Float16, Float16, Float16],
@@ -82,7 +82,24 @@ function run_recsyrk_accuracy_benchmark()
             
             push!(accuracy_results[name], -log10(max(relative_error, 1e-18)))
 
-            @printf("     %-28s | Rel. Error: %9.2e\n", name, relative_error)
+            @printf("      %-28s | Rel. Error: %9.2e\n", name, relative_error)
+
+            if name in ["Pure F16", "Pure F32", "Pure F64"]
+                if T_out == Float16
+                    C_for_cublas = CuArray{Float32}(d_C_orig)
+                    CUBLAS.gemmEx!('N', 'T', T_out(alpha), d_A, d_A, T_out(beta), C_for_cublas)
+                    C_for_cublas = CuArray{Float16}(C_for_cublas)
+                else
+                    C_for_cublas = copy(d_C_orig)
+                    CUBLAS.syrk!('L', 'N', T_out(alpha), d_A, T_out(beta), C_for_cublas)
+                end
+
+                h_C_cublas_result = Array(C_for_cublas)
+                cublas_error_norm = norm(tril(h_C_cublas_result) - tril(h_C_ground_truth))
+                cublas_relative_error = max(cublas_error_norm / solution_norm, 1e-20)
+                
+                @printf("      %-28s | Rel. Error: %9.2e\n", "CUBLAS " * name, cublas_relative_error)
+            end
 
             d_A = nothing
             d_C_orig = nothing

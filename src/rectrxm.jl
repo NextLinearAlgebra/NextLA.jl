@@ -1,4 +1,11 @@
 export unified_rectrxm!
+using StochasticRounding
+
+function stochastic_convert(::Type{T_out}, M_in::AbstractArray) where T_out
+    M_out = similar(M_in, T_out)
+    @. M_out = stochastic_round(T_out, M_in)
+    return M_out
+end
 
 
 function quantize(matrix::AbstractMatrix{T}) where T <: AbstractFloat
@@ -13,7 +20,7 @@ function quantize(matrix::AbstractMatrix{T}) where T <: AbstractFloat
         s = Float32(alpha / FP16_MAX_VAL)
         
         quantized_matrix = similar(matrix, Float16, size(matrix))
-        
+        print("CLAMPING3")
         @. quantized_matrix = Float16(round(clamp(matrix / s, -FP16_MAX_VAL, FP16_MAX_VAL)))
     else
         s = 1.0f0
@@ -35,7 +42,7 @@ function dequantize(quantized_matrix::AbstractMatrix{Float16}, s::Float32, origi
 end
 
 
-function GEMM_ADD_cublas!(A, B, C, scale::Float32=1.0f0)
+function GEMM_ADD!(A, B, C::CUDA.StridedCuArray, scale::Float32=1.0f0)
     transA = A isa Transpose ? 'T' : 'N'
     transB = B isa Transpose ? 'T' : 'N'
     A_mat = A isa Transpose ? parent(A) : A
@@ -44,6 +51,7 @@ function GEMM_ADD_cublas!(A, B, C, scale::Float32=1.0f0)
         if eltype(C) == Float16
             C_op = Float32.(C)
             CUBLAS.gemmEx!(transA, transB, scale, A_mat, B_mat, 1.0f0, C_op)
+            print("CLAMPING4")
             clamp!(C_op, floatmin(Float16), floatmax(Float16))
             copy!(C, C_op)
         else
@@ -55,7 +63,7 @@ function GEMM_ADD_cublas!(A, B, C, scale::Float32=1.0f0)
     end
 end
 
-function GEMM_SUB_cublas!(C, A, B, scale::Float32=1.0f0)
+function GEMM_SUB!(C::CUDA.StridedCuArray, A, B, scale::Float32=1.0f0)
     transA = A isa Transpose ? 'T' : 'N'
     transB = B isa Transpose ? 'T' : 'N'
     A_mat = A isa Transpose ? parent(A) : A
@@ -64,6 +72,7 @@ function GEMM_SUB_cublas!(C, A, B, scale::Float32=1.0f0)
         if eltype(C) == Float16
             C_op = Float32.(C)
             CUBLAS.gemmEx!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C_op)
+            print("CLAMPING5")
             clamp!(C_op, floatmin(Float16), floatmax(Float16))
             copy!(C, C_op)
         else
@@ -75,6 +84,94 @@ function GEMM_SUB_cublas!(C, A, B, scale::Float32=1.0f0)
     end
 end
 
+function GEMM_ADD!(A, B, C::AMDGPU.StridedROCArray, scale::Float32=1.0f0)
+    transA = A isa Transpose ? 'T' : 'N'
+    transB = B isa Transpose ? 'T' : 'N'
+    A_mat = A isa Transpose ? parent(A) : A
+    B_mat = B isa Transpose ? parent(B) : B
+    if eltype(A_mat) == Float16 && eltype(B_mat) == Float16
+        if eltype(C) == Float16
+            C_op = Float32.(C)
+            ROCBLAS.gemm_ex!(transA, transB, scale, A_mat, B_mat, 1.0f0, C_op)
+            print("CLAMPING6")
+            clamp!(C_op, floatmin(Float16), floatmax(Float16))
+            copy!(C, C_op)
+        else
+            ROCBLAS.gemm_ex!(transA, transB, scale, A_mat, B_mat, 1.0f0, C)
+        end
+    else
+        T_C = eltype(C)
+        ROCBLAS.gemm!(transA, transB, T_C(scale), A_mat, B_mat, T_C(1.0), C)
+    end
+end
+
+function GEMM_SUB!(C::AMDGPU.StridedROCArray, A, B, scale::Float32=1.0f0)
+    transA = A isa Transpose ? 'T' : 'N'
+    transB = B isa Transpose ? 'T' : 'N'
+    A_mat = A isa Transpose ? parent(A) : A
+    B_mat = B isa Transpose ? parent(B) : B
+    if eltype(A_mat) == Float16 && eltype(B_mat) == Float16
+        if eltype(C) == Float16
+            C_op = Float32.(C)
+            ROCBLAS.gemm_ex!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C_op)
+            print("CLAMPING7")
+            clamp!(C_op, floatmin(Float16), floatmax(Float16))
+            copy!(C, C_op)
+        else
+            ROCBLAS.gemm_ex!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C)
+        end
+    else
+        T_C = eltype(C)
+        ROCBLAS.gemm!(transA, transB, T_C(-scale), A_mat, B_mat, T_C(1.0), C)
+    end
+end
+
+function GEMM_ADD!(A, B, C::oneAPI.oneDeviceArray, scale::Float32=1.0f0)
+    transA = A isa Transpose ? 'T' : 'N'
+    transB = B isa Transpose ? 'T' : 'N'
+    A_mat = A isa Transpose ? parent(A) : A
+    B_mat = B isa Transpose ? parent(B) : B
+    T_C = eltype(C)
+    oneMKL.gemm!(transA, transB, T_C(scale), A_mat, B_mat, T_C(1.0), C)
+end
+
+function GEMM_SUB!(C::oneAPI.oneDeviceArray, A, B, scale::Float32=1.0f0)
+    transA = A isa Transpose ? 'T' : 'N'
+    transB = B isa Transpose ? 'T' : 'N'
+    A_mat = A isa Transpose ? parent(A) : A
+    B_mat = B isa Transpose ? parent(B) : B
+    T_C = eltype(C)
+    oneMKL.gemm!(transA, transB, T_C(-scale), A_mat, B_mat, T_C(1.0), C)
+end
+
+function dispatch_trsm!(side, uplo, trans, diag, alpha, A, B)
+    if eltype(A) == Float16
+        B_temp = Float32.(B)
+        _dispatch_trsm_kernel!(side, uplo, trans, diag, alpha, Float32.(A), B_temp)
+        copy!(B, B_temp)
+    else
+        _dispatch_trsm_kernel!(side, uplo, trans, diag, alpha, A, B)
+    end
+end
+
+_dispatch_trsm_kernel!(side, uplo, trans, diag, alpha, A::CUDA.StridedCuArray, B::CUDA.StridedCuArray) = CUBLAS.trsm!(side, uplo, trans, diag, alpha, A, B)
+_dispatch_trsm_kernel!(side, uplo, trans, diag, alpha, A::AMDGPU.StridedROCArray, B::AMDGPU.StridedROCArray) = ROCBLAS.trsm!(side, uplo, trans, diag, alpha, A, B)
+_dispatch_trsm_kernel!(side, uplo, trans, diag, alpha, A::oneAPI.oneDeviceArray, B::oneAPI.oneDeviceArray) = oneMKL.trsm!(side, uplo, trans, diag, alpha, A, B)
+
+
+function dispatch_trmm!(side, uplo, trans, diag, alpha, A, B)
+    if eltype(A) == Float16
+        B_temp = Float32.(B)
+        _dispatch_trmm_kernel!(side, uplo, trans, diag, alpha, Float32.(A), B_temp, B_temp)
+        copy!(B, B_temp)
+    else
+        _dispatch_trmm_kernel!(side, uplo, trans, diag, alpha, A, B, B)
+    end
+end
+
+_dispatch_trmm_kernel!(side, uplo, trans, diag, alpha, A::CUDA.StridedCuArray, B::CUDA.StridedCuArray, C::CUDA.StridedCuArray) = CUBLAS.trmm!(side, uplo, trans, diag, alpha, A, B, C)
+_dispatch_trmm_kernel!(side, uplo, trans, diag, alpha, A::AMDGPU.StridedROCArray, B::AMDGPU.StridedROCArray, C::AMDGPU.StridedROCArray) = ROCBLAS.trmm!(side, uplo, trans, diag, alpha, A, B, C)
+_dispatch_trmm_kernel!(side, uplo, trans, diag, alpha, A::oneAPI.oneDeviceArray, B::oneAPI.oneDeviceArray, C::oneAPI.oneDeviceArray) = oneMKL.trmm!(side, uplo, trans, diag, alpha, A, B, C)
 
 
 """
@@ -147,42 +244,50 @@ function unified_rec(func::Char, side::Char, uplo::Char,
     n = size(A, 1)
 
     if n <= threshold
+        B_type = eltype(B)
+        swapped_uplo = (uplo == 'U') ? 'L' : 'U'
         if func == 'S'
-            if (eltype(A) == Float16)
-                B_temp = Float32.(B)
-                swapped_uplo = (uplo == 'U') ? 'L' : 'U'
-                CUBLAS.trsm!(side, swapped_uplo, 'T', 'N', one(T), Float32.(A_orig), B_temp)
-                copy!(B, B_temp) 
-                # if side == 'L' && uplo == 'L'
-                #     LeftLowerTRSM!(A, B)
-                # elseif side == 'L' && uplo == 'U'
-                #     LeftUpperTRSM!(A, B)
-                # elseif side == 'R' && uplo == 'L'
-                #     RightLowerTRSM!(A, B)
-                # else
-                #     RightUpperTRSM!(A, B)   
-                # end
-            else
-                swapped_uplo = (uplo == 'U') ? 'L' : 'U'
-                CUBLAS.trsm!(side, swapped_uplo, 'T', 'N', one(T), A_orig, B)
-            end
+            dispatch_trsm!(side, swapped_uplo, 'T', 'N', one(B_type), A_orig, B)
         else 
-            if (eltype(A) == Float16)
-                if side == 'L' && uplo == 'L'
-                    LeftLowerTRMM!(A, B)
-                elseif side == 'L' && uplo == 'U'
-                    LeftUpperTRMM!(A, B)
-                elseif side == 'R' && uplo == 'L'
-                    RightLowerTRMM!(A, B)
-                else
-                    RightUpperTRMM!(A, B)
-                end
-            else
-                swapped_uplo = (uplo == 'U') ? 'L' : 'U'
-                CUBLAS.trmm!(side, swapped_uplo, 'T', 'N', one(T), A_orig, B)
-            end
+            dispatch_trmm!(side, swapped_uplo, 'T', 'N', one(B_type), A_orig, B)
         end
         return B
+        # if func == 'S'
+        #     if (eltype(A) == Float16)
+        #         B_temp = Float32.(B)
+        #         swapped_uplo = (uplo == 'U') ? 'L' : 'U'
+        #         CUBLAS.trsm!(side, swapped_uplo, 'T', 'N', one(T), Float32.(A_orig), B_temp)
+        #         copy!(B, B_temp) 
+        #         # if side == 'L' && uplo == 'L'
+        #         #     LeftLowerTRSM!(A, B)
+        #         # elseif side == 'L' && uplo == 'U'
+        #         #     LeftUpperTRSM!(A, B)
+        #         # elseif side == 'R' && uplo == 'L'
+        #         #     RightLowerTRSM!(A, B)
+        #         # else
+        #         #     RightUpperTRSM!(A, B)   
+        #         # end
+        #     else
+        #         swapped_uplo = (uplo == 'U') ? 'L' : 'U'
+        #         CUBLAS.trsm!(side, swapped_uplo, 'T', 'N', one(T), A_orig, B)
+        #     end
+        # else 
+        #     if (eltype(A) == Float16)
+        #         if side == 'L' && uplo == 'L'
+        #             LeftLowerTRMM!(A, B)
+        #         elseif side == 'L' && uplo == 'U'
+        #             LeftUpperTRMM!(A, B)
+        #         elseif side == 'R' && uplo == 'L'
+        #             RightLowerTRMM!(A, B)
+        #         else
+        #             RightUpperTRMM!(A, B)
+        #         end
+        #     else
+        #         swapped_uplo = (uplo == 'U') ? 'L' : 'U'
+        #         CUBLAS.trmm!(side, swapped_uplo, 'T', 'N', one(T), A_orig, B)
+        #     end
+        # end
+        # return B
 
     end
 
@@ -211,9 +316,9 @@ function unified_rec(func::Char, side::Char, uplo::Char,
         unified_rec(func, side, uplo, A11, B1, threshold; A_scale = A_scale)
 
         if side == 'L'
-            func == 'S' ? GEMM_SUB_cublas!(B2, A21, B1, A_scale) : GEMM_ADD_cublas!(A12, B2, B1, A_scale)
+            func == 'S' ? GEMM_SUB!(B2, A21, B1, A_scale) : GEMM_ADD!(A12, B2, B1, A_scale)
         else 
-            func == 'S' ? GEMM_SUB_cublas!(B2, B1, A12, A_scale) : GEMM_ADD_cublas!(B2, A21, B1, A_scale)
+            func == 'S' ? GEMM_SUB!(B2, B1, A12, A_scale) : GEMM_ADD!(B2, A21, B1, A_scale)
         end
 
         unified_rec(func, side, uplo, A22, B2, threshold; A_scale = A_scale)
@@ -222,9 +327,9 @@ function unified_rec(func::Char, side::Char, uplo::Char,
         unified_rec(func, side, uplo, A22, B2, threshold; A_scale = A_scale)
 
         if side == 'L'
-            func == 'S' ? GEMM_SUB_cublas!(B1, A12, B2, A_scale) : GEMM_ADD_cublas!(B1, A21, B2, A_scale)
+            func == 'S' ? GEMM_SUB!(B1, A12, B2, A_scale) : GEMM_ADD!(B1, A21, B2, A_scale)
         else 
-            func == 'S' ? GEMM_SUB_cublas!(B1, B2, A21, A_scale) : GEMM_ADD_cublas!(B1, A12, B2, A_scale)
+            func == 'S' ? GEMM_SUB!(B1, B2, A21, A_scale) : GEMM_ADD!(B1, A12, B2, A_scale)
         end
 
         unified_rec(func, side, uplo, A11, B1, threshold; A_scale = A_scale)
@@ -242,36 +347,38 @@ function unified_rec(func::Char, side::Char, uplo::Char,
     n = size(A, 1)
     if n <= threshold
         if func == 'S'
-            if (eltype(A) == Float16)
-                B_temp = Float32.(B)
-                CUBLAS.trsm!(side, uplo, 'N', 'N', one(T), Float32.(A), B_temp)
-                copy!(B, B_temp) 
-                # if side == 'L' && uplo == 'L'
-                #     LeftLowerTRSM!(A, B)
-                # elseif side == 'L' && uplo == 'U'
-                #     LeftUpperTRSM!(A, B)
-                # elseif side == 'R' && uplo == 'L'
-                #     RightLowerTRSM!(A, B)
-                # else
-                #     RightUpperTRSM!(A, B)   
-                # end
-            else
-                CUBLAS.trsm!(side, uplo, 'N', 'N', one(T), A, B)
-            end
+            dispatch_trsm!(side, uplo, 'N', 'N', one(T), A, B)
+            # if (eltype(A) == Float16)
+            #     B_temp = Float32.(B)
+            #     CUBLAS.trsm!(side, uplo, 'N', 'N', one(T), Float32.(A), B_temp)
+            #     copy!(B, B_temp) 
+            #     # if side == 'L' && uplo == 'L'
+            #     #     LeftLowerTRSM!(A, B)
+            #     # elseif side == 'L' && uplo == 'U'
+            #     #     LeftUpperTRSM!(A, B)
+            #     # elseif side == 'R' && uplo == 'L'
+            #     #     RightLowerTRSM!(A, B)
+            #     # else
+            #     #     RightUpperTRSM!(A, B)   
+            #     # end
+            # else
+            #     CUBLAS.trsm!(side, uplo, 'N', 'N', one(T), A, B)
+            # end
         else 
-            if (eltype(A) == Float16)
-                if side == 'L' && uplo == 'L'
-                    LeftLowerTRMM!(A, B)
-                elseif side == 'L' && uplo == 'U'
-                    LeftUpperTRMM!(A, B)
-                elseif side == 'R' && uplo == 'L'
-                    RightLowerTRMM!(A, B)
-                else
-                    RightUpperTRMM!(A, B)
-                end
-            else
-                CUBLAS.trmm!(side, uplo, 'N', 'N', one(T), A, B, B)
-            end
+            dispatch_trmm!(side, uplo, 'N', 'N', one(T), A, B)
+            # if (eltype(A) == Float16)
+            #     if side == 'L' && uplo == 'L'
+            #         LeftLowerTRMM!(A, B)
+            #     elseif side == 'L' && uplo == 'U'
+            #         LeftUpperTRMM!(A, B)
+            #     elseif side == 'R' && uplo == 'L'
+            #         RightLowerTRMM!(A, B)
+            #     else
+            #         RightUpperTRMM!(A, B)
+            #     end
+            # else
+            #     CUBLAS.trmm!(side, uplo, 'N', 'N', one(T), A, B, B)
+            # end
         end
         # if func == 'S'
         #     if side == 'L' && uplo == 'L'
@@ -333,18 +440,18 @@ function unified_rec(func::Char, side::Char, uplo::Char,
         if side == 'L'
             if func == 'S'
                 # GEMM_SUB!(B2, A21, B1)
-                GEMM_SUB_cublas!(B2, A21, B1, A_scale)
+                GEMM_SUB!(B2, A21, B1, A_scale)
             else  # func == 'M'
                 # GEMM_ADD!(A12, B2, B1)
-                GEMM_ADD_cublas!(A12, B2, B1, A_scale)
+                GEMM_ADD!(A12, B2, B1, A_scale)
             end
         else  # side == 'R'
             if func == 'S'
                 # GEMM_SUB!(B2, B1, A12)
-                GEMM_SUB_cublas!(B2, B1, A12, A_scale)
+                GEMM_SUB!(B2, B1, A12, A_scale)
             else  # func == 'M'
                 # GEMM_ADD!(B2, A21, B1)
-                GEMM_ADD_cublas!(B2, A21, B1, A_scale)
+                GEMM_ADD!(B2, A21, B1, A_scale)
             end
         end
 
@@ -357,18 +464,18 @@ function unified_rec(func::Char, side::Char, uplo::Char,
         if side == 'L'
             if func == 'S'
                 # GEMM_SUB!(B1, A12, B2)
-                GEMM_SUB_cublas!(B1, A12, B2, A_scale)
+                GEMM_SUB!(B1, A12, B2, A_scale)
             else  # func == 'M'
                 # GEMM_ADD!(A21, B1, B2)
-                GEMM_ADD_cublas!(A21, B1, B2, A_scale)
+                GEMM_ADD!(A21, B1, B2, A_scale)
             end
         else  # side == 'R'
             if func == 'S'
                 # GEMM_SUB!(B1, B2, A21)
-                GEMM_SUB_cublas!(B1, B2, A21, A_scale)
+                GEMM_SUB!(B1, B2, A21, A_scale)
             else  # func == 'M'
                 # GEMM_ADD!(B1, A12, B2)
-                GEMM_ADD_cublas!(B1, A12, B2, A_scale)
+                GEMM_ADD!(B1, A12, B2, A_scale)
             end
         end
 
@@ -463,6 +570,7 @@ function unified_rec_mixed(
                 B ./= A_scale
             else
                 temp_B_f32 = Float32.(B) .* A_scale
+                print("CLAMPING8")
                 clamp!(temp_B_f32, floatmin(eltype(B)), floatmax(eltype(B)))
                 copy!(B, temp_B_f32)
             end
@@ -505,77 +613,77 @@ function unified_rec_mixed(
                 if side == 'L' && func == 'S'
                     if A_type == Float16
                         if B_type !== Float64
-                            GEMM_SUB_cublas!(B2, OffDiag_block, A_type.(B1), A_scale)
+                            GEMM_SUB!(B2, OffDiag_block, A_type.(B1), A_scale)
                         else
                             B2_lp = Float32.(B2) 
-                            GEMM_SUB_cublas!(B2_lp, OffDiag_block, A_type.(B1), A_scale)
+                            GEMM_SUB!(B2_lp, OffDiag_block, A_type.(B1), A_scale)
                             copy!(B2, B2_lp)
                         end
                     else
                         B2_lp = A_type.(B2) 
                         # GEMM_SUB!(B2_lp, OffDiag_block, A_type.(B1))
-                        GEMM_SUB_cublas!(B2_lp, OffDiag_block, A_type.(B1), A_scale)
+                        GEMM_SUB!(B2_lp, OffDiag_block, A_type.(B1), A_scale)
                         copy!(B2, B2_lp)
                     end
                 elseif side == 'L' && func == 'M'
                     if A_type == Float16
                         if B_type !== Float64
-                            GEMM_ADD_cublas!(OffDiag_block, A_type.(B2), B1, A_scale)
+                            GEMM_ADD!(OffDiag_block, A_type.(B2), B1, A_scale)
                         else
                             B1_lp = Float32.(B1)
-                            GEMM_ADD_cublas!(OffDiag_block, A_type.(B2), B1_lp, A_scale)
+                            GEMM_ADD!(OffDiag_block, A_type.(B2), B1_lp, A_scale)
                             copy!(B1, B1_lp)
                         end
                     else
                         B1_lp = A_type.(B1)
                         # GEMM_ADD!(OffDiag_block, A_type.(B2), B1_lp)
-                        GEMM_ADD_cublas!(OffDiag_block, A_type.(B2), B1_lp, A_scale)
+                        GEMM_ADD!(OffDiag_block, A_type.(B2), B1_lp, A_scale)
                         copy!(B1, B1_lp)
                     end
                 elseif side == 'R' && func == 'S'
                     if A_type == Float16
                         if B_type !== Float64
-                            GEMM_SUB_cublas!(B2, A_type.(B1), OffDiag_block, A_scale)
+                            GEMM_SUB!(B2, A_type.(B1), OffDiag_block, A_scale)
                         else
                             B2_lp = Float32.(B2) 
-                            GEMM_SUB_cublas!(B2_lp, A_type.(B1), OffDiag_block, A_scale)
+                            GEMM_SUB!(B2_lp, A_type.(B1), OffDiag_block, A_scale)
                             copy!(B2, B2_lp)
                         end
                     else
                         B2_lp = A_type.(B2) 
                         # GEMM_SUB!(B2_lp, A_type.(B1), OffDiag_block)
-                        GEMM_SUB_cublas!(B2_lp, A_type.(B1), OffDiag_block, A_scale)
+                        GEMM_SUB!(B2_lp, A_type.(B1), OffDiag_block, A_scale)
                         copy!(B2, B2_lp)
                     end
                 else # side == 'R' && func == 'M'
                     if A_type == Float16
                         if B_type !== Float64
-                            GEMM_ADD_cublas!(A_type.(B2), OffDiag_block, B1, A_scale)
+                            GEMM_ADD!(A_type.(B2), OffDiag_block, B1, A_scale)
                         else
                             B1_lp = Float32.(B1)
-                            GEMM_ADD_cublas!(A_type.(B2), OffDiag_block, B1_lp, A_scale)
+                            GEMM_ADD!(A_type.(B2), OffDiag_block, B1_lp, A_scale)
                             copy!(B1, B1_lp) 
                         end
                     else
                         B1_lp = A_type.(B1)
                         # GEMM_ADD!(A_type.(B2), OffDiag_block, B1_lp) 
-                        GEMM_ADD_cublas!(A_type.(B2), OffDiag_block, B1_lp, A_scale)
+                        GEMM_ADD!(A_type.(B2), OffDiag_block, B1_lp, A_scale)
                         copy!(B1, B1_lp) 
                     end
                 end
             else
                 if side == 'L' && func == 'S'
                     # GEMM_SUB!(B2, OffDiag_block, B1)
-                    GEMM_SUB_cublas!(B2, OffDiag_block, B1, A_scale)
+                    GEMM_SUB!(B2, OffDiag_block, B1, A_scale)
                 elseif side == 'L' && func == 'M'
                     # GEMM_ADD!(OffDiag_block, B2, B1)
-                    GEMM_ADD_cublas!(OffDiag_block, B2, B1, A_scale)
+                    GEMM_ADD!(OffDiag_block, B2, B1, A_scale)
                 elseif side == 'R' && func == 'S'
                     # GEMM_SUB!(B2, B1, OffDiag_block)
-                    GEMM_SUB_cublas!(B2, B1, OffDiag_block, A_scale)
+                    GEMM_SUB!(B2, B1, OffDiag_block, A_scale)
                 else # side == 'R' && func == 'M'
                     # GEMM_ADD!(B2, OffDiag_block, B1)
-                    GEMM_ADD_cublas!(B2, OffDiag_block, B1, A_scale)
+                    GEMM_ADD!(B2, OffDiag_block, B1, A_scale)
                 end
             end
 
@@ -591,77 +699,77 @@ function unified_rec_mixed(
                 if side == 'L' && func == 'S'
                     if A_type == Float16
                         if B_type !== Float64
-                            GEMM_SUB_cublas!(B1, OffDiag_block, A_type.(B2), A_scale)
+                            GEMM_SUB!(B1, OffDiag_block, A_type.(B2), A_scale)
                         else
                             B1_lp = Float32.(B1)
-                            GEMM_SUB_cublas!(B1_lp, OffDiag_block, A_type.(B2), A_scale)
+                            GEMM_SUB!(B1_lp, OffDiag_block, A_type.(B2), A_scale)
                             copy!(B1, B1_lp)
                         end
                     else
                         B1_lp = A_type.(B1)
                         # GEMM_SUB!(B1_lp, OffDiag_block, A_type.(copy(B2)))
-                        GEMM_SUB_cublas!(B1_lp, OffDiag_block, A_type.(B2), A_scale)
+                        GEMM_SUB!(B1_lp, OffDiag_block, A_type.(B2), A_scale)
                         copy!(B1, B1_lp)
                     end
                 elseif side == 'L' && func == 'M'
                     if A_type == Float16
                         if B_type !== Float64
-                            GEMM_ADD_cublas!(OffDiag_block, A_type.(B1), B2, A_scale)
+                            GEMM_ADD!(OffDiag_block, A_type.(B1), B2, A_scale)
                         else
                             B2_lp = Float32.(B2)
-                            GEMM_ADD_cublas!(OffDiag_block, A_type.(B1), B2_lp, A_scale)
+                            GEMM_ADD!(OffDiag_block, A_type.(B1), B2_lp, A_scale)
                             copy!(B2, B2_lp)
                         end
                     else
                         B2_lp = A_type.(B2)
                         # GEMM_ADD!(OffDiag_block, A_type.(B1), B2_lp)
-                        GEMM_ADD_cublas!(OffDiag_block, A_type.(B1), B2_lp, A_scale)
+                        GEMM_ADD!(OffDiag_block, A_type.(B1), B2_lp, A_scale)
                         copy!(B2, B2_lp)
                     end
                 elseif side == 'R' && func == 'S'
                     if A_type == Float16
                         if B_type !== Float64
-                            GEMM_SUB_cublas!(B1, A_type.(B2), OffDiag_block, A_scale)
+                            GEMM_SUB!(B1, A_type.(B2), OffDiag_block, A_scale)
                         else
                             B1_lp = Float32.(B1)
-                            GEMM_SUB_cublas!(B1_lp, A_type.(B2), OffDiag_block, A_scale)
+                            GEMM_SUB!(B1_lp, A_type.(B2), OffDiag_block, A_scale)
                             copy!(B1, B1_lp)
                         end
                     else
                         B1_lp = A_type.(B1)
                         # GEMM_SUB!(B1_lp, A_type.(B2), OffDiag_block)
-                        GEMM_SUB_cublas!(B1_lp, A_type.(B2), OffDiag_block, A_scale)
+                        GEMM_SUB!(B1_lp, A_type.(B2), OffDiag_block, A_scale)
                         copy!(B1, B1_lp)
                     end
                 else # side == 'R' && func == 'M'
                     if A_type == Float16
                         if B_type !== Float64
-                            GEMM_ADD_cublas!(A_type.(B1), OffDiag_block, B2, A_scale)
+                            GEMM_ADD!(A_type.(B1), OffDiag_block, B2, A_scale)
                         else
                             B2_lp = Float32.(B2)
-                            GEMM_ADD_cublas!(A_type.(B1), OffDiag_block, B2_lp, A_scale)
+                            GEMM_ADD!(A_type.(B1), OffDiag_block, B2_lp, A_scale)
                             copy!(B2, B2_lp) 
                         end
                     else
                         B2_lp = A_type.(B2)
                         # GEMM_ADD!(A_type.(B1), OffDiag_block, B2_lp) 
-                        GEMM_ADD_cublas!(A_type.(B1), OffDiag_block, B2_lp, A_scale)
+                        GEMM_ADD!(A_type.(B1), OffDiag_block, B2_lp, A_scale)
                         copy!(B2, B2_lp) 
                     end
                 end
             else
                 if side == 'L' && func == 'S'
                     # GEMM_SUB!(B1, OffDiag_block, B2)
-                    GEMM_SUB_cublas!(B1, OffDiag_block, B2, A_scale)
+                    GEMM_SUB!(B1, OffDiag_block, B2, A_scale)
                 elseif side == 'L' && func == 'M'
                     # GEMM_ADD!(OffDiag_block, B1, B2)
-                    GEMM_ADD_cublas!(OffDiag_block, B1, B2, A_scale)
+                    GEMM_ADD!(OffDiag_block, B1, B2, A_scale)
                 elseif side == 'R' && func == 'S'
                     # GEMM_SUB!(B1, B2, OffDiag_block)
-                    GEMM_SUB_cublas!(B1, B2, OffDiag_block, A_scale)
+                    GEMM_SUB!(B1, B2, OffDiag_block, A_scale)
                 else # side == 'R' && func == 'M'
                     # GEMM_ADD!(B1, OffDiag_block, B2)
-                    GEMM_ADD_cublas!(B1, OffDiag_block, B2, A_scale)
+                    GEMM_ADD!(B1, OffDiag_block, B2, A_scale)
                 end
             end
             
@@ -735,69 +843,69 @@ function unified_rec_mixed(
             if side == 'L' && func == 'S'
                 if A_type == Float16
                     if B_type !== Float64
-                        GEMM_SUB_cublas!(B2, OffDiag_block_trans, A_type.(B1), A_scale)
+                        GEMM_SUB!(B2, OffDiag_block_trans, A_type.(B1), A_scale)
                     else
                         B2_lp = Float32.(B2) 
-                        GEMM_SUB_cublas!(B2_lp, OffDiag_block_trans, A_type.(B1), A_scale)
+                        GEMM_SUB!(B2_lp, OffDiag_block_trans, A_type.(B1), A_scale)
                         copy!(B2, B2_lp)
                     end
                 else
                     B2_lp = A_type.(B2) 
-                    GEMM_SUB_cublas!(B2_lp, OffDiag_block_trans, A_type.(B1), A_scale)
+                    GEMM_SUB!(B2_lp, OffDiag_block_trans, A_type.(B1), A_scale)
                     copy!(B2, B2_lp)
                 end
             elseif side == 'L' && func == 'M'
                  if A_type == Float16
                      if B_type !== Float64
-                         GEMM_ADD_cublas!(B1, OffDiag_block_trans, A_type.(B2), A_scale)
+                         GEMM_ADD!(B1, OffDiag_block_trans, A_type.(B2), A_scale)
                      else
                          B1_lp = Float32.(B1)
-                         GEMM_ADD_cublas!(B1_lp, OffDiag_block_trans, A_type.(B2), A_scale)
+                         GEMM_ADD!(B1_lp, OffDiag_block_trans, A_type.(B2), A_scale)
                          copy!(B1, B1_lp)
                      end
                  else
                      B1_lp = A_type.(B1)
-                     GEMM_ADD_cublas!(B1_lp, OffDiag_block_trans, A_type.(B2), A_scale)
+                     GEMM_ADD!(B1_lp, OffDiag_block_trans, A_type.(B2), A_scale)
                      copy!(B1, B1_lp)
                  end
             elseif side == 'R' && func == 'S'
                  if A_type == Float16
                      if B_type !== Float64
-                         GEMM_SUB_cublas!(B2, A_type.(B1), OffDiag_block_trans, A_scale)
+                         GEMM_SUB!(B2, A_type.(B1), OffDiag_block_trans, A_scale)
                      else
                          B2_lp = Float32.(B2) 
-                         GEMM_SUB_cublas!(B2_lp, A_type.(B1), OffDiag_block_trans, A_scale)
+                         GEMM_SUB!(B2_lp, A_type.(B1), OffDiag_block_trans, A_scale)
                          copy!(B2, B2_lp)
                      end
                  else
                      B2_lp = A_type.(B2) 
-                     GEMM_SUB_cublas!(B2_lp, A_type.(B1), OffDiag_block_trans, A_scale)
+                     GEMM_SUB!(B2_lp, A_type.(B1), OffDiag_block_trans, A_scale)
                      copy!(B2, B2_lp)
                  end
             else 
                  if A_type == Float16
                      if B_type !== Float64
-                         GEMM_ADD_cublas!(B1, A_type.(B2), OffDiag_block_trans, A_scale)
+                         GEMM_ADD!(B1, A_type.(B2), OffDiag_block_trans, A_scale)
                      else
                          B1_lp = Float32.(B1)
-                         GEMM_ADD_cublas!(B1_lp, A_type.(B2), OffDiag_block_trans, A_scale)
+                         GEMM_ADD!(B1_lp, A_type.(B2), OffDiag_block_trans, A_scale)
                          copy!(B1, B1_lp) 
                      end
                  else
                      B1_lp = A_type.(B1)
-                     GEMM_ADD_cublas!(B1_lp, A_type.(B2), OffDiag_block_trans, A_scale)
+                     GEMM_ADD!(B1_lp, A_type.(B2), OffDiag_block_trans, A_scale)
                      copy!(B1, B1_lp) 
                  end
             end
         else 
             if side == 'L' && func == 'S'
-                GEMM_SUB_cublas!(B2, OffDiag_block_trans, B1, A_scale)
+                GEMM_SUB!(B2, OffDiag_block_trans, B1, A_scale)
             elseif side == 'L' && func == 'M'
-                GEMM_ADD_cublas!(B1, OffDiag_block_trans, B2, A_scale)
+                GEMM_ADD!(B1, OffDiag_block_trans, B2, A_scale)
             elseif side == 'R' && func == 'S'
-                GEMM_SUB_cublas!(B2, B1, OffDiag_block_trans, A_scale)
+                GEMM_SUB!(B2, B1, OffDiag_block_trans, A_scale)
             else
-                GEMM_ADD_cublas!(B1, B2, OffDiag_block_trans, A_scale)
+                GEMM_ADD!(B1, B2, OffDiag_block_trans, A_scale)
             end
         end
         
@@ -813,69 +921,69 @@ function unified_rec_mixed(
             if side == 'L' && func == 'S'
                 if A_type == Float16
                     if B_type !== Float64
-                        GEMM_SUB_cublas!(B1, OffDiag_block_trans, A_type.(B2), A_scale)
+                        GEMM_SUB!(B1, OffDiag_block_trans, A_type.(B2), A_scale)
                     else
                         B1_lp = Float32.(B1)
-                        GEMM_SUB_cublas!(B1_lp, OffDiag_block_trans, A_type.(B2), A_scale)
+                        GEMM_SUB!(B1_lp, OffDiag_block_trans, A_type.(B2), A_scale)
                         copy!(B1, B1_lp)
                     end
                 else
                     B1_lp = A_type.(B1)
-                    GEMM_SUB_cublas!(B1_lp, OffDiag_block_trans, A_type.(B2), A_scale)
+                    GEMM_SUB!(B1_lp, OffDiag_block_trans, A_type.(B2), A_scale)
                     copy!(B1, B1_lp)
                 end
             elseif side == 'L' && func == 'M'
                 if A_type == Float16
                     if B_type !== Float64
-                        GEMM_ADD_cublas!(B2, OffDiag_block_trans, A_type.(B1), A_scale)
+                        GEMM_ADD!(B2, OffDiag_block_trans, A_type.(B1), A_scale)
                     else
                         B2_lp = Float32.(B2)
-                        GEMM_ADD_cublas!(B2_lp, OffDiag_block_trans, A_type.(B1), A_scale)
+                        GEMM_ADD!(B2_lp, OffDiag_block_trans, A_type.(B1), A_scale)
                         copy!(B2, B2_lp)
                     end
                 else
                     B2_lp = A_type.(B2)
-                    GEMM_ADD_cublas!(B2_lp, OffDiag_block_trans, A_type.(B1), A_scale)
+                    GEMM_ADD!(B2_lp, OffDiag_block_trans, A_type.(B1), A_scale)
                     copy!(B2, B2_lp)
                 end
             elseif side == 'R' && func == 'S'
                 if A_type == Float16
                     if B_type !== Float64
-                        GEMM_SUB_cublas!(B1, A_type.(B2), OffDiag_block_trans, A_scale)
+                        GEMM_SUB!(B1, A_type.(B2), OffDiag_block_trans, A_scale)
                     else
                         B1_lp = Float32.(B1)
-                        GEMM_SUB_cublas!(B1_lp, A_type.(B2), OffDiag_block_trans, A_scale)
+                        GEMM_SUB!(B1_lp, A_type.(B2), OffDiag_block_trans, A_scale)
                         copy!(B1, B1_lp)
                     end
                 else
                     B1_lp = A_type.(B1)
-                    GEMM_SUB_cublas!(B1_lp, A_type.(B2), OffDiag_block_trans, A_scale)
+                    GEMM_SUB!(B1_lp, A_type.(B2), OffDiag_block_trans, A_scale)
                     copy!(B1, B1_lp)
                 end
             else # side == 'R' && func == 'M'
                 if A_type == Float16
                     if B_type !== Float64
-                        GEMM_ADD_cublas!(B2, A_type.(B1), OffDiag_block_trans, A_scale)
+                        GEMM_ADD!(B2, A_type.(B1), OffDiag_block_trans, A_scale)
                     else
                         B2_lp = Float32.(B2)
-                        GEMM_ADD_cublas!(B2_lp, A_type.(B1), OffDiag_block_trans, A_scale)
+                        GEMM_ADD!(B2_lp, A_type.(B1), OffDiag_block_trans, A_scale)
                         copy!(B2, B2_lp) 
                     end
                 else
                     B2_lp = A_type.(B2)
-                    GEMM_ADD_cublas!(B2_lp, A_type.(B1), OffDiag_block_trans, A_scale)
+                    GEMM_ADD!(B2_lp, A_type.(B1), OffDiag_block_trans, A_scale)
                     copy!(B2, B2_lp) 
                 end
             end
         else 
             if side == 'L' && func == 'S'
-                GEMM_SUB_cublas!(B1, OffDiag_block_trans, B2, A_scale)
+                GEMM_SUB!(B1, OffDiag_block_trans, B2, A_scale)
             elseif side == 'L' && func == 'M'
-                GEMM_ADD_cublas!(B2, OffDiag_block_trans, B1, A_scale)
+                GEMM_ADD!(B2, OffDiag_block_trans, B1, A_scale)
             elseif side == 'R' && func == 'S'
-                GEMM_SUB_cublas!(B1, B2, OffDiag_block_trans, A_scale)
+                GEMM_SUB!(B1, B2, OffDiag_block_trans, A_scale)
             else
-                GEMM_ADD_cublas!(B2, B1, OffDiag_block_trans, A_scale)
+                GEMM_ADD!(B2, B1, OffDiag_block_trans, A_scale)
             end
         end
         

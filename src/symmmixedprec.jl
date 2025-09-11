@@ -49,6 +49,7 @@ function SymmMixedPrec(
             if alpha > FP16_MAX_VAL
                 base_scale = Float32(alpha / FP16_MAX_VAL)
                 base_matrix = similar(A, Float16, size(A))
+                print("CLAMPING9")
                 @. base_matrix = Float16(round(clamp(A / base_scale, -FP16_MAX_VAL, FP16_MAX_VAL)))
             else
                 base_scale = nothing
@@ -84,8 +85,10 @@ function SymmMixedPrec(
     if T_OffDiag == Float16
         alpha_offDiag = maximum(abs, offDiag_view)
         if alpha_offDiag > FP16_MAX_VAL
+            # print("this is alpha off diag:", alpha_offDiag)
             offDiag_scale = Float32(alpha_offDiag / FP16_MAX_VAL)
             offDiag_matrix = similar(offDiag_view, Float16, size(offDiag_view))
+            print("CLAMPING10")
             @. offDiag_matrix = Float16(round(clamp(offDiag_view / offDiag_scale, -FP16_MAX_VAL, FP16_MAX_VAL)))
         else
             offDiag_matrix = similar(offDiag_view, Float16, size(offDiag_view))
