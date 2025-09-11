@@ -82,7 +82,11 @@ function adaptive_precision_LT(A, U = [4,5], n_min = 4, epsilon = 1e-8)
 
             push!(frob_norms_level, off_diag_norm_left)
             
-            push!(new_vertices_diag, top_left_vertices, bottom_right_vertices)
+            # push!(new_vertices_diag, top_left_vertices, bottom_right_vertices)
+
+            # # Fix for line 72
+            push!(new_vertices_diag, top_left_vertices)
+            push!(new_vertices_diag, bottom_right_vertices)
         end
 
         # find the maximum norm at the level
