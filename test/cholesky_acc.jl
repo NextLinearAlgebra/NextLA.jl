@@ -1,4 +1,6 @@
-using Test, CUDA, LinearAlgebra, Printf, KernelAbstractions
+using Test, CUDA, LinearAlgebra, Printf, KernelAbstractions, GPUArrays
+
+
 
 function reconstruct_matrix(A::SymmMixedPrec{T_Base}) where {T_Base}
     if A.BaseCase !== nothing
@@ -26,7 +28,7 @@ function reconstruct_matrix(A::SymmMixedPrec{T_Base}) where {T_Base}
     n = n1 + n2
 
     T_Recon = promote_type(eltype(C11), eltype(C22), eltype(C21))
-    C_full = CuArray{T_Recon}(undef, n, n)
+    C_full = KernelAbstractions.allocate(backend,T_Recon,n,n) 
     
     C_full[1:n1, 1:m1] .= C11
     C_full[n1+1:n, 1:m1] .= C21
@@ -37,7 +39,7 @@ function reconstruct_matrix(A::SymmMixedPrec{T_Base}) where {T_Base}
 end
 
 
-function get_accuracy_pure(A_spd_fp64::CuMatrix, T_prec::DataType)
+function get_accuracy_pure(A_spd_fp64::AbstractGPUMatrix, T_prec::DataType)
     local A_to_factor, scale_factor
     
     if T_prec == Float16
@@ -53,7 +55,7 @@ function get_accuracy_pure(A_spd_fp64::CuMatrix, T_prec::DataType)
     A_reconstructed = Float64.(A_tri * Transpose(A_tri) * scale_factor)
     A_to_factor = nothing
     A_tri = nothing
-    GC.gc(true); CUDA.reclaim()
+    GC.gc(true)
     
     if T_prec == Float16
         error_norm = norm(A_reconstructed - (A_spd_fp64 + scale_factor*100*I))
@@ -68,7 +70,7 @@ function get_accuracy_pure(A_spd_fp64::CuMatrix, T_prec::DataType)
 end
 
 
-function get_accuracy_mixed(A_spd_fp64::CuMatrix, precisions::Vector)
+function get_accuracy_mixed(A_spd_fp64::AbstractGPUMatrix, precisions::Vector)
     A_mixed_input = SymmMixedPrec(copy(A_spd_fp64), 'L'; precisions=precisions)
 
     potrf_recursive!(A_mixed_input)
@@ -83,10 +85,10 @@ function get_accuracy_mixed(A_spd_fp64::CuMatrix, precisions::Vector)
     return max(error_norm / orig_norm, 1e-20)
 end
 
-function get_accuracy_cusolver(A_spd_fp64::CuMatrix, T_prec::DataType)
+function get_accuracy_cusolver(A_spd_fp64::AbstractGPUMatrix, T_prec::DataType)
     A_to_factor = T_prec.(A_spd_fp64)
     
-    CUSOLVER.potrf!('L', A_to_factor)
+    potrf!('L', A_to_factor)
     # L_result = tril(A_to_factor)
     
     A_reconstructed = Float64.(tril(A_to_factor) * tril(A_to_factor)')
@@ -137,13 +139,14 @@ function check_cholesky_accuracy()
         println("Checking Accuracy for Matrix Size (n x n) = $n x $n")
         
         A_cpu_rand = randn(Float64, n, n)* 0.01
-        A_gpu_rand = CuArray(A_cpu_rand)
+        A_gpu_rand =  KernelAbstractions.allocate(backend,Float64,n,n)
+	copyto!(A_gpu_rand,A_cpu_rand)
         A_cpu_rand = nothing
         
         A_spd_fp64 = A_gpu_rand * A_gpu_rand' + (n*10) * I
         A_gpu_rand = nothing
         
-        GC.gc(true); CUDA.reclaim()
+        GC.gc(true)
         
         println("\n--- CUSOLVER Library Scenarios ---")
         for (name, T_prec) in cusolver_scenarios

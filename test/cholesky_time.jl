@@ -70,7 +70,7 @@ function get_runtime_cusolver(A_spd_fp64, n::Int, T_prec::DataType)
     A_perf = copy(A_clean)
     backend = KernelAbstractions.get_backend(A_perf)
 
-    op = () -> CUSOLVER.potrf!('L', A_perf)
+    op = () -> potrf!('L', A_perf)
     reset_op = () -> copyto!(A_perf, A_clean)
     
     min_time_ns = benchmark_op(op, reset_op, backend)
@@ -115,7 +115,8 @@ function run_cholesky_benchmarks()
     for n in n_values
         A_cpu_rand = randn(Float64, n, n) * .01
         A_cpu_rand = A_cpu_rand * A_cpu_rand' + (n * 10) * I
-        A_gpu = CuArray(A_cpu_rand)
+         A_gpu =  KernelAbstractions.allocate(backend,Float64,n,n)
+        copyto!(A_gpu,A_cpu_rand)
         A_cpu_rand = nothing 
         A_spd_fp64 = A_gpu
         A_gpu = nothing

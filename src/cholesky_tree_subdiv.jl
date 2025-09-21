@@ -11,35 +11,40 @@ include("cholesky.jl")
 
 
 
-function potrf!(A::CUDA.StridedCuArray{T}) where T
+function potrf!(A::AnyGPUArray{T}) where T
     if eltype(A) == Float16
         A_f32 = Float32.(A)
-        CUSOLVER.potrf!('L', A_f32)
+        potrf!('L', A_f32)
         A .= Float16.(A_f32)
     else
-        CUSOLVER.potrf!('L', A)
+        potrf!('L', A)
     end
 end
 
-function potrf!(A::AMDGPU.StridedROCArray{T}) where T
-    if eltype(A) == Float16
-        A_f32 = Float32.(A)
-        ROCSOLVER.potrf!('L', A_f32)
-        A .= Float16.(A_f32)
-    else
-        ROCSOLVER.potrf!('L', A)
-    end
-end
+trsm!(side::Char, uplo::Char, transa::Char, diag::Char, alpha,
+            A::StridedROCMatrix{T}, B::StridedROCMatrix{T}) where T =AMDGPU.rocBLAS.trsm!(side,uplo,transa,diag,T.(alpha),A,B)
+trsm!(side::Char, uplo::Char, transa::Char, diag::Char, alpha,
+                       A::StridedCuMatrix{T},B::StridedCuMatrix{T}) where T =CUBLAS.trsm!(side,uplo,transa,diag,alpha,A,B)
+ syrk!(uplo::Char, trans::Char, alpha, A::StridedCuVecOrMat{T},
+                       beta,  C::StridedCuMatrix{T}) where T =CUBLAS.syrk!(uplo,trans,alpha,A,beta,C)
+syrk!(uplo::Char, trans::Char, alpha,
+            A::StridedROCVecOrMat{T}, beta, C::StridedROCMatrix{T}) where T =AMDGPU.rocBLAS.syrk!(uplo,trans,T.(alpha),A,T.(beta),C)
 
-function potrf!(A::oneAPI.oneDeviceArray{T}) where T
-    if eltype(A) == Float16
-        A_f32 = Float32.(A)
-        oneMKL.potrf!('L', A_f32)
-        A .= Float16.(A_f32)
-    else
-        oneMKL.potrf!('L', A)
-    end
-end
+gemm!(transA::Char,
+                       transB::Char,
+                       alpha,
+                       A::StridedCuVecOrMat{T},
+                       B::StridedCuVecOrMat{T},
+                       beta,
+                       C::StridedCuVecOrMat{T}) where T = CUBLAS.gemm(transA,transB,alpha,A,B,beta,C)
+
+gemmEx!(transA::Char, transB::Char,alpha,A::StridedCuVecOrMat,B::StridedCuVecOrMat,beta,C::StridedCuVecOrMat) = CUBLAS.gemmEx!(transA,transB, alpha, A, B, beta, C)
+gemmEx!(transA::Char, transB::Char,alpha,A::StridedROCVecOrMat,B::StridedROCVecOrMat,beta,C::StridedROCVecOrMat{T}) where T = AMDGPU.rocBLAS.gemm!(transA,transB, T.(alpha), T.(A), T.(B), T.(beta), C)
+
+gemm!(transA::Char,transB::Char,alpha::(T),A::StridedROCVecOrMat{T},B::StridedROCVecOrMat{T}, beta::(T), C::StridedROCVecOrMat{T} ) where T =AMDGPU.rocBLAS.gemm!(transA,transB,alpha,A,B,beta,C)
+potrf!(uplo::Char,  A::StridedCuMatrix) = CUSOLVER.potrf!(uplo,A)
+potrf!(uplo::Char, A::StridedROCMatrix) = AMDGPU.rocSOLVER.potrf!(uplo,A)
+
 
 function potrf_recursive!(A, block_size)
     n = size(A, 1)
@@ -65,14 +70,14 @@ function potrf_recursive!(A, block_size)
     if (eltype(A11) == Float16)
         unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A11, A21)
     else
-        CUBLAS.trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
+        trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
     end
 
     # SYRK: A22 -= A21 * A21ᵀ
     if (eltype(A21) == Float16)
         recsyrk!(-1.0, A21, 1.0, A22)
     else
-        CUBLAS.syrk!('L', 'N', -1.0, A21, 1.0, A22)
+        syrk!('L', 'N', -1.0, A21, 1.0, A22)
     end
     
     potrf_recursive!(A22, block_size)
@@ -128,7 +133,7 @@ function potrf_recursive_A!(A, block_size)
 
     if n <= block_size
         # Base case: do regular Cholesky
-        CUSOLVER.potrf!('L', A)
+        potrf!('L', A)
         return
     end
 
@@ -147,13 +152,13 @@ function potrf_recursive_A!(A, block_size)
     # TRSM: A21 = A21 * inv(L11ᵀ)
     # L11 = Matrix(A11)
     # A21_mat = Matrix(A21)
-    CUBLAS.trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
+    trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
     # A21 .= A21_mat
 
     # SYRK: A22 -= A21 * A21ᵀ
     # A22_mat = Matrix(A22)
     # CUBLAS.gemm!('N', 'T', -1.0, A21, A21, 1.0, A22) #recursive syrk with mixed precision 
-    CUBLAS.syrk!('L', 'N', -1.0, A21, 1.0, A22)
+    syrk!('L', 'N', -1.0, A21, 1.0, A22)
     # A22 .= A22_mat
 
     # Recursive POTRF on trailing block
@@ -168,7 +173,7 @@ function potrf_recursive_B!(A, block_size)
 
     if n <= block_size
         # Base case: do regular Cholesky
-        CUSOLVER.potrf!('L', A)
+        potrf!('L', A)
         return
     end
 
@@ -187,7 +192,7 @@ function potrf_recursive_B!(A, block_size)
     # L11 = Matrix(A11)
     # A21_mat = Matrix(A21)
     # unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A11, A21)
-    CUBLAS.trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
+    trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
     # A21 .= A21_mat
 
     # SYRK: A22 -= A21 * A21ᵀ
@@ -209,7 +214,7 @@ function potrf_recursive_C!(A, block_size)
 
     if n <= block_size
         # Base case: do regular Cholesky
-        CUSOLVER.potrf!('L', A)
+        potrf!('L', A)
         return
     end
 
@@ -235,7 +240,7 @@ function potrf_recursive_C!(A, block_size)
     # A22_mat = Matrix(A22)
     # CUBLAS.gemm!('N', 'T', -1.0, A21, A21, 1.0, A22) #recursive syrk with mixed precision
     # recsyrk!(-1.0, A21, 1.0, A22, 256) 
-    CUBLAS.syrk!('L', 'N', -1.0, A21, 1.0, A22)
+    syrk!('L', 'N', -1.0, A21, 1.0, A22)
     # A22 .= A22_mat
 
     # Recursive POTRF on trailing block
@@ -250,7 +255,7 @@ function potrf_recursive_D!(A, block_size)
 
     if n <= block_size
         # Base case: do regular Cholesky
-        CUSOLVER.potrf!('L', A)
+        potrf!('L', A)
         return
     end
 
