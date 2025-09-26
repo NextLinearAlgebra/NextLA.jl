@@ -79,6 +79,66 @@ function potrf_recursive!(A, block_size)
 end
 
 
+function potrf_recursive_nested!(A, block_size)
+    n = size(A, 1)
+
+    # Print a message when entering the function to trace the recursion
+    # println("[TRACE] potrf_recursive! called on $(n)x$(n) matrix of type $(eltype(A))")
+
+    if n <= block_size
+        potrf!(A)
+        return
+    end
+
+    n1 = 2^floor(Int, log2(n)) ÷ 2  
+    
+    A11 = @view A[1:n1, 1:n1]
+    A21 = @view A[n1+1:end, 1:n1]
+    A22 = @view A[n1+1:end, n1+1:end]
+
+    # Recursive POTRF on A11
+    potrf_recursive!(A11, block_size)
+
+    # TRSM: A21 = A21 * inv(L11ᵀ)
+    unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A11, A21)
+
+    # SYRK: A22 -= A21 * A21ᵀ
+    recsyrk!(-1.0, A21, 1.0, A22)
+    
+    potrf_recursive!(A22, block_size)
+end
+
+
+function potrf_recursive_nonnested!(A, block_size)
+    n = size(A, 1)
+
+    # Print a message when entering the function to trace the recursion
+    # println("[TRACE] potrf_recursive! called on $(n)x$(n) matrix of type $(eltype(A))")
+
+    if n <= block_size
+        potrf!(A)
+        return
+    end
+
+    n1 = 2^floor(Int, log2(n)) ÷ 2  
+    
+    A11 = @view A[1:n1, 1:n1]
+    A21 = @view A[n1+1:end, 1:n1]
+    A22 = @view A[n1+1:end, n1+1:end]
+
+    # Recursive POTRF on A11
+    potrf_recursive!(A11, block_size)
+
+    # TRSM: A21 = A21 * inv(L11ᵀ)
+    CUBLAS.trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
+
+    # SYRK: A22 -= A21 * A21ᵀ
+    CUBLAS.syrk!('L', 'N', -1.0, A21, 1.0, A22)
+    
+    potrf_recursive!(A22, block_size)
+end
+
+
 function reconstruct_matrix(A::SymmMixedPrec{T_Base}) where {T_Base}
     if A.BaseCase !== nothing
         return copy(A.BaseCase)
