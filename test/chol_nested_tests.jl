@@ -12,23 +12,27 @@ flops_potrf(T_prec, n) = (1/3 * n^3 + 1/2 * n^2)
 calculate_gflops(flops, time_ns) = (flops / time_ns)
 
 
-
 function run_cholesky_test(A_spd_fp64::CuMatrix, n::Int, T_prec::DataType, factorization_func!)
+    # Create a clean version of the matrix with the target precision
     A_clean = T_prec.(A_spd_fp64)
+    # Create the matrix to be used for performance measurement
     A_perf = copy(A_clean)
     backend = KernelAbstractions.get_backend(A_perf)
 
+    # Define the operation to be benchmarked, including resetting the matrix each time
     op_with_reset = () -> begin
         copyto!(A_perf, A_clean)
         factorization_func!(A_perf)
     end
     
+    # run_manual_benchmark is expected to return the minimum time in nanoseconds
     min_time_ns = run_manual_benchmark(op_with_reset, backend; min_time_s=1.0, min_iters=5)
     
     runtime_ms = min_time_ns / 1_000_000
     flops = flops_potrf(T_prec, n)
     gflops = calculate_gflops(flops, min_time_ns)
     
+    # Free up GPU memory explicitly
     A_clean = nothing
     A_perf = nothing
     GC.gc(true); CUDA.reclaim()
@@ -37,15 +41,9 @@ function run_cholesky_test(A_spd_fp64::CuMatrix, n::Int, T_prec::DataType, facto
 end
 
 
-"""
-    run_all_benchmarks()
-
-Main function to orchestrate the Cholesky factorization benchmarks across
-different matrix sizes, precisions, and implementations.
-"""
 function run_all_benchmarks()
     n_values = [4096, 8192, 16384, 32768, 65536]
-    precisions = [Float32, Float64]
+    precisions = [Float16, Float32, Float64] # Added Float16
     block_size = 256 
 
     println("="^80)
@@ -58,26 +56,30 @@ function run_all_benchmarks()
         @printf(" Matrix Size = %d x %d\n", n, n)
         println("-"^80)
         
+        # Generate a random symmetric positive-definite matrix on the CPU first
         A_cpu_rand = randn(Float64, n, n) * 0.01
+        # Move to GPU, ensuring it's positive-definite
         A_spd_fp64 = CuArray(A_cpu_rand * A_cpu_rand' + (n * 10) * I)
-        A_cpu_rand = nothing
+        A_cpu_rand = nothing # Free CPU memory
         GC.gc(true); CUDA.reclaim()
 
-        # Updated table header (Rel. Error column removed)
         @printf("%-28s | %-12s | %12s | %12s\n", "Implementation", "Precision", "Runtime (ms)", "GFLOPS")
-        println("-"^73) # Adjusted separator length
+        println("-"^73)
 
         for T_prec in precisions
-            # Updated function call to unpack only two values
+            # These two implementations are run for all precisions
             runtime, gflops = run_cholesky_test(A_spd_fp64, n, T_prec, A -> potrf_recursive_nested!(A, block_size))
-            # Updated print statement
             @printf("%-28s | %-12s | %12.3f | %12.2f\n", "Recursive Nested", string(T_prec), runtime, gflops)
 
             runtime, gflops = run_cholesky_test(A_spd_fp64, n, T_prec, A -> potrf_recursive_nonnested!(A, block_size))
             @printf("%-28s | %-12s | %12.3f | %12.2f\n", "Recursive Non-Nested", string(T_prec), runtime, gflops)
             
-            runtime, gflops = run_cholesky_test(A_spd_fp64, n, T_prec, A -> CUSOLVER.potrf!('L', A))
-            @printf("%-28s | %-12s | %12.3f | %12.2f\n", "CUSOLVER Standard", string(T_prec), runtime, gflops)
+            # --- Conditional CUSOLVER Benchmark ---
+            # Only run the CUSOLVER benchmark if the precision is NOT Float16
+            if T_prec != Float16
+                runtime, gflops = run_cholesky_test(A_spd_fp64, n, T_prec, A -> CUSOLVER.potrf!('L', A))
+                @printf("%-28s | %-12s | %12.3f | %12.2f\n", "CUSOLVER Standard", string(T_prec), runtime, gflops)
+            end
         end
         
         A_spd_fp64 = nothing
