@@ -50,7 +50,7 @@ end
 
 function run_all_benchmarks()
     n_values = [4096, 8192, 16384, 32768, 65536]
-    precisions = [Float32, Float64] # Added Float16
+    precisions = [Float32, Float64] 
     block_size = 256 
 
     println("="^80)
