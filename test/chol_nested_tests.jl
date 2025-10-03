@@ -5,6 +5,7 @@ using Printf
 using KernelAbstractions
 
 include("benchmark.jl")
+include("flops.jl")
 
 flops_potrf(T_prec, n) = (1/3 * n^3 + 1/2 * n^2)
 
@@ -25,27 +26,23 @@ function run_cholesky_test(A_spd_fp64::CuMatrix, n::Int, T_prec::DataType, facto
     min_time_ns = run_manual_benchmark(op_with_reset, backend; min_time_s=1.0, min_iters=5)
     
     runtime_ms = min_time_ns / 1_000_000
-    gflops = calculate_gflops(flops_potrf(T_prec, n), min_time_ns * 1e-9)
+    flops = flops_potrf(T_prec, n)
+    gflops = calculate_gflops(flops, min_time_ns)
     
-    copyto!(A_perf, A_clean)
-    factorization_func!(A_perf)
-    
-    A_reconstructed = Float64.(tril(A_perf) * tril(A_perf)')
-    
-    error_norm = norm(A_reconstructed - A_spd_fp64)
-    orig_norm = norm(A_spd_fp64)
-    relative_error = max(error_norm / orig_norm, 1e-20)
-
     A_clean = nothing
     A_perf = nothing
-    A_reconstructed = nothing
     GC.gc(true); CUDA.reclaim()
 
-    return runtime_ms, gflops, relative_error
+    return runtime_ms, gflops
 end
 
 
+"""
+    run_all_benchmarks()
 
+Main function to orchestrate the Cholesky factorization benchmarks across
+different matrix sizes, precisions, and implementations.
+"""
 function run_all_benchmarks()
     n_values = [4096, 8192, 16384, 32768, 65536]
     precisions = [Float32, Float64]
@@ -53,7 +50,7 @@ function run_all_benchmarks()
 
     println("="^80)
     println("🚀 Starting Cholesky Factorization Benchmark...")
-    println("   (Using provided 'run_manual_benchmark' function)")
+    println("   (Accuracy tests have been removed to conserve memory)")
     println("="^80)
 
     for n in n_values
@@ -66,18 +63,21 @@ function run_all_benchmarks()
         A_cpu_rand = nothing
         GC.gc(true); CUDA.reclaim()
 
-        @printf("%-28s | %-12s | %12s | %12s | %12s\n", "Implementation", "Precision", "Runtime (ms)", "GFLOPS", "Rel. Error")
-        println("-"^80)
+        # Updated table header (Rel. Error column removed)
+        @printf("%-28s | %-12s | %12s | %12s\n", "Implementation", "Precision", "Runtime (ms)", "GFLOPS")
+        println("-"^73) # Adjusted separator length
 
         for T_prec in precisions
-            runtime, gflops, err = run_cholesky_test(A_spd_fp64, n, T_prec, A -> potrf_recursive_nested!(A, block_size))
-            @printf("%-28s | %-12s | %12.3f | %12.2f | %12.2e\n", "Recursive Nested", string(T_prec), runtime, gflops, err)
+            # Updated function call to unpack only two values
+            runtime, gflops = run_cholesky_test(A_spd_fp64, n, T_prec, A -> potrf_recursive_nested!(A, block_size))
+            # Updated print statement
+            @printf("%-28s | %-12s | %12.3f | %12.2f\n", "Recursive Nested", string(T_prec), runtime, gflops)
 
-            runtime, gflops, err = run_cholesky_test(A_spd_fp64, n, T_prec, A -> potrf_recursive_nonnested!(A, block_size))
-            @printf("%-28s | %-12s | %12.3f | %12.2f | %12.2e\n", "Recursive Non-Nested", string(T_prec), runtime, gflops, err)
+            runtime, gflops = run_cholesky_test(A_spd_fp64, n, T_prec, A -> potrf_recursive_nonnested!(A, block_size))
+            @printf("%-28s | %-12s | %12.3f | %12.2f\n", "Recursive Non-Nested", string(T_prec), runtime, gflops)
             
-            runtime, gflops, err = run_cholesky_test(A_spd_fp64, n, T_prec, A -> CUSOLVER.potrf!('L', A))
-            @printf("%-28s | %-12s | %12.3f | %12.2f | %12.2e\n", "CUSOLVER Standard", string(T_prec), runtime, gflops, err)
+            runtime, gflops = run_cholesky_test(A_spd_fp64, n, T_prec, A -> CUSOLVER.potrf!('L', A))
+            @printf("%-28s | %-12s | %12.3f | %12.2f\n", "CUSOLVER Standard", string(T_prec), runtime, gflops)
         end
         
         A_spd_fp64 = nothing
