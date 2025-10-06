@@ -148,3 +148,58 @@ function RightUpperTRSM!(A, B)
     backend = get_backend(A)
     right_upper_kernel(backend, (m,))(Transpose(A), B, m, ndrange=(m, n))
 end
+
+"""
+    trsm(side, uplo, transa, diag, A, B, alpha=1.0) -> B
+
+Solves triangular matrix systems with automatic parameter detection.
+This is a simplified interface for triangular system solving.
+
+# Arguments
+- 'side': 
+    - 'L': solve op(A)*X = alpha*B
+    - 'R': solve X*op(A) = alpha*B
+- 'uplo':
+    - 'U': A is upper triangular
+    - 'L': A is lower triangular  
+- 'transa': operation on A
+    - 'N': op(A) = A
+    - 'T': op(A) = A^T
+    - 'C': op(A) = A^H
+- 'diag': diagonal type
+    - 'N': non-unit diagonal
+    - 'U': unit diagonal
+- 'A': triangular matrix
+- 'B': right-hand side matrix (will be overwritten with solution)
+- 'alpha': scalar multiplier (default: 1.0)
+
+# Returns
+- Updated matrix B containing the solution
+
+# Example
+```julia
+A = complex.(triu(randn(4, 4)), triu(randn(4, 4)))
+B = complex.(randn(4, 3), randn(4, 3))
+X = trsm('L', 'U', 'N', 'N', A, copy(B))
+```
+"""
+function trsm(side, uplo, transa, diag, A, B, alpha=one(eltype(A)))
+    # Scale B if alpha != 1
+    if alpha != one(eltype(A))
+        B .*= alpha
+    end
+    
+    # Apply the appropriate kernel based on parameters
+    if side == 'L' && uplo == 'L'
+        LeftLowerTRSM!(A, B)
+    elseif side == 'L' && uplo == 'U' 
+        LeftUpperTRSM!(A, B)
+    elseif side == 'R' && uplo == 'L'
+        RightLowerTRSM!(A, B)
+    elseif side == 'R' && uplo == 'U'
+        RightUpperTRSM!(A, B)
+    else
+        error("Unsupported combination of side='$side', uplo='$uplo'")
+    end
+    
+end

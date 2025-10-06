@@ -86,7 +86,16 @@ const TTQRT_SIZES = [
                         work_nextla = copy(work)
 
 
-                        NextLA.ttqrt(n, n, ib, A1_nextla, n, A2_nextla, m, T_mat_nextla, ib, tau, work_nextla)
+                        NextLA.ttqrt!(n, n, ib, A1_nextla, A2_nextla, T_mat_nextla, tau, work_nextla)
+
+                        # --- Test Helper Function ---
+                        A1_helper = copy(A1_orig)
+                        A2_helper = copy(A2_orig)
+                        NextLA.ttqrt!(A1_helper, A2_helper, T_mat_nextla)
+                        
+                        # Verify helper gives same results as kernel
+                        @test A1_helper ≈ A1_nextla rtol=rtol
+                        @test A2_helper ≈ A2_nextla rtol=rtol
 
                         lapack_tpqrt!(T, n, n, n, ib, A1, n, A2, n, T_mat, ib, work)
 
@@ -123,15 +132,13 @@ const TTQRT_SIZES = [
                 tau = zeros(T, n)
                 work = zeros(T, ib * n)
                 
-                @test_nowarn NextLA.ttqrt(m, n, ib, A1, n, A2, m, T_matrix, ib, tau, work)
+                @test_nowarn NextLA.ttqrt!(m, n, ib, A1, A2, T_matrix, tau, work)
                 
                 # Test edge cases
-                @test_nowarn NextLA.ttqrt(0, 0, 0, zeros(T, 0, 0), 1, zeros(T, 0, 0), 1, 
-                                         zeros(T, 0, 0), 1, T[], T[])
+                @test_nowarn NextLA.ttqrt!(0, 0, 0, zeros(T, 0, 0), zeros(T, 0, 0), zeros(T, 0, 0), T[], T[])
                 
                 # Test with minimal size
-                @test_nowarn NextLA.ttqrt(1, 1, 1, ones(T, 1, 1), 1, ones(T, 1, 1), 1,
-                                         zeros(T, 1, 1), 1, zeros(T, 1), zeros(T, 1))
+                @test_nowarn NextLA.ttqrt!(1, 1, 1, ones(T, 1, 1), ones(T, 1, 1), zeros(T, 1, 1), zeros(T, 1), zeros(T, 1))
             end
         end
     end
@@ -159,8 +166,8 @@ const TTQRT_SIZES = [
                         end
                     end
                     
-                    # Test calculation
-                    NextLA.ttqrt(m, n, ib, A1, n, A2, m, T_matrix, ib, tau, work)
+                    # Test calculation (simplified signature)
+                    NextLA.ttqrt!(m, n, ib, A1, A2, T_matrix, tau, work)
                     
                     # Check that results are finite
                     @test all(isfinite.(A1))
@@ -213,10 +220,10 @@ const TTQRT_SIZES = [
                         T_ref = copy(T_cpu)
                         tau_ref = copy(tau_cpu)
                         work_ref = copy(work_cpu)
-                        NextLA.ttqrt(m, n, ib, A1_ref, n, A2_ref, m, T_ref, ib, tau_ref, work_ref)
+                        NextLA.ttqrt!(m, n, ib, A1_ref, A2_ref, T_ref, tau_ref, work_ref)
                         
                         # GPU calculation
-                        NextLA.ttqrt(m, n, ib, A1_gpu, n, A2_gpu, m, T_gpu, ib, tau_gpu, work_gpu)
+                        NextLA.ttqrt!(m, n, ib, A1_gpu, A2_gpu, T_gpu, tau_gpu, work_gpu)
                         
                         # Compare results
                         @test norm(Array(A1_gpu) - A1_ref) < rtol * max(1, norm(A1_ref))

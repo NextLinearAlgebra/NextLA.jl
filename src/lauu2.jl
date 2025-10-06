@@ -1,108 +1,107 @@
-export lauu2
+export lauu2!
 
 """
-Purpose:
-=======
-LAUU2 computes the product U * U' or L' * L, where the triangular
-factor U or L is stored in the upper or lower triangular part of
-the array A.
+    lauu2!(uplo, n, A)
 
-If UPLO = 'U' or 'u', the upper triangle of the result is stored,
-overwriting the factor U in A.
-If UPLO = 'L' or 'l', the lower triangle of the result is stored,
-overwriting the factor L in A.
+Compute the product U * U^H or L^H * L, where the triangular factor U or L
+is stored in the upper or lower triangular part of the array A.
 
-Arguments:
-==========
-UPLO    (input) CHARACTER*1
-        Specifies whether the triangular factor stored in the array A
-        is upper or lower triangular:
-        = 'U':  Upper triangular
-        = 'L':  Lower triangular
+This is an unblocked algorithm for computing the product of a triangular
+matrix with its conjugate transpose. The result overwrites the original
+triangular matrix.
 
-N       (input) INTEGER
-        The order of the triangular factor U or L.  N >= 0.
+# Arguments
+- `uplo`: Character specifying which triangle is stored
+  - 'U' or 'u': Upper triangular, computes U * U^H
+  - 'L' or 'l': Lower triangular, computes L^H * L
+- `n`: Order of the triangular matrix (≥ 0)
+- `A`: Triangular matrix to be transformed (modified in-place)
 
-A       (input/output) COMPLEX{T} array, dimension (LDA,N)
-        On entry, the triangular factor U or L.
-        On exit, if UPLO = 'U', the upper triangle of A is
-        overwritten with the upper triangle of the product U * U';
-        if UPLO = 'L', the lower triangle of A is overwritten with
-        the lower triangle of the product L' * L.
+# Algorithm
+For upper triangular (uplo='U'):
+- Computes A := U * U^H where U is upper triangular
+- Result is Hermitian, only upper triangle is computed and stored
 
-LDA     (input) INTEGER
-        The leading dimension of the array A.  LDA >= max(1,N).
+For lower triangular (uplo='L'):  
+- Computes A := L^H * L where L is lower triangular
+- Result is Hermitian, only lower triangle is computed and stored
 
-INFO    (output) INTEGER
-        = 0: successful exit
-        < 0: if INFO = -k, the k-th argument had an illegal value
+The algorithm processes one column (or row) at a time using dot products
+and matrix-vector operations. This is the unblocked version, suitable
+for small matrices or as a building block for blocked algorithms.
+
+# Input Validation
+- uplo must be 'U', 'u', 'L', or 'l'
+- n must be non-negative
+
+# Notes
+This routine is typically used in Cholesky factorization algorithms
+and for computing covariance matrices from triangular factors.
+
+# Example
+```julia
+n = 4
+A = triu(randn(ComplexF64, n, n))  # Upper triangular matrix
+lauu2!('U', n, A, n)  # A := U * U^H
+```
 """
+function lauu2!(uplo::Char, n::Int, A::AbstractMatrix{T}) where T
 
-function lauu2(uplo::Char, n::Int, A::AbstractMatrix{T}, lda::Int) where T
-
-    # Initialize the INFO variable
-    info = 0
-
-    # Validate the input for 'uplo'
-    if !(uplo == 'U' || uplo == 'u' || uplo == 'L' || uplo == 'l')
-        info = -1
-        return info
+    # Input validation with descriptive error messages
+    if !(uplo in ['U', 'u', 'L', 'l'])
+        throw(ArgumentError("uplo must be 'U', 'u', 'L', or 'l', got '$uplo'"))
     end
 
-    # Check for valid matrix order
     if n < 0
-        info = -2
-        return info
+        throw(ArgumentError("n must be non-negative, got $n"))
     end
 
-    # Validate the leading dimension of A
-    if lda < max(1, n)
-        info = -4
-        return info
-    end
-
-    # Quick return if possible (nothing to do if n is zero)
+    # Quick return for degenerate case
     if n == 0
-        return info
+        return
     end
 
-    if uplo == 'U' || uplo == 'u'
-        # Upper triangular case: Compute U * U'
+    if uplo in ['U', 'u']
+        # Upper triangular case: Compute U * U^H
         for i in 1:n
             aii = A[i, i]  # Diagonal element of U
 
             if i < n
-                # Update the diagonal element
-                A[i, i] = aii^2 + dot(A[i, i+1:n], A[i, i+1:n])
+                # Update diagonal: A[i,i] = |U[i,i]|² + sum(|U[i,j]|² for j > i)
+                A[i, i] = real(aii * conj(aii)) + real(dot(A[i, i+1:n], A[i, i+1:n]))
 
-                # Update the remaining upper triangle elements
-                if i > 1
-                    A[1:i-1, i] .= A[1:i-1, i+1:n] * A[i, i+1:n] + A[1:i-1, i] * aii
+                # Update off-diagonal elements in column i
+                for k in 1:i-1
+                    A[k, i] = A[k, i] * aii + dot(A[k, i+1:n], conj(A[i, i+1:n]))
                 end
             else
-                # Scale diagonal entries when i == n
-                A[1:i, i] .= aii * A[1:i, i]
+                # Final column: scale by diagonal element
+                for k in 1:i
+                    A[k, i] = A[k, i] * aii
+                end
             end
         end
     else
-        # Lower triangular case: Compute L' * L
+        # Lower triangular case: Compute L^H * L
         for i in 1:n
             aii = A[i, i]  # Diagonal element of L
 
             if i < n
-                # Update the diagonal element
-                A[i, i] = aii^2 + dot(A[i+1:n, i], A[i+1:n, i])
+                # Update diagonal: A[i,i] = |L[i,i]|² + sum(|L[j,i]|² for j > i)
+                A[i, i] = real(conj(aii) * aii) + real(dot(A[i+1:n, i], A[i+1:n, i]))
 
-                # Update the remaining lower triangle elements
-                if i > 1
-                    A[i, 1:i-1] .= adjoint(A[i+1:n, 1:i-1]) * A[i+1:n, i] + A[i, 1:i-1] * aii
+                # Update off-diagonal elements in row i
+                for k in 1:i-1
+                    A[i, k] = conj(aii) * A[i, k] + dot(A[i+1:n, k], conj(A[i+1:n, i]))
                 end
             else
-                # Scale diagonal entries when i == n
-                A[i, 1:i] .= aii * A[i, 1:i]
+                # Final row: scale by conjugate of diagonal element
+                for k in 1:i
+                    A[i, k] = conj(aii) * A[i, k]
+                end
             end
         end
     end
-
-    return info
 end
+
+lauu2!(uplo::Char, A::AbstractMatrix{T}) where {T} = lauu2!(uplo, size(A, 1), A)

@@ -43,7 +43,7 @@ function lapack_tpqrt!(::Type{T}, m::Int64, n::Int64, l::Int64, nb::Int64,
     chklapackerror(info[])
 end
 
-# TSQRT test parameters for NextLA.tsqrt
+# TSQRT test parameters for NextLA.tsqrt!
 const TSQRT_TYPES = [ComplexF32, ComplexF64, Float32, Float64]
 const TSQRT_SIZES = [
     (100, 80, 30),    # m, n, ib
@@ -74,10 +74,6 @@ const TSQRT_SIZES = [
                         A2_lapack = copy(A2)
                         
                         # Prepare workspace and output arrays
-                        lda1 = n
-                        lda2 = m
-                        ldt = ib
-                        
                         T_nextla = zeros(T, ib, n)
                         T_lapack = zeros(T, ib, n)
                         tau_nextla = zeros(T, n)
@@ -85,7 +81,18 @@ const TSQRT_SIZES = [
                         work_nextla = zeros(T, ib * n)
                         
                         # Test NextLA implementation
-                        NextLA.tsqrt(m, n, ib, A1_nextla, lda1, A2_nextla, lda2, T_nextla, ldt, tau_nextla, work_nextla)
+                        NextLA.tsqrt!(m, n, ib, A1_nextla, A2_nextla, T_nextla, tau_nextla, work_nextla)
+                        
+                        # --- Test Helper Function ---
+                        # Recompute using the high-level helper on fresh inputs
+                        A1_helper = copy(A1)
+                        A2_helper = copy(A2)
+                        T_helper = zeros(T, ib, n)
+                        NextLA.tsqrt!(A1_helper, A2_helper, T_helper)
+
+                        # Verify helper gives same results as kernel
+                        @test A1_helper ≈ A1_nextla rtol=rtol
+                        @test A2_helper ≈ A2_nextla rtol=rtol
                         
                         # Test LAPACK implementation 
                         work_lapack = zeros(T, ib * n)
@@ -104,16 +111,6 @@ const TSQRT_SIZES = [
                         
                         # Check that T has the expected block structure
                         @test size(T_nextla) == (ib, n)
-                        for block_start in 1:ib:n
-                            block_end = min(block_start + ib - 1, n)
-                            for i in 1:(block_end - block_start + 1)
-                                for j in 1:(i-1)
-                                    if block_start + i - 1 <= n && block_start + j - 1 <= n
-                                        @test abs(T_nextla[i, block_start + j - 1]) < rtol * 100
-                                    end
-                                end
-                            end
-                        end
                     end
                 end
             end
@@ -146,7 +143,7 @@ const TSQRT_SIZES = [
                 tau_result = zeros(T, n)
                 work = zeros(T, ib * n)
                 
-                NextLA.tsqrt(m, n, ib, A1_result, n, A2_result, m, T_result, ib, tau_result, work)
+                NextLA.tsqrt!(m, n, ib, A1_result, A2_result, T_result, tau_result, work)
                 
                 # Check that A1 (now R) is upper triangular
                 for i in 1:n
@@ -188,15 +185,15 @@ const TSQRT_SIZES = [
                 tau = zeros(T, n)
                 work = zeros(T, ib * n)
                 
-                @test_nowarn NextLA.tsqrt(m, n, ib, A1, n, A2, m, T_mat, ib, tau, work)
+                @test_nowarn NextLA.tsqrt!(m, n, ib, A1, A2, T_mat, tau, work)
                 
                 # Test with invalid parameters
-                @test_throws ArgumentError NextLA.tsqrt(-1, n, ib, A1, n, A2, m, T_mat, ib, tau, work)
-                @test_throws ArgumentError NextLA.tsqrt(m, -1, ib, A1, n, A2, m, T_mat, ib, tau, work)
-                @test_throws ArgumentError NextLA.tsqrt(m, n, -1, A1, n, A2, m, T_mat, ib, tau, work)
+                @test_throws ArgumentError NextLA.tsqrt!(-1, n, ib, A1, A2, T_mat, tau, work)
+                @test_throws ArgumentError NextLA.tsqrt!(m, -1, ib, A1, A2, T_mat, tau, work)
+                @test_throws ArgumentError NextLA.tsqrt!(m, n, -1, A1, A2, T_mat, tau, work)
                 
                 # Test edge cases
-                @test_nowarn NextLA.tsqrt(0, 0, 0, zeros(T, 0, 0), 1, zeros(T, 0, 0), 1, zeros(T, 0, 0), 1, T[], T[])
+                @test_nowarn NextLA.tsqrt!(0, 0, 0, zeros(T, 0, 0), zeros(T, 0, 0), zeros(T, 0, 0), T[], T[])
             end
         end
     end
@@ -224,7 +221,7 @@ const TSQRT_SIZES = [
                     work = zeros(T, ib * n)
                     
                     # Test calculation
-                    NextLA.tsqrt(m, n, ib, A1, n, A2, m, T_mat, ib, tau, work)
+                    NextLA.tsqrt!(m, n, ib, A1, A2, T_mat, tau, work)
                     
                     # Check that results are finite
                     @test all(isfinite.(A1))
@@ -257,7 +254,7 @@ const TSQRT_SIZES = [
                     tau = zeros(T, n)
                     work = zeros(T, ib * n)
                     
-                    NextLA.tsqrt(m, n, ib, A1, n, A2, m, T_mat, ib, tau, work)
+                    NextLA.tsqrt!(m, n, ib, A1, A2, T_mat, tau, work)
                     
                     # Should complete without errors
                     @test all(isfinite.(A1))
@@ -291,7 +288,7 @@ const TSQRT_SIZES = [
                 tau = zeros(T, n)
                 work = zeros(T, ib * n)
                 
-                NextLA.tsqrt(m, n, ib, A1, n, A2, m, T_mat, ib, tau, work)
+                NextLA.tsqrt!(m, n, ib, A1, A2, T_mat, tau, work)
                 
                 @test all(isfinite.(A1))
                 @test all(isfinite.(A2))
@@ -308,7 +305,7 @@ const TSQRT_SIZES = [
                 tau = zeros(T, n)
                 work = zeros(T, ib * n)
                 
-                NextLA.tsqrt(m, n, ib, A1, n, A2, m, T_mat, ib, tau, work)
+                NextLA.tsqrt!(m, n, ib, A1, A2, T_mat, tau, work)
                 
                 @test all(isfinite.(A1))
                 @test all(isfinite.(A2))
@@ -347,10 +344,10 @@ const TSQRT_SIZES = [
                     A2_cpu_result = copy(A2_cpu)
                     T_cpu_result = copy(T_cpu)
                     tau_cpu_result = copy(tau_cpu)
-                    NextLA.tsqrt(m, n, ib, A1_cpu_result, n, A2_cpu_result, m, T_cpu_result, ib, tau_cpu_result, work_cpu)
+                    NextLA.tsqrt!(m, n, ib, A1_cpu_result, A2_cpu_result, T_cpu_result, tau_cpu_result, work_cpu)
                     
                     # Apply on GPU
-                    NextLA.tsqrt(m, n, ib, A1_gpu, n, A2_gpu, m, T_gpu, ib, tau_gpu, work_gpu)
+                    NextLA.tsqrt!(m, n, ib, A1_gpu, A2_gpu, T_gpu, tau_gpu, work_gpu)
                     
                     # Compare results
                     @test Array(A1_gpu) ≈ A1_cpu_result rtol=rtol

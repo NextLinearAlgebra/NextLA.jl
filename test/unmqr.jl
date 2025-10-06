@@ -16,14 +16,12 @@ const UNMQR_TESTTYPES = [ComplexF32, ComplexF64, Float32, Float64]
             A_original = copy(A_qr)
             lda = m
             T = zeros(type, ib, k)
-            ldt = ib
             tau = zeros(type, k)
-            ldwork = ib * n
-            work_qr = zeros(type, ldwork)
+            work_qr = zeros(type, ib * k)
 
 
             # Perform QR factorization
-            NextLA.geqrt(m, k, ib, A_qr, lda, T, ldt, tau, work_qr)
+            NextLA.geqrt!(m, k, ib, A_qr, T, tau, work_qr)
 
             # Test matrix to apply Q to
             C = rand(T, m, n)
@@ -31,18 +29,25 @@ const UNMQR_TESTTYPES = [ComplexF32, ComplexF64, Float32, Float64]
             ldc = m
 
             # Workspace for UNMQR
-            work = zeros(type, ib * m)
-            ldwork = n
+            # Workspace for UNMQR (matrix workspace)
+            work = zeros(type, n, ib)
 
             # Apply Q from left (Q * C)
-            NextLA.unmqr('L', 'N', m, n, k, ib, A_qr, lda, T, ldt, C, ldc, work, ldwork)
+            NextLA.unmqr!('L', 'N', m, n, k, ib, A_qr, lda, T, C, work)
+
+            # --- Test Helper Function ---
+            C_helper = copy(C_original)
+            NextLA.unmqr!('L', 'N', A_qr, T, C_helper)
+            
+            # Verify helper gives same results as kernel (in-place)
+            @test C_helper ≈ C rtol=rtol
         
             # Verify using reference QR decomposition
             Q_ref, R_ref = qr(A_original)
             C_expected = Matrix(Q_ref) * C_original
 
             # Note: Due to potential sign differences in QR, we check properties rather than exact equality
-            @test size(C) == (n, m)
+            @test size(C) == (m, n)
             @test all(isfinite.(C))
         
             # Check that the transformation preserves matrix structure
@@ -60,14 +65,12 @@ const UNMQR_TESTTYPES = [ComplexF32, ComplexF64, Float32, Float64]
             A_original = copy(A_qr)
             lda = m
             T = zeros(type, ib, k)
-            ldt = ib
             tau = zeros(type, k)
-            ldwork = ib * n
-            work_qr = zeros(type, ldwork)
+            work_qr = zeros(type, ib * k)
 
 
             # Perform QR factorization
-            NextLA.geqrt(m, k, ib, A_qr, lda, T, ldt, tau, work_qr)
+            NextLA.geqrt!(m, k, ib, A_qr, T, tau, work_qr)
 
             # Test matrix to apply Q to
             C = rand(T, m, n)
@@ -75,18 +78,25 @@ const UNMQR_TESTTYPES = [ComplexF32, ComplexF64, Float32, Float64]
             ldc = m
 
             # Workspace for UNMQR
-            work = zeros(type, ib * m)
-            ldwork = n
+            # Workspace for UNMQR (matrix workspace)
+            work = zeros(type, n, ib)
 
             # Apply Q from left (Q * C)
-            NextLA.unmqr('L', 'C', m, n, k, ib, A_qr, lda, T, ldt, C, ldc, work, ldwork)
+            NextLA.unmqr!('L', 'C', m, n, k, ib, A_qr, lda, T, C, work)
+
+            # --- Test Helper Function ---
+            C_helper = copy(C_original)
+            NextLA.unmqr!('L', 'C', A_qr, T, C_helper)
+            
+            # Verify helper gives same results as kernel (in-place)
+            @test C_helper ≈ C rtol=rtol
         
             # Verify using reference QR decomposition
             Q_ref, R_ref = qr(A_original)
             C_expected = adjoint(Matrix(Q_ref)) * C_original
 
             # Note: Due to potential sign differences in QR, we check properties rather than exact equality
-            @test size(C) == (n, m)
+            @test size(C) == (m, n)
             @test all(isfinite.(C))
         
             # Check that the transformation preserves matrix structure
@@ -104,14 +114,12 @@ const UNMQR_TESTTYPES = [ComplexF32, ComplexF64, Float32, Float64]
             A_original = copy(A_qr)
             lda = m
             T = zeros(type, ib, k)
-            ldt = ib
             tau = zeros(type, k)
-            ldwork = ib * n
-            work_qr = zeros(type, ldwork)
+            work_qr = zeros(type, ib * k)
 
 
             # Perform QR factorization
-            NextLA.geqrt(m, k, ib, A_qr, lda, T, ldt, tau, work_qr)
+            NextLA.geqrt!(m, k, ib, A_qr, T, tau, work_qr)
 
             # Test matrix to apply Q to
             C = rand(T, m, n)
@@ -119,18 +127,18 @@ const UNMQR_TESTTYPES = [ComplexF32, ComplexF64, Float32, Float64]
             ldc = m
 
             # Workspace for UNMQR
-            work = zeros(type, ib * m)
-            ldwork = m
+            # Workspace for UNMQR (matrix workspace)
+            work = zeros(type, m, ib)
 
             # Apply Q from left (Q * C)
-            NextLA.unmqr('R', 'N', m, n, k, ib, A_qr, lda, T, ldt, C, ldc, work, ldwork)
+            NextLA.unmqr!('R', 'N', m, n, k, ib, A_qr, lda, T, C, work)
         
             # Verify using reference QR decomposition
             Q_ref, R_ref = qr(A_original)
             C_expected =  C_original * Matrix(Q_ref)
 
             # Note: Due to potential sign differences in QR, we check properties rather than exact equality
-            @test size(C) == (n, m)
+            @test size(C) == (m, n)
             @test all(isfinite.(C))
         
             # Check that the transformation preserves matrix structure
@@ -148,14 +156,12 @@ const UNMQR_TESTTYPES = [ComplexF32, ComplexF64, Float32, Float64]
             A_original = copy(A_qr)
             lda = m
             T = zeros(type, ib, k)
-            ldt = ib
             tau = zeros(type, k)
-            ldwork = ib * n
-            work_qr = zeros(type, ldwork)
+            work_qr = zeros(type, ib * k)
 
 
             # Perform QR factorization
-            NextLA.geqrt(m, k, ib, A_qr, lda, T, ldt, tau, work_qr)
+            NextLA.geqrt!(m, k, ib, A_qr, T, tau, work_qr)
 
             # Test matrix to apply Q to
             C = rand(T, m, n)
@@ -163,18 +169,18 @@ const UNMQR_TESTTYPES = [ComplexF32, ComplexF64, Float32, Float64]
             ldc = m
 
             # Workspace for UNMQR
-            work = zeros(type, ib * m)
-            ldwork = m
+            # Workspace for UNMQR (matrix workspace)
+            work = zeros(type, m, ib)
 
-            # Apply Q from left (Q * C)
-            NextLA.unmqr('R', 'N', m, n, k, ib, A_qr, lda, T, ldt, C, ldc, work, ldwork)
+            # Apply Q^H from right (C * Q^H)
+            NextLA.unmqr!('R', 'C', m, n, k, ib, A_qr, lda, T, C, work)
         
             # Verify using reference QR decomposition
             Q_ref, R_ref = qr(A_original)
             C_expected =  C_original * adjoint(Matrix(Q_ref))
 
             # Note: Due to potential sign differences in QR, we check properties rather than exact equality
-            @test size(C) == (n, m)
+            @test size(C) == (m, n)
             @test all(isfinite.(C))
         
             # Check that the transformation preserves matrix structure
@@ -188,23 +194,22 @@ const UNMQR_TESTTYPES = [ComplexF32, ComplexF64, Float32, Float64]
         
         A_qr = rand(ComplexF64, m, k)
         lda = m
-        T = zeros(ComplexF64, ib, k)
-        ldt = ib
+    T = zeros(ComplexF64, ib, k)
         tau = zeros(ComplexF64, k)
-        work_qr = zeros(ComplexF64, ib * k)
+    work_qr = zeros(ComplexF64, ib * k)
         
-        NextLA.geqrt(m, k, ib, A_qr, lda, T, ldt, tau, work_qr)
+    NextLA.geqrt!(m, k, ib, A_qr, T, tau, work_qr)
         
         C = Matrix{ComplexF64}(I, m, n)  # Identity matrix
         C_original = copy(C)
-        ldc = m
+    ldc = m
         
-        work = zeros(ComplexF64, ib * n)
-        ldwork = n
+    # Matrix workspace for UNMQR
+    work = zeros(ComplexF64, n, ib)
         
         # Apply Q then Q^H
-        NextLA.unmqr('L', 'N', m, n, k, ib, A_qr, lda, T, ldt, C, ldc, work, ldwork)
-        NextLA.unmqr('L', 'C', m, n, k, ib, A_qr, lda, T, ldt, C, ldc, work, ldwork)
+    NextLA.unmqr!('L', 'N', m, n, k, ib, A_qr, lda, T, C, work)
+    NextLA.unmqr!('L', 'C', m, n, k, ib, A_qr, lda, T, C, work)
         
         # Should get back to identity (at least for the first k columns)
         @test C[:, 1:k] ≈ C_original[:, 1:k] rtol=1e-10
@@ -215,22 +220,22 @@ const UNMQR_TESTTYPES = [ComplexF32, ComplexF64, Float32, Float64]
         A = zeros(ComplexF64, m, k)
         T = zeros(ComplexF64, ib, k)
         C = zeros(ComplexF64, m, n)
-        work = zeros(ComplexF64, ib * n)
+    work = zeros(ComplexF64, n, ib)
         
-        # Invalid side
-        @test_throws ArgumentError NextLA.unmqr('X', 'N', m, n, k, ib, A, m, T, ib, C, m, work, ib)
+    # Invalid side
+    @test_throws ArgumentError NextLA.unmqr!('X', 'N', m, n, k, ib, A, m, T, C, work)
         
-        # Invalid trans
-        @test_throws ArgumentError NextLA.unmqr('L', 'X', m, n, k, ib, A, m, T, ib, C, m, work, ib)
+    # Invalid trans
+    @test_throws ArgumentError NextLA.unmqr!('L', 'X', m, n, k, ib, A, m, T, C, work)
         
         # Negative dimensions
-        @test_throws ArgumentError NextLA.unmqr('L', 'N', -1, n, k, ib, A, m, T, ib, C, m, work, ib)
-        @test_throws ArgumentError NextLA.unmqr('L', 'N', m, -1, k, ib, A, m, T, ib, C, m, work, ib)
-        @test_throws ArgumentError NextLA.unmqr('L', 'N', m, n, -1, ib, A, m, T, ib, C, m, work, ib)
-        @test_throws ArgumentError NextLA.unmqr('L', 'N', m, n, k, -1, A, m, T, ib, C, m, work, ib)
+    @test_throws ArgumentError NextLA.unmqr!('L', 'N', -1, n, k, ib, A, m, T, C, work)
+    @test_throws ArgumentError NextLA.unmqr!('L', 'N', m, -1, k, ib, A, m, T, C, work)
+    @test_throws ArgumentError NextLA.unmqr!('L', 'N', m, n, -1, ib, A, m, T, C, work)
+    @test_throws ArgumentError NextLA.unmqr!('L', 'N', m, n, k, -1, A, m, T, C, work)
         
         # Invalid k (k > nq)
-        @test_throws ArgumentError NextLA.unmqr('L', 'N', m, n, m+1, ib, A, m, T, ib, C, m, work, ib)
+    @test_throws ArgumentError NextLA.unmqr!('L', 'N', m, n, m+1, ib, A, m, T, C, work)
     end
     
     @testset "Edge Cases" begin
@@ -240,9 +245,9 @@ const UNMQR_TESTTYPES = [ComplexF32, ComplexF64, Float32, Float64]
         T = zeros(ComplexF64, ib, max(1, k))
         C = rand(ComplexF64, m, n)
         C_original = copy(C)
-        work = zeros(ComplexF64, ib * n)
+    work = zeros(ComplexF64, n, ib)
         
-        NextLA.unmqr('L', 'N', m, n, k, ib, A, m, T, ib, C, m, work, n)
+    NextLA.unmqr!('L', 'N', m, n, k, ib, A, m, T, C, work)
         
         # With k=0, C should remain unchanged
         @test C ≈ C_original
@@ -252,19 +257,17 @@ const UNMQR_TESTTYPES = [ComplexF32, ComplexF64, Float32, Float64]
         A_qr = rand(ComplexF64, m, k)
         lda = m
         T = zeros(ComplexF64, ib, k)
-        ldt = ib
         tau = zeros(ComplexF64, k)
         work_qr = zeros(ComplexF64, ib * k)
         
-        NextLA.geqrt(m, k, ib, A_qr, lda, T, ldt, tau, work_qr)
+    NextLA.geqrt!(m, k, ib, A_qr, T, tau, work_qr)
         
         C = rand(ComplexF64, m, n)
         C_original = copy(C)
         ldc = m
-        work = zeros(ComplexF64, ib * n)
-        ldwork = n
+    work = zeros(ComplexF64, n, ib)
         
-        NextLA.unmqr('L', 'N', m, n, k, ib, A_qr, lda, T, ldt, C, ldc, work, ldwork)
+    NextLA.unmqr!('L', 'N', m, n, k, ib, A_qr, lda, T, C, work)
         
         @test all(isfinite.(C))
         @test norm(C) ≈ norm(C_original) rtol=1e-8
@@ -278,17 +281,15 @@ const UNMQR_TESTTYPES = [ComplexF32, ComplexF64, Float32, Float64]
             A_qr_cpu = rand(ComplexF32, m, k)
             lda = m
             T_cpu = zeros(ComplexF32, ib, k)
-            ldt = ib
             tau_cpu = zeros(ComplexF32, k)
             work_qr_cpu = zeros(ComplexF32, ib * k)
             
-            NextLA.geqrt(m, k, ib, A_qr_cpu, lda, T_cpu, ldt, tau_cpu, work_qr_cpu)
+            NextLA.geqrt!(m, k, ib, A_qr_cpu, T_cpu, tau_cpu, work_qr_cpu)
             
             # Create test matrices
             C_cpu = rand(ComplexF32, m, n)
             ldc = m
-            work_cpu = zeros(ComplexF32, ib * n)
-            ldwork = ib
+            work_cpu = zeros(ComplexF32, n, ib)
             
             # Create GPU data
             A_qr_gpu = CuArray(A_qr_cpu)
@@ -298,10 +299,10 @@ const UNMQR_TESTTYPES = [ComplexF32, ComplexF64, Float32, Float64]
             
             # Apply on CPU
             C_cpu_result = copy(C_cpu)
-            NextLA.unmqr('L', 'N', m, n, k, ib, A_qr_cpu, lda, T_cpu, ldt, C_cpu_result, ldc, work_cpu, ldwork)
+            NextLA.unmqr!('L', 'N', m, n, k, ib, A_qr_cpu, lda, T_cpu, C_cpu_result, work_cpu)
             
             # Apply on GPU
-            NextLA.unmqr('L', 'N', m, n, k, ib, A_qr_gpu, lda, T_gpu, ldt, C_gpu, ldc, work_gpu, ldwork)
+            NextLA.unmqr!('L', 'N', m, n, k, ib, A_qr_gpu, lda, T_gpu, C_gpu, work_gpu)
             
             @test Array(C_gpu) ≈ C_cpu_result rtol=1e-6
         end

@@ -1,73 +1,40 @@
-function ttmqr(side, trans, m1, n1, m2, n2, k, ib, A1, lda1, A2, lda2, V, ldv, T, ldt, work, ldwork)
+function ttmqr!(side::Char, trans::Char, m1::Integer, n1::Integer, m2::Integer, n2::Integer, k::Integer, ib::Integer, A1::AbstractMatrix{T}, A2::AbstractMatrix{T}, V::AbstractMatrix{T}, T_mat::AbstractMatrix{T}, work::AbstractVector{T}) where {T}
     # check input arguments
     if side != 'L' && side != 'R'
         throw(ArgumentError("illegal value of side"))
-        return -1
     end
 
     if trans != 'N' && trans != 'C' 
         throw(ArgumentError("illegal value of trans"))
-        return -2
     end
 
     if m1 < 0 
         throw(ArgumentError("illegal value of m1"))
-        return -3
     end
 
     if n1 < 0
         throw(ArgumentError("illegal value of n1"))
-        return -4
     end
 
     if (m2 < 0) || (m2 != m1 && side == 'R')
         throw(ArgumentError("illegal value of m2"))
-        return -5
     end
 
     if (n2 < 0) || (n2 != n1 && side == 'L')
         throw(ArgumentError("illegal value of n2"))
-        return -6
     end
 
     if (k < 0) || (side == 'L' && k > m1) || (side == 'R' && k > n1)
         throw(ArgumentError("illegal value of k"))
-        return -7
     end
 
     if ib < 0
         throw(ArgumentError("illegal value of ib"))
-        return -8
-    end
-
-    if lda1 < max(1,m1)
-        throw(ArgumentError("illegal value of lda1"))
-        return -10
-    end
-
-    if lda2 < max(1,m2)
-        throw(ArgumentError("illegal value of lda2"))
-        return -12
-    end
-
-    if ldv < max(1, side == 'L' ? m2 : n2)
-        throw(ArgumentError("illegal value of ldv"))
-        return -14
-    end
-
-    if ldt < max(1,ib)
-        throw(ArgumentError("illegal of ldt"))
-        return -16
-    end
-
-    if ldwork < max(1, side == 'L' ? ib : m1)
-        throw(ArgumentError("illegal value of ldwork"))
-        return -18
     end
 
     # quick return
     if m1 == 0 || n1 == 0 || m2 == 0 || n2 == 0 || k == 0 || ib == 0
-        return 0
+        return
     end
 
     if (side == 'L' && trans != 'N') || (side == 'R' && trans == 'N')
@@ -91,28 +58,70 @@ function ttmqr(side, trans, m1, n1, m2, n2, k, ib, A1, lda1, A2, lda2, V, ldv, T
         l = 0
 
         if side == 'L'
-            # H or H^H applied to C[i:m, 1:n]
+            # Apply from left on the current block rows
             mi = kb
-            mi2 = min(i+kb-1, m2)
+            mi2 = min(i + kb - 1, m2)
             ic = i
-            l = min(kb, max(0, m2-i))  # Julia 1-based: m2-i+1 (PLASMA has m2-i for 0-based)
-            ldvv = m2
-        else 
+            l = min(kb, max(0, m2 - i))
+            # Workspace as kb x ni
+            W = reshape(@view(work[1:kb*ni]), kb, ni)
+            parfb!('L', trans, 'F', 'C', mi, ni, mi2, ni2, kb, l,
+            (@view A1[ic:ic+mi-1, jc:jc+ni-1]),
+            (@view A2[1:mi2, 1:ni2]),
+            (@view V[1:m2, i:i+kb-1]),
+            (@view T_mat[1:kb, i:i+kb-1]),
+            W)
+        else
+            # Apply from right on the current block columns
             ni = kb
-            ni2 = min(i+kb-1, n2)
+            ni2 = min(i + kb - 1, n2)
             jc = i
-            l = min(kb, max(0, n2-i))  # Julia 1-based: n2-i+1 (PLASMA has n2-i for 0-based)
-            ldvv = n2
+            l = min(kb, max(0, n2 - i))
+            # Workspace as mi x kb
+            W = reshape(@view(work[1:mi*kb]), mi, kb)
+            parfb!('R', trans, 'F', 'C', mi, ni, mi2, ni2, kb, l,
+                   (@view A1[ic:ic+mi-1, jc:jc+ni-1]),
+                   (@view A2[1:mi2, 1:ni2]),
+                   (@view V[1:n2, i:i+kb-1]),
+                   (@view T_mat[1:kb, i:i+kb-1]),
+                   W)
         end
-
-        # apply H or H^H 
-        parfb(side, trans, 'F', 'C', mi, ni, mi2, ni2, kb, l,
-            (@view A1[ic:ic+mi-1, jc:jc+ni-1]), lda1, 
-            (@view A2[1:mi2, 1:ni2]), lda2, 
-            (@view V[1:ldvv, i:i+kb-1]), ldvv, 
-            (@view T[1:ldt, i:i+kb-1]), ldt, 
-            work, ldwork)
         
         i += i3
     end
+end
+
+"""
+    ttmqr!(side, trans, A1, A2, V, T, ib) -> (A1, A2)
+    
+Helper function for triangular-trapezoidal matrix transformation.
+
+# Arguments
+- `side`: 'L' (left) or 'R' (right)
+- `trans`: 'N' (no transpose) or 'C' (conjugate transpose)  
+- `A1`: Upper triangular matrix to be updated
+- `A2`: Trapezoidal matrix to be updated
+- `V`: Reflector vectors matrix
+- `T`: Block reflector matrix
+- `ib`: Block size
+
+# Returns  
+- Modified `A1` and `A2`
+"""
+function ttmqr!(side::Char, trans::Char, A1::AbstractMatrix{T}, A2::AbstractMatrix{T},
+         V::AbstractMatrix{T}, T_matrix::AbstractMatrix{T}) where T
+    m1, n1 = size(A1)
+    m2, n2 = size(A2)
+    ib = size(T_matrix, 1)
+    # Use the common number of reflectors available in V and T
+    k = size(T_matrix, 2)
+
+    # Workspace size follows parfb!/TPMQRT requirements
+    # - Left: W is (ib x n1) at most
+    # - Right: W is (m1 x ib) at most
+    work_size = side == 'L' ? ib * n1 : m1 * ib
+    work = zeros(T, work_size)
+
+    ttmqr!(side, trans, m1, n1, m2, n2, k, ib, A1, A2,
+        V, T_matrix, work)
 end

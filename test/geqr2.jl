@@ -52,51 +52,46 @@ end
                         for imat in 1:4
                             @testset "Matrix type $imat" begin
                                 A_orig = generate_qr_test_matrix(T, m, n, imat)
-                                
-                                # --- Reference Calculation ---
-                                A_ref = copy(A_orig)
-                                tau_ref = zeros(T, k)
-                                A_ref = qr(A_ref).factors
 
                                 # --- NextLA Calculation ---
                                 A_test = copy(A_orig)
-                                lda = max(1, m)
                                 tau_test = zeros(T, k)
-                                work_test = zeros(T, n)  # Work array size n for geqr2
-                                NextLA.geqr2(m, n, A_test, lda, tau_test, work_test)
+                                work_test = zeros(T, n)  # Work array size n for geqr2!
+                                NextLA.geqr2!(m, n, A_test, tau_test, work_test)
+
+                                # --- Test Helper Function ---
+                                A_helper = copy(A_orig)
+                                tau_helper = zeros(T, k)
+                                NextLA.geqr2!(A_helper, tau_helper)
+
+                                # Verify helper gives same results as kernel
+                                @test A_helper ≈ A_test rtol=rtol atol=atol
+                                if k > 0
+                                    @test tau_helper ≈ tau_test rtol=rtol atol=atol
+                                end
 
                                 # --- Comparisons ---
                                 if m == 0 || n == 0
                                     @test size(A_test) == size(A_orig)
                                 else
-                                    # 1. Compare the factored matrix A (contains V and R)
-                                    scaled_rtol = rtol * max(1, m, n)
-                                    @test A_test ≈ A_ref rtol=scaled_rtol
-
-                                    # 3. Mathematical property checks
+                                    #Mathematical property checks
                                     if k > 0
                                         # Extract R from the factored matrix
                                         R_test = triu(A_test[1:k, 1:n])
                                         
-                                        # Form Q using LAPACK's unmqr
+                                        # Form Q using LAPACK's unmqr!
                                         Q_test = Matrix{T}(I, m, m)
-                                        try
-                                            LAPACK.ormqr!('L', 'N', A_test, tau_test, Q_test)
-                                            
-                                            # Test 3a: Reconstruction. A_orig should be Q * R.
-                                            A_recon = Q_test[:, 1:k] * R_test
-                                            reconstruction_tol = rtol * max(1, m, n) * norm(A_orig)
-                                            @test A_orig ≈ A_recon rtol=reconstruction_tol
+                                        LAPACK.ormqr!('L', 'N', A_test, tau_test, Q_test)
+                                        
+                                        # Test 3a: Reconstruction. A_orig should be Q * R.
+                                        A_recon = Q_test[:, 1:k] * R_test
+                                        reconstruction_tol = rtol * max(1, m, n) * norm(A_orig)
+                                        @test A_orig ≈ A_recon
 
-                                            # Test 3b: Orthogonality of Q. Q' * Q should be Identity.
-                                            orthog_error = norm(Q_test' * Q_test - I)
-                                            orthog_tol = rtol * m
-                                            @test orthog_error < orthog_tol
-                                        catch e
-                                            # If LAPACK fails, just check basic properties
-                                            @test all(isfinite.(A_test))
-                                            @test all(isfinite.(tau_test))
-                                        end
+                                        # Test 3b: Orthogonality of Q. Q' * Q should be Identity.
+                                        orthog_error = norm(Q_test' * Q_test - I)
+                                        orthog_tol = rtol * m
+                                        @test orthog_error < orthog_tol
                                         
                                         # Additional checks
                                         @test all(isfinite.(A_test))
@@ -119,17 +114,16 @@ end
                 # Test edge cases and error conditions
                 m, n = 500, 300
                 A = rand(T, m, n)
-                lda = m
                 tau = zeros(T, min(m, n))
                 work = zeros(T, n)
                 
                 # Valid call should not error
-                @test_nowarn NextLA.geqr2(m, n, copy(A), lda, copy(tau), copy(work))
+                @test_nowarn NextLA.geqr2!(m, n, copy(A), copy(tau), copy(work))
                 
                 # Zero dimensions should not error
-                @test_nowarn NextLA.geqr2(0, 0, zeros(T, 0, 0), 1, T[], T[])
-                @test_nowarn NextLA.geqr2(0, 300, zeros(T, 0, 300), 1, T[], zeros(T, 300))
-                @test_nowarn NextLA.geqr2(500, 0, zeros(T, 500, 0), 500, T[], T[])
+                @test_nowarn NextLA.geqr2!(0, 0, zeros(T, 0, 0), T[], T[])
+                @test_nowarn NextLA.geqr2!(0, 300, zeros(T, 0, 300), T[], zeros(T, 300))
+                @test_nowarn NextLA.geqr2!(500, 0, zeros(T, 500, 0), T[], T[])
             end
         end
     end
@@ -153,10 +147,10 @@ end
                     
                     # CPU reference
                     A_cpu_result = copy(A_cpu)
-                    NextLA.geqr2(m, n, A_cpu_result, m, tau_cpu, work_cpu)
+                    NextLA.geqr2!(m, n, A_cpu_result, tau_cpu, work_cpu)
                     
                     # GPU test
-                    NextLA.geqr2(m, n, A_gpu, m, tau_gpu, work_gpu)
+                    NextLA.geqr2!(m, n, A_gpu, tau_gpu, work_gpu)
                     
                     # Compare results
                     @test Array(A_gpu) ≈ A_cpu_result rtol=rtol
