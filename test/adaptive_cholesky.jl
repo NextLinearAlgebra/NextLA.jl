@@ -198,6 +198,7 @@ function run_all_cholesky_tests()
     base_case_size = 256
 
     matrices_to_test = [  
+        "Zhao/zhao2",
         "HB/saylr3",
         "DRIVCAV/cavity18",        
         "HB/psmigr_1",            

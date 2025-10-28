@@ -23,7 +23,7 @@ function get_syrk_runtime_pure(d_A, C_clean, n::Int, T_prec, alpha, beta)
     backend = KernelAbstractions.get_backend(d_A)
     C_perf = copy(C_clean)
 
-    op = () -> recsyrk!(T_prec(alpha), d_A, T_prec(beta), C_perf, 256)
+    op = () -> recsyrk!(T_prec(alpha), d_A, T_prec(beta), C_perf, 2048)
     reset_op = () -> copyto!(C_perf, C_clean)
 
     min_time_ns = benchmark_op(op, reset_op, backend)
