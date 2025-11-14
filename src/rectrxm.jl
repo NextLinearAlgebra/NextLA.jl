@@ -20,7 +20,7 @@ function quantize(matrix::AbstractMatrix{T}) where T <: AbstractFloat
         s = Float32(alpha / FP16_MAX_VAL)
         
         quantized_matrix = similar(matrix, Float16, size(matrix))
-        print("CLAMPING3")
+        # print("CLAMPING3")
         @. quantized_matrix = Float16(round(clamp(matrix / s, -FP16_MAX_VAL, FP16_MAX_VAL)))
     else
         s = 1.0f0
@@ -51,7 +51,7 @@ function GEMM_ADD!(A, B, C::CUDA.StridedCuArray, scale::Float32=1.0f0)
         if eltype(C) == Float16
             C_op = Float32.(C)
             CUBLAS.gemmEx!(transA, transB, scale, A_mat, B_mat, 1.0f0, C_op)
-            print("CLAMPING4")
+            print("4")
             clamp!(C_op, floatmin(Float16), floatmax(Float16))
             copy!(C, C_op)
         else
