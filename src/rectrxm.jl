@@ -72,7 +72,7 @@ function GEMM_SUB!(C::CUDA.StridedCuArray, A, B, scale::Float32=1.0f0)
         if eltype(C) == Float16
             C_op = Float32.(C)
             CUBLAS.gemmEx!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C_op)
-            print("CLAMPING5")
+            # print("CLAMPING5")
             clamp!(C_op, floatmin(Float16), floatmax(Float16))
             copy!(C, C_op)
         else
@@ -93,7 +93,7 @@ function GEMM_ADD!(A, B, C::AMDGPU.StridedROCArray, scale::Float32=1.0f0)
         if eltype(C) == Float16
             C_op = Float32.(C)
             ROCBLAS.gemm_ex!(transA, transB, scale, A_mat, B_mat, 1.0f0, C_op)
-            print("CLAMPING6")
+            # print("CLAMPING6")
             clamp!(C_op, floatmin(Float16), floatmax(Float16))
             copy!(C, C_op)
         else
@@ -114,7 +114,7 @@ function GEMM_SUB!(C::AMDGPU.StridedROCArray, A, B, scale::Float32=1.0f0)
         if eltype(C) == Float16
             C_op = Float32.(C)
             ROCBLAS.gemm_ex!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C_op)
-            print("CLAMPING7")
+            # print("CLAMPING7")
             clamp!(C_op, floatmin(Float16), floatmax(Float16))
             copy!(C, C_op)
         else
@@ -570,7 +570,7 @@ function unified_rec_mixed(
                 B ./= A_scale
             else
                 temp_B_f32 = Float32.(B) .* A_scale
-                print("CLAMPING8")
+                # print("CLAMPING8")
                 clamp!(temp_B_f32, floatmin(eltype(B)), floatmax(eltype(B)))
                 copy!(B, temp_B_f32)
             end
