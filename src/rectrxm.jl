@@ -92,12 +92,12 @@ function GEMM_ADD!(A, B, C::AMDGPU.StridedROCArray, scale::Float32=1.0f0)
     if eltype(A_mat) == Float16 && eltype(B_mat) == Float16
         if eltype(C) == Float16
             C_op = Float32.(C)
-            gemm_ex!(transA, transB, scale, A_mat, B_mat, 1.0f0, C_op)
+            gemmEx!(transA, transB, scale, A_mat, B_mat, 1.0f0, C_op)
             # print("CLAMPING6")
             clamp!(C_op, floatmin(Float16), floatmax(Float16))
             copy!(C, C_op)
         else
-            gemm_ex!(transA, transB, scale, A_mat, B_mat, 1.0f0, C)
+            gemmEx!(transA, transB, scale, A_mat, B_mat, 1.0f0, C)
         end
     else
         T_C = eltype(C)
@@ -113,12 +113,12 @@ function GEMM_SUB!(C::AMDGPU.StridedROCArray, A, B, scale::Float32=1.0f0)
     if eltype(A_mat) == Float16 && eltype(B_mat) == Float16
         if eltype(C) == Float16
             C_op = Float32.(C)
-            gemm_ex!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C_op)
+            gemmEx!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C_op)
             # print("CLAMPING7")
             clamp!(C_op, floatmin(Float16), floatmax(Float16))
             copy!(C, C_op)
         else
-            gemm_ex!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C)
+            gemmEx!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C)
         end
     else
         T_C = eltype(C)
