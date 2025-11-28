@@ -1,4 +1,4 @@
-using Test, AMDGPU, rocBLAS, LinearAlgebra, Printf, Plots, KernelAbstractions
+using Test, AMDGPU, LinearAlgebra, Printf, Plots, KernelAbstractions
 
 include("benchmark.jl")
 

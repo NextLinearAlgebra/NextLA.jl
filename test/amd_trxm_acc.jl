@@ -1,4 +1,4 @@
-using Test, AMDGPU, rocBLAS, LinearAlgebra, Printf, KernelAbstractions
+using Test, AMDGPU, LinearAlgebra, Printf, KernelAbstractions
 
 function check_accuracy()
     sizes = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
