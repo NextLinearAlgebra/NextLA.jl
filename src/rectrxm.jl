@@ -92,16 +92,16 @@ function GEMM_ADD!(A, B, C::AMDGPU.StridedROCArray, scale::Float32=1.0f0)
     if eltype(A_mat) == Float16 && eltype(B_mat) == Float16
         if eltype(C) == Float16
             C_op = Float32.(C)
-            ROCBLAS.gemm_ex!(transA, transB, scale, A_mat, B_mat, 1.0f0, C_op)
+            AMDGPU.rocBLAS.gemm_ex!(transA, transB, scale, A_mat, B_mat, 1.0f0, C_op)
             # print("CLAMPING6")
             clamp!(C_op, floatmin(Float16), floatmax(Float16))
             copy!(C, C_op)
         else
-            ROCBLAS.gemm_ex!(transA, transB, scale, A_mat, B_mat, 1.0f0, C)
+            AMDGPU.rocBLAS.gemm_ex!(transA, transB, scale, A_mat, B_mat, 1.0f0, C)
         end
     else
         T_C = eltype(C)
-        ROCBLAS.gemm!(transA, transB, T_C(scale), A_mat, B_mat, T_C(1.0), C)
+        AMDGPU.rocBLAS.gemm!(transA, transB, T_C(scale), A_mat, B_mat, T_C(1.0), C)
     end
 end
 
@@ -113,16 +113,16 @@ function GEMM_SUB!(C::AMDGPU.StridedROCArray, A, B, scale::Float32=1.0f0)
     if eltype(A_mat) == Float16 && eltype(B_mat) == Float16
         if eltype(C) == Float16
             C_op = Float32.(C)
-            ROCBLAS.gemm_ex!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C_op)
+            AMDGPU.rocBLAS.gemm_ex!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C_op)
             # print("CLAMPING7")
             clamp!(C_op, floatmin(Float16), floatmax(Float16))
             copy!(C, C_op)
         else
-            ROCBLAS.gemm_ex!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C)
+            AMDGPU.rocBLAS.gemm_ex!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C)
         end
     else
         T_C = eltype(C)
-        ROCBLAS.gemm!(transA, transB, T_C(-scale), A_mat, B_mat, T_C(1.0), C)
+        AMDGPU.rocBLAS.gemm!(transA, transB, T_C(-scale), A_mat, B_mat, T_C(1.0), C)
     end
 end
 
@@ -155,7 +155,7 @@ function dispatch_trsm!(side, uplo, trans, diag, alpha, A, B)
 end
 
 _dispatch_trsm_kernel!(side, uplo, trans, diag, alpha, A::CUDA.StridedCuArray, B::CUDA.StridedCuArray) = CUBLAS.trsm!(side, uplo, trans, diag, alpha, A, B)
-_dispatch_trsm_kernel!(side, uplo, trans, diag, alpha, A::AMDGPU.StridedROCArray, B::AMDGPU.StridedROCArray) = ROCBLAS.trsm!(side, uplo, trans, diag, alpha, A, B)
+_dispatch_trsm_kernel!(side, uplo, trans, diag, alpha, A::AMDGPU.StridedROCArray, B::AMDGPU.StridedROCArray) = AMDGPU.rocBLAS.trsm!(side, uplo, trans, diag, alpha, A, B)
 _dispatch_trsm_kernel!(side, uplo, trans, diag, alpha, A::oneAPI.oneDeviceArray, B::oneAPI.oneDeviceArray) = oneMKL.trsm!(side, uplo, trans, diag, alpha, A, B)
 
 
@@ -170,7 +170,7 @@ function dispatch_trmm!(side, uplo, trans, diag, alpha, A, B)
 end
 
 _dispatch_trmm_kernel!(side, uplo, trans, diag, alpha, A::CUDA.StridedCuArray, B::CUDA.StridedCuArray, C::CUDA.StridedCuArray) = CUBLAS.trmm!(side, uplo, trans, diag, alpha, A, B, C)
-_dispatch_trmm_kernel!(side, uplo, trans, diag, alpha, A::AMDGPU.StridedROCArray, B::AMDGPU.StridedROCArray, C::AMDGPU.StridedROCArray) = ROCBLAS.trmm!(side, uplo, trans, diag, alpha, A, B, C)
+_dispatch_trmm_kernel!(side, uplo, trans, diag, alpha, A::AMDGPU.StridedROCArray, B::AMDGPU.StridedROCArray, C::AMDGPU.StridedROCArray) = AMDGPU.rocBLAS.trmm!(side, uplo, trans, diag, alpha, A, B, C)
 _dispatch_trmm_kernel!(side, uplo, trans, diag, alpha, A::oneAPI.oneDeviceArray, B::oneAPI.oneDeviceArray, C::oneAPI.oneDeviceArray) = oneMKL.trmm!(side, uplo, trans, diag, alpha, A, B, C)
 
 

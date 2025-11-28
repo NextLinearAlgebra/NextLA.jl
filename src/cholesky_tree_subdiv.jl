@@ -24,10 +24,10 @@ end
 function potrf!(A::AMDGPU.StridedROCArray{T}) where T
     if eltype(A) == Float16
         A_f32 = Float32.(A)
-        ROCSOLVER.potrf!('L', A_f32)
+        AMDGPU.rocSOLVER.potrf!('L', A_f32)
         A .= Float16.(A_f32)
     else
-        ROCSOLVER.potrf!('L', A)
+        AMDGPU.rocSOLVER.potrf!('L', A)
     end
 end
 
