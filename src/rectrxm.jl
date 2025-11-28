@@ -20,7 +20,7 @@ function quantize(matrix::AbstractMatrix{T}) where T <: AbstractFloat
         s = Float32(alpha / FP16_MAX_VAL)
         
         quantized_matrix = similar(matrix, Float16, size(matrix))
-        # print("CLAMPING3")
+        print("CLAMPING3")
         @. quantized_matrix = Float16(round(clamp(matrix / s, -FP16_MAX_VAL, FP16_MAX_VAL)))
     else
         s = 1.0f0
@@ -42,49 +42,7 @@ function dequantize(quantized_matrix::AbstractMatrix{Float16}, s::Float32, origi
 end
 
 
-function GEMM_ADD!(A, B, C::CUDA.StridedCuArray, scale::Float32=1.0f0)
-    transA = A isa Transpose ? 'T' : 'N'
-    transB = B isa Transpose ? 'T' : 'N'
-    A_mat = A isa Transpose ? parent(A) : A
-    B_mat = B isa Transpose ? parent(B) : B
-    if eltype(A_mat) == Float16 && eltype(B_mat) == Float16
-        if eltype(C) == Float16
-            C_op = Float32.(C)
-            CUBLAS.gemmEx!(transA, transB, scale, A_mat, B_mat, 1.0f0, C_op)
-            print("4")
-            clamp!(C_op, floatmin(Float16), floatmax(Float16))
-            copy!(C, C_op)
-        else
-            CUBLAS.gemmEx!(transA, transB, scale, A_mat, B_mat, 1.0f0, C)
-        end
-    else
-        T_C = eltype(C)
-        CUBLAS.gemm!(transA, transB, T_C(scale), A_mat, B_mat, T_C(1.0), C)
-    end
-end
-
-function GEMM_SUB!(C::CUDA.StridedCuArray, A, B, scale::Float32=1.0f0)
-    transA = A isa Transpose ? 'T' : 'N'
-    transB = B isa Transpose ? 'T' : 'N'
-    A_mat = A isa Transpose ? parent(A) : A
-    B_mat = B isa Transpose ? parent(B) : B
-    if eltype(A_mat) == Float16 && eltype(B_mat) == Float16
-        if eltype(C) == Float16
-            C_op = Float32.(C)
-            CUBLAS.gemmEx!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C_op)
-            # print("CLAMPING5")
-            clamp!(C_op, floatmin(Float16), floatmax(Float16))
-            copy!(C, C_op)
-        else
-            CUBLAS.gemmEx!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C)
-        end
-    else
-        T_C = eltype(C)
-        CUBLAS.gemm!(transA, transB, T_C(-scale), A_mat, B_mat, T_C(1.0), C)
-    end
-end
-
-function GEMM_ADD!(A, B, C::AMDGPU.StridedROCArray, scale::Float32=1.0f0)
+function GEMM_ADD!(A, B, C::AnyGPUArray, scale::Float32=1.0f0)
     transA = A isa Transpose ? 'T' : 'N'
     transB = B isa Transpose ? 'T' : 'N'
     A_mat = A isa Transpose ? parent(A) : A
@@ -93,7 +51,7 @@ function GEMM_ADD!(A, B, C::AMDGPU.StridedROCArray, scale::Float32=1.0f0)
         if eltype(C) == Float16
             C_op = Float32.(C)
             gemmEx!(transA, transB, scale, A_mat, B_mat, 1.0f0, C_op)
-            # print("CLAMPING6")
+            #print("CLAMPING4")
             clamp!(C_op, floatmin(Float16), floatmax(Float16))
             copy!(C, C_op)
         else
@@ -105,7 +63,7 @@ function GEMM_ADD!(A, B, C::AMDGPU.StridedROCArray, scale::Float32=1.0f0)
     end
 end
 
-function GEMM_SUB!(C::AMDGPU.StridedROCArray, A, B, scale::Float32=1.0f0)
+function GEMM_SUB!(C::AnyGPUArray, A, B, scale::Float32=1.0f0)
     transA = A isa Transpose ? 'T' : 'N'
     transB = B isa Transpose ? 'T' : 'N'
     A_mat = A isa Transpose ? parent(A) : A
@@ -114,7 +72,7 @@ function GEMM_SUB!(C::AMDGPU.StridedROCArray, A, B, scale::Float32=1.0f0)
         if eltype(C) == Float16
             C_op = Float32.(C)
             gemmEx!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C_op)
-            # print("CLAMPING7")
+            #print("CLAMPING5")
             clamp!(C_op, floatmin(Float16), floatmax(Float16))
             copy!(C, C_op)
         else
@@ -125,6 +83,7 @@ function GEMM_SUB!(C::AMDGPU.StridedROCArray, A, B, scale::Float32=1.0f0)
         gemm!(transA, transB, T_C(-scale), A_mat, B_mat, T_C(1.0), C)
     end
 end
+
 
 function GEMM_ADD!(A, B, C::oneAPI.oneDeviceArray, scale::Float32=1.0f0)
     transA = A isa Transpose ? 'T' : 'N'
@@ -147,31 +106,31 @@ end
 function dispatch_trsm!(side, uplo, trans, diag, alpha, A, B)
     if eltype(A) == Float16
         B_temp = Float32.(B)
-        _dispatch_trsm_kernel!(side, uplo, trans, diag, alpha, Float32.(A), B_temp)
+        trsm!(side, uplo, trans, diag, alpha, Float32.(A), B_temp)
         copy!(B, B_temp)
     else
-        _dispatch_trsm_kernel!(side, uplo, trans, diag, alpha, A, B)
+        trsm!(side, uplo, trans, diag, alpha, A, B)
     end
 end
 
-_dispatch_trsm_kernel!(side, uplo, trans, diag, alpha, A::CUDA.StridedCuArray, B::CUDA.StridedCuArray) = CUBLAS.trsm!(side, uplo, trans, diag, alpha, A, B)
-_dispatch_trsm_kernel!(side, uplo, trans, diag, alpha, A::AMDGPU.StridedROCArray, B::AMDGPU.StridedROCArray) = AMDGPU.rocBLAS.trsm!(side, uplo, trans, diag, alpha, A, B)
-_dispatch_trsm_kernel!(side, uplo, trans, diag, alpha, A::oneAPI.oneDeviceArray, B::oneAPI.oneDeviceArray) = oneMKL.trsm!(side, uplo, trans, diag, alpha, A, B)
+#_dispatch_trsm_kernel!(side, uplo, trans, diag, alpha, A::CUDA.StridedCuArray, B::CUDA.StridedCuArray) = CUBLAS.trsm!(side, uplo, trans, diag, alpha, A, B)
+#_dispatch_trsm_kernel!(side, uplo, trans, diag, alpha, A::AMDGPU.StridedROCArray, B::AMDGPU.StridedROCArray) = AMDGPU.rocBLAS.trsm!(side, uplo, trans, diag, alpha, A, B)
+#_dispatch_trsm_kernel!(side, uplo, trans, diag, alpha, A::oneAPI.oneDeviceArray, B::oneAPI.oneDeviceArray) = oneMKL.trsm!(side, uplo, trans, diag, alpha, A, B)
 
 
 function dispatch_trmm!(side, uplo, trans, diag, alpha, A, B)
     if eltype(A) == Float16
         B_temp = Float32.(B)
-        _dispatch_trmm_kernel!(side, uplo, trans, diag, alpha, Float32.(A), B_temp, B_temp)
+        trmm!(side, uplo, trans, diag, alpha, Float32.(A), B_temp, B_temp)
         copy!(B, B_temp)
     else
-        _dispatch_trmm_kernel!(side, uplo, trans, diag, alpha, A, B, B)
+        trmm!(side, uplo, trans, diag, alpha, A, B, B)
     end
 end
 
-_dispatch_trmm_kernel!(side, uplo, trans, diag, alpha, A::CUDA.StridedCuArray, B::CUDA.StridedCuArray, C::CUDA.StridedCuArray) = CUBLAS.trmm!(side, uplo, trans, diag, alpha, A, B, C)
-_dispatch_trmm_kernel!(side, uplo, trans, diag, alpha, A::AMDGPU.StridedROCArray, B::AMDGPU.StridedROCArray, C::AMDGPU.StridedROCArray) = AMDGPU.rocBLAS.trmm!(side, uplo, trans, diag, alpha, A, B, C)
-_dispatch_trmm_kernel!(side, uplo, trans, diag, alpha, A::oneAPI.oneDeviceArray, B::oneAPI.oneDeviceArray, C::oneAPI.oneDeviceArray) = oneMKL.trmm!(side, uplo, trans, diag, alpha, A, B, C)
+#_dispatch_trmm_kernel!(side, uplo, trans, diag, alpha, A::CUDA.StridedCuArray, B::CUDA.StridedCuArray, C::CUDA.StridedCuArray) = CUBLAS.trmm!(side, uplo, trans, diag, alpha, A, B, C)
+#_dispatch_trmm_kernel!(side, uplo, trans, diag, alpha, A::AMDGPU.StridedROCArray, B::AMDGPU.StridedROCArray, C::AMDGPU.StridedROCArray) = AMDGPU.rocBLAS.trmm!(side, uplo, trans, diag, alpha, A, B, C)
+#_dispatch_trmm_kernel!(side, uplo, trans, diag, alpha, A::oneAPI.oneDeviceArray, B::oneAPI.oneDeviceArray, C::oneAPI.oneDeviceArray) = oneMKL.trmm!(side, uplo, trans, diag, alpha, A, B, C)
 
 
 """
@@ -570,7 +529,7 @@ function unified_rec_mixed(
                 B ./= A_scale
             else
                 temp_B_f32 = Float32.(B) .* A_scale
-                # print("CLAMPING8")
+                print("CLAMPING8")
                 clamp!(temp_B_f32, floatmin(eltype(B)), floatmax(eltype(B)))
                 copy!(B, temp_B_f32)
             end
