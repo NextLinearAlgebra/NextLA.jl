@@ -55,6 +55,36 @@ function _syrk_dispatch!(
     end
 end
 
+# function _syrk_dispatch!(
+#     op::Symbol,
+#     alpha::Number, A::AMDGPU.StridedROCArray, B::AMDGPU.StridedROCArray, beta::Number, C::AMDGPU.StridedROCArray
+# )
+#     TC = eltype(C)
+#     TA = eltype(A)
+
+#     if op === :SYRK
+#         if TA == TC && TC in (Float32, Float64)
+#             ROCBLAS.syrk!('L', 'N', TC(alpha), A, TC(beta), C)
+#         elseif TA == Float16 && TC in (Float16, Float32)
+#             ROCBLAS.gemm_ex!('N', 'T', alpha, A, A, beta, C)
+#         else
+#             A_converted = TC.(A)
+#             ROCBLAS.syrk!('L', 'N', TC(alpha), A_converted, TC(beta), C)
+#         end
+#     elseif op === :GEMM
+#         TB = eltype(B)
+#         if TA == TB == TC && TC in (Float32, Float64)
+#             ROCBLAS.gemm!('N', 'T', TC(alpha), A, B, TC(beta), C)
+#         elseif TA == Float16 && TB == Float16 && TC in (Float16, Float32)
+#             ROCBLAS.gemm_ex!('N', 'T', alpha, A, B, beta, C)
+#         else
+#             A_final = (TA == TC) ? A : TC.(A)
+#             B_final = (TB == TC) ? B : TC.(B)
+#             ROCBLAS.gemm!('N', 'T', TC(alpha), A_final, B_final, TC(beta), C)
+#         end
+#     end
+# end
+
 function _syrk_dispatch!(
     op::Symbol,
     alpha::Number, A::AMDGPU.StridedROCArray, B::AMDGPU.StridedROCArray, beta::Number, C::AMDGPU.StridedROCArray
@@ -64,23 +94,23 @@ function _syrk_dispatch!(
 
     if op === :SYRK
         if TA == TC && TC in (Float32, Float64)
-            ROCBLAS.syrk!('L', 'N', TC(alpha), A, TC(beta), C)
+            syrk!('L', 'N', TC(alpha), A, TC(beta), C)
         elseif TA == Float16 && TC in (Float16, Float32)
-            ROCBLAS.gemm_ex!('N', 'T', alpha, A, A, beta, C)
+            gemmEx!('N', 'T', alpha, A, A, beta, C)
         else
             A_converted = TC.(A)
-            ROCBLAS.syrk!('L', 'N', TC(alpha), A_converted, TC(beta), C)
+            syrk!('L', 'N', TC(alpha), A_converted, TC(beta), C)
         end
     elseif op === :GEMM
         TB = eltype(B)
         if TA == TB == TC && TC in (Float32, Float64)
-            ROCBLAS.gemm!('N', 'T', TC(alpha), A, B, TC(beta), C)
+            gemm!('N', 'T', TC(alpha), A, B, TC(beta), C)
         elseif TA == Float16 && TB == Float16 && TC in (Float16, Float32)
-            ROCBLAS.gemm_ex!('N', 'T', alpha, A, B, beta, C)
+            gemmEx!('N', 'T', alpha, A, B, beta, C)
         else
             A_final = (TA == TC) ? A : TC.(A)
             B_final = (TB == TC) ? B : TC.(B)
-            ROCBLAS.gemm!('N', 'T', TC(alpha), A_final, B_final, TC(beta), C)
+            gemm!('N', 'T', TC(alpha), A_final, B_final, TC(beta), C)
         end
     end
 end
