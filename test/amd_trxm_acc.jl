@@ -25,7 +25,7 @@ function check_accuracy()
         "TriMixed: [F32, F32, F32, F32, F64]" => [Float32, Float32, Float32, Float32, Float64],
     )
 
-    for func in ['M']
+    for func in ['S']
         op_name = func == 'S' ? "TRSM" : "TRMM"
         println("\n" * "="^70)
         println("🔬 Starting Accuracy Check for $op_name (uplo='$uplo')...")

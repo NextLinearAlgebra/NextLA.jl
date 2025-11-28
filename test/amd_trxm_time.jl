@@ -115,7 +115,7 @@ function run_tr_benchmarks()
         "TriMixed: [F32, F32, F32, F32, F64]" => [Float32, Float32, Float32, Float32, Float64],
     )
 
-    for op_char in ['S', 'M']
+    for op_char in ['S']
         op_name = op_char == 'S' ? "TRSM" : "TRMM"
         println("\n" * "="^80)
         println("🚀 Starting Benchmark for $op_name (side='$side', uplo='$uplo')...")

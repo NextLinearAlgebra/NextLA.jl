@@ -1,4 +1,4 @@
-using Test, CUDA, LinearAlgebra, Printf, KernelAbstractions
+using Test, AMDGPU, LinearAlgebra, Printf, KernelAbstractions
 
 include("benchmark.jl") 
 include("flops.jl")
@@ -65,12 +65,15 @@ function get_runtime_mixed(A_spd_fp64, n::Int, precisions::Vector)
     return runtime_ms, gflops
 end
 
-function get_runtime_cusolver(A_spd_fp64, n::Int, T_prec::DataType)
+# CHANGE: Renamed to generic vendor function (uses rocSOLVER)
+function get_runtime_vendor(A_spd_fp64, n::Int, T_prec::DataType)
     A_clean = (T_prec == Float64) ? A_spd_fp64 : T_prec.(A_spd_fp64)
     A_perf = copy(A_clean)
     backend = KernelAbstractions.get_backend(A_perf)
 
-    op = () -> CUSOLVER.potrf!('L', A_perf)
+    # CHANGE: CUSOLVER.potrf! -> LinearAlgebra.cholesky!
+    # On AMDGPU arrays, this dispatches to rocSOLVER
+    op = () -> LinearAlgebra.cholesky!(Hermitian(A_perf, :L))
     reset_op = () -> copyto!(A_perf, A_clean)
     
     min_time_ns = benchmark_op(op, reset_op, backend)
@@ -127,7 +130,9 @@ function run_cholesky_benchmarks()
     for n in n_values
         A_cpu_rand = randn(Float64, n, n) * .01
         A_cpu_rand = A_cpu_rand * A_cpu_rand' + (n * 10) * I
-        A_gpu = CuArray(A_cpu_rand)
+        
+        # CHANGE: CuArray -> ROCArray
+        A_gpu = ROCArray(A_cpu_rand)
         A_cpu_rand = nothing 
         A_spd_fp64 = A_gpu
         A_gpu = nothing
@@ -147,9 +152,10 @@ function run_cholesky_benchmarks()
             @printf("    %-25s | Runtime: %8.3f ms | GFLOPS: %8.2f\n", name, runtime_ms, gflops)
         end
         
-        println("\n--- Standard CUSOLVER.potrf! ---")
-        for (name, T_prec) in Dict("CUSOLVER F32" => Float32, "CUSOLVER F64" => Float64)
-            runtime_ms, gflops = get_runtime_cusolver(A_spd_fp64, n, T_prec)
+        # CHANGE: CUSOLVER -> ROCSOLVER label
+        println("\n--- Standard ROCSOLVER.potrf! ---")
+        for (name, T_prec) in Dict("ROCSOLVER F32" => Float32, "ROCSOLVER F64" => Float64)
+            runtime_ms, gflops = get_runtime_vendor(A_spd_fp64, n, T_prec)
             @printf("    %-25s | Runtime: %8.3f ms | GFLOPS: %8.2f\n", name, runtime_ms, gflops)
         end
     end
