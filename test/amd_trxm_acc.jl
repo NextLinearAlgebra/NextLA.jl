@@ -6,7 +6,7 @@ function check_accuracy()
     side = 'L'
     alpha = 1.0f0
     trans = 'N'
-    backend = AMDGPU.rocbackend()
+    backend = AMDGPU.ROCBackend()
 
     test_scenarios = Dict(
         "Recursive Float64" => [Float64],

@@ -54,7 +54,7 @@ function get_syrk_runtime_mixed(d_A, d_C_orig, n::Int, T_out, precisions, alpha,
 end
 
 function get_syrk_runtime_blas(n::Int, T_prec, alpha, beta)
-    backend = AMDGPU.rocbackend()
+    backend = AMDGPU.ROCBackend()
     A_cpu = randn(T_prec, n, n)
     C_cpu = zeros(T_prec, n, n)
 
@@ -79,7 +79,7 @@ end
 
 function run_recsyrk_performance_benchmark()
     n_values = [4096, 8192, 16384, 32768, 65536]
-    backend = AMDGPU.rocbackend()
+    backend = AMDGPU.ROCBackend()
     
     pure_scenarios = Dict(
         "Pure F16" => [Float16, Float16, Float16],

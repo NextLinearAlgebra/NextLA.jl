@@ -19,7 +19,7 @@ function benchmark_op(op, reset_op, backend)
 end
 
 function get_runtime_recursive(A_cpu, B_cpu, n::Int, T_prec, op_char, side, uplo, trans, alpha)
-    backend = AMDGPU.rocbackend()
+    backend = AMDGPU.ROCBackend()
     A_perf = KernelAbstractions.allocate(backend, T_prec, size(A_cpu)...)
     copyto!(A_perf, A_cpu)
     B_clean = KernelAbstractions.allocate(backend, T_prec, size(B_cpu)...)
@@ -40,7 +40,7 @@ end
 
 function get_runtime_mixed(A_cpu, B_cpu, n::Int, precisions, op_char, side, uplo, trans, alpha)
     T_base = precisions[1]
-    backend = AMDGPU.rocbackend()
+    backend = AMDGPU.ROCBackend()
     A_gpu = KernelAbstractions.allocate(backend, eltype(A_cpu), size(A_cpu)...)
     copyto!(A_gpu, A_cpu)
     B_clean = KernelAbstractions.allocate(backend, T_base, size(B_cpu)...)
@@ -64,7 +64,7 @@ function get_runtime_mixed(A_cpu, B_cpu, n::Int, precisions, op_char, side, uplo
 end
 
 function get_runtime_blas(A_cpu, B_cpu, n::Int, T_prec, op_char, side, uplo, trans, alpha)
-    backend = AMDGPU.rocbackend()
+    backend = AMDGPU.ROCBackend()
     A_blas = KernelAbstractions.allocate(backend, T_prec, size(A_cpu)...)
     copyto!(A_blas, A_cpu)
     B_blas_clean = KernelAbstractions.allocate(backend, T_prec, size(B_cpu)...)
