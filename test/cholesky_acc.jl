@@ -2,37 +2,30 @@ using Test, CUDA, LinearAlgebra, Printf, KernelAbstractions, GPUArrays
 
 
 
-function reconstruct_matrix(A::SymmMixedPrec{T_Base}) where {T_Base}
+function reconstruct_matrix!(A::SymmMixedPrec{T_Base},A_orig::AbstractGPUMatrix )where {T_Base}
     if A.BaseCase !== nothing
+	view(A_orig,A.loc+1:size(A.BaseCase,1),A.loc+1:size(A.BaseCase,2)).=A.BaseCase
         if A.base_scale !== nothing
-            print("this is the base scale:", A.base_scale)
-            return copy(A.BaseCase) .* A.base_scale
-        else
-            return copy(A.BaseCase)
+            #print("this is the base scale:", A.base_scale)
+            A.BaseCase.*=A.base_scale
         end
     end
     
-    C11 = reconstruct_matrix(A.A11)
-    C22 = reconstruct_matrix(A.A22)
+    reconstruct_matrix!(A.A11,A_orig)
+    reconstruct_matrix!(A.A22,A_orig)
     
-    local C21
+    C21=A.OffDiag
     if A.offDiag_scale !== nothing
-        print("this is the off diag scale:", A.offDiag_scale)
-        C21 = A.OffDiag .* A.offDiag_scale
-    else
-        C21 = A.OffDiag
+        #print("this is the off diag scale:", A.offDiag_scale)
+        C21 .*= A.offDiag_scale
     end
 
     n1, m1 = size(C11)
     n2, m2 = size(C22)
     n = n1 + n2
-
-    T_Recon = promote_type(eltype(C11), eltype(C22), eltype(C21))
-    C_full = KernelAbstractions.allocate(backend,T_Recon,n,n) 
     
-    C_full[1:n1, 1:m1] .= C11
-    C_full[n1+1:n, 1:m1] .= C21
-    C_full[n1+1:n, m1+1:n] .= C22
+
+    view(A_orig,n1+1:n, 1:m1] .= C21
     C_full[1:n1, m1+1:n] .= transpose(C21)
 
     return C_full
@@ -71,12 +64,13 @@ end
 
 
 function get_accuracy_mixed(A_spd_fp64::AbstractGPUMatrix, precisions::Vector)
-    A_mixed_input = SymmMixedPrec(copy(A_spd_fp64), 'L'; precisions=precisions)
+    A_mixed_input = SymmMixedPrec(A_spd_fp64), 'L'; precisions=precisions)
 
     potrf_recursive!(A_mixed_input)
 
     # L_result = tril(reconstruct_matrix(A_mixed_input))
-    
+    L_reconstructed=()
+
     A_reconstructed = Float64.(tril(reconstruct_matrix(A_mixed_input)) * tril(reconstruct_matrix(A_mixed_input))')
     
     error_norm = norm(A_reconstructed - A_spd_fp64)
