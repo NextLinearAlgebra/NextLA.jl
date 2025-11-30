@@ -83,7 +83,7 @@ function get_runtime_cusolver(A_spd_fp64, n::Int, T_prec::DataType)
 end
 
 function run_cholesky_benchmarks()
-    n_values = [4096, 8192, 16384, 32768, 65536] #256, 512, 1024, 2048, 
+	n_values = [4096, 8192, 16384, 32768, 65536] #256, 512, 1024, 2048, 
 
     pure_scenarios = Dict(
         "Pure F32" => [Float32],
@@ -113,32 +113,28 @@ function run_cholesky_benchmarks()
     println("🚀 Starting Cholesky Benchmark...")
 
     for n in n_values
-        A_cpu_rand = randn(Float64, n, n) * .01
-        A_cpu_rand = A_cpu_rand * A_cpu_rand' + (n * 10) * I
          A_gpu =  KernelAbstractions.allocate(backend,Float64,n,n)
-        copyto!(A_gpu,A_cpu_rand)
-        A_cpu_rand = nothing 
-        A_spd_fp64 = A_gpu
-        A_gpu = nothing
+	 randn!(A_gpu)
+	 A_gpu=A_gpu*A_gpu'+(n*10)*I
 
         println("\n" * "="^80)
         println("Benchmarking Matrix Size (n x n) = $n x $n")
         
         println("\n--- Pure Precision Scenarios ---")
         for (name, precisions) in pure_scenarios
-            runtime_ms, gflops = get_runtime_pure(A_spd_fp64, n, precisions[1])
+            runtime_ms, gflops = get_runtime_pure(A_gpu, n, precisions[1])
             @printf("    %-25s | Runtime: %8.3f ms | GFLOPS: %8.2f\n", name, runtime_ms, gflops)
         end
 
         println("\n--- Mixed Precision Scenarios ---")
         for (name, precisions) in mixed_scenarios
-            runtime_ms, gflops = get_runtime_mixed(A_spd_fp64, n, precisions)
+            runtime_ms, gflops = get_runtime_mixed(A_gpu, n, precisions)
             @printf("    %-25s | Runtime: %8.3f ms | GFLOPS: %8.2f\n", name, runtime_ms, gflops)
         end
         
         println("\n--- Standard CUSOLVER.potrf! ---")
         for (name, T_prec) in Dict("CUSOLVER F32" => Float32, "CUSOLVER F64" => Float64)
-            runtime_ms, gflops = get_runtime_cusolver(A_spd_fp64, n, T_prec)
+            runtime_ms, gflops = get_runtime_cusolver(A_gpu, n, T_prec)
             @printf("    %-25s | Runtime: %8.3f ms | GFLOPS: %8.2f\n", name, runtime_ms, gflops)
         end
     end
