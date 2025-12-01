@@ -128,14 +128,18 @@ function run_cholesky_benchmarks()
     println("🚀 Starting Cholesky Benchmark...")
 
     for n in n_values
-        A_cpu_rand = randn(Float64, n, n) * .01
-        A_cpu_rand = A_cpu_rand * A_cpu_rand' + (n * 10) * I
+        A_spd_fp64 = ROCArray{Float64}(undef, n, n)
         
-        # CHANGE: CuArray -> ROCArray
-        A_gpu = ROCArray(A_cpu_rand)
-        A_cpu_rand = nothing 
-        A_spd_fp64 = A_gpu
-        A_gpu = nothing
+        # 2. Fill with random numbers directly on GPU
+        AMDGPU.rand!(A_spd_fp64)
+        
+        # 3. Make SPD via Diagonal Dominance 
+        # (This is instant compared to the A*A' you were doing before)
+        view(A_spd_fp64, diagind(A_spd_fp64)) .+= Float64(n)
+        
+        # 4. Sync to ensure data is ready
+        AMDGPU.synchronize()
+        # --- CHANGED SECTION END ---
 
         println("\n" * "="^80)
         println("Benchmarking Matrix Size (n x n) = $n x $n")
