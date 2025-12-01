@@ -86,7 +86,7 @@ function get_runtime_vendor(A_spd_fp64, n::Int, T_prec::DataType)
 end
 
 function run_cholesky_benchmarks()
-    n_values = [20480, 24576, 28672, 32768, 65536] #256, 512, 1024, 2048, 20480, 24576, 28672, 4096, 8192, 16384, 
+    n_values = [32768, 65536] #256, 512, 1024, 2048, 20480, 24576, 28672, 4096, 8192, 16384, 20480, 24576, 28672, 
 
     pure_scenarios = Dict(
         "Pure F32" => [Float32],
