@@ -25,8 +25,8 @@ end
 
 
 function run_recsyrk_accuracy_benchmark()
-    n_values = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768]
-    backend = AMDGPU.rocbackend()
+    n_values = [256, 512, 1024, 2048, 4096, 8192, 16384, 20480, 24576, 28672, 32768]
+    backend = AMDGPU.ROCBackend()
 
     test_scenarios = Dict(
         "Pure F16"                  => [Float16, Float16, Float16],

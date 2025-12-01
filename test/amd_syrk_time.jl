@@ -78,7 +78,7 @@ end
 
 
 function run_recsyrk_performance_benchmark()
-    n_values = [4096, 8192, 16384, 32768, 65536]
+    n_values = [4096, 8192, 16384, 20480, 24576, 28672, 32768, 65536]
     backend = AMDGPU.ROCBackend()
     
     pure_scenarios = Dict(

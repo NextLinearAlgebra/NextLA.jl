@@ -1,7 +1,7 @@
 using Test, AMDGPU, LinearAlgebra, Printf, KernelAbstractions
 
 function check_accuracy()
-    sizes = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
+    sizes = [256, 512, 1024, 2048, 4096, 8192, 16384, 20480, 24576, 28672, 32768, 65536]
     uplo = 'U'
     side = 'L'
     alpha = 1.0f0
