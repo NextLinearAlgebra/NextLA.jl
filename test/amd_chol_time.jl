@@ -139,7 +139,6 @@ function run_cholesky_benchmarks()
         
         # 4. Sync to ensure data is ready
         AMDGPU.synchronize()
-        # --- CHANGED SECTION END ---
 
         println("\n" * "="^80)
         println("Benchmarking Matrix Size (n x n) = $n x $n")

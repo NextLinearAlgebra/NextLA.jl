@@ -3,7 +3,9 @@ using Test, AMDGPU, LinearAlgebra, Printf, KernelAbstractions
 include("benchmark.jl")
 include("flops.jl")
 
+# 1. UPDATED: Consistent, clean benchmark harness
 function benchmark_op(op, reset_op, backend)
+    # Warm-up
     reset_op()
     op()
     KernelAbstractions.synchronize(backend)
@@ -18,13 +20,14 @@ function benchmark_op(op, reset_op, backend)
     return min_time_ns
 end
 
-function get_runtime_recursive(A_cpu, B_cpu, n::Int, T_prec, op_char, side, uplo, trans, alpha)
-    backend = AMDGPU.ROCBackend()
-    A_perf = KernelAbstractions.allocate(backend, T_prec, size(A_cpu)...)
-    copyto!(A_perf, A_cpu)
-    B_clean = KernelAbstractions.allocate(backend, T_prec, size(B_cpu)...)
-    copyto!(B_clean, B_cpu)
+# 2. UPDATED: Takes Master GPU Arrays, casts/copies on device
+function get_runtime_recursive(d_A_master, d_B_master, n::Int, T_prec, op_char, side, uplo, trans, alpha)
+    # GPU-to-GPU cast
+    A_perf = T_prec.(d_A_master)
+    B_clean = T_prec.(d_B_master)
     B_perf = copy(B_clean)
+    
+    backend = KernelAbstractions.get_backend(A_perf)
     
     op = () -> unified_rectrxm!(side, uplo, trans, alpha, op_char, A_perf, B_perf)
     reset_op = () -> copyto!(B_perf, B_clean)
@@ -38,14 +41,19 @@ function get_runtime_recursive(A_cpu, B_cpu, n::Int, T_prec, op_char, side, uplo
     return runtime_ms, gflops
 end
 
-function get_runtime_mixed(A_cpu, B_cpu, n::Int, precisions, op_char, side, uplo, trans, alpha)
+# 3. UPDATED: Takes Master GPU Arrays
+function get_runtime_mixed(d_A_master, d_B_master, n::Int, precisions, op_char, side, uplo, trans, alpha)
     T_base = precisions[1]
-    backend = AMDGPU.ROCBackend()
-    A_gpu = KernelAbstractions.allocate(backend, eltype(A_cpu), size(A_cpu)...)
-    copyto!(A_gpu, A_cpu)
-    B_clean = KernelAbstractions.allocate(backend, T_base, size(B_cpu)...)
-    copyto!(B_clean, B_cpu)
+    
+    # We assume A starts as F64 (master) and TriMixedPrec handles the internal precision.
+    # We copy it to ensure we don't modify the master (though TRSM 'A' is usually read-only).
+    A_gpu = copy(d_A_master) 
+    
+    # B is the target, so we cast to the base precision
+    B_clean = T_base.(d_B_master)
     B_perf = copy(B_clean)
+
+    backend = KernelAbstractions.get_backend(A_gpu)
 
     op = () -> begin
         A_mixed_perf = TriMixedPrec(A_gpu, uplo; precisions=precisions)
@@ -63,13 +71,14 @@ function get_runtime_mixed(A_cpu, B_cpu, n::Int, precisions, op_char, side, uplo
     return runtime_ms, gflops
 end
 
-function get_runtime_blas(A_cpu, B_cpu, n::Int, T_prec, op_char, side, uplo, trans, alpha)
-    backend = AMDGPU.ROCBackend()
-    A_blas = KernelAbstractions.allocate(backend, T_prec, size(A_cpu)...)
-    copyto!(A_blas, A_cpu)
-    B_blas_clean = KernelAbstractions.allocate(backend, T_prec, size(B_cpu)...)
-    copyto!(B_blas_clean, B_cpu)
+# 4. UPDATED: Takes Master GPU Arrays
+function get_runtime_blas(d_A_master, d_B_master, n::Int, T_prec, op_char, side, uplo, trans, alpha)
+    # Fast GPU-to-GPU cast
+    A_blas = T_prec.(d_A_master)
+    B_blas_clean = T_prec.(d_B_master)
     B_blas = copy(B_blas_clean)
+
+    backend = AMDGPU.ROCBackend()
 
     op = () -> begin
         if op_char == 'S'
@@ -124,30 +133,39 @@ function run_tr_benchmarks()
             println("\n" * "="^80)
             println("Benchmarking Matrix Size (n x n) = $n x $n")
 
-            A_cpu = Matrix(UpperTriangular(rand(Float64, n, n)))
-            A_cpu .+= Diagonal(fill(Float64(n), n))
-            B_cpu = rand(Float64, n, n)
+            # 5. NEW: Direct GPU Generation
+            d_A_master = ROCArray{Float64}(undef, n, n)
+            d_B_master = ROCArray{Float64}(undef, n, n)
+            
+            AMDGPU.rand!(d_A_master)
+            AMDGPU.rand!(d_B_master)
+            
+            # Diagonal Dominance on GPU (mimics A_cpu .+= Diagonal(n))
+            # Note: We don't need to explicitly UpperTriangular() the data 
+            # because the BLAS/Recursive calls respect the 'uplo' flag.
+            view(d_A_master, diagind(d_A_master)) .+= Float64(n)
+            
+            AMDGPU.synchronize()
             
             println("\n--- Custom & Mixed Precision Scenarios ---")
             for (name, precisions) in test_scenarios
                 local runtime_ms, gflops
                 if startswith(name, "Recursive")
                     T_prec = precisions[1]
-                    runtime_ms, gflops = get_runtime_recursive(A_cpu, B_cpu, n, T_prec, op_char, side, uplo, trans, alpha)
+                    runtime_ms, gflops = get_runtime_recursive(d_A_master, d_B_master, n, T_prec, op_char, side, uplo, trans, alpha)
                 else 
-                    runtime_ms, gflops = get_runtime_mixed(A_cpu, B_cpu, n, precisions, op_char, side, uplo, trans, alpha)
+                    runtime_ms, gflops = get_runtime_mixed(d_A_master, d_B_master, n, precisions, op_char, side, uplo, trans, alpha)
                 end
                 @printf("        %-45s | Runtime: %8.3f ms | GFLOPS: %8.2f\n", name, runtime_ms, gflops)
             end
 
             println("\n--- Standard Vendor BLAS Baselines ---")
             for T_prec in [Float64, Float32]
-                runtime_ms, gflops = get_runtime_blas(A_cpu, B_cpu, n, T_prec, op_char, side, uplo, trans, alpha)
+                runtime_ms, gflops = get_runtime_blas(d_A_master, d_B_master, n, T_prec, op_char, side, uplo, trans, alpha)
                 blas_name = "Vendor BLAS F$(sizeof(T_prec)*8)"
                 @printf("        %-45s | Runtime: %8.3f ms | GFLOPS: %8.2f\n", blas_name, runtime_ms, gflops)
             end
             
-            A_cpu, B_cpu = (nothing, nothing)
             GC.gc(true)
         end
     end
