@@ -8,7 +8,7 @@ include("matmul.jl")
 include("rectrxm.jl")
 include("recsyrk.jl")
 include("cholesky.jl")
-
+include("ka_kernels.jl")
 
 
 function potrf!(A::AnyGPUArray{T}) where T
