@@ -11,7 +11,8 @@ function benchmark_op(op, reset_op, backend)
     KernelAbstractions.synchronize(backend)
 
     min_time_ns = Inf
-    for _ in 1:5
+    n_runs = (n_size >= 65536) ? 1 : (n_size > 16384 ? 2 : 5)
+    for _ in 1:n_runs
         reset_op()
         time = run_single_benchmark(op, backend)
         min_time_ns = min(min_time_ns, time)
@@ -134,7 +135,6 @@ function run_cholesky_benchmarks()
         println("\n" * "="^80)
         println("Benchmarking Matrix Size (n x n) = $n x $n")
         
-        # 2. Allocate
         try
             global A_spd_fp64 = ROCArray{Float64}(undef, n, n)
         catch e
@@ -142,8 +142,6 @@ function run_cholesky_benchmarks()
             continue
         end
         
-        # 3. Fill with random numbers (Chunked to avoid Int32 overflow)
-        # If N > 46340, N^2 > 2^31, which crashes standard AMDGPU.rand!
         if n > 46340
             print("   Generating large data in 4 chunks... ")
             chunk_width = n ÷ 4
