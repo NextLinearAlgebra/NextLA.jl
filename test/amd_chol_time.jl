@@ -128,16 +128,40 @@ function run_cholesky_benchmarks()
     println("🚀 Starting Cholesky Benchmark...")
 
     for n in n_values
-        A_spd_fp64 = ROCArray{Float64}(undef, n, n)
+        GC.gc(true)
+        AMDGPU.synchronize()
+
+        println("\n" * "="^80)
+        println("Benchmarking Matrix Size (n x n) = $n x $n")
         
-        # 2. Fill with random numbers directly on GPU
-        AMDGPU.rand!(A_spd_fp64)
+        # 2. Allocate
+        try
+            global A_spd_fp64 = ROCArray{Float64}(undef, n, n)
+        catch e
+            println("❌ Allocation failed (OOM?). Skipping n=$n")
+            continue
+        end
         
-        # 3. Make SPD via Diagonal Dominance 
-        # (This is instant compared to the A*A' you were doing before)
+        # 3. Fill with random numbers (Chunked to avoid Int32 overflow)
+        # If N > 46340, N^2 > 2^31, which crashes standard AMDGPU.rand!
+        if n > 46340
+            print("   Generating large data in 4 chunks... ")
+            chunk_width = n ÷ 4
+            for i in 1:4
+                # Calculate column range for this chunk
+                c_start = (i-1)*chunk_width + 1
+                c_end   = (i==4) ? n : i*chunk_width
+                
+                # Randomize this vertical strip only
+                AMDGPU.rand!(view(A_spd_fp64, :, c_start:c_end))
+            end
+            println("Done.")
+        else
+            AMDGPU.rand!(A_spd_fp64)
+        end
+        
+        # 4. Make SPD via Diagonal Dominance
         view(A_spd_fp64, diagind(A_spd_fp64)) .+= Float64(n)
-        
-        # 4. Sync to ensure data is ready
         AMDGPU.synchronize()
 
         println("\n" * "="^80)
