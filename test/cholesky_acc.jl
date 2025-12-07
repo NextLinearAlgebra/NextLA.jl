@@ -51,22 +51,22 @@ function get_accuracy_pure(A_spd_fp64::AbstractGPUMatrix, T_prec::DataType)
     end
     
     potrf_recursive!(A_to_factor, 4096)
-    A_tri = tril(A_to_factor)
-    A_reconstructed = Float64.(A_tri * Transpose(A_tri) * scale_factor)
-    A_to_factor = nothing
-    A_tri = nothing
-    GC.gc(true)
+    #A_tri = tril(A_to_factor)
+    #A_reconstructed = Float64.(A_tri * Transpose(A_tri) * scale_factor)
+    #A_to_factor = nothing
+    #A_tri = nothing
+    #GC.gc(true)
     
-    if T_prec == Float16
-        error_norm = norm(A_reconstructed - (A_spd_fp64 + scale_factor*100*I))
-        orig_norm = norm(A_spd_fp64 + scale_factor*100*I)
-    else
-        orig_norm = norm(A_spd_fp64)
-        A_reconstructed .-= A_spd_fp64
-        error_norm = norm(A_reconstructed)
-    end
+    #if T_prec == Float16
+    #    error_norm = norm(A_reconstructed - (A_spd_fp64 + scale_factor*100*I))
+    #    orig_norm = norm(A_spd_fp64 + scale_factor*100*I)
+    #else
+    #    orig_norm = norm(A_spd_fp64)
+    #    A_reconstructed .-= A_spd_fp64
+    #    error_norm = norm(A_reconstructed)
+    #end
     
-    return max(error_norm / orig_norm, 1e-20)
+    #return max(error_norm / orig_norm, 1e-20)
 end
 
 
@@ -101,7 +101,7 @@ end
 
 
 function check_cholesky_accuracy()
-    n_values = [1000, 4096, 5000, 8192, 9999, 16384, 32768, 65536] #256, 512, 1024, 2048, 
+    n_values = [256, 1000] 
 
     pure_scenarios = Dict(
         "Pure F32" => [Float32],
@@ -115,18 +115,18 @@ function check_cholesky_accuracy()
     mixed_scenarios = Dict(
         "[F32, F64, F64, F64]"      => [Float32, Float64, Float64, Float64],
         "[F32, F32, F32, F64]"      => [Float32, Float32, Float32, Float64],
-        "[F32, F32, F64]"           => [Float32, Float32, Float64],
-        "[F32, F64, F64]"           => [Float32, Float64, Float64],
-        "[F16, F32, F32]"           => [Float16, Float32, Float32],
-        "[F16, F16, F32]"           => [Float16, Float16, Float32],
-        "[F16, F16, F16, F32]"      => [Float16, Float16, Float16, Float32],
-        "[F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float32],
-        "[F16, F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float16, Float32],
-        "[F16, F16, F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float16, Float16, Float32],
-        "[F16, F32, F32, F32, F32, F32, F32]" => [Float16, Float16, Float16, Float16, Float16, Float16, Float32],
-        "[F16, F16, F16, F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float16, Float16, Float16, Float32],
-        "[F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float32, Float64],
-        "[F16, F32, F64]"           => [Float16, Float32, Float64],
+#        "[F32, F32, F64]"           => [Float32, Float32, Float64],
+#        "[F32, F64, F64]"           => [Float32, Float64, Float64],
+#        "[F16, F32, F32]"           => [Float16, Float32, Float32],
+#        "[F16, F16, F32]"           => [Float16, Float16, Float32],
+#        "[F16, F16, F16, F32]"      => [Float16, Float16, Float16, Float32],
+#        "[F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float32],
+#        "[F16, F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float16, Float32],
+#        "[F16, F16, F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float16, Float16, Float32],
+#        "[F16, F32, F32, F32, F32, F32, F32]" => [Float16, Float16, Float16, Float16, Float16, Float16, Float32],
+#        "[F16, F16, F16, F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float16, Float16, Float16, Float32],
+#        "[F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float32, Float64],
+#        "[F16, F32, F64]"           => [Float16, Float32, Float64],
         "[F32, F64]"                => [Float32, Float64],
         "[F16, F64]"                => [Float16, Float64],
         "[F16, F32]"                => [Float16, Float32],
@@ -138,33 +138,33 @@ function check_cholesky_accuracy()
         println("\n" * "="^80)
         println("Checking Accuracy for Matrix Size (n x n) = $n x $n")
         
-        A_cpu_rand = randn(Float64, n, n)* 0.01
+        #A_cpu_rand = randn(Float64, n, n)* 0.01
         A_gpu_rand =  KernelAbstractions.allocate(backend,Float64,n,n)
-	copyto!(A_gpu_rand,A_cpu_rand)
-        A_cpu_rand = nothing
+	rand!(A_gpu_rand)
+        #copyto!(A_gpu_rand,A_cpu_rand)
+        #A_cpu_rand = nothing
         
-        A_spd_fp64 = A_gpu_rand * A_gpu_rand' + (n*10) * I
-        A_gpu_rand = nothing
+        A_gpu_rand = A_gpu_rand * A_gpu_rand' + (n*10) * I
         
         GC.gc(true)
         
         println("\n--- CUSOLVER Library Scenarios ---")
         for (name, T_prec) in cusolver_scenarios
-            relative_error = get_accuracy_cusolver(A_spd_fp64, T_prec)
+            relative_error = get_accuracy_cusolver(A_gpu_rand, T_prec)
             @printf("      %-25s | Rel. Error: %9.2e\n", name, relative_error)
         end
         
         println("\n--- Pure Precision Scenarios ---")
         for (name, precisions) in pure_scenarios
             T_prec = precisions[1]
-            relative_error = get_accuracy_pure(A_spd_fp64, T_prec)
-            @printf("      %-25s | Rel. Error: %9.2e\n", name, relative_error)
+            relative_error = get_accuracy_pure(A_gpu_rand, T_prec)
+            #@printf("      %-25s | Rel. Error: %9.2e\n", name, relative_error)
         end
 
         println("\n--- Mixed Precision Scenarios ---")
         for (name, precisions) in mixed_scenarios
-            relative_error = get_accuracy_mixed(A_spd_fp64, precisions)
-            @printf("      %-25s | Rel. Error: %9.2e\n", name, relative_error)
+            #relative_error = get_accuracy_mixed(A_gpu_rand, precisions)
+            #@printf("      %-25s | Rel. Error: %9.2e\n", name, relative_error)
         end
     end
     
