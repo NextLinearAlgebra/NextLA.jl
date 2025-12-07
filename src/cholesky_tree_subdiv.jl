@@ -9,7 +9,14 @@ include("rectrxm.jl")
 include("recsyrk.jl")
 include("cholesky.jl")
 
-
+import AMDGPU.StridedROCVecOrMat
+import CUDA.StridedCuVecOrMat
+import oneAPI.oneStridedVecOrMat
+#import AMDGPU.rocBLAS: trsm!, syrk!, gemm!, trmm!
+#import CUDA.CUBLAS: trsm!, syrk!, gemm!, trmm!
+import oneAPI.oneMKL: trsm!, syrk!, gemm!, potrf!, trmm!
+#import CUDA.CUSOLVER: potrf!
+#import AMDGPU.rocSOLVER: potrf!
 
 function potrf!(A::AnyGPUArray{T}) where T
     if eltype(A) == Float16
@@ -21,29 +28,30 @@ function potrf!(A::AnyGPUArray{T}) where T
     end
 end
 
-trsm!(side::Char, uplo::Char, transa::Char, diag::Char, alpha,
-            A::StridedROCMatrix{T}, B::StridedROCMatrix{T}) where T =AMDGPU.rocBLAS.trsm!(side,uplo,transa,diag,T.(alpha),A,B)
-trsm!(side::Char, uplo::Char, transa::Char, diag::Char, alpha,
-                       A::StridedCuMatrix{T},B::StridedCuMatrix{T}) where T =CUBLAS.trsm!(side,uplo,transa,diag,alpha,A,B)
- syrk!(uplo::Char, trans::Char, alpha, A::StridedCuVecOrMat{T},
-                       beta,  C::StridedCuMatrix{T}) where T =CUBLAS.syrk!(uplo,trans,alpha,A,beta,C)
-syrk!(uplo::Char, trans::Char, alpha,
-            A::StridedROCVecOrMat{T}, beta, C::StridedROCMatrix{T}) where T =AMDGPU.rocBLAS.syrk!(uplo,trans,T.(alpha),A,T.(beta),C)
+#trsm!(side::Char, uplo::Char, transa::Char, diag::Char, alpha,
+#            A::StridedROCMatrix{T}, B::StridedROCMatrix{T}) where T =AMDGPU.rocBLAS.trsm!(side,uplo,transa,diag,T.(alpha),A,B)
+#trsm!(side::Char, uplo::Char, transa::Char, diag::Char, alpha,
+#                       A::StridedCuMatrix{T},B::StridedCuMatrix{T}) where T =CUBLAS.trsm!(side,uplo,transa,diag,alpha,A,B)
+#syrk!(uplo::Char, trans::Char, alpha, A::StridedCuVecOrMat{T},
+#                       beta,  C::StridedCuMatrix{T}) where T =CUBLAS.syrk!(uplo,trans,alpha,A,beta,C)
+#syrk!(uplo::Char, trans::Char, alpha,
+#            A::StridedROCVecOrMat{T}, beta, C::StridedROCMatrix{T}) where T =AMDGPU.rocBLAS.syrk!(uplo,trans,T.(alpha),A,T.(beta),C)
 
-gemm!(transA::Char,
-                       transB::Char,
-                       alpha,
-                       A::StridedCuVecOrMat{T},
-                       B::StridedCuVecOrMat{T},
-                       beta,
-                       C::StridedCuVecOrMat{T}) where T = CUBLAS.gemm(transA,transB,alpha,A,B,beta,C)
+#gemm!(transA::Char,
+#                       transB::Char,
+#                       alpha,
+#                       A::StridedCuVecOrMat{T},
+#                       B::StridedCuVecOrMat{T},
+#                       beta,
+#                       C::StridedCuVecOrMat{T}) where T = CUBLAS.gemm(transA,transB,alpha,A,B,beta,C)
 
-gemmEx!(transA::Char, transB::Char,alpha,A::StridedCuVecOrMat,B::StridedCuVecOrMat,beta,C::StridedCuVecOrMat) = CUBLAS.gemmEx!(transA,transB, alpha, A, B, beta, C)
-gemmEx!(transA::Char, transB::Char,alpha,A::StridedROCVecOrMat,B::StridedROCVecOrMat,beta,C::StridedROCVecOrMat{T}) where T = AMDGPU.rocBLAS.gemm!(transA,transB, T.(alpha), T.(A), T.(B), T.(beta), C)
+#gemmEx!(transA::Char, transB::Char,alpha,A::StridedCuVecOrMat,B::StridedCuVecOrMat,beta,C::StridedCuVecOrMat) = CUBLAS.gemmEx!(transA,transB, alpha, A, B, beta, C)
+gemmEx!(transA::Char, transB::Char,alpha,A::StridedROCVecOrMat,B::StridedROCVecOrMat,beta,C::StridedROCVecOrMat{T}) where T = gemm!(transA,transB, T.(alpha), T.(A), T.(B), T.(beta), C)
+gemmEx!(transA::Char, transB::Char,alpha,A::oneStridedVecOrMat,B::oneStridedVecOrMat,beta,C::oneStridedVecOrMat{T}) where T = gemm!(transA,transB, T.(alpha), T.(A), T.(B), T.(beta), C)
 
-gemm!(transA::Char,transB::Char,alpha::(T),A::StridedROCVecOrMat{T},B::StridedROCVecOrMat{T}, beta::(T), C::StridedROCVecOrMat{T} ) where T =AMDGPU.rocBLAS.gemm!(transA,transB,alpha,A,B,beta,C)
-potrf!(uplo::Char,  A::StridedCuMatrix) = CUSOLVER.potrf!(uplo,A)
-potrf!(uplo::Char, A::StridedROCMatrix) = AMDGPU.rocSOLVER.potrf!(uplo,A)
+#gemm!(transA::Char,transB::Char,alpha::(T),A::StridedROCVecOrMat{T},B::StridedROCVecOrMat{T}, beta::(T), C::StridedROCVecOrMat{T} ) where T =AMDGPU.rocBLAS.gemm!(transA,transB,alpha,A,B,beta,C)
+#potrf!(uplo::Char,  A::StridedCuMatrix) = CUSOLVER.potrf!(uplo,A)
+#potrf!(uplo::Char, A::StridedROCMatrix) = AMDGPU.rocSOLVER.potrf!(uplo,A)
 
 
 function potrf_recursive!(A, block_size)
