@@ -4,14 +4,15 @@ include("benchmark.jl")
 include("flops.jl")
 
 
-function benchmark_op(op, reset_op, backend)
+function benchmark_op(op, reset_op, backend;N=1024)
     # 1. Warm-up
     reset_op()
     op()
     KernelAbstractions.synchronize(backend)
 
+    numiter= N<=16*1024 ? 5 : 1
     min_time_ns = Inf
-    for _ in 1:5
+    for _ in 1:numiter
         reset_op()
         time = run_single_benchmark(op, backend)
         min_time_ns = min(min_time_ns, time)
@@ -36,7 +37,7 @@ function get_runtime_pure(A_spd_fp64, n::Int, T_prec::DataType)
     op = () -> potrf_recursive!(A_perf, 4096)
     reset_op = () -> copyto!(A_perf, A_clean)
 
-    min_time_ns = benchmark_op(op, reset_op, backend)
+    min_time_ns = benchmark_op(op, reset_op, backend;N=size(A_spd_fp64,1))
     runtime_ms = min_time_ns / 1_000_000
 
     flops = flops_potrf(T_prec, n)
@@ -47,15 +48,23 @@ end
 
 function get_runtime_mixed(A_spd_fp64, n::Int, precisions::Vector)
     backend = KernelAbstractions.get_backend(A_spd_fp64)
+    memspace = SymmMixedPrec_prealloc(A_spd_fp64,precisions)
 
     op = () -> begin
-        A_to_factor = SymmMixedPrec(A_spd_fp64, 'L'; precisions=precisions)
+        A_to_factor = SymmMixedPrec(A_spd_fp64, 'L',memspace; precisions=precisions)
         potrf_recursive!(A_to_factor)
     end
     
     reset_op = () -> () 
 
-    min_time_ns = benchmark_op(op, reset_op, backend)
+
+    min_time_ns = benchmark_op(op, reset_op, backend;N=size(A_spd_fp64,1))
+    KernelAbstractions.synchronize(get_backend(A_spd_fp64))
+    for i in 1:length(memspace)
+	 memspace[i]=nothing
+    end
+    GC.gc(true)
+
     runtime_ms = min_time_ns / 1_000_000
 
     T_flops = precisions[1]
@@ -73,7 +82,7 @@ function get_runtime_cusolver(A_spd_fp64, n::Int, T_prec::DataType)
     op = () -> potrf!('L', A_perf)
     reset_op = () -> copyto!(A_perf, A_clean)
     
-    min_time_ns = benchmark_op(op, reset_op, backend)
+    min_time_ns = benchmark_op(op, reset_op, backend;N=size(A_spd_fp64,1))
     runtime_ms = min_time_ns / 1_000_000
 
     flops = flops_potrf(T_prec, n)
@@ -83,7 +92,7 @@ function get_runtime_cusolver(A_spd_fp64, n::Int, T_prec::DataType)
 end
 
 function run_cholesky_benchmarks()
-    n_values = [4096, 8192, 16384, 32768, 65536] #256, 512, 1024, 2048, 
+	n_values = [4096, 8192, 16384, 32768, 65536] #256, 512, 1024, 2048, 
 
     pure_scenarios = Dict(
         "Pure F32" => [Float32],
@@ -97,8 +106,8 @@ function run_cholesky_benchmarks()
         "[F32, F64, F64]"           => [Float32, Float64, Float64],
         "[F16, F32, F32]"           => [Float16, Float32, Float32],
         "[F16, F16, F32]"           => [Float16, Float16, Float32],
-        "[F16, F16, F16, F32]"      => [Float16, Float16, Float16, Float32],
-        "[F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float32],
+       "[F16, F16, F16, F32]"      => [Float16, Float16, Float16, Float32],
+       "[F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float32],
         "[F16, F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float16, Float32],
         "[F16, F16, F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float16, Float16, Float32],
         "[F16, F32, F32, F32, F32, F32, F32]" => [Float16, Float16, Float16, Float16, Float16, Float16, Float32],
@@ -113,34 +122,39 @@ function run_cholesky_benchmarks()
     println("🚀 Starting Cholesky Benchmark...")
 
     for n in n_values
-        A_cpu_rand = randn(Float64, n, n) * .01
-        A_cpu_rand = A_cpu_rand * A_cpu_rand' + (n * 10) * I
-         A_gpu =  KernelAbstractions.allocate(backend,Float64,n,n)
+         #A_gpu =  KernelAbstractions.allocate(backend,Float64,n,n)
+	 #randn!(A_gpu)
+	 A_cpu_rand = randn(Float64, n, n)* 0.01
+        A_gpu =  KernelAbstractions.allocate(backend,Float64,n,n)
         copyto!(A_gpu,A_cpu_rand)
-        A_cpu_rand = nothing 
-        A_spd_fp64 = A_gpu
-        A_gpu = nothing
-
+        A_cpu_rand = nothing
+         
+	 A_gpu=A_gpu*A_gpu'+(n*10)*I
+	 GC.gc(true)
         println("\n" * "="^80)
         println("Benchmarking Matrix Size (n x n) = $n x $n")
         
-        println("\n--- Pure Precision Scenarios ---")
-        for (name, precisions) in pure_scenarios
-            runtime_ms, gflops = get_runtime_pure(A_spd_fp64, n, precisions[1])
-            @printf("    %-25s | Runtime: %8.3f ms | GFLOPS: %8.2f\n", name, runtime_ms, gflops)
-        end
+        if n<=32768
+		println("\n--- Pure Precision Scenarios ---")
+        	for (name, precisions) in pure_scenarios
+            		runtime_ms, gflops = get_runtime_pure(A_gpu, n, precisions[1])
+            		@printf("    %-25s | Runtime: %8.3f ms | GFLOPS: %8.2f\n", name, runtime_ms, gflops)
+        	end
+	end
 
         println("\n--- Mixed Precision Scenarios ---")
         for (name, precisions) in mixed_scenarios
-            runtime_ms, gflops = get_runtime_mixed(A_spd_fp64, n, precisions)
+            runtime_ms, gflops = get_runtime_mixed(A_gpu, n, precisions)
             @printf("    %-25s | Runtime: %8.3f ms | GFLOPS: %8.2f\n", name, runtime_ms, gflops)
         end
         
-        println("\n--- Standard CUSOLVER.potrf! ---")
-        for (name, T_prec) in Dict("CUSOLVER F32" => Float32, "CUSOLVER F64" => Float64)
-            runtime_ms, gflops = get_runtime_cusolver(A_spd_fp64, n, T_prec)
-            @printf("    %-25s | Runtime: %8.3f ms | GFLOPS: %8.2f\n", name, runtime_ms, gflops)
-        end
+	if n<=32768
+        	println("\n--- Standard CUSOLVER.potrf! ---")
+        	for (name, T_prec) in Dict("CUSOLVER F32" => Float32, "CUSOLVER F64" => Float64)
+            		runtime_ms, gflops = get_runtime_cusolver(A_gpu, n, T_prec)
+            		@printf("    %-25s | Runtime: %8.3f ms | GFLOPS: %8.2f\n", name, runtime_ms, gflops)
+        	end
+	end
     end
     
     println("\n" * "="^80)

@@ -27,13 +27,38 @@ struct SymmMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
 
     uplo::Char # 'U' or 'L' to know which triangle is stored
     sz::Tuple{Int, Int}
+    loc::Tuple{Int,Int} #for reconstructions, location start and midpoint
 end
 
+function SymmMixedPrec_prealloc(
+    A::AbstractMatrix,
+    precisions::Vector{DataType}
+		)
+	mem_alloc=[]
+	n=size(A,1)
+       @assert n == size(A, 2) "A must be square"
+       npow=nextpow(2,n)
+       mid=n
+       mid_n = isinteger(log2(n)) ? div(n, 2) : 2^floor(Int, log2(n))
+       for current_precision in precisions[1:end-1]
+	       mid = isinteger(log2(mid)) ? div(mid, 2) : 2^floor(Int, log2(mid))
+	       #println(current_precision, " ", mid_n,mid)
+	       pushfirst!(mem_alloc,similar(A,current_precision,npow,mid))
+	       #mem_alloc[1].=0
+       end
+       #mid = isinteger(log2(mid)) ? div(mid, 2) : 2^floor(Int, log2(mid))
+       #println(precisions[end], " ", mid_n,mid)
+       pushfirst!(mem_alloc,similar(A,precisions[end],npow,mid))
+       #mem_alloc[1].=0
+       return mem_alloc
+end
 
 function SymmMixedPrec(
     A::AbstractMatrix,
-    uplo::Char;
-    precisions::Vector{DataType}
+    uplo::Char,
+    memspace::Array;
+    precisions::Vector{DataType},
+    n_start::Int=0
 )
     FP16_MAX_VAL = 65504.0f0
     n = size(A, 1)
@@ -48,21 +73,23 @@ function SymmMixedPrec(
             alpha = maximum(abs, A)
             if alpha > FP16_MAX_VAL
                 base_scale = Float32(alpha / FP16_MAX_VAL)
-                base_matrix = similar(A, Float16, size(A))
-                print("CLAMPING9")
-                @. base_matrix = Float16(round(clamp(A / base_scale, -FP16_MAX_VAL, FP16_MAX_VAL)))
+		base_matrix = view(memspace[length(precisions)],(1:size(A,1)).+n_start,1:size(A,2))
+                #print("CLAMPING9")
+		A./=base_scale
+		clamp!(A,-FP16_MAX_VAL, FP16_MAX_VAL)
+		base_matrix.=A
             else
                 base_scale = nothing
-                base_matrix = similar(A, Float16, size(A))
+                base_matrix = view(memspace[length(precisions)],(1:size(A,1)).+n_start,1:size(A,2))
                 base_matrix .= A
             end
         else
-            base_matrix = similar(A, T_Base, size(A))
+            base_matrix = view(memspace[length(precisions)],(1:size(A,1)).+n_start,1:size(A,2))
             base_matrix .= A
             base_scale = nothing
         end
 
-        return SymmMixedPrec{T_Base}(nothing, nothing, nothing, nothing, base_scale, base_matrix, uplo, (n, n))
+	return SymmMixedPrec{T_Base}(nothing, nothing, nothing, nothing, base_scale, base_matrix, uplo, (n, n),(n_start,0))
     end
 
     mid = isinteger(log2(n)) ? div(n, 2) : 2^floor(Int, log2(n))
@@ -70,9 +97,9 @@ function SymmMixedPrec(
     T_OffDiag = precisions[1]
     remaining_precisions = precisions[2:end]
 
-    A11 = SymmMixedPrec(view(A, 1:mid, 1:mid), uplo; precisions=remaining_precisions)
-    A22 = SymmMixedPrec(view(A, mid+1:n, mid+1:n), uplo; precisions=remaining_precisions)
-
+    A11 = SymmMixedPrec(view(A, 1:mid, 1:mid), uplo,memspace; precisions=remaining_precisions,n_start=n_start)
+    A22 = SymmMixedPrec(view(A, mid+1:n, mid+1:n), uplo,memspace; precisions=remaining_precisions,n_start=n_start+mid)
+    
     local offDiag_matrix
     local offDiag_view
     local offDiag_scale = nothing
@@ -87,21 +114,22 @@ function SymmMixedPrec(
         if alpha_offDiag > FP16_MAX_VAL
             # print("this is alpha off diag:", alpha_offDiag)
             offDiag_scale = Float32(alpha_offDiag / FP16_MAX_VAL)
-            offDiag_matrix = similar(offDiag_view, Float16, size(offDiag_view))
-            print("CLAMPING10")
-            @. offDiag_matrix = Float16(round(clamp(offDiag_view / offDiag_scale, -FP16_MAX_VAL, FP16_MAX_VAL)))
-        else
-            offDiag_matrix = similar(offDiag_view, Float16, size(offDiag_view))
+            offDiag_matrix = view(memspace[length(precisions)],(1:size(offDiag_view,1)).+n_start,1:size(offDiag_view,2))
+	    offDiag_matrix ./= offDiag_scale
+	    clamp!(offDiag_matrix,-FP16_MAX_VAL, FP16_MAX_VAL)
+            offDiag_matrix .= offDiag_view        
+       else
+            offDiag_matrix = view(memspace[length(precisions)],(1:size(offDiag_view,1)).+n_start,1:size(offDiag_view,2))
             offDiag_matrix .= offDiag_view
         end
     else
-        offDiag_matrix = similar(A, T_OffDiag, size(offDiag_view))
+        offDiag_matrix = view(memspace[length(precisions)],(1:size(offDiag_view,1)).+n_start,1:size(offDiag_view,2))
         offDiag_matrix .= offDiag_view
         offDiag_scale = nothing
     end
 
     T_Final_Base = precisions[end]
-    return SymmMixedPrec{T_Final_Base}(A11, A22, offDiag_matrix, offDiag_scale, nothing, nothing, uplo, (n, n))
+    return SymmMixedPrec{T_Final_Base}(A11, A22, offDiag_matrix, offDiag_scale, nothing, nothing, uplo, (n, n),(n_start,mid))
 end
 
 

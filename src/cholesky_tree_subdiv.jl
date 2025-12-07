@@ -17,6 +17,8 @@ import oneAPI.oneStridedVecOrMat
 import oneAPI.oneMKL: trsm!, syrk!, gemm!, potrf!, trmm!
 #import CUDA.CUSOLVER: potrf!
 #import AMDGPU.rocSOLVER: potrf!
+include("ka_kernels.jl")
+
 
 function potrf!(A::AnyGPUArray{T}) where T
     if eltype(A) == Float16
