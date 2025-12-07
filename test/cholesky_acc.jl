@@ -67,19 +67,18 @@ end
 function get_accuracy_mixed(A_spd_fp64::AbstractGPUMatrix, precisions::Vector)
     memspace = SymmMixedPrec_prealloc(A_spd_fp64,precisions)
     A_mixed_input = SymmMixedPrec(A_spd_fp64, 'L',memspace; precisions=precisions)
-    CPU_A = Array(A_spd_fp64)
+    CPU_A = copy(A_spd_fp64)
     potrf_recursive!(A_mixed_input)
     # L_result = tril(reconstruct_matrix(A_mixed_input))
     L_reconstructed=reconstruct_matrix!(A_mixed_input,A_spd_fp64)
     for i in 1:length(memspace)
 	    memspace[i]=nothing
     end
-    #tril!(L_reconstructed)
     A_reconstructed = L_reconstructed * L_reconstructed'
     copyto!(A_spd_fp64, CPU_A)
     myAminB!(A_reconstructed,A_spd_fp64)
-    error_norm = norm(Array(A_reconstructed))
-    orig_norm = norm(Array(A_spd_fp64))
+    error_norm = norm((A_reconstructed))
+    orig_norm = norm((A_spd_fp64))
     
     return max(error_norm / orig_norm, 1e-20)
 end
@@ -100,7 +99,7 @@ end
 
 
 function check_cholesky_accuracy()
-	n_values = [1000, 4096, 5000, 8192, 9999, 16384, 32768, 65536] #256, 512, 1024, 2048, 
+	n_values =  [1000, 4096, 5000, 8192, 9999, 16384, 32768, 65536]
 
     pure_scenarios = Dict(
         "Pure F32" => [Float32],
@@ -138,27 +137,28 @@ function check_cholesky_accuracy()
         println("\n" * "="^80)
         println("Checking Accuracy for Matrix Size (n x n) = $n x $n")
         
-        A_cpu_rand = randn(Float64, n, n)* 0.01
         A_gpu_rand =  KernelAbstractions.allocate(backend,Float64,n,n)
-	copyto!(A_gpu_rand,A_cpu_rand)
-        A_cpu_rand = nothing
+	randn!(A_gpu_rand)
+	A_gpu_rand*=0.01
         
         A_spd_fp64 = A_gpu_rand * A_gpu_rand' + (n*10) * I
         A_gpu_rand = nothing
         
-        if n<32768
+        if n<32000
         	println("\n--- CUSOLVER Library Scenarios ---")
 		for (name, T_prec) in cusolver_scenarios
             		relative_error = get_accuracy_cusolver(A_spd_fp64, T_prec)
+			GC.gc()
             		@printf("      %-25s | Rel. Error: %9.2e\n", name, relative_error)
         	end
 	end
         
-        if n<65536
+        if n<32768
 		println("\n--- Pure Precision Scenarios ---")
         	for (name, precisions) in pure_scenarios
             		T_prec = precisions[1]
             		relative_error = get_accuracy_pure(A_spd_fp64, T_prec)
+			GC.gc()
             		@printf("      %-25s | Rel. Error: %9.2e\n", name, relative_error)
         	end
 	end
@@ -166,6 +166,7 @@ function check_cholesky_accuracy()
         println("\n--- Mixed Precision Scenarios ---")
         for (name, precisions) in mixed_scenarios
             relative_error = get_accuracy_mixed(A_spd_fp64, precisions)
+	    GC.gc()
             @printf("      %-25s | Rel. Error: %9.2e\n", name, relative_error)
         end
     end
