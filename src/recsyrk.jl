@@ -43,7 +43,6 @@ function _syrk_dispatch!(
         elseif TA == Float16 && TB == Float16 && TC in (Float16, Float32)
             CUBLAS.gemmEx!('N', 'T', alpha, A, B, beta, C)
         else
-            # print("type a:", eltype(A), "type b:", eltype(B), "type c:", eltype(C))
             A_final = (TA == TC) ? A : TC.(A)
             B_final = (TB == TC) ? B : TC.(B)
             if TC in (Float32, Float64)
@@ -57,7 +56,7 @@ end
 
 function _syrk_dispatch!(
     op::Symbol,
-    alpha::Number, A::AMDGPU.StridedROCArray, B::AMDGPU.StridedROCArray, beta::Number, C::AMDGPU.StridedROCArray
+    alpha::Number, A::AnyGPUArray, B::AnyGPUArray, beta::Number, C::AnyGPUArray
 )
     TC = eltype(C)
     TA = eltype(A)
@@ -81,36 +80,6 @@ function _syrk_dispatch!(
             A_final = (TA == TC) ? A : TC.(A)
             B_final = (TB == TC) ? B : TC.(B)
             gemm!('N', 'T', TC(alpha), A_final, B_final, TC(beta), C)
-        end
-    end
-end
-
-function _syrk_dispatch!(
-    op::Symbol,
-    alpha::Number, A::oneAPI.oneDeviceArray, B::oneAPI.oneDeviceArray, beta::Number, C::oneAPI.oneDeviceArray
-)
-    TC = eltype(C)
-    TA = eltype(A)
-
-    if op === :SYRK
-        if TA == TC && TC in (Float32, Float64)
-            oneMKL.syrk!('L', 'N', TC(alpha), A, TC(beta), C)
-        elseif TA == Float16 && TC in (Float16, Float32)
-            oneMKL.gemm!('N', 'T', alpha, A, A, beta, C)
-        else
-            A_converted = TC.(A)
-            oneMKL.syrk!('L', 'N', TC(alpha), A_converted, TC(beta), C)
-        end
-    elseif op === :GEMM
-        TB = eltype(B)
-        if TA == TB == TC && TC in (Float32, Float64)
-            oneMKL.gemm!('N', 'T', TC(alpha), A, B, TC(beta), C)
-        elseif TA == Float16 && TB == Float16 && TC in (Float16, Float32)
-            oneMKL.gemm!('N', 'T', alpha, A, B, beta, C)
-        else
-            A_final = (TA == TC) ? A : TC.(A)
-            B_final = (TB == TC) ? B : TC.(B)
-            oneMKL.gemm!('N', 'T', TC(alpha), A_final, B_final, TC(beta), C)
         end
     end
 end
