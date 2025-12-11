@@ -99,7 +99,7 @@ end
 
 
 function check_cholesky_accuracy()
-    n_values = [1000, 4096, 5000, 8192, 9999, 16384, 32768, 65536] #256, 512, 1024, 2048, 
+    n_values = [4096, 8192, 16384, 32768, 65536] #256, 512, 1024, 2048, 
 
     pure_scenarios = Dict(
         "Pure F32" => [Float32],
@@ -148,14 +148,21 @@ function check_cholesky_accuracy()
         println("\n" * "="^80)
         println("Checking Accuracy for Matrix Size (n x n) = $n x $n")
         
-        A_cpu_rand = randn(Float64, n, n)* 0.01
-        A_gpu_rand = CuArray(A_cpu_rand)
-        A_cpu_rand = nothing
+        # A_cpu_rand = randn(Float64, n, n)* 0.01
+        # A_gpu_rand = CuArray(A_cpu_rand)
+        # A_cpu_rand = nothing
         
-        A_spd_fp64 = A_gpu_rand * A_gpu_rand' + (n*10) * I
-        A_gpu_rand = nothing
+        # A_spd_fp64 = A_gpu_rand * A_gpu_rand' + (n*10) * I
+        # A_gpu_rand = nothing
         
-        GC.gc(true); CUDA.reclaim()
+        # GC.gc(true); CUDA.reclaim()
+        A_spd_fp64 = CUDA.rand(Float64, n, n)
+        
+        # 2. Make it Symmetric Positive Definite (SPD)
+        # Adding 'n' to the diagonal is sufficient and essentially free compared to A*A'
+        view(A_spd_fp64, diagind(A_spd_fp64)) .+= n
+        
+        CUDA.synchronize()
         
         println("\n--- CUSOLVER Library Scenarios ---")
         for (name, T_prec) in cusolver_scenarios
@@ -175,6 +182,9 @@ function check_cholesky_accuracy()
             relative_error = get_accuracy_mixed(A_spd_fp64, precisions)
             @printf("      %-25s | Rel. Error: %9.2e\n", name, relative_error)
         end
+        A_spd_fp64 = nothing
+        GC.gc(true)
+        CUDA.reclaim()
     end
     
     println("\n" * "="^80)
