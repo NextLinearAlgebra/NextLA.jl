@@ -35,7 +35,7 @@ gemm!(transA::Char,
                        A::StridedCuVecOrMat{T},
                        B::StridedCuVecOrMat{T},
                        beta,
-                       C::StridedCuVecOrMat{T}) where T = CUBLAS.gemm(transA,transB,alpha,A,B,beta,C)
+                       C::StridedCuVecOrMat{T}) where T = CUBLAS.gemm!(transA,transB,alpha,A,B,beta,C)
 
 gemmEx!(transA::Char, transB::Char,alpha,A::StridedCuVecOrMat,B::StridedCuVecOrMat,beta,C::StridedCuVecOrMat) = CUBLAS.gemmEx!(transA,transB, alpha, A, B, beta, C)
 gemmEx!(transA::Char, transB::Char,alpha,A::StridedROCVecOrMat,B::StridedROCVecOrMat,beta,C::StridedROCVecOrMat{T}) where T = AMDGPU.rocBLAS.gemm!(transA,transB, T.(alpha), T.(A), T.(B), T.(beta), C)
