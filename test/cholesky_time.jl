@@ -125,12 +125,15 @@ function run_cholesky_benchmarks()
     println("🚀 Starting Cholesky Benchmark...")
 
     for n in n_values
-        A_cpu_rand = randn(Float64, n, n) * .01
-        A_cpu_rand = A_cpu_rand * A_cpu_rand' + (n * 10) * I
-        A_gpu = CuArray(A_cpu_rand)
-        A_cpu_rand = nothing 
-        A_spd_fp64 = A_gpu
-        A_gpu = nothing
+        # A_cpu_rand = randn(Float64, n, n) * .01
+        # A_cpu_rand = A_cpu_rand * A_cpu_rand' + (n * 10) * I
+        # A_gpu = CuArray(A_cpu_rand)
+        # A_cpu_rand = nothing 
+        # A_spd_fp64 = A_gpu
+        # A_gpu = nothing
+        A_spd_fp64 = CUDA.rand(Float64, n, n)
+        view(A_spd_fp64, diagind(A_spd_fp64)) .+= n
+        CUDA.synchronize()
 
         println("\n" * "="^80)
         println("Benchmarking Matrix Size (n x n) = $n x $n")
@@ -152,11 +155,15 @@ function run_cholesky_benchmarks()
             runtime_ms, gflops = get_runtime_cusolver(A_spd_fp64, n, T_prec)
             @printf("    %-25s | Runtime: %8.3f ms | GFLOPS: %8.2f\n", name, runtime_ms, gflops)
         end
+
+        A_spd_fp64 = nothing
+        GC.gc(true)
     end
     
     println("\n" * "="^80)
     println("✅ Benchmark complete.")
     println("="^80)
+    
 end
 
 run_cholesky_benchmarks()
