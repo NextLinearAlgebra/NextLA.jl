@@ -156,12 +156,18 @@ function check_cholesky_accuracy()
         # A_gpu_rand = nothing
         
         # GC.gc(true); CUDA.reclaim()
-        A_spd_fp64 = CUDA.rand(Float64, n, n)
+        A_raw = CUDA.rand(Float64, n, n)
         
-        # 2. Make it Symmetric Positive Definite (SPD)
-        # Adding 'n' to the diagonal is sufficient and essentially free compared to A*A'
+        # 2. Symmetrize it! (A + A')
+        # This is CRITICAL. If input isn't symmetric, error calculation 
+        # compares LL' (symmetric) vs A (non-symmetric), causing constant high error.
+        A_spd_fp64 = A_raw + A_raw'
+        
+        # 3. Make it SPD (Add n to diagonal)
         view(A_spd_fp64, diagind(A_spd_fp64)) .+= n
         
+        # Free temp memory
+        A_raw = nothing
         CUDA.synchronize()
         
         println("\n--- CUSOLVER Library Scenarios ---")
