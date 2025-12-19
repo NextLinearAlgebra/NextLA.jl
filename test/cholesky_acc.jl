@@ -185,7 +185,7 @@ function check_cholesky_accuracy()
         A_spd_fp64 = A_raw*A_raw'
         
         # 3. Make it SPD (Add n to diagonal)
-        view(A_spd_fp64, diagind(A_spd_fp64)) .+= 1000
+        view(A_spd_fp64, diagind(A_spd_fp64)) .+= 10*n
         
         # Free temp memory
         A_raw = nothing
