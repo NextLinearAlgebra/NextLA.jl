@@ -42,7 +42,7 @@ function get_accuracy_pure(A_spd_fp64::CuMatrix, T_prec::DataType)
     
     if T_prec == Float16
         scale_factor = maximum(abs, A_spd_fp64)
-        A_to_factor = Float16.(A_spd_fp64 ./ scale_factor) + 100*I
+        A_to_factor = Float16.(A_spd_fp64 ./ scale_factor) #+ 100*I
     else
         scale_factor = 1.0
         A_to_factor = T_prec.(A_spd_fp64)
@@ -161,10 +161,8 @@ function check_cholesky_accuracy()
         # 2. Symmetrize it! (A + A')
         # This is CRITICAL. If input isn't symmetric, error calculation 
         # compares LL' (symmetric) vs A (non-symmetric), causing constant high error.
-        A_spd_fp64 = A_raw + A_raw'
+        A_spd_fp64 = A_raw + A_raw' + (n * 100.0) * I
         
-        # 3. Make it SPD (Add n to diagonal)
-        view(A_spd_fp64, diagind(A_spd_fp64)) .+= n
         
         # Free temp memory
         A_raw = nothing
