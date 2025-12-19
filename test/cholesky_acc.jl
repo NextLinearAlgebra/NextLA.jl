@@ -182,7 +182,7 @@ function check_cholesky_accuracy()
         scale_factor = 1.0 / sqrt(n)
         A_raw .*= scale_factor
 
-        A_spd_fp64 = A_raw + A_raw'
+        A_spd_fp64 = A_raw*A_raw'
         
         # 3. Make it SPD (Add n to diagonal)
         view(A_spd_fp64, diagind(A_spd_fp64)) .+= 1000
