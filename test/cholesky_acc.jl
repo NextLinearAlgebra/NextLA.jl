@@ -42,7 +42,7 @@ function get_accuracy_pure(A_spd_fp64::CuMatrix, T_prec::DataType)
     
     if T_prec == Float16
         scale_factor = maximum(abs, A_spd_fp64)
-        A_to_factor = Float16.(A_spd_fp64 ./ scale_factor) #+ 100*I
+        A_to_factor = Float16.(A_spd_fp64 ./ scale_factor) + 100*I
     else
         scale_factor = 1.0
         A_to_factor = T_prec.(A_spd_fp64)
@@ -139,7 +139,24 @@ function check_cholesky_accuracy()
         "[F16, F16, F16, F16, F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float16, Float16, Float16, Float16, Float32, Float64],
         "[F16, F16, F16, F16, F16, F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float16, Float16, Float16, Float16, Float16, Float32, Float64],
         "[F16, F16, F16, F16, F16, F16, F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float16, Float16, Float16, Float16, Float16, Float16, Float32, Float64],
-        "[F16, F16, F16, F16, F16, F16, F16, F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float16, Float16, Float16, Float16, Float16, Float16, Float16, Float32, Float64]
+        "[F16, F16, F16, F16, F16, F16, F16, F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float16, Float16, Float16, Float16, Float16, Float16, Float16, Float32, Float64],
+        "[F32, F64, F64, F64]"      => [Float32, Float64, Float64, Float64],
+        "[F32, F32, F32, F64]"      => [Float32, Float32, Float32, Float64],
+        "[F32, F32, F64]"           => [Float32, Float32, Float64],
+        "[F32, F64, F64]"           => [Float32, Float64, Float64],
+        "[F16, F32, F32]"           => [Float16, Float32, Float32],
+        "[F16, F16, F32]"           => [Float16, Float16, Float32],
+        "[F16, F16, F16, F32]"      => [Float16, Float16, Float16, Float32],
+        "[F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float32],
+        "[F16, F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float16, Float32],
+        "[F16, F16, F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float16, Float16, Float32],
+        "[F16, F32, F32, F32, F32, F32, F32]" => [Float16, Float16, Float16, Float16, Float16, Float16, Float32],
+        "[F16, F16, F16, F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float16, Float16, Float16, Float32],
+        "[F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float32, Float64],
+        "[F16, F32, F64]"           => [Float16, Float32, Float64],
+        "[F32, F64]"                => [Float32, Float64],
+        "[F16, F64]"                => [Float16, Float64],
+        "[F16, F32]"                => [Float16, Float32],
     )
 
     println("Starting Cholesky Accuracy Check...")
