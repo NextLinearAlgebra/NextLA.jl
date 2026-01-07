@@ -1,20 +1,23 @@
+authors = ["Rabab Alomairy, Evelyne Ringoot, Sophie Xuan, Vicki Carrica, Maxwell Onyango, Julian Samaroo, and Felipe Tome"]
 name = "NextLA"
 uuid = "d37ed344-79c4-486d-9307-6d11355a15a3"
-authors = ["Rabab Alomairy, Evelyne Ringoot, Sophie Xuan, Vicki Carrica, Maxwell Onyango, Julian Samaroo, and Felipe Tome"]
 version = "0.2.0"
 
-[deps]
-KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
-LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
-Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
-
 [compat]
+CUDA = "5.9.6"
 KernelAbstractions = "0.9.34"
 LinearAlgebra = "1.11.0"
 Random = "1.11.0"
 julia = "1.11"
 
+[deps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+
 [extras]
+CUDA_Runtime_jll = "76a88914-d11a-5bdc-97e0-2f5a05c973a2"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
