@@ -1,93 +1,105 @@
-using LinearAlgebra
 
-function scopy!(n, sx, incx, sy, incy)
+"""
+Function Docstring from lapack
 
-    if n <= 0:
-        return
-    end
+!>
+!> SLASET initializes an m-by-n matrix A to BETA on the diagonal and
+!> ALPHA on the offdiagonals.
+!> 
 
-    if inxc == 1 && incy == 1
-        m = mod(n, 7)
-        if m != 0
-            for i in 0 : m-1
-                sy[i] = sx[i]
-            end
-            if n < 7
-                return
-            end
-        end
 
-        mp1 = m + 1
+#Arguments
+UPLO
+    !>          UPLO is CHARACTER*1
+    !>          Specifies the part of the matrix A to be set.
+    !>          = 'U':      Upper triangular part is set; the strictly lower
+    !>                      triangular part of A is not changed.
+    !>          = 'L':      Lower triangular part is set; the strictly upper
+    !>                      triangular part of A is not changed.
+    !>          Otherwise:  All of the matrix A is set.
 
-        for i in mp1 - 1 : 7 : n - 1
-            sy[i] = sx[i]
-            sy[i + 1] = sx[i + 1]
-            sy[i + 2] = sx[i + 2]
-            sy[i + 3] = sx[i + 3]
-            sy[i + 4] = sx[i + 4]
-            sy[i + 5] = sx[i + 5]
-            sy[i + 6] = sx[i + 6]
-        end
-    else
-        ix = 1
-        iy = 1
+M
+    !>          M is INTEGER
+    !>          The number of rows of the matrix A.  M >= 0.
+    !> 
 
-        if incx < 0 
-            ix = (-n + 1)*incx + 1
-        end
-        if incy < 0 
-            iy = (-n + 1)*incy + 1
-        end
+N
+    !>          N is INTEGER
+    !>          The number of columns of the matrix A.  N >= 0.
+    !> 
 
-        for i in 0 : n-1
-            sy[iy] = sx[ix]
+ALPHA
+    !>          ALPHA is REAL
+    !>          The constant to which the offdiagonal elements are to be set.
+    !> 
 
-            ix = ix + incx
-            iy = iy + incy
-        end
-    end
+BETA
+    !>          BETA is REAL
+    !>          The constant to which the diagonal elements are to be set.
+    !>
+    
+A
+    !>          A is REAL array, dimension (LDA,N)
+    !>          On exit, the leading m-by-n submatrix of A is set as follows:
+    !>
+    !>          if UPLO = 'U', A(i,j) = ALPHA, 1<=i<=j-1, 1<=j<=n,
+    !>          if UPLO = 'L', A(i,j) = ALPHA, j+1<=i<=m, 1<=j<=n,
+    !>          otherwise,     A(i,j) = ALPHA, 1<=i<=m, 1<=j<=n, i.ne.j,
+    !>
+    !>          and, for all UPLO, A(i,i) = BETA, 1<=i<=min(m,n).
+    !> 
 
-    return
+LDA
+    !>          LDA is INTEGER
+    !>          The leading dimension of the array A.  LDA >= max(1,M).
+    !> 
+"""
+function slaset!(uplo::Char, m::Integer, n::Integer, alpha::T, beta::T, A::AbstractMatrix{T}, lda::Integer) where T{<:AbstractFloat}
+    # It should be noted that the size of the dimension of A is m x n.
+    #   lda is used to figure out the how many positions in memory to jump between the first row in column i
+    #   and the first row in column i+1, so essentially the actual in memory column length. It's possible for this
+    #   to not line up with the number of rows m if A is a submatrix, or for memory alignment reasons, etc.
+
 end
 
-function slartg!(f::Ref{T}, g::Ref{T}, c::Ref{T}, s::Ref{T}, r::Ref{T}) where {T<:AbstractFloat}
+function slartg!(g::T, f::Ref{T},  c::Ref{T}, s::Ref{T}, r::Ref{T}) where {T<:AbstractFloat}
 
-    #Single precision. 
-    safmin = floatmin(Float32)
-    safmax = floatmax(Float32)
+    #Templated for T to be a Float
 
-    rtmin = sqrt(safmin)
-    rtmax = sqrt(safmax/2)
+    rtmin = sqrt(floatmin(T))
+    rtmax = sqrt(floatmax(T)/2)
 
     f1 = abs(f[])
-    g1 = abs(g[])
+    g1 = abs(g)
 
-    if g[] == 0
-        c[] = 1.0
-        s[] = 0
+    if g == 0
+        c[] = one(T)
+        s[] = zero(T)
         r[] = f[]
     
     elseif f[] == 0
-        f[] = 0
-        s[] = sign(g[])
+        f[] = zero(T)
+        s[] = sign(g)
         r[] = g1
     elseif f1 > rtmin && f1 < rtmax && g1 > rtmin && g1 < rtmax
-        d = sqrt(f[]*f[] + g[]*g[])
+        d = sqrt(f[]*f[] + g*g)
         c[] = f1/d
-        r[] = sign(d, f)
-        s[] = g[]/r[]
+        r[] = copysign(d, f[])
+        s[] = g/r[]
     else
-        u = min(safmax, max(safmin, f1, g1))
-        fs = f/u
+        u = min(safmax, max(floatmin(T), f1, g1))
+        fs = f[]/u
         gs = g/u
         d = sqrt(fs*fs + gs*gs)
         c[] = abs(fs) / d
-        r[] = copysign(d, f)
+        r[] = copysign(d, f[])
         s[] = gs/r
         r[] = r[]*u
     end
     return
 end
+
+
 
 
 function sbdsdc!(uplo, compq, n, d e, u, ldu, vt, ldvt, q, iq, work, iwork, info)
@@ -168,8 +180,10 @@ function sbdsdc!(uplo, compq, n, d e, u, ldu, vt, ldvt, q, iq, work, iwork, info
     r = Ref(Float32(0.0))
 
     if icompq == 1
-        scopy!(n, d, 1, q[0], 1)
-        scopy!(n-1, e, 1, q[n], 1)
+        copyto!(d,q[0])
+        copyto!(e,q[n])
+        # scopy!(n, d, 1, q[0], 1)
+        # scopy!(n-1, e, 1, q[n], 1)
     end
 
     if iuplo == 2
@@ -181,7 +195,7 @@ function sbdsdc!(uplo, compq, n, d e, u, ldu, vt, ldvt, q, iq, work, iwork, info
 
         for i in 0 : n-2
 
-            slartg1(@view d[i], @view e[i], cs, sn, r)
+            slartg!(@view e[i],@view d[i],  cs, sn, r)
             d[i] = r
             e[i] = sn * d[i+1]
             d[i+1] = cs * d[i+1]
