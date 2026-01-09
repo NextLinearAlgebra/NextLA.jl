@@ -245,7 +245,7 @@ function sbdsdc!(uplo, compq, n, d e, u, ldu, vt, ldvt, q, iq, work, iwork, info
 
         #This gives the machine epsilon for float64. Need to verify that's what we want or if we should template this to
         #   accept multiple number types
-        eps = eps()
+        epsil = eps()
 
 
 
