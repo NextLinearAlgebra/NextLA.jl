@@ -71,9 +71,10 @@ function run_syrk_benchmark()
     alpha = 1.5
     beta  = 0.5
 
-    println("="^95)
-    @printf("%-6s | %-6s | %-18s | %-18s | %-15s\n", "N", "K", "Time Custom (ms)", "Time CUBLAS (ms)", "Speedup (Ref/KA)")
-    println("="^95)
+    println("="^135)
+    @printf("%-6s | %-6s | %-16s | %-16s | %-16s | %-18s | %-18s\n", 
+            "N", "K", "Time Custom", "Time SYRK", "Time GEMM", "Speedup (vs SYRK)", "Speedup (vs GEMM)")
+    println("="^135)
 
     for n in n_sizes
         for k in k_sizes
@@ -82,33 +83,41 @@ function run_syrk_benchmark()
             
             d_A = CuArray(A_host)
             d_C = CuArray(C_host)
-            d_C_ref = CuArray(C_host)
+            
+            d_C_syrk = CuArray(C_host)
+            d_C_gemm = CuArray(C_host)
+            
             d_C_init = CuArray(C_host)
 
             backend = KernelAbstractions.get_backend(d_A)
 
-            # Custom Kernel Benchmark
             op_custom = () -> SYRK_KERNEL!('L', 'N', alpha, d_A, beta, d_C)
             reset_custom = () -> copyto!(d_C, d_C_init)
             
             time_custom_ns = benchmark_op(op_custom, reset_custom, backend)
             time_custom_ms = time_custom_ns / 1_000_000
 
-            # CUBLAS Benchmark
-            op_cublas = () -> CUBLAS.syrk!('L', 'N', alpha, d_A, beta, d_C_ref)
-            reset_cublas = () -> copyto!(d_C_ref, d_C_init)
+            op_syrk = () -> CUBLAS.syrk!('L', 'N', alpha, d_A, beta, d_C_syrk)
+            reset_syrk = () -> copyto!(d_C_syrk, d_C_init)
 
-            time_cublas_ns = benchmark_op(op_cublas, reset_cublas, backend)
-            time_cublas_ms = time_cublas_ns / 1_000_000
+            time_syrk_ns = benchmark_op(op_syrk, reset_syrk, backend)
+            time_syrk_ms = time_syrk_ns / 1_000_000
 
-            ratio = time_cublas_ms / time_custom_ms
+            op_gemm = () -> CUBLAS.gemm!('N', 'T', alpha, d_A, d_A, beta, d_C_gemm)
+            reset_gemm = () -> copyto!(d_C_gemm, d_C_init)
 
-            @printf("%6d | %6d | %18.4f | %18.4f | %15.4fx\n", 
-                    n, k, time_custom_ms, time_cublas_ms, ratio)
+            time_gemm_ns = benchmark_op(op_gemm, reset_gemm, backend)
+            time_gemm_ms = time_gemm_ns / 1_000_000
+
+            ratio_syrk = time_syrk_ms / time_custom_ms
+            ratio_gemm = time_gemm_ms / time_custom_ms
+
+            @printf("%6d | %6d | %16.4f | %16.4f | %16.4f | %18.4fx | %18.4fx\n", 
+                    n, k, time_custom_ms, time_syrk_ms, time_gemm_ms, ratio_syrk, ratio_gemm)
             
             CUDA.reclaim()
         end
-        println("-"^95)
+        println("-"^135)
     end
 end
 
