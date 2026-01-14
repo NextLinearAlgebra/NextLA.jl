@@ -3,11 +3,12 @@ using CUDA
 using LinearAlgebra
 
 const MAX_THREADS = 512
+const MAX_SHARED_SIZE = 4096
 
 @kernel function chol_kernel_lower!(A, N, ops_per_thread)
     tx = @index(Global, Linear)
 
-    curr_col = @localmem eltype(A) 1024
+    curr_col = @localmem eltype(A) MAX_SHARED_SIZE
 
     for k in 1:N
         # Thread 0 does sqrt and division
@@ -17,9 +18,10 @@ const MAX_THREADS = 512
 
         @synchronize
 
+        diag = A[k, k]
         idx = k + tx 
         while idx <= N
-            A[idx, k] /= A[k, k]
+            A[idx, k] /= diag
             idx += MAX_THREADS
         end
 
@@ -32,18 +34,19 @@ const MAX_THREADS = 512
         end
         
         if tx == 1
-            curr_col[k] = A[k, k]
+            curr_col[k] = diag
         end
         @synchronize
 
         # Elimination step
-        col = (k + 1) + (tx - 1)
-        mul = curr_col[col] 
-        while col <= N
-            for row in col:N
+        for col in (k + 1):N
+            mul = curr_col[col] 
+            row = col + (tx - 1)
+            while row <= N
                 A[row, col] -= curr_col[row] * mul
+                row += MAX_THREADS
             end
-            col += MAX_THREADS
+            
         end
 
         @synchronize

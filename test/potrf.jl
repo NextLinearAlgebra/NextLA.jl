@@ -3,7 +3,6 @@ using CUDA
 using LinearAlgebra
 using Printf
 using KernelAbstractions
-using CUDA.CUSOLVER
 
 function benchmark_op(op, reset_op, backend)
     reset_op()
@@ -85,7 +84,7 @@ function run_chol_benchmark()
         # 2. CUSOLVER potrf!
         # potrf! computes Cholesky in-place. 
         # Returns info code, but we just benchmark execution time.
-        op_cublas = () -> CUDA.CUSOLVER.potrf!('L', d_A_ref)
+        op_cublas = () -> CUSOLVER.potrf!('L', d_A_ref)
         reset_cublas = () -> copyto!(d_A_ref, d_A_init)
 
         time_cublas_ns = benchmark_op(op_cublas, reset_cublas, backend)
