@@ -5,7 +5,7 @@ using LinearAlgebra
 const MAX_THREADS = 512
 const MAX_SHARED_SIZE = 2048
 
-@kernel function chol_kernel_lower!(A, N, ops_per_thread)
+@kernel function chol_kernel_lower!(A, N)
     tx = @index(Global, Linear)
 
     curr_col = @localmem eltype(A) MAX_SHARED_SIZE
@@ -13,15 +13,15 @@ const MAX_SHARED_SIZE = 2048
     for k in 1:N
         # Thread 0 does sqrt and division
         if tx == 1
-            A[k, k] = sqrt(A[k, k])
+            @inbounds A[k, k] = sqrt(A[k, k])
         end
 
         @synchronize
 
-        diag = A[k, k]
+        diag = @inbounds A[k, k]
         idx = k + tx 
         while idx <= N
-            A[idx, k] /= diag
+            @inbounds A[idx, k] /= diag
             idx += MAX_THREADS
         end
 
@@ -29,50 +29,69 @@ const MAX_SHARED_SIZE = 2048
 
         idx = k + tx
         while idx <= N
-            curr_col[idx] = A[idx, k]
+            @inbounds curr_col[idx] = A[idx, k]
             idx += MAX_THREADS
         end
         
         if tx == 1
-            curr_col[k] = diag
+            @inbounds curr_col[k] = diag
         end
         @synchronize
 
         # Elimination step
-        for col in (k + 1):N
-            mul = curr_col[col] 
-            row = col + (tx - 1)
-            while row <= N
-                A[row, col] -= curr_col[row] * mul
-                row += MAX_THREADS
-            end
+        # for col in (k + 1):N
+        #     mul = curr_col[col] 
+        #     row = col + (tx - 1)
+        #     while row <= N
+        #         A[row, col] -= curr_col[row] * mul
+        #         row += MAX_THREADS
+        #     end
             
+        # end
+        len = N - k
+        if len > 0
+            limit = len * len
+            
+            t_idx = tx - 1 
+            
+            while t_idx < limit
+                col_offset = div(t_idx, len)
+                row_offset = rem(t_idx, len)
+                
+                if row_offset >= col_offset
+                    r = row_offset + k + 1
+                    c = col_offset + k + 1
+                    @inbounds A[r, c] -= curr_col[r] * curr_col[c]
+                end
+                
+                t_idx += MAX_THREADS
+            end
         end
 
         @synchronize
     end
 
     # Zero out upper triangle
-    istart = (tx - 1) * ops_per_thread + 1
-    iend = min(N, istart + ops_per_thread - 1)
+    # istart = (tx - 1) * ops_per_thread + 1
+    # iend = min(N, istart + ops_per_thread - 1)
 
-    for i in istart:iend
-        for j in (i+1):N
-            A[i, j] = 0
-        end
-    end
+    # for i in istart:iend
+    #     for j in (i+1):N
+    #         A[i, j] = 0
+    #     end
+    # end
 end
 
 
 function cholesky_lower!(A)
     N = size(A, 1)
-    num_threads = min(N, MAX_THREADS)
-    ops_per_thread = cld(N, num_threads)
+    num_threads = MAX_THREADS
+    # ops_per_thread = cld(N, num_threads)
 
     backend = CUDABackend()
     kernel = chol_kernel_lower!(backend, num_threads)
 
-    kernel(A, N, ops_per_thread; ndrange = num_threads)
+    kernel(A, N; ndrange = num_threads)
     KernelAbstractions.synchronize(backend)
     return A
 end
