@@ -7,25 +7,43 @@ const MAX_THREADS = 512
 @kernel function chol_kernel_lower!(A, N, ops_per_thread)
     tx = @index(Global, Linear)
 
+    curr_col = @localmem eltype(A) 1024
+
     for k in 1:N
         # Thread 0 does sqrt and division
         if tx == 1
             A[k, k] = sqrt(A[k, k])
-            for j in (k+1):N
-                A[j, k] /= A[k, k]
-            end
         end
 
         @synchronize
 
-        # Elimination step
-        istart = (k + 1) + (tx - 1) * ops_per_thread
-        iend = min(N, istart + ops_per_thread - 1)
+        idx = k + tx 
+        while idx <= N
+            A[idx, k] /= A[k, k]
+            idx += MAX_THREADS
+        end
 
-        for i in istart:iend
-            for j in i:N
-                A[j, i] -= A[j, k] * A[i, k]
+        @synchronize
+
+        idx = k + tx
+        while idx <= N
+            curr_col[idx] = A[idx, k]
+            idx += MAX_THREADS
+        end
+        
+        if tx == 1
+            curr_col[k] = A[k, k]
+        end
+        @synchronize
+
+        # Elimination step
+        col = (k + 1) + (tx - 1)
+        mul = curr_col[col] 
+        while col <= N
+            for row in col:N
+                A[row, col] -= curr_col[row] * mul
             end
+            col += MAX_THREADS
         end
 
         @synchronize

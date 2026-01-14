@@ -7,7 +7,7 @@ include("trmm.jl")
 include("matmul.jl")
 include("rectrxm.jl")
 include("recsyrk.jl")
-include("cholesky.jl")
+include("potrf.jl")
 
 
 function potrf!(A::AnyGPUArray{T}) where T
