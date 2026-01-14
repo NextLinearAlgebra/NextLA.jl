@@ -2,13 +2,30 @@ ENV["GKSwstype"] = "100"
 ENV["PLOTS_TEST"] = "true"
 # To ensure that the plot doesn't try to open a window
 
-using LinearAlgebra
 using BenchmarkTools
 using Plots
 using LinearAlgebra
+using LinearAlgebra.BLAS: @blasfunc
+using LinearAlgebra: libblastrampoline
 using NextLA
 
 
+function slas2_time(f::Float64, g::Float64, h::Float64, ssmin::Ref{Float64}, ssmax::Ref{Float64})
+        return @belapsed ccall(
+            (@blasfunc(slas2_), libblastrampoline),
+                Cvoid, 
+                (Ref{Float64}, Ref{Float64}, Ref{Float64}, Ref{Float64}, Ref{Float64}),
+                $f, $g, $h, $ssmin, $ssmax
+            )
+end
+function slas2_time(f::Float32, g::Float32, h::Float32, ssmin::Ref{Float32}, ssmax::Ref{Float32})
+        return @belapsed ccall(
+            (@blasfunc(slas2_), libblastrampoline),
+                Cvoid, 
+                (Ref{Float32}, Ref{Float32}, Ref{Float32}, Ref{Float32}, Ref{Float32}),
+                $f, $g, $h, $ssmin, $ssmax
+            )
+end
 
 for T in [Float32, Float64]
     jul = Float64[]
@@ -26,8 +43,9 @@ for T in [Float32, Float64]
         ssmax = Ref{T}()
 
 
-        j = @belapsed NextLA.slas2!($f, $g, $h, $ssmin, $ssmax)
-        n = @belapsed LinearAlgebra.svdvals($A)
+        j = @belapsed NextLA.slas2!($A)
+
+        n = slas2_time(f, g, h, ssmin, ssmax)
 
         push!(jul, j)
         push!(nat, n)

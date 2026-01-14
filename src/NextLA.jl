@@ -78,4 +78,6 @@ include("pemv.jl")
 include("ttmqr.jl")
 include("ttqrt.jl")
 include("slas2.jl")
+include("srot.jl")
+include("slamrg.jl")
 end
