@@ -11,7 +11,7 @@ const BLOCK_SIZE = 64
     tx = @index(Global, Linear)
 
     # curr_col = @localmem eltype(A) MAX_SHARED_SIZE
-    tile = @localmem eltype(A) (BLOCK_SIZE, BLOCK_SIZE)
+    tile = @localmem eltype(A) (BLOCK_SIZE + 1, BLOCK_SIZE)
 
     total_elements = N * N
     idx = tx
@@ -60,7 +60,8 @@ const BLOCK_SIZE = 64
                 if row_offset >= col_offset
                     r = row_offset + Int32(k + 1)
                     c = col_offset + Int32(k + 1)
-                    @inbounds tile[r, c] -= tile[r, k] * tile[c, k]
+                    # @inbounds tile[r, c] -= tile[r, k] * tile[c, k]
+                    @inbounds tile[r, c] = muladd(-tile[r, k], tile[c, k], tile[r, c])
                 end
                 
                 t_idx += stride
