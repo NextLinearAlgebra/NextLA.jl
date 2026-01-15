@@ -5,13 +5,15 @@ using LinearAlgebra
 const MAX_THREADS = 512
 const MAX_SHARED_SIZE = 2048
 const BLOCK_SIZE = 64
+const PAD = 1
+const STRIDE = BLOCK_SIZE + PAD
 
 
 @kernel function chol_kernel_lower!(A, N)
     tx = @index(Global, Linear)
 
     # curr_col = @localmem eltype(A) MAX_SHARED_SIZE
-    tile = @localmem eltype(A) (BLOCK_SIZE + 1, BLOCK_SIZE)
+    tile = @localmem eltype(A) (BLOCK_SIZE * STRIDE)
 
     total_elements = N * N
     idx = tx
@@ -20,8 +22,10 @@ const BLOCK_SIZE = 64
         # Julia is Column-Major: row changes fastest
         c = div(idx - 1, N) + 1
         r = rem(idx - 1, N) + 1
+
+        s_idx = (c - 1) * STRIDE + r
         
-        @inbounds tile[r, c] = A[r, c]
+        @inbounds tile[s_idx] = A[r, c]
         idx += MAX_THREADS
     end
 
@@ -29,16 +33,18 @@ const BLOCK_SIZE = 64
 
     for k in 1:N
         # Thread 0 does sqrt and division
+        diag_idx = (k - 1) * STRIDE + k
         if tx == 1
-            @inbounds tile[k, k] = sqrt(tile[k, k])
+            @inbounds tile[diag_idx] = sqrt(tile[diag_idx])
         end
 
         @synchronize
 
-        diag = @inbounds tile[k, k]
+        diag = @inbounds tile[diag_idx]
         idx = k + tx 
         while idx <= N
-            @inbounds tile[idx, k] /= diag
+            s_idx = (k - 1) * STRIDE + r_start
+            @inbounds tile[s_idx] /= diag
             idx += MAX_THREADS
         end
 
@@ -60,8 +66,10 @@ const BLOCK_SIZE = 64
                 if row_offset >= col_offset
                     r = row_offset + Int32(k + 1)
                     c = col_offset + Int32(k + 1)
-                    # @inbounds tile[r, c] -= tile[r, k] * tile[c, k]
-                    @inbounds tile[r, c] = muladd(-tile[r, k], tile[c, k], tile[r, c])
+                    idx_rc = (c - 1) * STRIDE + r
+                    idx_rk = (k - 1) * STRIDE + r
+                    idx_ck = (k - 1) * STRIDE + c
+                    @inbounds tile[idx_rc] = muladd(-tile[idx_rk], tile[idx_ck], tile[idx_rc])
                 end
                 
                 t_idx += stride
@@ -85,7 +93,9 @@ const BLOCK_SIZE = 64
         c = div(idx - 1, N) + 1
         r = rem(idx - 1, N) + 1
         
-        @inbounds A[r, c] = tile[r, c]
+        s_idx = (c - 1) * STRIDE + r
+        
+        @inbounds A[r, c] = tile[s_idx]
         idx += MAX_THREADS
     end
 end
