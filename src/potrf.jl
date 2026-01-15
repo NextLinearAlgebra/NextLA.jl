@@ -43,7 +43,7 @@ const STRIDE = BLOCK_SIZE + PAD
         diag = @inbounds tile[diag_idx]
         idx = k + tx 
         while idx <= N
-            s_idx = (k - 1) * STRIDE + r_start
+            s_idx = (k - 1) * STRIDE + idx
             @inbounds tile[s_idx] /= diag
             idx += MAX_THREADS
         end
