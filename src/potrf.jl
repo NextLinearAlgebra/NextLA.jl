@@ -95,7 +95,7 @@ function cholesky_lower!(A)
 
         cholesky_lower!(A11)
 
-        RightLowerTRSM!(Transpose(A11), A21)
+        RightUpperTRSM!(Transpose(A11), A21)
         # CUBLAS.trsm!('R', 'L', 'T', 'N', one(eltype(A)), A11, A21)
         
         CUBLAS.gemm!('N', 'T', -one(eltype(A)), A21, A21, one(eltype(A)), A22)
