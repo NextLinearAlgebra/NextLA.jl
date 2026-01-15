@@ -4,6 +4,7 @@ using LinearAlgebra
 
 const MAX_THREADS = 512
 const MAX_SHARED_SIZE = 2048
+const BLOCK_SIZE = 32
 
 @kernel function chol_kernel_lower!(A, N)
     tx = @index(Global, Linear)
