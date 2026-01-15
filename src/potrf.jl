@@ -41,74 +41,40 @@ const STRIDE = BLOCK_SIZE + PAD
         @synchronize
 
         diag = @inbounds tile[diag_idx]
-        # idx = k + tx 
-        # while idx <= N
-        #     s_idx = (k - 1) * STRIDE + idx
-        #     @inbounds tile[s_idx] /= diag
-        #     idx += MAX_THREADS
-        # end
-        for i in 0:7
-            linear_idx = tx + (i * MAX_THREADS)
-            
-            if linear_idx <= total_elements
-                c = div(linear_idx - 1, N) + 1
-                
-                if c == k
-                    r = rem(linear_idx - 1, N) + 1
-                    if r > k
-                        s_idx = (k - 1) * STRIDE + r
-                        @inbounds tile[s_idx] /= diag
-                    end
-                end
-            end
+        idx = k + tx 
+        while idx <= N
+            s_idx = (k - 1) * STRIDE + idx
+            @inbounds tile[s_idx] /= diag
+            idx += MAX_THREADS
         end
 
         @synchronize
 
         # Elimination step
         
-        # len = Int32(N - k)
-        # tx_32 = Int32(tx)
-        # if len > 0
-        #     limit = len * len
-        #     t_idx = tx_32 - Int32(1) 
-        #     stride = Int32(MAX_THREADS)
+        len = Int32(N - k)
+        tx_32 = Int32(tx)
+        if len > 0
+            limit = len * len
+            t_idx = tx_32 - Int32(1) 
+            stride = Int32(MAX_THREADS)
             
-        #     while t_idx < limit
-        #         col_offset = div(t_idx, len)
-        #         row_offset = rem(t_idx, len)
+            while t_idx < limit
+                col_offset = div(t_idx, len)
+                row_offset = rem(t_idx, len)
 
-        #         if row_offset >= col_offset
-        #             r = row_offset + Int32(k + 1)
-        #             c = col_offset + Int32(k + 1)
-        #             idx_rc = (c - 1) * STRIDE + r
-        #             idx_rk = (k - 1) * STRIDE + r
-        #             idx_ck = (k - 1) * STRIDE + c
-        #             @inbounds tile[idx_rc] = muladd(-tile[idx_rk], tile[idx_ck], tile[idx_rc])
-        #         end
-                
-        #         t_idx += stride
-        #     end
-        # end
-
-        for i in 0:7
-            linear_idx = tx + (i * MAX_THREADS)
-            
-            if linear_idx <= total_elements
-                c = div(linear_idx - 1, N) + 1
-                r = rem(linear_idx - 1, N) + 1
-
-                if c > k && r >= c
+                if row_offset >= col_offset
+                    r = row_offset + Int32(k + 1)
+                    c = col_offset + Int32(k + 1)
                     idx_rc = (c - 1) * STRIDE + r
                     idx_rk = (k - 1) * STRIDE + r
                     idx_ck = (k - 1) * STRIDE + c
-                    
                     @inbounds tile[idx_rc] = muladd(-tile[idx_rk], tile[idx_ck], tile[idx_rc])
                 end
+                
+                t_idx += stride
             end
         end
-
-        
 
         @synchronize
     end
