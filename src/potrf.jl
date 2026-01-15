@@ -77,14 +77,30 @@ end
 
 function cholesky_lower!(A)
     N = size(A, 1)
-    num_threads = MAX_THREADS
-    # ops_per_thread = cld(N, num_threads)
+    if (N <= 32)
+        num_threads = MAX_THREADS
+        # ops_per_thread = cld(N, num_threads)
 
-    backend = CUDABackend()
-    kernel = chol_kernel_lower!(backend, num_threads)
+        backend = CUDABackend()
+        kernel = chol_kernel_lower!(backend, num_threads)
 
-    kernel(A, N; ndrange = num_threads)
-    KernelAbstractions.synchronize(backend)
+        kernel(A, N; ndrange = num_threads)
+        KernelAbstractions.synchronize(backend)
+    else 
+        mid = N ÷ 2
+        
+        A11 = view(A, 1:mid, 1:mid)
+        A21 = view(A, (mid+1):N, 1:mid)
+        A22 = view(A, (mid+1):N, (mid+1):N)
+
+        cholesky_lower!(A11)
+
+        RightUpperTRSM!(A11, A21)
+        
+        CUBLAS.gemm!('N', 'T', -one(eltype(A)), A21, A21, one(eltype(A)), A22)
+
+        cholesky_lower!(A22)
+    end
     return A
 end
 
