@@ -111,7 +111,7 @@ function cholesky_lower!(A)
         A_diag = view(A, k:k_end, k:k_end)
         kernel = chol_kernel_lower!(backend, MAX_THREADS)
         kernel(A_diag, blk_len; ndrange=MAX_THREADS)
-        KernelAbstractions.synchronize(backend)
+        
         
         if k_end < N
             A_panel = view(A, (k_end + 1):N, k:k_end)
@@ -125,6 +125,7 @@ function cholesky_lower!(A)
             # CUBLAS.syrk!('L', 'N', -1.0, A_panel, 1.0, A_trailing)
         end
     end
+    KernelAbstractions.synchronize(backend)
     return A
 end
 

@@ -10,7 +10,7 @@ function benchmark_op(op, reset_op, backend)
     KernelAbstractions.synchronize(backend)
 
     min_time_ns = Inf
-    for _ in 1:10
+    for _ in 1:50
         reset_op()
         time = run_single_benchmark(op, backend)
         min_time_ns = min(min_time_ns, time)
