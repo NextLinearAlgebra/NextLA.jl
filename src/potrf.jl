@@ -15,16 +15,6 @@ const STRIDE = BLOCK_SIZE + PAD
     # curr_col = @localmem eltype(A) MAX_SHARED_SIZE
     tile = @localmem eltype(A) (BLOCK_SIZE * STRIDE)
 
-    my_rows = ntuple(i -> begin
-        idx = tx + (i - 1) * MAX_THREADS 
-        rem(idx - 1, N) + 1
-    end, 8)
-
-    my_cols = ntuple(i -> begin
-        idx = tx + (i - 1) * MAX_THREADS
-        div(idx - 1, N) + 1
-    end, 8)
-
     total_elements = N * N
     idx = tx
     while idx <= total_elements
@@ -51,11 +41,26 @@ const STRIDE = BLOCK_SIZE + PAD
         @synchronize
 
         diag = @inbounds tile[diag_idx]
-        idx = k + tx 
-        while idx <= N
-            s_idx = (k - 1) * STRIDE + idx
-            @inbounds tile[s_idx] /= diag
-            idx += MAX_THREADS
+        # idx = k + tx 
+        # while idx <= N
+        #     s_idx = (k - 1) * STRIDE + idx
+        #     @inbounds tile[s_idx] /= diag
+        #     idx += MAX_THREADS
+        # end
+        for i in 0:7
+            linear_idx = tx + (i * MAX_THREADS)
+            
+            if linear_idx <= total_elements
+                c = div(linear_idx - 1, N) + 1
+                
+                if c == k
+                    r = rem(linear_idx - 1, N) + 1
+                    if r > k
+                        s_idx = (k - 1) * STRIDE + r
+                        @inbounds tile[s_idx] /= diag
+                    end
+                end
+            end
         end
 
         @synchronize
@@ -86,18 +91,24 @@ const STRIDE = BLOCK_SIZE + PAD
         #     end
         # end
 
-        for i in 1:8
-            r = my_rows[i]
-            c = my_cols[i]
+        for i in 0:7
+            linear_idx = tx + (i * MAX_THREADS)
+            
+            if linear_idx <= total_elements
+                c = div(linear_idx - 1, N) + 1
+                r = rem(linear_idx - 1, N) + 1
 
-            if c > k && r >= c
-                idx_rc = (c - 1) * STRIDE + r
-                idx_rk = (k - 1) * STRIDE + r
-                idx_ck = (k - 1) * STRIDE + c
-                
-                @inbounds tile[idx_rc] = muladd(-tile[idx_rk], tile[idx_ck], tile[idx_rc])
+                if c > k && r >= c
+                    idx_rc = (c - 1) * STRIDE + r
+                    idx_rk = (k - 1) * STRIDE + r
+                    idx_ck = (k - 1) * STRIDE + c
+                    
+                    @inbounds tile[idx_rc] = muladd(-tile[idx_rk], tile[idx_ck], tile[idx_rc])
+                end
             end
         end
+
+        
 
         @synchronize
     end
