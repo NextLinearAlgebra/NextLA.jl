@@ -77,7 +77,7 @@ end
 
 function cholesky_lower!(A)
     N = size(A, 1)
-    if (N <= 32)
+    if (N <= 64)
         num_threads = MAX_THREADS
         # ops_per_thread = cld(N, num_threads)
 
