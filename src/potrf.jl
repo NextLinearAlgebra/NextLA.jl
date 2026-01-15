@@ -15,6 +15,16 @@ const STRIDE = BLOCK_SIZE + PAD
     # curr_col = @localmem eltype(A) MAX_SHARED_SIZE
     tile = @localmem eltype(A) (BLOCK_SIZE * STRIDE)
 
+    my_rows = ntuple(i -> begin
+        idx = tx + (i - 1) * MAX_THREADS 
+        rem(idx - 1, N) + 1
+    end, 8)
+
+    my_cols = ntuple(i -> begin
+        idx = tx + (i - 1) * MAX_THREADS
+        div(idx - 1, N) + 1
+    end, 8)
+
     total_elements = N * N
     idx = tx
     while idx <= total_elements
@@ -52,27 +62,40 @@ const STRIDE = BLOCK_SIZE + PAD
 
         # Elimination step
         
-        len = Int32(N - k)
-        tx_32 = Int32(tx)
-        if len > 0
-            limit = len * len
-            t_idx = tx_32 - Int32(1) 
-            stride = Int32(MAX_THREADS)
+        # len = Int32(N - k)
+        # tx_32 = Int32(tx)
+        # if len > 0
+        #     limit = len * len
+        #     t_idx = tx_32 - Int32(1) 
+        #     stride = Int32(MAX_THREADS)
             
-            while t_idx < limit
-                col_offset = div(t_idx, len)
-                row_offset = rem(t_idx, len)
+        #     while t_idx < limit
+        #         col_offset = div(t_idx, len)
+        #         row_offset = rem(t_idx, len)
 
-                if row_offset >= col_offset
-                    r = row_offset + Int32(k + 1)
-                    c = col_offset + Int32(k + 1)
-                    idx_rc = (c - 1) * STRIDE + r
-                    idx_rk = (k - 1) * STRIDE + r
-                    idx_ck = (k - 1) * STRIDE + c
-                    @inbounds tile[idx_rc] = muladd(-tile[idx_rk], tile[idx_ck], tile[idx_rc])
-                end
+        #         if row_offset >= col_offset
+        #             r = row_offset + Int32(k + 1)
+        #             c = col_offset + Int32(k + 1)
+        #             idx_rc = (c - 1) * STRIDE + r
+        #             idx_rk = (k - 1) * STRIDE + r
+        #             idx_ck = (k - 1) * STRIDE + c
+        #             @inbounds tile[idx_rc] = muladd(-tile[idx_rk], tile[idx_ck], tile[idx_rc])
+        #         end
                 
-                t_idx += stride
+        #         t_idx += stride
+        #     end
+        # end
+
+        for i in 1:8
+            r = my_rows[i]
+            c = my_cols[i]
+
+            if c > k && r >= c
+                idx_rc = (c - 1) * STRIDE + r
+                idx_rk = (k - 1) * STRIDE + r
+                idx_ck = (k - 1) * STRIDE + c
+                
+                @inbounds tile[idx_rc] = muladd(-tile[idx_rk], tile[idx_ck], tile[idx_rc])
             end
         end
 
