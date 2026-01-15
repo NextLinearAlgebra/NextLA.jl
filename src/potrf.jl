@@ -77,32 +77,53 @@ end
 
 function cholesky_lower!(A)
     N = size(A, 1)
-    if (N <= 64)
-        num_threads = MAX_THREADS
-        # ops_per_thread = cld(N, num_threads)
-
-        backend = CUDABackend()
-        kernel = chol_kernel_lower!(backend, num_threads)
-
-        kernel(A, N; ndrange = num_threads)
+    backend = CUDABackend()
+    
+    for k in 1:BLOCK_SIZE:N
+        k_end = min(k + BLOCK_SIZE - 1, N)
+        blk_len = k_end - k + 1
+        A_diag = view(A, k:k_end, k:k_end)
+        kernel = chol_kernel_lower!(backend, MAX_THREADS)
+        kernel(A_diag, blk_len; ndrange=MAX_THREADS)
         KernelAbstractions.synchronize(backend)
-    else 
-        mid = N ÷ 2
         
-        A11 = view(A, 1:mid, 1:mid)
-        A21 = view(A, (mid+1):N, 1:mid)
-        A22 = view(A, (mid+1):N, (mid+1):N)
+        if k_end < N
+            A_panel = view(A, (k_end + 1):N, k:k_end)
 
-        cholesky_lower!(A11)
-
-        RightUpperTRSM!(Transpose(A11), A21)
-        # CUBLAS.trsm!('R', 'L', 'T', 'N', one(eltype(A)), A11, A21)
-        
-        CUBLAS.gemm!('N', 'T', -one(eltype(A)), A21, A21, one(eltype(A)), A22)
-
-        cholesky_lower!(A22)
+            RightUpperTRSM!(Transpose(A_diag), A_panel)
+            
+            A_trailing = view(A, (k_end + 1):N, (k_end + 1):N)
+            
+            CUBLAS.gemm!('N', 'T', -one(eltype(A)), A_panel, A_panel, one(eltype(A)), A_trailing)
+        end
     end
     return A
+    # N = size(A, 1)
+    # if (N <= 64)
+    #     num_threads = MAX_THREADS
+    #     # ops_per_thread = cld(N, num_threads)
+
+    #     backend = CUDABackend()
+    #     kernel = chol_kernel_lower!(backend, num_threads)
+
+    #     kernel(A, N; ndrange = num_threads)
+    #     KernelAbstractions.synchronize(backend)
+    # else 
+    #     mid = N ÷ 2
+        
+    #     A11 = view(A, 1:mid, 1:mid)
+    #     A21 = view(A, (mid+1):N, 1:mid)
+    #     A22 = view(A, (mid+1):N, (mid+1):N)
+
+    #     cholesky_lower!(A11)
+
+    #     RightUpperTRSM!(Transpose(A11), A21)
+        
+    #     CUBLAS.gemm!('N', 'T', -one(eltype(A)), A21, A21, one(eltype(A)), A22)
+
+    #     cholesky_lower!(A22)
+    # end
+    # return A
 end
 
 function test_cholesky_lower(N)
