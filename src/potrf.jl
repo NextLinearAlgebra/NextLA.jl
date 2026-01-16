@@ -58,11 +58,12 @@ const STRIDE = BLOCK_SIZE + PAD
             limit = len * len
             t_idx = tx_32 - Int32(1) 
             stride = Int32(MAX_THREADS)
+            col_offset = div(t_idx, len)
+            row_offset = rem(t_idx, len)
+            stride_c = div(stride, len)
+            stride_r = rem(stride, len)
             
             while t_idx < limit
-                col_offset = div(t_idx, len)
-                row_offset = rem(t_idx, len)
-
                 if row_offset >= col_offset
                     r = row_offset + Int32(k + 1)
                     c = col_offset + Int32(k + 1)
@@ -73,6 +74,13 @@ const STRIDE = BLOCK_SIZE + PAD
                 end
                 
                 t_idx += stride
+                col_offset += stride_c
+                row_offset += stride_r
+
+                if row_offset >= len
+                    row_offset -= len
+                    col_offset += Int32(1)
+                end
             end
         end
 
