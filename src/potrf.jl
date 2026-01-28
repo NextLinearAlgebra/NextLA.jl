@@ -5,6 +5,7 @@ using LinearAlgebra
 const MAX_THREADS = 512
 const MAX_SHARED_SIZE = 2048
 const BLOCK_SIZE = 64
+#padding for bank conflicts
 const PAD = 1
 const STRIDE = BLOCK_SIZE + PAD
 
@@ -12,14 +13,15 @@ const STRIDE = BLOCK_SIZE + PAD
 @kernel function chol_kernel_lower!(A, N)
     tx = @index(Global, Linear)
 
-    # curr_col = @localmem eltype(A) MAX_SHARED_SIZE
+    # put block into shared memory 
     tile = @localmem eltype(A) (BLOCK_SIZE * STRIDE)
 
     total_elements = N * N
     idx = tx
+
+    #load into shared memory 
     while idx <= total_elements
-        # Map linear index to (row, col)
-        # Julia is Column-Major: row changes fastest
+        # julia is column-major
         c = div(idx - 1, N) + 1
         r = rem(idx - 1, N) + 1
 
@@ -32,7 +34,7 @@ const STRIDE = BLOCK_SIZE + PAD
     @synchronize
 
     for k in 1:N
-        # Thread 0 does sqrt and division
+        # one thread does sqrt
         diag_idx = (k - 1) * STRIDE + k
         if tx == 1
             @inbounds tile[diag_idx] = sqrt(tile[diag_idx])
@@ -40,6 +42,7 @@ const STRIDE = BLOCK_SIZE + PAD
 
         @synchronize
 
+        # division is now parallelized 
         diag = @inbounds tile[diag_idx]
         idx = k + tx 
         while idx <= N
@@ -51,6 +54,7 @@ const STRIDE = BLOCK_SIZE + PAD
         @synchronize
 
         # Elimination step
+        # updates submatrix to right/bottom
         
         len = Int32(N - k)
         tx_32 = Int32(tx)
@@ -58,6 +62,8 @@ const STRIDE = BLOCK_SIZE + PAD
             limit = len * len
             t_idx = tx_32 - Int32(1) 
             stride = Int32(MAX_THREADS)
+
+            # precalculate offsets to avoid division inside loop
             col_offset = div(t_idx, len)
             row_offset = rem(t_idx, len)
             stride_c = div(stride, len)
@@ -70,9 +76,11 @@ const STRIDE = BLOCK_SIZE + PAD
                     idx_rc = (c - 1) * STRIDE + r
                     idx_rk = (k - 1) * STRIDE + r
                     idx_ck = (k - 1) * STRIDE + c
+                    # use muladd instead of * and - for speed
                     @inbounds tile[idx_rc] = muladd(-tile[idx_rk], tile[idx_ck], tile[idx_rc])
                 end
                 
+                # manual index updates to avoid modulo operations
                 t_idx += stride
                 col_offset += stride_c
                 row_offset += stride_r
@@ -96,6 +104,8 @@ const STRIDE = BLOCK_SIZE + PAD
     #         A[i, j] = 0
     #     end
     # end
+
+    # write results back to global memory 
     idx = tx
     while idx <= total_elements
         c = div(idx - 1, N) + 1
@@ -113,6 +123,7 @@ function cholesky_lower!(A)
     N = size(A, 1)
     backend = CUDABackend()
     
+    #blocked algorithm - for sized bigger than 64x64 we do the trsm/gemm but not recursive.
     for k in 1:BLOCK_SIZE:N
         k_end = min(k + BLOCK_SIZE - 1, N)
         blk_len = k_end - k + 1
