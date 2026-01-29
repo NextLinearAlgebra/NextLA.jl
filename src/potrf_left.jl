@@ -133,11 +133,12 @@ end
         @synchronize
 
         # division is now parallelized 
-        diag = @inbounds tile[diag_idx]
+        # diag = @inbounds tile[diag_idx]
+        inv_diag = 1.0f0 / @inbounds tile[diag_idx]
         idx = k + tx 
         while idx <= N
             s_idx = (k - 1) * STRIDE + idx
-            @inbounds tile[s_idx] /= diag
+            @inbounds tile[s_idx] *= inv_diag
             idx += MAX_THREADS
         end
 
