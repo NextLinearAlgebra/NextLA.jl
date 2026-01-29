@@ -12,13 +12,15 @@ const STRIDE = BLOCK_SIZE + PAD
 @kernel function chol_kernel_left!(A, N)
     tx = @index(Global, Linear)
     
-    # shared memory w padding
+    # 1. Shared Memory Allocation
     tile = @localmem eltype(A) (BLOCK_SIZE * STRIDE)
 
-    # load tile into shmem
+    # 2. Collaborative Load (Global -> Shared)
+    # Same efficient loading pattern you had before
     total_elements = N * N
     idx = tx
     while idx <= total_elements
+        # Map linear index to (r, c)
         c = div(idx - 1, N) + 1
         r = rem(idx - 1, N) + 1
         s_idx = (c - 1) * STRIDE + r
@@ -27,72 +29,70 @@ const STRIDE = BLOCK_SIZE + PAD
         idx += MAX_THREADS
     end
 
-    # wait for finish for load
     @synchronize
 
-    # factorization loop
-    for j in 1:N
+    # 3. Main Factorization Loop (Iterate over pivot column 'k')
+    for k in 1:N
         
-        # each thread handles one ROW 'i' for the current column 'j'.
-        i = tx
-        while i <= N
-            # we only process the lower triangle (i >= j)
-            if i >= j
-                
-                # load curr val into register (val)
-                idx_ij = (j - 1) * STRIDE + i
-                @private val = @inbounds tile[idx_ij]
-                # @private this is how you declare a register accordinf to my advisor 
-                
-                # accumulate updates from other columns
-                for k in 1:(j-1)
-                    idx_ik = (k - 1) * STRIDE + i # L[i,k]
-                    idx_jk = (k - 1) * STRIDE + j # L[j,k] (transpose of L[k,j])
-                    
-                    # muladd happens in reg
-                    val = muladd(-tile[idx_ik], tile[idx_jk], val)
-                end
-                
-                # write result back to Shared Memory ONCE.
-                @inbounds tile[idx_ij] = val
-            end
-            
-            i += MAX_THREADS
-        end
-        
-        @synchronize 
-
-        #sqrt (diagonal factorization)
+        # A. Square Root Diagonal (Single Thread)
         if tx == 1
-            idx_jj = (j - 1) * STRIDE + j
-            @inbounds tile[idx_jj] = sqrt(tile[idx_jj])
+            idx_kk = (k - 1) * STRIDE + k
+            @inbounds tile[idx_kk] = sqrt(tile[idx_kk])
         end
-        
         @synchronize
 
-        # scaling
-        diag_val = @inbounds tile[(j - 1) * STRIDE + j]
+        # B. Scale the Current Column 'k' (Parallel)
+        # We need the diagonal value to scale the rest of the column
+        diag_val = tile[(k - 1) * STRIDE + k]
         
+        # All threads help scale rows i > k in column k
         i = tx
         while i <= N
-            if i > j
-                idx_ij = (j - 1) * STRIDE + i
-                # division happens here
-                @inbounds tile[idx_ij] /= diag_val
+            if i > k
+                idx_ik = (k - 1) * STRIDE + i
+                @inbounds tile[idx_ik] /= diag_val
             end
             i += MAX_THREADS
         end
+        @synchronize
+
+        # C. Update Trailing Submatrix (The Right-Looking "Outer Product")
+        # Goal: A[i, j] = A[i, j] - L[i, k] * L[j, k]' for all i,j > k
         
+        # We assign threads to handle rows 'i' in the trailing submatrix
+        i = tx
+        while i <= N
+            if i > k
+                # --- REGISTER OPTIMIZATION (The MAGMA trick) ---
+                # Load L[i, k] (the factor from the pivot column) into a REGISTER.
+                # We will reuse this value for every column 'j'.
+                # This saves 1 Shared Memory Read per multiplication compared to your old code.
+                idx_ik = (k - 1) * STRIDE + i
+                @private L_ik = @inbounds tile[idx_ik] 
+
+                # Loop over columns 'j' to the right of 'k'
+                # Note: We only process the lower triangle, so j <= i
+                for j in (k + 1):i
+                    idx_jk = (k - 1) * STRIDE + j  # L[j, k] (Row value)
+                    idx_ij = (j - 1) * STRIDE + i  # L[i, j] (Target to update)
+
+                    # L_ik is in register (fast). 
+                    # tile[idx_jk] is shared mem read.
+                    # tile[idx_ij] is accumulator.
+                    @inbounds tile[idx_ij] = muladd(-L_ik, tile[idx_jk], tile[idx_ij])
+                end
+            end
+            i += MAX_THREADS
+        end
         @synchronize
     end
 
-    # write back to globalmem
+    # 4. Write Back (Shared -> Global)
     idx = tx
     while idx <= total_elements
         c = div(idx - 1, N) + 1
         r = rem(idx - 1, N) + 1
         s_idx = (c - 1) * STRIDE + r
-        
         @inbounds A[r, c] = tile[s_idx]
         idx += MAX_THREADS
     end
