@@ -121,7 +121,7 @@ end
         idx += MAX_THREADS
     end
 
-    @synchronize
+    # @synchronize
 
     for k in 1:N
         # one thread does sqrt
