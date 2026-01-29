@@ -135,7 +135,8 @@ function cholesky_lower!(A)
         if k_end < N
             A_panel = view(A, (k_end + 1):N, k:k_end)
 
-            RightUpperTRSM!(Transpose(A_diag), A_panel)
+            # RightUpperTRSM!(Transpose(A_diag), A_panel)
+            unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A_diag, A_off_diag)
             # CUBLAS.trsm!('R', 'L', 'T', 'N', one(eltype(A)), A_diag, A_panel)
             
             A_trailing = view(A, (k_end + 1):N, (k_end + 1):N)

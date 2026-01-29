@@ -106,6 +106,8 @@ end
     # put block into shared memory 
     tile = @localmem eltype(A) (BLOCK_SIZE * STRIDE)
 
+    stride = @groupsize()[1]
+
     total_elements = N * N
     idx = tx
 
@@ -118,10 +120,10 @@ end
         s_idx = (c - 1) * STRIDE + r
         
         @inbounds tile[s_idx] = A[r, c]
-        idx += MAX_THREADS
+        idx += stride
     end
 
-    # @synchronize
+    @synchronize
 
     for k in 1:N
         # one thread does sqrt
@@ -133,15 +135,16 @@ end
         @synchronize
 
         # division is now parallelized 
-        diag = @inbounds tile[diag_idx]
+        # diag = @inbounds tile[diag_idx]
+        inv_diag = 1.0f0 / @inbounds tile[diag_idx]
         idx = k + tx 
         while idx <= N
             s_idx = (k - 1) * STRIDE + idx
-            @inbounds tile[s_idx] /= diag
-            idx += MAX_THREADS
+            @inbounds tile[s_idx] *= inv_diag
+            idx += stride
         end
 
-        # @synchronize
+        @synchronize
 
         # Elimination step
         # updates submatrix to right/bottom
@@ -151,13 +154,13 @@ end
         if len > 0
             limit = len * len
             t_idx = tx_32 - Int32(1) 
-            stride = Int32(MAX_THREADS)
+            dyn_stride = Int32(stride)
 
             # precalculate offsets to avoid division inside loop
             col_offset = div(t_idx, len)
             row_offset = rem(t_idx, len)
-            stride_c = div(stride, len)
-            stride_r = rem(stride, len)
+            stride_c = div(dyn_stride, len)
+            stride_r = rem(dyn_stride, len)
             
             while t_idx < limit
                 if row_offset >= col_offset
@@ -171,7 +174,7 @@ end
                 end
                 
                 # manual index updates to avoid modulo operations
-                t_idx += stride
+                t_idx += dyn_stride
                 col_offset += stride_c
                 row_offset += stride_r
 
@@ -182,7 +185,7 @@ end
             end
         end
 
-        # @synchronize
+        @synchronize
     end
 
     # Zero out upper triangle
@@ -204,7 +207,7 @@ end
         s_idx = (c - 1) * STRIDE + r
         
         @inbounds A[r, c] = tile[s_idx]
-        idx += MAX_THREADS
+        idx += stride
     end
 end
 
@@ -225,17 +228,20 @@ function cholesky_lower_left!(A)
         end
         
         A_diag = view(A, k:k_end, k:k_end)
+
+        needed = nextpow(2, blk_len * blk_len)
+        actual_threads = clamp(needed, 32, MAX_THREADS)
         
         kernel = chol_kernel_lower!(backend, MAX_THREADS)
-        kernel(A_diag, blk_len; ndrange=MAX_THREADS)
+        kernel(A_diag, blk_len; ndrange=actual_threads)
         # KernelAbstractions.synchronize(backend)
         
         if k_end < N
             A_off_diag = view(A, (k_end + 1):N, k:k_end)
             
-            # CUBLAS.trsm!('R', 'L', 'T', 'N', one(eltype(A)), A_diag, A_off_diag)
+            CUBLAS.trsm!('R', 'L', 'T', 'N', one(eltype(A)), A_diag, A_off_diag)
             # RightUpperTRSM!(Transpose(A_diag), A_panel)
-            unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A_diag, A_off_diag)
+            # unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A_diag, A_off_diag)
         end
     end
 
