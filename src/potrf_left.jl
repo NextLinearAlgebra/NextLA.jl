@@ -228,7 +228,7 @@ function cholesky_lower_left!(A)
         
         kernel = chol_kernel_lower!(backend, MAX_THREADS)
         kernel(A_diag, blk_len; ndrange=MAX_THREADS)
-        KernelAbstractions.synchronize(backend)
+        # KernelAbstractions.synchronize(backend)
         
         if k_end < N
             A_off_diag = view(A, (k_end + 1):N, k:k_end)
