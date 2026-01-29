@@ -3,7 +3,7 @@ using CUDA
 using LinearAlgebra
 
 
-const MAX_THREADS = 512 
+const MAX_THREADS = 1024 
 const BLOCK_SIZE = 64
 const PAD = 1
 const STRIDE = BLOCK_SIZE + PAD
