@@ -203,14 +203,14 @@ function unified_rec(func::Char, side::Char, uplo::Char,
     n = size(A, 1)
 
     if n <= threshold
-        B_type = eltype(B)
-        swapped_uplo = (uplo == 'U') ? 'L' : 'U'
-        if func == 'S'
-            dispatch_trsm!(side, swapped_uplo, 'T', 'N', one(B_type), A_orig, B)
-        else 
-            dispatch_trmm!(side, swapped_uplo, 'T', 'N', one(B_type), A_orig, B)
-        end
-        return B
+        # B_type = eltype(B)
+        # swapped_uplo = (uplo == 'U') ? 'L' : 'U'
+        # if func == 'S'
+        #     dispatch_trsm!(side, swapped_uplo, 'T', 'N', one(B_type), A_orig, B)
+        # else 
+        #     dispatch_trmm!(side, swapped_uplo, 'T', 'N', one(B_type), A_orig, B)
+        # end
+        # return B
         # if func == 'S'
         #     if (eltype(A) == Float16)
         #         B_temp = Float32.(B)
@@ -247,6 +247,29 @@ function unified_rec(func::Char, side::Char, uplo::Char,
         #     end
         # end
         # return B
+        if func == 'S'
+            if side == 'L' && uplo == 'L'
+                LeftLowerTRSM!(A, B)
+            elseif side == 'L' && uplo == 'U'
+                LeftUpperTRSM!(A, B)
+            elseif side == 'R' && uplo == 'L'
+                RightLowerTRSM!(A, B)
+            else
+                RightUpperTRSM!(A, B)   
+            end
+        else 
+            if side == 'L' && uplo == 'L'
+                LeftLowerTRMM!(A, B)
+            elseif side == 'L' && uplo == 'U'
+                LeftUpperTRMM!(A, B)
+            elseif side == 'R' && uplo == 'L'
+                RightLowerTRMM!(A, B)
+            else
+                RightUpperTRMM!(A, B)
+            end
+        
+        end
+        return B
 
     end
 
