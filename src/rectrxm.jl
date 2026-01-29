@@ -305,61 +305,62 @@ function unified_rec(func::Char, side::Char, uplo::Char,
 
     n = size(A, 1)
     if n <= threshold
-        if func == 'S'
-            dispatch_trsm!(side, uplo, 'N', 'N', one(T), A, B)
-            # if (eltype(A) == Float16)
-            #     B_temp = Float32.(B)
-            #     CUBLAS.trsm!(side, uplo, 'N', 'N', one(T), Float32.(A), B_temp)
-            #     copy!(B, B_temp) 
-            #     # if side == 'L' && uplo == 'L'
-            #     #     LeftLowerTRSM!(A, B)
-            #     # elseif side == 'L' && uplo == 'U'
-            #     #     LeftUpperTRSM!(A, B)
-            #     # elseif side == 'R' && uplo == 'L'
-            #     #     RightLowerTRSM!(A, B)
-            #     # else
-            #     #     RightUpperTRSM!(A, B)   
-            #     # end
-            # else
-            #     CUBLAS.trsm!(side, uplo, 'N', 'N', one(T), A, B)
-            # end
-        else 
-            dispatch_trmm!(side, uplo, 'N', 'N', one(T), A, B)
-            # if (eltype(A) == Float16)
-            #     if side == 'L' && uplo == 'L'
-            #         LeftLowerTRMM!(A, B)
-            #     elseif side == 'L' && uplo == 'U'
-            #         LeftUpperTRMM!(A, B)
-            #     elseif side == 'R' && uplo == 'L'
-            #         RightLowerTRMM!(A, B)
-            #     else
-            #         RightUpperTRMM!(A, B)
-            #     end
-            # else
-            #     CUBLAS.trmm!(side, uplo, 'N', 'N', one(T), A, B, B)
-            # end
-        end
         # if func == 'S'
-        #     if side == 'L' && uplo == 'L'
-        #         LeftLowerTRSM!(A, B)
-        #     elseif side == 'L' && uplo == 'U'
-        #         LeftUpperTRSM!(A, B)
-        #     elseif side == 'R' && uplo == 'L'
-        #         RightLowerTRSM!(A, B)
-        #     else
-        #         RightUpperTRSM!(A, B)   
-        #     end
-        # else
-        #     if side == 'L' && uplo == 'L'
-        #         LeftLowerTRMM!(A, B)
-        #     elseif side == 'L' && uplo == 'U'
-        #         LeftUpperTRMM!(A, B)
-        #     elseif side == 'R' && uplo == 'L'
-        #         RightLowerTRMM!(A, B)
-        #     else
-        #         RightUpperTRMM!(A, B)
-        #     end
-        # end 
+        #     # dispatch_trsm!(side, uplo, 'N', 'N', one(T), A, B)
+        #     # if (eltype(A) == Float16)
+        #     #     B_temp = Float32.(B)
+        #     #     CUBLAS.trsm!(side, uplo, 'N', 'N', one(T), Float32.(A), B_temp)
+        #     #     copy!(B, B_temp) 
+        #     #     # if side == 'L' && uplo == 'L'
+        #     #     #     LeftLowerTRSM!(A, B)
+        #     #     # elseif side == 'L' && uplo == 'U'
+        #     #     #     LeftUpperTRSM!(A, B)
+        #     #     # elseif side == 'R' && uplo == 'L'
+        #     #     #     RightLowerTRSM!(A, B)
+        #     #     # else
+        #     #     #     RightUpperTRSM!(A, B)   
+        #     #     # end
+        #     # else
+        #     #     CUBLAS.trsm!(side, uplo, 'N', 'N', one(T), A, B)
+        #     # end
+        # else 
+        #     dispatch_trmm!(side, uplo, 'N', 'N', one(T), A, B)
+        #     # if (eltype(A) == Float16)
+        #     #     if side == 'L' && uplo == 'L'
+        #     #         LeftLowerTRMM!(A, B)
+        #     #     elseif side == 'L' && uplo == 'U'
+        #     #         LeftUpperTRMM!(A, B)
+        #     #     elseif side == 'R' && uplo == 'L'
+        #     #         RightLowerTRMM!(A, B)
+        #     #     else
+        #     #         RightUpperTRMM!(A, B)
+        #     #     end
+        #     # else
+        #     #     CUBLAS.trmm!(side, uplo, 'N', 'N', one(T), A, B, B)
+        #     # end
+            
+        # end
+        if func == 'S'
+            if side == 'L' && uplo == 'L'
+                LeftLowerTRSM!(A, B)
+            elseif side == 'L' && uplo == 'U'
+                LeftUpperTRSM!(A, B)
+            elseif side == 'R' && uplo == 'L'
+                RightLowerTRSM!(A, B)
+            else
+                RightUpperTRSM!(A, B)   
+            end
+        else
+            if side == 'L' && uplo == 'L'
+                LeftLowerTRMM!(A, B)
+            elseif side == 'L' && uplo == 'U'
+                LeftUpperTRMM!(A, B)
+            elseif side == 'R' && uplo == 'L'
+                RightLowerTRMM!(A, B)
+            else
+                RightUpperTRMM!(A, B)
+            end
+        end 
         
         return B    
     end
