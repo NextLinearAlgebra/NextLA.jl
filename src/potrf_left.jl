@@ -130,7 +130,7 @@ end
             @inbounds tile[diag_idx] = sqrt(tile[diag_idx])
         end
 
-        # @synchronize
+        @synchronize
 
         # division is now parallelized 
         diag = @inbounds tile[diag_idx]
@@ -141,7 +141,7 @@ end
             idx += MAX_THREADS
         end
 
-        @synchronize
+        # @synchronize
 
         # Elimination step
         # updates submatrix to right/bottom
