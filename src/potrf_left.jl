@@ -235,7 +235,7 @@ function cholesky_lower_left!(A)
             
             # CUBLAS.trsm!('R', 'L', 'T', 'N', one(eltype(A)), A_diag, A_off_diag)
             # RightUpperTRSM!(Transpose(A_diag), A_panel)
-            unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A_diag, A_off_diag)
+            unified_rectrxm!('R', 'U', 'N', 1.0, 'S', Transpose(A_diag), A_off_diag)
         end
     end
 
