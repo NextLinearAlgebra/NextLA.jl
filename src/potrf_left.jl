@@ -41,7 +41,8 @@ const STRIDE = BLOCK_SIZE + PAD
                 
                 # load curr val into register (val)
                 idx_ij = (j - 1) * STRIDE + i
-                val = @inbounds tile[idx_ij]
+                @private val = @inbounds tile[idx_ij]
+                # @private this is how you declare a register accordinf to my advisor 
                 
                 # accumulate updates from other columns
                 for k in 1:(j-1)
