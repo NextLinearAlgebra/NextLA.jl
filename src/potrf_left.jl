@@ -106,7 +106,7 @@ end
     # put block into shared memory 
     tile = @localmem eltype(A) (BLOCK_SIZE * STRIDE)
 
-    stride = @groupsize()[1]
+    stride = MAX_THREADS
 
     total_elements = N * N
     idx = tx
