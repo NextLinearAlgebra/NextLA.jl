@@ -99,15 +99,23 @@ const STRIDE = BLOCK_SIZE + PAD
     idx = tx
 
     #load into shared memory 
-    while idx <= total_elements
+    # while idx <= total_elements
+    #     # julia is column-major
+    #     c = div(idx - 1, N) + 1
+    #     r = rem(idx - 1, N) + 1
+
+    #     s_idx = (c - 1) * STRIDE + r
+        
+    #     @inbounds tile[s_idx] = A[r, c]
+    #     idx += MAX_THREADS
+    # end
+
+    for idx in tx:MAX_THREADS:total_elements
         # julia is column-major
         c = div(idx - 1, N) + 1
         r = rem(idx - 1, N) + 1
-
         s_idx = (c - 1) * STRIDE + r
-        
         @inbounds tile[s_idx] = A[r, c]
-        idx += MAX_THREADS
     end
 
     @synchronize
@@ -125,11 +133,15 @@ const STRIDE = BLOCK_SIZE + PAD
         # division is now parallelized 
         # divide col by diag
         diag = @inbounds tile[diag_idx]
-        idx = k + tx 
-        while idx <= N
+        # idx = k + tx 
+        # while idx <= N
+        #     s_idx = (k - 1) * STRIDE + idx
+        #     @inbounds tile[s_idx] /= diag
+        #     idx += MAX_THREADS
+        # end
+        for idx in (k + tx):MAX_THREADS:N
             s_idx = (k - 1) * STRIDE + idx
             @inbounds tile[s_idx] /= diag
-            idx += MAX_THREADS
         end
 
         @synchronize
@@ -160,38 +172,64 @@ const STRIDE = BLOCK_SIZE + PAD
             current_L_ck = zero(eltype(A))
             
             # loop until this thread has finished its share of the submatrix
-            while t_idx < limit
-                #actual r, c
+            # while t_idx < limit
+            #     #actual r, c
+            #     c = col_offset + Int32(k + 1)
+            #     r = row_offset + Int32(k + 1)
+                
+            #     # the top multiplier (tile[k, c]) stays the same for a whole column
+            #     # if 'c' hasn't changed, reuse the value from the register.
+            #     if c != last_c
+            #         idx_ck = (k - 1) * STRIDE + c
+            #         current_L_ck = @inbounds tile[idx_ck]
+            #         last_c = c
+            #     end
+            #     # indices for the Target (rc) and the Left Multiplier (rk)
+            #     idx_rc = (c - 1) * STRIDE + r
+            #     idx_rk = (k - 1) * STRIDE + r
+                
+            #     # perform the update: A[r,c] = A[r,c] - L[r,k] * L[c,k]
+            #     # idx_ck = (k - 1) * STRIDE + c
+            #     # use muladd instead of * and - for speed
+            #     @inbounds tile[idx_rc] = muladd(-tile[idx_rk], current_L_ck, tile[idx_rc])
+                
+            #     # manual index updates to avoid modulo operations; update by stride
+            #     t_idx += stride
+            #     col_offset += stride_c
+            #     row_offset += stride_r
+
+            #     #wrap around logic
+            #     if row_offset >= len
+            #         row_offset -= len
+            #         col_offset += Int32(1)
+            #     end
+                
+            # end
+
+            for t_idx in start_t:stride:(limit - Int32(1))
                 c = col_offset + Int32(k + 1)
                 r = row_offset + Int32(k + 1)
                 
-                # the top multiplier (tile[k, c]) stays the same for a whole column
-                # if 'c' hasn't changed, reuse the value from the register.
+                # Register caching logic
                 if c != last_c
                     idx_ck = (k - 1) * STRIDE + c
                     current_L_ck = @inbounds tile[idx_ck]
                     last_c = c
                 end
-                # indices for the Target (rc) and the Left Multiplier (rk)
+                
                 idx_rc = (c - 1) * STRIDE + r
                 idx_rk = (k - 1) * STRIDE + r
                 
-                # perform the update: A[r,c] = A[r,c] - L[r,k] * L[c,k]
-                # idx_ck = (k - 1) * STRIDE + c
-                # use muladd instead of * and - for speed
                 @inbounds tile[idx_rc] = muladd(-tile[idx_rk], current_L_ck, tile[idx_rc])
                 
-                # manual index updates to avoid modulo operations; update by stride
-                t_idx += stride
+                # Update offsets (Logic is exactly the same, but t_idx auto-increments)
                 col_offset += stride_c
                 row_offset += stride_r
 
-                #wrap around logic
                 if row_offset >= len
                     row_offset -= len
                     col_offset += Int32(1)
                 end
-                
             end
         end
 
@@ -209,15 +247,21 @@ const STRIDE = BLOCK_SIZE + PAD
     # end
 
     # write results back to global memory 
-    idx = tx
-    while idx <= total_elements
+    # idx = tx
+    # while idx <= total_elements
+    #     c = div(idx - 1, N) + 1
+    #     r = rem(idx - 1, N) + 1
+        
+    #     s_idx = (c - 1) * STRIDE + r
+        
+    #     @inbounds A[r, c] = tile[s_idx]
+    #     idx += MAX_THREADS
+    # end
+    for idx in tx:MAX_THREADS:total_elements
         c = div(idx - 1, N) + 1
         r = rem(idx - 1, N) + 1
-        
         s_idx = (c - 1) * STRIDE + r
-        
         @inbounds A[r, c] = tile[s_idx]
-        idx += MAX_THREADS
     end
 end
 
