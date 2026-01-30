@@ -308,13 +308,13 @@ function cholesky_lower_left!(A)
         k_end = min(k + BLOCK_SIZE - 1, N)
         blk_len = k_end - k + 1
         
-        if k > 1
-            L_prev_cols = view(A, k:N, 1:k-1) 
-            L_prev_top  = view(A, k:k_end, 1:k-1)
-            A_panel     = view(A, k:N, k:k_end)
+        # if k > 1
+        #     L_prev_cols = view(A, k:N, 1:k-1) 
+        #     L_prev_top  = view(A, k:k_end, 1:k-1)
+        #     A_panel     = view(A, k:N, k:k_end)
             
-            CUBLAS.gemm!('N', 'T', -one(eltype(A)), L_prev_cols, L_prev_top, one(eltype(A)), A_panel)
-        end
+        #     CUBLAS.gemm!('N', 'T', -one(eltype(A)), L_prev_cols, L_prev_top, one(eltype(A)), A_panel)
+        # end
         
         A_diag = view(A, k:k_end, k:k_end)
         
@@ -322,13 +322,13 @@ function cholesky_lower_left!(A)
         kernel(A_diag, blk_len; ndrange=MAX_THREADS)
         # KernelAbstractions.synchronize(backend)
         
-        # if k_end < N
-        #     A_off_diag = view(A, (k_end + 1):N, k:k_end)
+        if k_end < N
+            A_off_diag = view(A, (k_end + 1):N, k:k_end)
             
-        #     # CUBLAS.trsm!('R', 'L', 'T', 'N', one(eltype(A)), A_diag, A_off_diag)
-        #     # RightUpperTRSM!(Transpose(A_diag), A_panel)
-        #     unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A_diag, A_off_diag)
-        # end
+            # CUBLAS.trsm!('R', 'L', 'T', 'N', one(eltype(A)), A_diag, A_off_diag)
+            # RightUpperTRSM!(Transpose(A_diag), A_panel)
+            unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A_diag, A_off_diag)
+        end
     end
 
     KernelAbstractions.synchronize(backend)
