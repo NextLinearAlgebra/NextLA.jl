@@ -110,9 +110,9 @@ const STRIDE = BLOCK_SIZE + PAD
         idx += MAX_THREADS
     end
 
-    # @synchronize
+    @synchronize
 
-    # #iterate thru diagonal k
+    #iterate thru diagonal k
     # for k in 1:N
     #     # one thread does sqrt
     #     diag_idx = (k - 1) * STRIDE + k
@@ -198,27 +198,27 @@ const STRIDE = BLOCK_SIZE + PAD
     #     @synchronize
     # end
 
-    # # Zero out upper triangle - got rid of this bc unneccesary 
-    # # istart = (tx - 1) * ops_per_thread + 1
-    # # iend = min(N, istart + ops_per_thread - 1)
+    # Zero out upper triangle - got rid of this bc unneccesary 
+    # istart = (tx - 1) * ops_per_thread + 1
+    # iend = min(N, istart + ops_per_thread - 1)
 
-    # # for i in istart:iend
-    # #     for j in (i+1):N
-    # #         A[i, j] = 0
-    # #     end
-    # # end
-
-    # # write results back to global memory 
-    # idx = tx
-    # while idx <= total_elements
-    #     c = div(idx - 1, N) + 1
-    #     r = rem(idx - 1, N) + 1
-        
-    #     s_idx = (c - 1) * STRIDE + r
-        
-    #     @inbounds A[r, c] = tile[s_idx]
-    #     idx += MAX_THREADS
+    # for i in istart:iend
+    #     for j in (i+1):N
+    #         A[i, j] = 0
+    #     end
     # end
+
+    # write results back to global memory 
+    idx = tx
+    while idx <= total_elements
+        c = div(idx - 1, N) + 1
+        r = rem(idx - 1, N) + 1
+        
+        s_idx = (c - 1) * STRIDE + r
+        
+        @inbounds A[r, c] = tile[s_idx]
+        idx += MAX_THREADS
+    end
 end
 
 #version w row in register
