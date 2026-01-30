@@ -89,192 +89,192 @@ end
 
 
 #right looking cholesky kernel
-# @kernel function chol_kernel_lower!(A, N)
-#     tx = @index(Global, Linear)
-
-#     # put block into shared memory 
-#     tile = @localmem eltype(A) (BLOCK_SIZE * STRIDE)
-
-#     total_elements = N * N
-#     idx = tx
-
-#     #load into shared memory 
-#     while idx <= total_elements
-#         # julia is column-major
-#         c = div(idx - 1, N) + 1
-#         r = rem(idx - 1, N) + 1
-
-#         s_idx = (c - 1) * STRIDE + r
-        
-#         @inbounds tile[s_idx] = A[r, c]
-#         idx += MAX_THREADS
-#     end
-
-#     @synchronize
-
-#     for k in 1:N
-#         # one thread does sqrt
-#         diag_idx = (k - 1) * STRIDE + k
-#         if tx == 1
-#             @inbounds tile[diag_idx] = sqrt(tile[diag_idx])
-#         end
-
-#         @synchronize
-
-#         # division is now parallelized 
-#         diag = @inbounds tile[diag_idx]
-#         idx = k + tx 
-#         while idx <= N
-#             s_idx = (k - 1) * STRIDE + idx
-#             @inbounds tile[s_idx] /= diag
-#             idx += MAX_THREADS
-#         end
-
-#         @synchronize
-
-#         # Elimination step
-#         # updates submatrix to right/bottom
-        
-#         len = Int32(N - k)
-#         tx_32 = Int32(tx)
-#         if len > 0
-#             limit = len * len
-#             t_idx = tx_32 - Int32(1) 
-#             stride = Int32(MAX_THREADS)
-
-#             # precalculate offsets to avoid division inside loop
-#             col_offset = div(t_idx, len)
-#             row_offset = rem(t_idx, len)
-#             stride_c = div(stride, len)
-#             stride_r = rem(stride, len)
-            
-#             while t_idx < limit
-#                 if row_offset >= col_offset
-#                     r = row_offset + Int32(k + 1)
-#                     c = col_offset + Int32(k + 1)
-#                     idx_rc = (c - 1) * STRIDE + r
-#                     idx_rk = (k - 1) * STRIDE + r
-#                     idx_ck = (k - 1) * STRIDE + c
-#                     # use muladd instead of * and - for speed
-#                     @inbounds tile[idx_rc] = muladd(-tile[idx_rk], tile[idx_ck], tile[idx_rc])
-#                 end
-                
-#                 # manual index updates to avoid modulo operations
-#                 t_idx += stride
-#                 col_offset += stride_c
-#                 row_offset += stride_r
-
-#                 if row_offset >= len
-#                     row_offset -= len
-#                     col_offset += Int32(1)
-#                 end
-#             end
-#         end
-
-#         @synchronize
-#     end
-
-#     # Zero out upper triangle
-#     # istart = (tx - 1) * ops_per_thread + 1
-#     # iend = min(N, istart + ops_per_thread - 1)
-
-#     # for i in istart:iend
-#     #     for j in (i+1):N
-#     #         A[i, j] = 0
-#     #     end
-#     # end
-
-#     # write results back to global memory 
-#     idx = tx
-#     while idx <= total_elements
-#         c = div(idx - 1, N) + 1
-#         r = rem(idx - 1, N) + 1
-        
-#         s_idx = (c - 1) * STRIDE + r
-        
-#         @inbounds A[r, c] = tile[s_idx]
-#         idx += MAX_THREADS
-#     end
-# end
-
-#version w row in register
 @kernel function chol_kernel_lower!(A, N)
     tx = @index(Global, Linear)
-    
-    # shmem
+
+    # put block into shared memory 
     tile = @localmem eltype(A) (BLOCK_SIZE * STRIDE)
 
-    # load into shmem
     total_elements = N * N
     idx = tx
+
+    #load into shared memory 
     while idx <= total_elements
+        # julia is column-major
         c = div(idx - 1, N) + 1
         r = rem(idx - 1, N) + 1
+
         s_idx = (c - 1) * STRIDE + r
+        
         @inbounds tile[s_idx] = A[r, c]
         idx += MAX_THREADS
     end
 
     @synchronize
 
-    # main loop
     for k in 1:N
-        
-        # sqrt step
+        # one thread does sqrt
         diag_idx = (k - 1) * STRIDE + k
         if tx == 1
             @inbounds tile[diag_idx] = sqrt(tile[diag_idx])
         end
+
         @synchronize
 
-        # read diagonal once into reg
-        diag_val = @inbounds tile[diag_idx] 
-        
-        r_idx = k + tx
-        while r_idx <= N
-            s_idx = (k - 1) * STRIDE + r_idx
-            @inbounds tile[s_idx] /= diag_val
-            r_idx += MAX_THREADS
+        # division is now parallelized 
+        diag = @inbounds tile[diag_idx]
+        idx = k + tx 
+        while idx <= N
+            s_idx = (k - 1) * STRIDE + idx
+            @inbounds tile[s_idx] /= diag
+            idx += MAX_THREADS
         end
+
         @synchronize
 
-        # elimination
-        # assign threads to rows
-        r = (k + 1) + (tx - 1)
+        # Elimination step
+        # updates submatrix to right/bottom
         
-        while r <= N
-            # load L[r, k] into a register variable `L_rk`.
-            L_rk_idx = (k - 1) * STRIDE + r
-            L_rk = @inbounds tile[L_rk_idx]
+        len = Int32(N - k)
+        tx_32 = Int32(tx)
+        if len > 0
+            limit = len * len
+            t_idx = tx_32 - Int32(1) 
+            stride = Int32(MAX_THREADS)
 
-            # iterate over columns c 
-            for c in (k + 1):r
-                L_ck_idx = (k - 1) * STRIDE + c
-                
-                A_rc_idx = (c - 1) * STRIDE + r
-
-                L_ck = @inbounds tile[L_ck_idx]
-
-                @inbounds tile[A_rc_idx] = muladd(-L_rk, L_ck, tile[A_rc_idx])
-            end
+            # precalculate offsets to avoid division inside loop
+            col_offset = div(t_idx, len)
+            row_offset = rem(t_idx, len)
+            stride_c = div(stride, len)
+            stride_r = rem(stride, len)
             
-            # move to next row
-            r += MAX_THREADS
+            while t_idx < limit
+                if row_offset >= col_offset
+                    r = row_offset + Int32(k + 1)
+                    c = col_offset + Int32(k + 1)
+                    idx_rc = (c - 1) * STRIDE + r
+                    idx_rk = (k - 1) * STRIDE + r
+                    idx_ck = (k - 1) * STRIDE + c
+                    # use muladd instead of * and - for speed
+                    @inbounds tile[idx_rc] = muladd(-tile[idx_rk], tile[idx_ck], tile[idx_rc])
+                end
+                
+                # manual index updates to avoid modulo operations
+                t_idx += stride
+                col_offset += stride_c
+                row_offset += stride_r
+
+                if row_offset >= len
+                    row_offset -= len
+                    col_offset += Int32(1)
+                end
+            end
         end
 
         @synchronize
     end
 
-    # write to global mem
+    # Zero out upper triangle
+    # istart = (tx - 1) * ops_per_thread + 1
+    # iend = min(N, istart + ops_per_thread - 1)
+
+    # for i in istart:iend
+    #     for j in (i+1):N
+    #         A[i, j] = 0
+    #     end
+    # end
+
+    # write results back to global memory 
     idx = tx
     while idx <= total_elements
         c = div(idx - 1, N) + 1
         r = rem(idx - 1, N) + 1
+        
         s_idx = (c - 1) * STRIDE + r
+        
         @inbounds A[r, c] = tile[s_idx]
         idx += MAX_THREADS
     end
 end
+
+#version w row in register
+# @kernel function chol_kernel_lower!(A, N)
+#     tx = @index(Global, Linear)
+    
+#     # shmem
+#     tile = @localmem eltype(A) (BLOCK_SIZE * STRIDE)
+
+#     # load into shmem
+#     total_elements = N * N
+#     idx = tx
+#     while idx <= total_elements
+#         c = div(idx - 1, N) + 1
+#         r = rem(idx - 1, N) + 1
+#         s_idx = (c - 1) * STRIDE + r
+#         @inbounds tile[s_idx] = A[r, c]
+#         idx += MAX_THREADS
+#     end
+
+#     @synchronize
+
+#     # main loop
+#     for k in 1:N
+        
+#         # sqrt step
+#         diag_idx = (k - 1) * STRIDE + k
+#         if tx == 1
+#             @inbounds tile[diag_idx] = sqrt(tile[diag_idx])
+#         end
+#         @synchronize
+
+#         # read diagonal once into reg
+#         diag_val = @inbounds tile[diag_idx] 
+        
+#         r_idx = k + tx
+#         while r_idx <= N
+#             s_idx = (k - 1) * STRIDE + r_idx
+#             @inbounds tile[s_idx] /= diag_val
+#             r_idx += MAX_THREADS
+#         end
+#         @synchronize
+
+#         # elimination
+#         # assign threads to rows
+#         r = (k + 1) + (tx - 1)
+        
+#         while r <= N
+#             # load L[r, k] into a register variable `L_rk`.
+#             L_rk_idx = (k - 1) * STRIDE + r
+#             L_rk = @inbounds tile[L_rk_idx]
+
+#             # iterate over columns c 
+#             for c in (k + 1):r
+#                 L_ck_idx = (k - 1) * STRIDE + c
+                
+#                 A_rc_idx = (c - 1) * STRIDE + r
+
+#                 L_ck = @inbounds tile[L_ck_idx]
+
+#                 @inbounds tile[A_rc_idx] = muladd(-L_rk, L_ck, tile[A_rc_idx])
+#             end
+            
+#             # move to next row
+#             r += MAX_THREADS
+#         end
+
+#         @synchronize
+#     end
+
+#     # write to global mem
+#     idx = tx
+#     while idx <= total_elements
+#         c = div(idx - 1, N) + 1
+#         r = rem(idx - 1, N) + 1
+#         s_idx = (c - 1) * STRIDE + r
+#         @inbounds A[r, c] = tile[s_idx]
+#         idx += MAX_THREADS
+#     end
+# end
 
 function cholesky_lower_left!(A)
     N = size(A, 1)
