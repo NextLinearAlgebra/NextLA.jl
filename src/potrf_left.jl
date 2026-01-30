@@ -123,7 +123,6 @@ const STRIDE = BLOCK_SIZE + PAD
 
         # division is now parallelized 
         diag = @inbounds tile[diag_idx]
-        # inv_diag = @inbounds one(diag) / diag
         idx = k + tx 
         while idx <= N
             s_idx = (k - 1) * STRIDE + idx
@@ -153,8 +152,8 @@ const STRIDE = BLOCK_SIZE + PAD
             current_L_ck = zero(eltype(A))
             
             while t_idx < limit
-                c = col_offset + Int32(k + 1)
                 if row_offset >= col_offset
+                    c = col_offset + Int32(k + 1)
                     r = row_offset + Int32(k + 1)
                     if c != last_c
                         idx_ck = (k - 1) * STRIDE + c
