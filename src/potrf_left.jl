@@ -89,7 +89,7 @@ const STRIDE = BLOCK_SIZE + PAD
 
 
 #right looking cholesky kernel
-@kernel function chol_kernel_lower!(A, ::Val{N}) where N
+@kernel cpu=false inbounds=true unsafe_indices=false function chol_kernel_lower!(A, ::Val{N}) where N
     tx = @index(Global, Linear)
 
     # put block into shared memory 
@@ -198,16 +198,6 @@ const STRIDE = BLOCK_SIZE + PAD
         @synchronize
     end
 
-    # Zero out upper triangle - got rid of this bc unneccesary 
-    # istart = (tx - 1) * ops_per_thread + 1
-    # iend = min(N, istart + ops_per_thread - 1)
-
-    # for i in istart:iend
-    #     for j in (i+1):N
-    #         A[i, j] = 0
-    #     end
-    # end
-
     # write results back to global memory 
     idx = tx
     while idx <= total_elements
@@ -216,7 +206,11 @@ const STRIDE = BLOCK_SIZE + PAD
         
         s_idx = (c - 1) * STRIDE + r
         
-        @inbounds A[r, c] = tile[s_idx]
+        # @inbounds A[r, c] = tile[s_idx]
+
+        if r >= c
+            @inbounds A[r, c] = tile[s_idx]
+        end
         idx += MAX_THREADS
     end
 end
@@ -313,13 +307,13 @@ function cholesky_lower_left!(A)
             L_prev_top  = view(A, k:k_end, 1:k-1)
             A_panel     = view(A, k:N, k:k_end)
             
-            CUBLAS.gemm!('N', 'T', -one(eltype(A)), L_prev_cols, L_prev_top, one(eltype(A)), A_panel)
+            # CUBLAS.gemm!('N', 'T', -one(eltype(A)), L_prev_cols, L_prev_top, one(eltype(A)), A_panel)
         end
         
         A_diag = view(A, k:k_end, k:k_end)
         
-        kernel = chol_kernel_lower!(backend, MAX_THREADS)
-        kernel(A_diag, Val(blk_len); ndrange=MAX_THREADS)
+        # kernel = chol_kernel_lower!(backend, MAX_THREADS)
+        # kernel(A_diag, Val(blk_len); ndrange=MAX_THREADS)
         # KernelAbstractions.synchronize(backend)
         
         if k_end < N
@@ -327,7 +321,7 @@ function cholesky_lower_left!(A)
             
             # CUBLAS.trsm!('R', 'L', 'T', 'N', one(eltype(A)), A_diag, A_off_diag)
             # RightUpperTRSM!(Transpose(A_diag), A_panel)
-            unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A_diag, A_off_diag)
+            # unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A_diag, A_off_diag)
         end
     end
 
