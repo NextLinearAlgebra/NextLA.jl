@@ -152,20 +152,18 @@ const STRIDE = BLOCK_SIZE + PAD
             current_L_ck = zero(eltype(A))
             
             while t_idx < limit
-                if row_offset >= col_offset
-                    c = col_offset + Int32(k + 1)
-                    r = row_offset + Int32(k + 1)
-                    if c != last_c
-                        idx_ck = (k - 1) * STRIDE + c
-                        current_L_ck = @inbounds tile[idx_ck]
-                        last_c = c
-                    end
-                    idx_rc = (c - 1) * STRIDE + r
-                    idx_rk = (k - 1) * STRIDE + r
-                    # idx_ck = (k - 1) * STRIDE + c
-                    # use muladd instead of * and - for speed
-                    @inbounds tile[idx_rc] = muladd(-tile[idx_rk], current_L_ck, tile[idx_rc])
+                c = col_offset + Int32(k + 1)
+                r = row_offset + Int32(k + 1)
+                if c != last_c
+                    idx_ck = (k - 1) * STRIDE + c
+                    current_L_ck = @inbounds tile[idx_ck]
+                    last_c = c
                 end
+                idx_rc = (c - 1) * STRIDE + r
+                idx_rk = (k - 1) * STRIDE + r
+                # idx_ck = (k - 1) * STRIDE + c
+                # use muladd instead of * and - for speed
+                @inbounds tile[idx_rc] = muladd(-tile[idx_rk], current_L_ck, tile[idx_rc])
                 
                 # manual index updates to avoid modulo operations
                 t_idx += stride
