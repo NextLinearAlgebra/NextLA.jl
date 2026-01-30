@@ -95,10 +95,6 @@ end
     # put block into shared memory 
     tile = @localmem eltype(A) (BLOCK_SIZE * STRIDE)
 
-    #register for multiplier & diag
-    multiplier = @private eltype(A) (1,)
-    # diag_val = @private eltype(A) (1,)
-
     total_elements = N * N
     idx = tx
 
@@ -126,11 +122,11 @@ end
         @synchronize
 
         # division is now parallelized 
-        diag_val = @inbounds tile[diag_idx] #register holds the diagonal val
+        diag = @inbounds tile[diag_idx]
         idx = k + tx 
         while idx <= N
             s_idx = (k - 1) * STRIDE + idx
-            @inbounds tile[s_idx] /= diag_val
+            @inbounds tile[s_idx] /= diag
             idx += MAX_THREADS
         end
 
@@ -138,61 +134,42 @@ end
 
         # Elimination step
         # updates submatrix to right/bottom
-
-        c = (k + 1) + (tx - 1) # Parallelize over columns
         
-        while c <= N
-            # load in register
-            ck_idx = (k - 1) * STRIDE + c
-            @inbounds multiplier[1] = tile[ck_idx]
+        len = Int32(N - k)
+        tx_32 = Int32(tx)
+        if len > 0
+            limit = len * len
+            t_idx = tx_32 - Int32(1) 
+            stride = Int32(MAX_THREADS)
 
-            # update rows in col
-            for r in c:N
-                rc_idx = (c - 1) * STRIDE + r 
-                rk_idx = (k - 1) * STRIDE + r 
+            # precalculate offsets to avoid division inside loop
+            col_offset = div(t_idx, len)
+            row_offset = rem(t_idx, len)
+            stride_c = div(stride, len)
+            stride_r = rem(stride, len)
+            
+            while t_idx < limit
+                if row_offset >= col_offset
+                    r = row_offset + Int32(k + 1)
+                    c = col_offset + Int32(k + 1)
+                    idx_rc = (c - 1) * STRIDE + r
+                    idx_rk = (k - 1) * STRIDE + r
+                    idx_ck = (k - 1) * STRIDE + c
+                    # use muladd instead of * and - for speed
+                    @inbounds tile[idx_rc] = muladd(-tile[idx_rk], tile[idx_ck], tile[idx_rc])
+                end
                 
-                #use maladd for speed
-                @inbounds tile[rc_idx] = muladd(-tile[rk_idx], multiplier[1], tile[rc_idx])
+                # manual index updates to avoid modulo operations
+                t_idx += stride
+                col_offset += stride_c
+                row_offset += stride_r
+
+                if row_offset >= len
+                    row_offset -= len
+                    col_offset += Int32(1)
+                end
             end
-            
-            c += MAX_THREADS
         end
-        
-        # len = Int32(N - k)
-        # tx_32 = Int32(tx)
-        # if len > 0
-        #     limit = len * len
-        #     t_idx = tx_32 - Int32(1) 
-        #     stride = Int32(MAX_THREADS)
-
-        #     # precalculate offsets to avoid division inside loop
-        #     col_offset = div(t_idx, len)
-        #     row_offset = rem(t_idx, len)
-        #     stride_c = div(stride, len)
-        #     stride_r = rem(stride, len)
-            
-        #     while t_idx < limit
-        #         if row_offset >= col_offset
-        #             r = row_offset + Int32(k + 1)
-        #             c = col_offset + Int32(k + 1)
-        #             idx_rc = (c - 1) * STRIDE + r
-        #             idx_rk = (k - 1) * STRIDE + r
-        #             idx_ck = (k - 1) * STRIDE + c
-        #             # use muladd instead of * and - for speed
-        #             @inbounds tile[idx_rc] = muladd(-tile[idx_rk], tile[idx_ck], tile[idx_rc])
-        #         end
-                
-        #         # manual index updates to avoid modulo operations
-        #         t_idx += stride
-        #         col_offset += stride_c
-        #         row_offset += stride_r
-
-        #         if row_offset >= len
-        #             row_offset -= len
-        #             col_offset += Int32(1)
-        #         end
-        #     end
-        # end
 
         @synchronize
     end
