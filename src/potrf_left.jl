@@ -90,10 +90,10 @@ const STRIDE = BLOCK_SIZE + PAD
 
 #right looking cholesky kernel
 @kernel cpu=false inbounds=true unsafe_indices=false function chol_kernel_lower!(A, ::Val{N}) where N
-    tx = @index(Global, Linear)
+    tx = @index(Global, Linear) #change global to local? 
 
     # put block into shared memory 
-    tile = @localmem eltype(A) (BLOCK_SIZE * STRIDE) #stride prevents bank conflicts
+    tile = @localmem eltype(A) (BLOCK_SIZE * STRIDE) #stride prevents bank conflicts [64][65]
 
     total_elements = N * N
     idx = tx
@@ -179,7 +179,7 @@ const STRIDE = BLOCK_SIZE + PAD
                 # perform the update: A[r,c] = A[r,c] - L[r,k] * L[c,k]
                 # idx_ck = (k - 1) * STRIDE + c
                 # use muladd instead of * and - for speed
-                @inbounds tile[idx_rc] = muladd(-tile[idx_rk], current_L_ck, tile[idx_rc])
+                # @inbounds tile[idx_rc] = muladd(-tile[idx_rk], current_L_ck, tile[idx_rc])
                 
                 # manual index updates to avoid modulo operations; update by stride
                 t_idx += stride
