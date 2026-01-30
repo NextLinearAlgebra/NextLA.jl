@@ -93,7 +93,7 @@ const STRIDE = BLOCK_SIZE + PAD
     tx = @index(Global, Linear)
 
     # put block into shared memory 
-    tile = @localmem eltype(A) (BLOCK_SIZE * STRIDE)
+    tile = @localmem eltype(A) (BLOCK_SIZE * STRIDE) #stride prevents bank conflicts
 
     total_elements = N * N
     idx = tx
@@ -112,6 +112,7 @@ const STRIDE = BLOCK_SIZE + PAD
 
     @synchronize
 
+    #iterate thru diagonal k
     for k in 1:N
         # one thread does sqrt
         diag_idx = (k - 1) * STRIDE + k
@@ -122,6 +123,7 @@ const STRIDE = BLOCK_SIZE + PAD
         @synchronize
 
         # division is now parallelized 
+        # divide col by diag
         diag = @inbounds tile[diag_idx]
         idx = k + tx 
         while idx <= N
@@ -134,57 +136,69 @@ const STRIDE = BLOCK_SIZE + PAD
 
         # Elimination step
         # updates submatrix to right/bottom
+        # treat the 2D submatrix as a 1D flat array to balance work evenly (quicker than doing it by row)
         
-        len = Int32(N - k)
+        len = Int32(N - k) #size of submatrix
         tx_32 = Int32(tx)
         if len > 0
-            limit = len * len
+            limit = len * len #total items to process
+
+            # map thread ID to the starting index in the flattened submatrix
             t_idx = tx_32 - Int32(1) 
             stride = Int32(MAX_THREADS)
 
-            # precalculate offsets to avoid division inside loop
+            # initial r, c
             col_offset = div(t_idx, len)
             row_offset = rem(t_idx, len)
+
+            # precalculate how much R/C change per stride to avoid division inside loop
             stride_c = div(stride, len)
             stride_r = rem(stride, len)
 
+            #register for tile[idx_ck] (because it is repeated sometimes)
             last_c = Int32(-1)
             current_L_ck = zero(eltype(A))
             
+            # loop until this thread has finished its share of the submatrix
             while t_idx < limit
+                #actual r, c
                 c = col_offset + Int32(k + 1)
                 r = row_offset + Int32(k + 1)
+                
+                # the top multiplier (tile[k, c]) stays the same for a whole column
+                # if 'c' hasn't changed, reuse the value from the register.
                 if c != last_c
                     idx_ck = (k - 1) * STRIDE + c
                     current_L_ck = @inbounds tile[idx_ck]
                     last_c = c
                 end
+                # indices for the Target (rc) and the Left Multiplier (rk)
                 idx_rc = (c - 1) * STRIDE + r
                 idx_rk = (k - 1) * STRIDE + r
+                
+                # perform the update: A[r,c] = A[r,c] - L[r,k] * L[c,k]
                 # idx_ck = (k - 1) * STRIDE + c
                 # use muladd instead of * and - for speed
                 @inbounds tile[idx_rc] = muladd(-tile[idx_rk], current_L_ck, tile[idx_rc])
                 
-                # manual index updates to avoid modulo operations
+                # manual index updates to avoid modulo operations; update by stride
                 t_idx += stride
                 col_offset += stride_c
                 row_offset += stride_r
 
+                #wrap around logic
                 if row_offset >= len
                     row_offset -= len
                     col_offset += Int32(1)
                 end
                 
-                wrap = Int32(row_offset >= len)
-                row_offset -= len * wrap 
-                col_offset += wrap
             end
         end
 
         @synchronize
     end
 
-    # Zero out upper triangle
+    # Zero out upper triangle - got rid of this bc unneccesary 
     # istart = (tx - 1) * ops_per_thread + 1
     # iend = min(N, istart + ops_per_thread - 1)
 
