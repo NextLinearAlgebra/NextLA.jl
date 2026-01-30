@@ -174,6 +174,10 @@ const STRIDE = BLOCK_SIZE + PAD
                     row_offset -= len
                     col_offset += Int32(1)
                 end
+                
+                wrap = Int32(row_offset >= len)
+                row_offset -= len * wrap 
+                col_offset += wrap
             end
         end
 
