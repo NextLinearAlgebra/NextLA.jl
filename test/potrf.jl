@@ -26,7 +26,7 @@ end
     println("\nRunning Accuracy Tests...")
     for n in n_sizes
         # Generate PD Matrix
-        A_rand = rand(Float32, n, n)
+        A_rand = rand(Float64, n, n)
         A_host = A_rand * A_rand' + n * I 
         
         L_ref = cholesky(A_host).L
@@ -64,7 +64,7 @@ function run_chol_benchmark()
 
     for n in n_sizes
         # Setup PD Matrix
-        A_rand = rand(Float32, n, n)
+        A_rand = rand(Float64, n, n)
         A_host = A_rand * A_rand' + n * I 
         
         d_A_init = CuArray(A_host) # Source for resets

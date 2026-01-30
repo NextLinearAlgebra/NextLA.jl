@@ -147,16 +147,24 @@ end
             row_offset = rem(t_idx, len)
             stride_c = div(stride, len)
             stride_r = rem(stride, len)
+
+            last_c = Int32(-1)
+            current_L_ck = zero(eltype(A))
             
             while t_idx < limit
+                c = col_offset + Int32(k + 1)
                 if row_offset >= col_offset
                     r = row_offset + Int32(k + 1)
-                    c = col_offset + Int32(k + 1)
+                    if c != last_c
+                        idx_ck = (k - 1) * STRIDE + c
+                        current_L_ck = @inbounds tile[idx_ck]
+                        last_c = c
+                    end
                     idx_rc = (c - 1) * STRIDE + r
                     idx_rk = (k - 1) * STRIDE + r
-                    idx_ck = (k - 1) * STRIDE + c
+                    # idx_ck = (k - 1) * STRIDE + c
                     # use muladd instead of * and - for speed
-                    @inbounds tile[idx_rc] = muladd(-tile[idx_rk], tile[idx_ck], tile[idx_rc])
+                    @inbounds tile[idx_rc] = muladd(-tile[idx_rk], current_L_ck, tile[idx_rc])
                 end
                 
                 # manual index updates to avoid modulo operations
