@@ -9,83 +9,83 @@ const PAD = 1
 const STRIDE = BLOCK_SIZE + PAD
 
 # left looking cholesky kernel
-@kernel function chol_kernel_left!(A, N)
-    tx = @index(Global, Linear)
+# @kernel function chol_kernel_left!(A, N)
+#     tx = @index(Global, Linear)
     
-    # shared memory alloc
-    tile = @localmem eltype(A) (BLOCK_SIZE * STRIDE)
+#     # shared memory alloc
+#     tile = @localmem eltype(A) (BLOCK_SIZE * STRIDE)
 
-    # load into shmem
-    total_elements = N * N
-    idx = tx
-    while idx <= total_elements
-        c = div(idx - 1, N) + 1
-        r = rem(idx - 1, N) + 1
-        s_idx = (c - 1) * STRIDE + r
+#     # load into shmem
+#     total_elements = N * N
+#     idx = tx
+#     while idx <= total_elements
+#         c = div(idx - 1, N) + 1
+#         r = rem(idx - 1, N) + 1
+#         s_idx = (c - 1) * STRIDE + r
         
-        @inbounds tile[s_idx] = A[r, c]
-        idx += MAX_THREADS
-    end
+#         @inbounds tile[s_idx] = A[r, c]
+#         idx += MAX_THREADS
+#     end
 
-    @synchronize
+#     @synchronize
 
-    # main factorization
-    for k in 1:N
+#     # main factorization
+#     for k in 1:N
         
-        # sqrt diag
-        if tx == 1
-            idx_kk = (k - 1) * STRIDE + k
-            @inbounds tile[idx_kk] = sqrt(tile[idx_kk])
-        end
-        @synchronize
+#         # sqrt diag
+#         if tx == 1
+#             idx_kk = (k - 1) * STRIDE + k
+#             @inbounds tile[idx_kk] = sqrt(tile[idx_kk])
+#         end
+#         @synchronize
 
-        # take col k
-        diag_val = tile[(k - 1) * STRIDE + k]
+#         # take col k
+#         diag_val = tile[(k - 1) * STRIDE + k]
         
-        # scale rows i > k in column k
-        i = tx
-        while i <= N
-            if i > k
-                idx_ik = (k - 1) * STRIDE + i
-                @inbounds tile[idx_ik] /= diag_val
-            end
-            i += MAX_THREADS
-        end
-        @synchronize
+#         # scale rows i > k in column k
+#         i = tx
+#         while i <= N
+#             if i > k
+#                 idx_ik = (k - 1) * STRIDE + i
+#                 @inbounds tile[idx_ik] /= diag_val
+#             end
+#             i += MAX_THREADS
+#         end
+#         @synchronize
 
-        # update trailing submatrix A[i, j] = A[i, j] - L[i, k] * L[j, k]' for all i,j > k
+#         # update trailing submatrix A[i, j] = A[i, j] - L[i, k] * L[j, k]' for all i,j > k
         
-        # assign threads to handle rows 'i' in the trailing submatrix
-        i = tx
-        while i <= N
-            if i > k
+#         # assign threads to handle rows 'i' in the trailing submatrix
+#         i = tx
+#         while i <= N
+#             if i > k
                 
-                # load L[i, k] (the factor from the pivot column) into a register
-                idx_ik = (k - 1) * STRIDE + i
-                @private L_ik = @inbounds tile[idx_ik] 
+#                 # load L[i, k] (the factor from the pivot column) into a register
+#                 idx_ik = (k - 1) * STRIDE + i
+#                 @private L_ik = @inbounds tile[idx_ik] 
 
-                for j in (k + 1):i
-                    idx_jk = (k - 1) * STRIDE + j  
-                    idx_ij = (j - 1) * STRIDE + i  
+#                 for j in (k + 1):i
+#                     idx_jk = (k - 1) * STRIDE + j  
+#                     idx_ij = (j - 1) * STRIDE + i  
 
-                    @inbounds tile[idx_ij] = muladd(-L_ik, tile[idx_jk], tile[idx_ij])
-                end
-            end
-            i += MAX_THREADS
-        end
-        @synchronize
-    end
+#                     @inbounds tile[idx_ij] = muladd(-L_ik, tile[idx_jk], tile[idx_ij])
+#                 end
+#             end
+#             i += MAX_THREADS
+#         end
+#         @synchronize
+#     end
 
-    # write back
-    idx = tx
-    while idx <= total_elements
-        c = div(idx - 1, N) + 1
-        r = rem(idx - 1, N) + 1
-        s_idx = (c - 1) * STRIDE + r
-        @inbounds A[r, c] = tile[s_idx]
-        idx += MAX_THREADS
-    end
-end
+#     # write back
+#     idx = tx
+#     while idx <= total_elements
+#         c = div(idx - 1, N) + 1
+#         r = rem(idx - 1, N) + 1
+#         s_idx = (c - 1) * STRIDE + r
+#         @inbounds A[r, c] = tile[s_idx]
+#         idx += MAX_THREADS
+#     end
+# end
 
 
 #right looking cholesky kernel
@@ -122,11 +122,12 @@ end
         @synchronize
 
         # division is now parallelized 
-        diag = @inbounds tile[diag_idx]
+        # diag = @inbounds tile[diag_idx]
+        inv_diag = @inbounds 1.0f0 / diag
         idx = k + tx 
         while idx <= N
             s_idx = (k - 1) * STRIDE + idx
-            @inbounds tile[s_idx] /= diag
+            @inbounds tile[s_idx] *= inv_diag
             idx += MAX_THREADS
         end
 
