@@ -236,7 +236,7 @@ function slasd6!(icompq::Integer, nl::Integer, nr::Integer, sqre::Integer, d::Ab
     work[beta] = work[beta]/orgnrm
 
     slasd7!(icompq, nl, nr, sqre, @view iwork[k:k], d, z, @view work[iw:ivfw-1], vf, @view work[ivfw:ivlw-1], vl,
-            @view work[ivlw:4*m], @view work[alpha:alpha], @view work[beta:beta], @view work[isigma:iw-1], @view iwork[idx:idxc-1], @view iwork[idxp:3*n],
+            @view work[ivlw:4*m], work[alpha], @view work[beta:beta], @view work[isigma:iw-1], @view iwork[idx:idxc-1], @view iwork[idxp:3*n],
             idxq, perm, @view iwork[givptr:givptr], givcol, ldgcol, givnum, ldgnum, @view work[c:c], @view work[s:s], @view iwork[info:info])
 
     slasd8!(icompq, iwork[k], d, z, vf, vl, difl, difr, ldgnum, @view work[isigma:isigma+iwork[k]], @view work[iw:iw+3*iwork[k]], @view iwork[info:info])

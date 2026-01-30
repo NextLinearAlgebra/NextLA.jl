@@ -1,20 +1,23 @@
 using LinearAlgebra
+using LinearAlgebra: BlasInt, libblastrampoline
+using LinearAlgebra.BLAS: @blasfunc
 
-function slasd7!(icompq::Integer, nl::Integer, nr::Integer, sqre::Integer, k::AbstractVector{Integer},
+function lasd7!(icompq::S, nl::S, nr::S, sqre::S, k::AbstractVector{<:Integer},
     d::AbstractVector{T}, z::AbstractVector{T}, zw::AbstractVector{T},
     vf::AbstractVector{T}, vfw::AbstractVector{T}, vl::AbstractVector{T},
-    vlw::AbstractVector{T}, alpha::AbstractVector{T}, beta::AbstractVector{T},
-    dsigma::AbstractVector{T}, idx::AbstractVector{Integer}, idxp::AbstractVector{Integer},
-    idxq::AbstractVector{Integer}, perm::AbstractVector{Integer}, givptr::AbstractVector{Integer}, givcol::AbstractMatrix{Integer},
-    ldgcol::Integer, givnum::AbstractMatrix{T}, ldgnum::Integer, c::AbstractVector{T},
-    s::AbstractVector{T}, info::AbstractVector{Integer}) where {T <:AbstractFloat}
+    vlw::AbstractVector{T}, alpha::T, beta::T,
+    dsigma::AbstractVector{T}, idx::AbstractVector{<:Integer}, idxp::AbstractVector{<:Integer},
+    idxq::AbstractVector{<:Integer}, perm::AbstractVector{<:Integer}, givptr::AbstractVector{<:Integer}, givcol::AbstractMatrix{<:Integer},
+    ldgcol::S, givnum::AbstractMatrix{T}, ldgnum::S, c::AbstractVector{T},
+    s::AbstractVector{T}, info::AbstractVector{<:Integer}) where {T <:AbstractFloat, S <:Integer}
+
     #=
-        k, alpha, beta, givptr, c, and s are in vectors of size one so that we can 
+        k, givptr, c, and s are in vectors of size one so that we can 
             save space by preallocating the memory and make the memory contiguous
 
     =#
 
-    info[1] = 0
+    info .= 0
 
     n = nl + nr + 1
 
@@ -22,52 +25,54 @@ function slasd7!(icompq::Integer, nl::Integer, nr::Integer, sqre::Integer, k::Ab
 
     if icompq < 0 || icompq > 1
 
-        info[1] = -1
+        info .= -1
     elseif nl < 1
-        info[1] = -2
+        info .= -2
     elseif nr < 1
-        info[1] = -3
+        info .= -3
     elseif sqre < 0 || sqre > 1
-        info[1] = -4
+        info .= -4
     elseif ldgcol < n
-        info[1] = -22
+        info .= -22
     elseif ldgnum < n
-        info[1] = -24
+        info .= -24
     end
 
     if info[1] != 0
         return
     end
+
     nlp1 = nl + 1
     nlp2 = nl + 2
     if icompq == 1
-        givptr[1] = 0
+        givptr .= 0
     end
+    
     #=     
         Generate the first part of the vector Z and move the singular
         values in the first part of D one position backward.
     =#
 
-    z1 = alpha[1]*vl[nlp1]
-    vl[nlp1] = zero(eltype(vl))
+    z1 = alpha*vl[nlp1]
+    vl[nlp1] = zero(T)
     tau = vf[nlp1]
-
     for i in nl:-1:1
-        z[i+1] = alpha[1]*vl[i]
-        vl[i] = zero(eltype(vl))
+        z[i+1] = alpha*vl[i]
+        vl[i] = zero(T)
         vf[i+1] = vf[i]
         d[i+1] = d[i]
         idxq[i+1] = idxq[i]+1
     end
-
+    
     vf[1] = tau
-
+    
     # Generate the second part of the vector Z.
-
+    
     for i in nlp2:m
-        z[i] = beta[1]*vf[i]
-        vf[i] = zero(eltype(vf))
+        z[i] = beta*vf[i]
+        vf[i] = zero(T)
     end
+    
 
     # Sort the singular values into increasing order
     idxq[nlp2:n] .+= nlp1
@@ -80,9 +85,9 @@ function slasd7!(icompq::Integer, nl::Integer, nr::Integer, sqre::Integer, k::Ab
         vlw[i] = vl[idxq[i]]
     end
 
-    slamrg!(nl, nr, @view dsigma[2:end], 1, 1, @view idx[2:end])
+    slamrg!(nl, nr, view(dsigma, 2:n), 1, 1, view(idx, 2:n))
 
-    for i in 2:N
+    for i in 2:n
         idxi = 1 + idx[i]
         d[i] = dsigma[idxi]
         z[i] = zw[idxi]
@@ -90,10 +95,30 @@ function slasd7!(icompq::Integer, nl::Integer, nr::Integer, sqre::Integer, k::Ab
         vl[i] = vlw[idxi]
     end
 
+
     # Calculate the allowable deflation tolerance
-    mach_eps = eps(eltype(s))
-    tol = max(abs(alpha[1]), abs[beta[1]])
-    tol = 16*one(tol)*eps*max(abs(d[n]), tol)
+    tol = max(abs(alpha), abs(beta))
+    mach_eps = 0
+
+    if T == Float32
+        mach_eps = ccall(
+                            (@blasfunc(slamch_), libblastrampoline),
+                            Float32,
+                            (Ref{UInt8},),
+                            UInt8('E')
+                        )
+    elseif T ==  Float64
+        mach_eps = ccall(
+                            (@blasfunc(dlamch_), libblastrampoline),
+                            Float64,
+                            (Ref{UInt8},),
+                            UInt8('E')
+                        )
+    else
+        mach_eps = eps(T)
+    end
+    # tol = T(64)*eps(T)*max(abs(d[n]), tol)
+    tol = T(64)*mach_eps*max(abs(d[n]), tol)
 
     #=
         There are 2 kinds of deflation -- first a value in the z-vector
@@ -116,58 +141,54 @@ function slasd7!(icompq::Integer, nl::Integer, nr::Integer, sqre::Integer, k::Ab
         corresponding components of Z are zero in this new basis.
     =#
 
-    k = 1
+    k .= 1
     k2 = n + 1
     jprev = 0
-    j = 2
-    while j <= n
+    for j in 2:n
         if abs(z[j]) <= tol
-            k2 = k2 - 1
-            idxp[k2] = jul
+            k2 -=  1
+            idxp[k2] = j
             if j  == n
+                jprev = 0
                 break
             end
         else
             jprev = j
             break
         end
-        j += 1
     end
-    
-    if j != n
+
+    if jprev > 0
         j = jprev
 
-        while true
+        while j < n
             j += 1
-            if j > n
-                break
-            end
-
             if abs(z[j]) <= tol
-
                 # Deflate due to small z component.
-
                 k2 -= 1
-                idxp[kn] = j
+                idxp[k2] = j
             else
                 # Check if singular values are close enough to allow deflation.
+                # if abs(d[j]-d[jprev]) <= tol
                 if abs(d[j]-d[jprev]) <= tol
-                    s[1]  = z[jprev]
-                    c[1] = z[j]
+                    
+                    s .= z[jprev]
+                    c .= z[j]
                     # Find sqrt(a**2+b**2) without overflow or
                     # destructive underflow.
 
                     tau = hypot(c[1], s[1])
-
+ 
                     z[j] = tau
-                    c[1] = c[1] / tau
-                    s[1] = -s[1] / tau
+                    z[jprev] = zero(T)
+                    c .= c[1] / tau
+                    s .= -s[1] / tau
 
                     # Record the appropriate Givens rotation
 
                     if icompq == 1
-                        givptr[1] += 1
-                        idxjp = idxp[idx[jprev]+1]
+                        givptr .+= 1
+                        idxjp = idxq[idx[jprev]+1]
                         idxj = idxq[idx[j]+1]
 
                         if idxjp <= nlp1
@@ -185,28 +206,27 @@ function slasd7!(icompq::Integer, nl::Integer, nr::Integer, sqre::Integer, k::Ab
                         givnum[givptr[1], 1] = s[1]
                     end
 
-                    srot(1, @view vf[jprev:jprev], 1, @view vf[j:j], 1, c[1], s[1])
-                    srot(1, @view vl[jprev:jprev], 1, @view vl[j:j], 1, c[1], s[1])
+                    srot!(1, view(vf, jprev:jprev), 1, view(vf, j:j), 1, c[1], s[1])
+                    srot!(1, view(vl,jprev:jprev), 1, view(vl, j:j), 1, c[1], s[1])
 
                     k2 -= 1
                     idxp[k2] = jprev
                     jprev = j
-
-
+                else
+                    k .+= 1
+                    zw[k[1]] = z[jprev]
+                    dsigma[k[1]] = d[jprev]
+                    idxp[k[1]] = jprev
+                    jprev = j
                 end
 
-                k[1] += 1
-                zq[k[1]] = z[jprev]
-                dsigma[k[1]] = d[jprev]
-                idxp[k[1]] = jprev
-                jprev = j
             end
         end
 
         # Record the last singular value
 
-        k[1] += 1
-        zq[k[1]] = z[jprev]
+        k .+= 1
+        zw[k[1]] = z[jprev]
         dsigma[k[1]] = d[jprev]
         idxp[k[1]] = jprev
 
@@ -215,7 +235,6 @@ function slasd7!(icompq::Integer, nl::Integer, nr::Integer, sqre::Integer, k::Ab
     # Sort the singular values into DSIGMA. The singular values which
     # were not deflated go into the first K slots of DSIGMA, except
     # that DSIGMA(1) is treated separately.
-
     for j in 2:n
 
         jp = idxp[j]
@@ -227,17 +246,17 @@ function slasd7!(icompq::Integer, nl::Integer, nr::Integer, sqre::Integer, k::Ab
     if icompq == 1
         for j in 2:n
             jp = idxp[j]
-            perm[j] = idxp[idx[jp]+1]
+            perm[j] = idxq[idx[jp]+1]
             if perm[j] <= nlp1
                 perm[j] -= 1
             end
         end
     end
     r = k[1]+1:n
-    copyto!(@view d[r], @view dsigma[r])
+    copyto!(view(d, r), view(dsigma, r))
 
-    dsigma[1] = zero(eltype(dsigma))
-    hlftol = tol/(2*one(tol))
+    dsigma[1] = zero(T)
+    hlftol = tol/(T(2))
 
     if abs(dsigma[2]) <= hlftol
         dsigma[2] = hlftol
@@ -248,16 +267,16 @@ function slasd7!(icompq::Integer, nl::Integer, nr::Integer, sqre::Integer, k::Ab
 
         if z[1] <= tol
             
-            c[1] = one(c[1])
-            s[1] = zero(s[1])
+            c  .= one(c[1])
+            s .= zero(s[1])
             z[1] = tol
         else
-            c[1] = z1/z[1]
-            s[1] = -z[m]/z[1]
+            c .= z1/z[1]
+            s .= -z[m]/z[1]
         end
 
-        srot(1, @view vf[m:m], 1, @view vf[1:1], 1, c[1], s[1])
-        srot(1, @view vl[m:m], 1, @view vl[1:1], 1, c[1], s[1])
+        srot!(1, view(vf, m:m), 1, view(vf, 1:1), 1, c[1], s[1])
+        srot!(1, view(vl, m:m), 1, view(vl, 1:1), 1, c[1], s[1])
     else
         if abs(z1) <= tol
             z[1] = tol
@@ -267,10 +286,10 @@ function slasd7!(icompq::Integer, nl::Integer, nr::Integer, sqre::Integer, k::Ab
     end
 
     r = 2:k[1]
-    copyto!(z[r], zw[r])
+    copyto!(view(z, r), view(zw, r))
     r = 2:n
-    copyto!(vf[r], vfw[r])
-    copyto!(vl[r], vlw[r])
+    copyto!(view(vf, r), view(vfw,r))
+    copyto!(view(vl, r), view(vlw, r))
 
 
 end

@@ -86,17 +86,17 @@ Parameters
 
 =#
 
-function slasd8!(icompq::Integer, k::Integer, d::AbstractVector{T}, z::AbstractVector{T},
+function slasd8!(icompq::S, k::S, d::AbstractVector{T}, z::AbstractVector{T},
                 vf::AbstractVector{T}, vl::AbstractVector{T}, difl::AbstractVector{T},
-                difr::AbstractMatrix{T}, lddifr::Integer,
-                dsigma::AbstractVector{T}, work::AbstractVector{T}, info::AbstractVector{Integer}) where {T <: AbstractFloat}
+                difr::AbstractMatrix{T}, lddifr::S,
+                dsigma::AbstractVector{T}, work::AbstractVector{T}, info::AbstractVector{S}) where {T <: AbstractFloat, S<:Integer}
     #=
         Important to note that info is just a vector of 1x1. We used a vector so we
             can preallocate the memory
     =#
     
     info[1] = 0
-
+    # println("Starting function")
     if icompq < 0 || icompq > 1
         info[1] = -1
     elseif k < 1
@@ -105,7 +105,7 @@ function slasd8!(icompq::Integer, k::Integer, d::AbstractVector{T}, z::AbstractV
         info[1] = -9
     end
 
-    if info != 0
+    if info[1] != 0
         return
     end
 
@@ -129,23 +129,40 @@ function slasd8!(icompq::Integer, k::Integer, d::AbstractVector{T}, z::AbstractV
 
     #normalize z
     rho = norm(z)
-
+    if rho == 0 || isnan(rho)
+        info .= -4
+        return
+    end
     z ./= rho
     rho *= rho
-
     #initialize work[iwk3]
-
-    work[iwk3:iwk3+k] .= one(T)
-
+    work[iwk3:iwk3+k-1] .= one(T)
+    # println("z: $z")
+    
     #Compute the updated singular values, the arrays difl, difr, and the updated z
-
+    # println("k: $k")
     for j in 1:k
         #Need to add this function
-        slasd4!(k, j, dsigma, z, @view work[iwk1:iwk2-1], rho,
-        @view d[j:j], @view work[iwk2:iwk3-1], info)
+        # println("Starting slasd4")
+        # println("slasd8 disgma length: $(length(dsigma))")
+        # println("work: $work")
+        # println("dsigma: $dsigma")
+        # println("z: $z")
+        # println("d: $d")
+        # println("info: $info")
+        # println("lasd8 sigma before: $(d[j])")
+        lasd4!(k, j, dsigma, z, view(work, iwk1:iwk2-1), rho,
+        view(d, j:j), view(work, iwk2:iwk3-1), info)
+        # println("lasd8 sigma after: $(d[j])")
+        # println("work: $work")
+        # println("dsigma: $dsigma")
+        # println("z: $z")
+        # println("d: $d")
+        # println("info: $info")
+        # println("")
+        # println("Finishing slasd4")
 
         if info[1] != 0
-
             return
         end
 
@@ -154,19 +171,28 @@ function slasd8!(icompq::Integer, k::Integer, d::AbstractVector{T}, z::AbstractV
         difr[j,1] = -work[j+1]
 
         for i in 1:j-1
-            work[iwk3i+i] = work[iwk3i+i]*work[i]*work[iwk2i+i]/(dsigma[i] - dsigma[j])/(dsigma[i]+dsigma[j])
+            work[iwk3i+i] = (work[iwk3i+i]*work[i]*
+                            work[iwk2i+i]/(dsigma[i] - dsigma[j])
+                            /(dsigma[i]+dsigma[j]))
+
+        end
+        for i in j+1:k
+            work[iwk3i+i] = (work[iwk3i+i]*work[i]*
+                            work[iwk2i+i]/(dsigma[i] - dsigma[j])
+                            /(dsigma[i]+dsigma[j]))
 
         end
     end
 
+
     for i in 1:k
-        z[i] = sign(sqrt(abs(work[iwk3i+i])))*z[i]
+        z[i] = (z[i] > 0 ? 1 : -1)*sqrt(abs(work[iwk3i+i]))
     end
 
     for j in 1:k
         diflj = difl[j]
         dj = d[j]
-        dsigj = -disgma[j]
+        dsigj = -dsigma[j]
 
         if j < k
             difrj = -difr[j, 1]
@@ -176,24 +202,26 @@ function slasd8!(icompq::Integer, k::Integer, d::AbstractVector{T}, z::AbstractV
         work[j] = -z[j] / diflj / (dsigma[j] + dj)
 
         for i in 1:j-1
-            work[i] = z[i] / ((dsigma[i] + dsigj) - diflj) / (disgma[i] + dj)
+            work[i] = z[i] / ((dsigma[i] + dsigj) - diflj) / (dsigma[i] + dj)
         end
         
         for i in j+1:k
-            work[i] = z[i] / ((disgma[i] + dsigjp) + difrj) / (dsigma[i] + dj)
+            work[i] = z[i] / ((dsigma[i] + dsigjp) + difrj) / (dsigma[i] + dj)
         end
 
-        temp = norm(@view work[1:k])
+        temp = norm(view(work, 1:k))
 
-        work[iwk2i + j] = dot(@view work[1:k], vf) / temp
-        work[iwk3i + j] = dot(@view work[1:k], vl) / temp
+        work[iwk2i + j] = dot(view(work, 1:k), vf) / temp
+        work[iwk3i + j] = dot(view(work, 1:k), vl) / temp
 
         if icompq == 1
             difr[j, 2] = temp
         end
     end
 
-    copyto!(vf, @view work[iwk2:iwk3-1])
-    copyto!(vl, @view work[iwk3:iwk3+k-1])
+    copyto!(vf, view(work, iwk2:iwk3-1))
+    copyto!(vl, view(work, iwk3:iwk3+k-1))
+    # println("d at the end of slasd8: $d")
+    # println("work at the end of slasd8: $work")
 
 end

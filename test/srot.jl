@@ -50,6 +50,7 @@ end
         end
     end
 end
+
 @testset "srot! test random input against rotation matrix medium input" begin
     for T in [Float16, Float32, Float64]
         starting = -T(1e3)

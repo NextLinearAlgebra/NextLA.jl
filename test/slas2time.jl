@@ -12,7 +12,7 @@ using NextLA
 
 function slas2_time(f::Float64, g::Float64, h::Float64, ssmin::Ref{Float64}, ssmax::Ref{Float64})
         return @belapsed ccall(
-            (@blasfunc(slas2_), libblastrampoline),
+            (@blasfunc(dlas2_), libblastrampoline),
                 Cvoid, 
                 (Ref{Float64}, Ref{Float64}, Ref{Float64}, Ref{Float64}, Ref{Float64}),
                 $f, $g, $h, $ssmin, $ssmax
