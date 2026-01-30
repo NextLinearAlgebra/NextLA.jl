@@ -156,7 +156,8 @@ const STRIDE = BLOCK_SIZE + PAD
             limit = len * len #total items to process
 
             # map thread ID to the starting index in the flattened submatrix
-            t_idx = tx_32 - Int32(1) 
+            # t_idx = tx_32 - Int32(1) 
+            start_t = tx_32 - Int32(1)
             stride = Int32(MAX_THREADS)
 
             # initial r, c
