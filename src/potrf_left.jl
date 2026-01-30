@@ -4,7 +4,7 @@ using LinearAlgebra
 
 
 const MAX_THREADS = 512 
-const BLOCK_SIZE = 128
+const BLOCK_SIZE = 64
 const PAD = 1
 const STRIDE = BLOCK_SIZE + PAD
 
