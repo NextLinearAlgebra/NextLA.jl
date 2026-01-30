@@ -97,7 +97,7 @@ end
 
     #register for multiplier & diag
     multiplier = @private eltype(A) (1,)
-    diag_val = @private eltype(A) (1,)
+    # diag_val = @private eltype(A) (1,)
 
     total_elements = N * N
     idx = tx
@@ -126,11 +126,11 @@ end
         @synchronize
 
         # division is now parallelized 
-        @inbounds diag_val[1] = tile[diag_idx] #register holds the diagonal val
+        diag_val = @inbounds tile[diag_idx] #register holds the diagonal val
         idx = k + tx 
         while idx <= N
             s_idx = (k - 1) * STRIDE + idx
-            @inbounds tile[s_idx] /= diag_val[1]
+            @inbounds tile[s_idx] /= diag_val
             idx += MAX_THREADS
         end
 
