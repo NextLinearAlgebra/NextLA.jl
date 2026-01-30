@@ -115,24 +115,24 @@ const STRIDE = BLOCK_SIZE + PAD
     #iterate thru diagonal k
     for k in 1:N
         # one thread does sqrt
-        # diag_idx = (k - 1) * STRIDE + k
-        # if tx == 1
-        #     @inbounds tile[diag_idx] = sqrt(tile[diag_idx])
-        # end
+        diag_idx = (k - 1) * STRIDE + k
+        if tx == 1
+            @inbounds tile[diag_idx] = sqrt(tile[diag_idx])
+        end
 
-        # @synchronize
+        @synchronize
 
-        # # division is now parallelized 
-        # # divide col by diag
-        # diag = @inbounds tile[diag_idx]
-        # idx = k + tx 
-        # while idx <= N
-        #     s_idx = (k - 1) * STRIDE + idx
-        #     @inbounds tile[s_idx] /= diag
-        #     idx += MAX_THREADS
-        # end
+        # division is now parallelized 
+        # divide col by diag
+        diag = @inbounds tile[diag_idx]
+        idx = k + tx 
+        while idx <= N
+            s_idx = (k - 1) * STRIDE + idx
+            @inbounds tile[s_idx] /= diag
+            idx += MAX_THREADS
+        end
 
-        # @synchronize
+        @synchronize
 
         # Elimination step
         # updates submatrix to right/bottom
@@ -322,13 +322,13 @@ function cholesky_lower_left!(A)
         kernel(A_diag, blk_len; ndrange=MAX_THREADS)
         # KernelAbstractions.synchronize(backend)
         
-        if k_end < N
-            A_off_diag = view(A, (k_end + 1):N, k:k_end)
+        # if k_end < N
+        #     A_off_diag = view(A, (k_end + 1):N, k:k_end)
             
-            # CUBLAS.trsm!('R', 'L', 'T', 'N', one(eltype(A)), A_diag, A_off_diag)
-            # RightUpperTRSM!(Transpose(A_diag), A_panel)
-            unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A_diag, A_off_diag)
-        end
+        #     # CUBLAS.trsm!('R', 'L', 'T', 'N', one(eltype(A)), A_diag, A_off_diag)
+        #     # RightUpperTRSM!(Transpose(A_diag), A_panel)
+        #     unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A_diag, A_off_diag)
+        # end
     end
 
     KernelAbstractions.synchronize(backend)
