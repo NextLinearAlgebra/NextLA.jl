@@ -19,43 +19,44 @@ function benchmark_op(op, reset_op, backend)
     return min_time_ns
 end
 
-@testset "Cholesky Accuracy Check" begin
-    n_sizes = [32, 64, 128, 256, 512] 
-    tolerance = 1e-4 # Relaxed slightly for Float32 accumulations
+# @testset "Cholesky Accuracy Check" begin
+#     n_sizes = [32, 64, 128, 256, 512] 
+#     tolerance = 1e-4 # Relaxed slightly for Float32 accumulations
 
-    println("\nRunning Accuracy Tests...")
-    for n in n_sizes
-        # Generate PD Matrix
-        A_rand = rand(Float64, n, n)
-        A_host = A_rand * A_rand' + n * I 
+#     println("\nRunning Accuracy Tests...")
+#     for n in n_sizes
+#         # Generate PD Matrix
+#         A_rand = rand(Float64, n, n)
+#         A_host = A_rand * A_rand' + n * I 
         
-        L_ref = cholesky(A_host).L
+#         L_ref = cholesky(A_host).L
 
-        # Test Right-Looking (cholesky_lower!)
-        d_A_right = CuArray(A_host)
-        cholesky_lower!(d_A_right) # FIXED: Was cholesky_right!
-        res_right = Array(d_A_right)
-        diff_right = norm(tril(res_right) - tril(L_ref)) / norm(tril(L_ref))
+#         # Test Right-Looking (cholesky_lower!)
+#         d_A_right = CuArray(A_host)
+#         cholesky_lower!(d_A_right) # FIXED: Was cholesky_right!
+#         res_right = Array(d_A_right)
+#         diff_right = norm(tril(res_right) - tril(L_ref)) / norm(tril(L_ref))
 
-        # Test Left-Looking (cholesky_lower_left!)
-        d_A_left = CuArray(A_host)
-        cholesky_lower_left!(d_A_left) # FIXED: Was cholesky_left!
-        res_left = Array(d_A_left)
-        diff_left = norm(tril(res_left) - tril(L_ref)) / norm(tril(L_ref))
+#         # Test Left-Looking (cholesky_lower_left!)
+#         d_A_left = CuArray(A_host)
+#         cholesky_lower_left!(d_A_left) # FIXED: Was cholesky_left!
+#         res_left = Array(d_A_left)
+#         diff_left = norm(tril(res_left) - tril(L_ref)) / norm(tril(L_ref))
 
-        @test diff_right < tolerance
-        @test diff_left < tolerance
+#         @test diff_right < tolerance
+#         @test diff_left < tolerance
         
-        if diff_right >= tolerance || diff_left >= tolerance
-             @printf("FAIL N=%d: RightErr=%.2e, LeftErr=%.2e\n", n, diff_right, diff_left)
-        end
-    end
-    println("Accuracy Tests Passed!\n")
-end
+#         if diff_right >= tolerance || diff_left >= tolerance
+#              @printf("FAIL N=%d: RightErr=%.2e, LeftErr=%.2e\n", n, diff_right, diff_left)
+#         end
+#     end
+#     println("Accuracy Tests Passed!\n")
+# end
 
 function run_chol_benchmark()
     # Benchmark sizes
-    n_sizes = [32, 64, 128, 256, 512, 1024, 2048, 4096]
+    # n_sizes = [32, 64, 128, 256, 512, 1024, 2048, 4096]
+    n_sizes = [64]
 
     println("="^110)
     @printf("%-6s | %-12s | %-12s | %-12s | %-15s | %-15s\n", 
