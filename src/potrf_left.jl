@@ -122,7 +122,7 @@ const STRIDE = BLOCK_SIZE + PAD
         @synchronize
 
         # division is now parallelized 
-        # diag = @inbounds tile[diag_idx]
+        diag = @inbounds tile[diag_idx]
         inv_diag = @inbounds one(diag) / diag
         idx = k + tx 
         while idx <= N
