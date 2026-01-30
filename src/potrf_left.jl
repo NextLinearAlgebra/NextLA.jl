@@ -3,7 +3,7 @@ using CUDA
 using LinearAlgebra
 
 
-const MAX_THREADS = 1024 
+const MAX_THREADS = 512 
 const BLOCK_SIZE = 64
 const PAD = 1
 const STRIDE = BLOCK_SIZE + PAD
@@ -12,15 +12,13 @@ const STRIDE = BLOCK_SIZE + PAD
 @kernel function chol_kernel_left!(A, N)
     tx = @index(Global, Linear)
     
-    # 1. Shared Memory Allocation
+    # shared memory alloc
     tile = @localmem eltype(A) (BLOCK_SIZE * STRIDE)
 
-    # 2. Collaborative Load (Global -> Shared)
-    # Same efficient loading pattern you had before
+    # load into shmem
     total_elements = N * N
     idx = tx
     while idx <= total_elements
-        # Map linear index to (r, c)
         c = div(idx - 1, N) + 1
         r = rem(idx - 1, N) + 1
         s_idx = (c - 1) * STRIDE + r
@@ -31,21 +29,20 @@ const STRIDE = BLOCK_SIZE + PAD
 
     @synchronize
 
-    # 3. Main Factorization Loop (Iterate over pivot column 'k')
+    # main factorization
     for k in 1:N
         
-        # A. Square Root Diagonal (Single Thread)
+        # sqrt diag
         if tx == 1
             idx_kk = (k - 1) * STRIDE + k
             @inbounds tile[idx_kk] = sqrt(tile[idx_kk])
         end
         @synchronize
 
-        # B. Scale the Current Column 'k' (Parallel)
-        # We need the diagonal value to scale the rest of the column
+        # take col k
         diag_val = tile[(k - 1) * STRIDE + k]
         
-        # All threads help scale rows i > k in column k
+        # scale rows i > k in column k
         i = tx
         while i <= N
             if i > k
@@ -56,29 +53,21 @@ const STRIDE = BLOCK_SIZE + PAD
         end
         @synchronize
 
-        # C. Update Trailing Submatrix (The Right-Looking "Outer Product")
-        # Goal: A[i, j] = A[i, j] - L[i, k] * L[j, k]' for all i,j > k
+        # update trailing submatrix A[i, j] = A[i, j] - L[i, k] * L[j, k]' for all i,j > k
         
-        # We assign threads to handle rows 'i' in the trailing submatrix
+        # assign threads to handle rows 'i' in the trailing submatrix
         i = tx
         while i <= N
             if i > k
-                # --- REGISTER OPTIMIZATION (The MAGMA trick) ---
-                # Load L[i, k] (the factor from the pivot column) into a REGISTER.
-                # We will reuse this value for every column 'j'.
-                # This saves 1 Shared Memory Read per multiplication compared to your old code.
+                
+                # load L[i, k] (the factor from the pivot column) into a register
                 idx_ik = (k - 1) * STRIDE + i
                 @private L_ik = @inbounds tile[idx_ik] 
 
-                # Loop over columns 'j' to the right of 'k'
-                # Note: We only process the lower triangle, so j <= i
                 for j in (k + 1):i
-                    idx_jk = (k - 1) * STRIDE + j  # L[j, k] (Row value)
-                    idx_ij = (j - 1) * STRIDE + i  # L[i, j] (Target to update)
+                    idx_jk = (k - 1) * STRIDE + j  
+                    idx_ij = (j - 1) * STRIDE + i  
 
-                    # L_ik is in register (fast). 
-                    # tile[idx_jk] is shared mem read.
-                    # tile[idx_ij] is accumulator.
                     @inbounds tile[idx_ij] = muladd(-L_ik, tile[idx_jk], tile[idx_ij])
                 end
             end
@@ -87,7 +76,7 @@ const STRIDE = BLOCK_SIZE + PAD
         @synchronize
     end
 
-    # 4. Write Back (Shared -> Global)
+    # write back
     idx = tx
     while idx <= total_elements
         c = div(idx - 1, N) + 1
@@ -99,12 +88,16 @@ const STRIDE = BLOCK_SIZE + PAD
 end
 
 
-
+#right looking cholesky kernel
 @kernel function chol_kernel_lower!(A, N)
     tx = @index(Global, Linear)
 
     # put block into shared memory 
     tile = @localmem eltype(A) (BLOCK_SIZE * STRIDE)
+
+    #register for multiplier & diag
+    multiplier = @private eltype(A) (1,)
+    diag_val = @private eltype(A) (1,)
 
     total_elements = N * N
     idx = tx
@@ -133,11 +126,11 @@ end
         @synchronize
 
         # division is now parallelized 
-        diag = @inbounds tile[diag_idx]
+        @inbounds diag_val[1] = tile[diag_idx] #register holds the diagonal val
         idx = k + tx 
         while idx <= N
             s_idx = (k - 1) * STRIDE + idx
-            @inbounds tile[s_idx] /= diag
+            @inbounds tile[s_idx] /= diag_val[1]
             idx += MAX_THREADS
         end
 
@@ -145,42 +138,61 @@ end
 
         # Elimination step
         # updates submatrix to right/bottom
+
+        c = (k + 1) + (tx - 1) # Parallelize over columns
         
-        len = Int32(N - k)
-        tx_32 = Int32(tx)
-        if len > 0
-            limit = len * len
-            t_idx = tx_32 - Int32(1) 
-            stride = Int32(MAX_THREADS)
+        while c <= N
+            # load in register
+            ck_idx = (k - 1) * STRIDE + c
+            @inbounds multiplier[1] = tile[ck_idx]
 
-            # precalculate offsets to avoid division inside loop
-            col_offset = div(t_idx, len)
-            row_offset = rem(t_idx, len)
-            stride_c = div(stride, len)
-            stride_r = rem(stride, len)
-            
-            while t_idx < limit
-                if row_offset >= col_offset
-                    r = row_offset + Int32(k + 1)
-                    c = col_offset + Int32(k + 1)
-                    idx_rc = (c - 1) * STRIDE + r
-                    idx_rk = (k - 1) * STRIDE + r
-                    idx_ck = (k - 1) * STRIDE + c
-                    # use muladd instead of * and - for speed
-                    @inbounds tile[idx_rc] = muladd(-tile[idx_rk], tile[idx_ck], tile[idx_rc])
-                end
+            # update rows in col
+            for r in c:N
+                rc_idx = (c - 1) * STRIDE + r 
+                rk_idx = (k - 1) * STRIDE + r 
                 
-                # manual index updates to avoid modulo operations
-                t_idx += stride
-                col_offset += stride_c
-                row_offset += stride_r
-
-                if row_offset >= len
-                    row_offset -= len
-                    col_offset += Int32(1)
-                end
+                #use maladd for speed
+                @inbounds tile[rc_idx] = muladd(-tile[rk_idx], multiplier[1], tile[rc_idx])
             end
+            
+            c += MAX_THREADS
         end
+        
+        # len = Int32(N - k)
+        # tx_32 = Int32(tx)
+        # if len > 0
+        #     limit = len * len
+        #     t_idx = tx_32 - Int32(1) 
+        #     stride = Int32(MAX_THREADS)
+
+        #     # precalculate offsets to avoid division inside loop
+        #     col_offset = div(t_idx, len)
+        #     row_offset = rem(t_idx, len)
+        #     stride_c = div(stride, len)
+        #     stride_r = rem(stride, len)
+            
+        #     while t_idx < limit
+        #         if row_offset >= col_offset
+        #             r = row_offset + Int32(k + 1)
+        #             c = col_offset + Int32(k + 1)
+        #             idx_rc = (c - 1) * STRIDE + r
+        #             idx_rk = (k - 1) * STRIDE + r
+        #             idx_ck = (k - 1) * STRIDE + c
+        #             # use muladd instead of * and - for speed
+        #             @inbounds tile[idx_rc] = muladd(-tile[idx_rk], tile[idx_ck], tile[idx_rc])
+        #         end
+                
+        #         # manual index updates to avoid modulo operations
+        #         t_idx += stride
+        #         col_offset += stride_c
+        #         row_offset += stride_r
+
+        #         if row_offset >= len
+        #             row_offset -= len
+        #             col_offset += Int32(1)
+        #         end
+        #     end
+        # end
 
         @synchronize
     end
