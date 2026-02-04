@@ -3,10 +3,9 @@ using CUDA
 using LinearAlgebra
 
 
-const MAX_THREADS = 768 
-const BLOCK_SIZE = 64
-const PAD = 1
-const STRIDE = BLOCK_SIZE + PAD
+const REG_THREADS = 768
+const N_MATRIX = 64
+const STRIP_WIDTH = 4
 
 # left looking cholesky kernel
 # @kernel function chol_kernel_left!(A, N)
@@ -302,10 +301,8 @@ const STRIDE = BLOCK_SIZE + PAD
 
 
 
-@kernel cpu=false inbounds=true unsafe_indices=false function chol_kernel_lower!(A, ::Val{N}) where N
-    const BLOCK_SIZE = 768 # 24 Warps * 32 Threads
-    const N_MATRIX = 64
-    const STRIP_WIDTH = 4
+@kernel cpu=false inbounds=true unsafe_indices=false function chol_kernel_register!(A, ::Val{N}) where N
+    
     # thread mapping
     # we map 24 warps to vertical strips of the matrix. each strip is 4 columns wide. 64 / 4 = 16 strips.
     
@@ -497,8 +494,8 @@ function cholesky_lower_left!(A)
         
         A_diag = view(A, k:k_end, k:k_end)
         
-        kernel = chol_kernel_lower!(backend, MAX_THREADS)
-        kernel(A_diag, Val(blk_len); ndrange=MAX_THREADS, workgroupsize=MAX_THREADS)
+        kernel = chol_kernel_register!(backend, REG_THREADS)
+        kernel(A_diag, Val(blk_len); ndrange=REG_THREADS, workgroupsize=REG_THREADS)
         # KernelAbstractions.synchronize(backend)
         
         if k_end < N
