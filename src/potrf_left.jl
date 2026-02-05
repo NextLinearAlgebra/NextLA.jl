@@ -415,7 +415,7 @@ const STRIP_WIDTH = 4
         # c2. elimination (the outer product update)
         # this is the heavy lifting: A = A - L * L'
         # we only update if we are below the current diagonal (row > k)
-        if my_row > k 
+        if my_row > k && my_row <= N
             # grabbing the multiplier for my row
             L_rk = @inbounds tile[my_row]
             
