@@ -301,9 +301,9 @@ function cholesky_lower!(A)
         # grabbing the diagonal block to solve with our custom kernel
         A_diag = view(A, k:k_end, k:k_end)
         
-        kernel = chol_kernel_lower!(backend, REG_THREADS)
+        kernel = chol_kernel_lower!(backend, MAX_THREADS)
         # crucial: we must force workgroupsize to be 768 so all threads are in the same block
-        kernel(A_diag, Val(blk_len); ndrange=REG_THREADS, workgroupsize=REG_THREADS)
+        kernel(A_diag, Val(blk_len); ndrange=MAX_THREADS)
         
         # update the panel to the right if we aren't at the end yet
         if k_end < N
