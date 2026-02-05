@@ -61,7 +61,7 @@ function run_chol_benchmark()
 
     println("="^110)
     @printf("%-6s | %-12s | %-12s | %-12s | %-15s | %-15s\n", 
-            "N", "Right (ms)", "Left (ms)", "CUSOLVER(ms)", "Left vs Right", "CUSOLVER vs Left")
+            "N", "Previous (ms)", "Current (ms)", "CUSOLVER(ms)", "Prev vs Current", "CUSOLVER vs Current")
     println("="^110)
 
     for n in n_sizes
