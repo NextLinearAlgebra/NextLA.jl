@@ -3,7 +3,7 @@ using CUDA
 using LinearAlgebra
 
 
-const REG_THREADS = 768
+const REG_THREADS = 768 
 const N_MATRIX = 64
 const STRIP_WIDTH = 4
 
@@ -302,124 +302,109 @@ const STRIP_WIDTH = 4
 
 
 @kernel cpu=false inbounds=true unsafe_indices=false function chol_kernel_register!(A, ::Val{N}) where N
-    
-    # thread mapping
-    # we map 24 warps to vertical strips of the matrix. each strip is 4 columns wide. 64 / 4 = 16 strips.
+    # ---------------------------------------------------------------------
+    # 0. thread mapping
+    # ---------------------------------------------------------------------
+    # ok so we need to figure out which part of the matrix this specific thread owns.
+    # we have 768 threads total (24 warps) and we're splitting the 64x64 matrix 
+    # into vertical strips that are 4 columns wide.
     
     tx = @index(Global, Linear)
     
-    # calculate Warp ID (0-23) and Lane ID (0-31)
     warp_id = (tx - 1) ÷ 32
     lane_id = (tx - 1) % 32
-    
-    # variables to determine which matrix elements this thread owns
-    # my_row: the row index this thread is responsible for
-    # strip_idx: which vertical strip (0-15) this thread owns
     
     my_row = 0
     strip_idx = 0
     
-    # warps 0-15 handle the first 8 strips (cols 1-32). these are the tall strips.
-    # we use 2 Warps per strip: even warps take top half, odd warps take bottom half.
+    # logic for warps 0-15 (cols 1-32):
+    # these columns are "tall" (full height), so one warp isn't enough.
+    # we use 2 warps per strip here. even warps take the top half, odd warps take the bottom.
     if warp_id < 16
         strip_idx = warp_id ÷ 2
         is_bottom = (warp_id % 2) == 1
-        
-        # Lane 0->Row 1, Lane 1->Row 2... (plus 32 if bottom warp)
         my_row = lane_id + 1 + (is_bottom ? 32 : 0)
 
-    # warps 16-23 handle the last 8 strips (cols 33-64). these are short strips.
-    # Because it is Lower Triangular, rows 1-32 are zero here. We only need rows 33-64.
-    # One Warp is enough to cover these 32 rows.
+    # logic for warps 16-23 (cols 33-64):
+    # these columns are "short" because it's a lower triangular matrix.
+    # rows 1-32 are just zeros here, so we only care about rows 33-64.
+    # one warp is enough to cover that.
     else
         strip_idx = 8 + (warp_id - 16)
-        my_row = lane_id + 33 # Start at row 33
+        my_row = lane_id + 33 
     end
 
-    # The first column index this thread owns (1-based)
+    # calculating the start index of the 4 columns this thread is responsible for
     col_start = (strip_idx * STRIP_WIDTH) + 1
     
-    # ========================================================================================
-    # STEP 1: LOAD GLOBAL -> REGISTERS (The Hoard)
-    # ========================================================================================
-    # Create our "Notepad" (Registers). We use MArray to force register usage.
-    # Each thread owns 4 consecutive columns for its specific row.
+    # ---------------------------------------------------------------------
+    # 1. load global -> registers
+    # ---------------------------------------------------------------------
+    # defining our private register array to hold the 4 values.
+    # using ka's native @private syntax instead of mvector to keep the compiler happy.
+    my_vals = @private eltype(A) (4,)
     
-    my_vals = @private MVector{4, eltype(A)}(undef)
-    
-    # Load from Global Memory
-    # Check bounds just in case, though mapping should be perfect for N=64
+    # grabbing the data from global memory.
+    # we gotta make sure we don't read out of bounds.
     if my_row <= N
         for i in 1:STRIP_WIDTH
             c = col_start + (i - 1)
-            # Only load if it's a valid matrix coordinate
             if c <= N 
                 @inbounds my_vals[i] = A[my_row, c]
             else
+                # if we're padding or out of bounds, just fill with zero
                 my_vals[i] = zero(eltype(A))
             end
         end
     end
 
-    # shared memory for broadcasting - one column at a time
+    # allocating a sliver of shared memory.
+    # we only need enough space to hold ONE column (the active one) at a time.
     tile = @localmem eltype(A) N
 
+    # making sure everyone is loaded up before we start mathing
     @synchronize
 
-    # ========================================================================================
-    # STEP 2: THE MAIN LOOP
-    # ========================================================================================
-    
+    # ---------------------------------------------------------------------
+    # 2. main loop
+    # ---------------------------------------------------------------------
+    # iterating down the diagonal...
     for k in 1:N
         
-        # ------------------------------------------------------------------------
-        # PHASE A: BROADCAST (Put active column k into Shared Memory)
-        # ------------------------------------------------------------------------
-        
-        # Am I the owner of the data for column k?
-        # Check if k falls inside my strip [col_start, col_start + 3]
+        # --- a. broadcast active column ---
+        # if i own the data for the current column k, i need to share it with the class.
+        # copying from my private register to the shared memory tile.
         if k >= col_start && k < (col_start + STRIP_WIDTH)
-            # Calculate which local register holds column k
             local_idx = (k - col_start) + 1
-            
-            # Write my value to the shared memory whiteboard
-            # Thread responsible for 'my_row' writes to 'tile[my_row]'
             if my_row <= N
                 @inbounds tile[my_row] = my_vals[local_idx]
             end
         end
 
+        # wait for the owner to finish writing to shared mem
         @synchronize
         
-        # ------------------------------------------------------------------------
-        # PHASE B: DIAGONAL & COLUMN SCALE (Math on the Whiteboard)
-        # ------------------------------------------------------------------------
-        # We do this math on Shared Memory so everyone sees the updated factors.
-        
-        # 1. Square Root the Diagonal
-        # Only one thread needs to do this (e.g., Thread 1)
+        # --- b. sqrt & scale ---
+        # step 1: square root the diagonal element (just one thread does this)
         if tx == 1
             @inbounds tile[k] = sqrt(tile[k])
         end
         
         @synchronize
 
-        # 2. Scale the column (Divide by diagonal)
-        # We parallelize this. Threads 1..N each handle one row of the vector.
-        # Note: We reuse 'tx' here as a simple linear index for the column array.
+        # step 2: normalize the rest of the column by dividing by the diagonal.
+        # all threads help out here to make it fast.
         if tx > k && tx <= N
             @inbounds tile[tx] /= tile[k]
         end
         
         @synchronize
 
-        # ------------------------------------------------------------------------
-        # PHASE C: UPDATE REGISTERS (The "Pull" & Elimination)
-        # ------------------------------------------------------------------------
-
-        # C1: Update my own register if I owned part of Column k
-        # If I owned 'A[my_row, k]', I just scaled it in Shared Memory.
-        # I must copy that new scaled value back into my pocket.
+        # --- c. update registers ---
+        
+        # c1. update my own pocket
+        # if i owned that column k originally, the values in shared mem just got updated/scaled.
+        # i need to pull those new values back into my private register so i stay up to date.
         if k >= col_start && k < (col_start + STRIP_WIDTH)
             local_idx = (k - col_start) + 1
             if my_row <= N
@@ -427,31 +412,20 @@ const STRIP_WIDTH = 4
             end
         end
         
-        # C2: The Elimination (The heavy math)
-        # A[r, c] = A[r, c] - L[r, k] * L[c, k]'
-        
-        # L[r, k]: The factor for MY row. It is sitting in tile[my_row].
-        # L[c, k]: The factor for MY columns. They are sitting in tile[c].
-        
-        if my_row > k # Only update rows below the current diagonal
-            
-            # Load the multiplier for my row (L_rk)
+        # c2. elimination (the outer product update)
+        # this is the heavy lifting: A = A - L * L'
+        # we only update if we are below the current diagonal (row > k)
+        if my_row > k 
+            # grabbing the multiplier for my row
             L_rk = @inbounds tile[my_row]
             
-            # Loop through my 4 columns
             for i in 1:STRIP_WIDTH
                 c = col_start + (i - 1)
-                
-                # Only update if this column is to the right of the diagonal (and valid)
-                # (Lower triangular update means we only touch cols <= my_row? 
-                # Cholesky fills lower triangle. We update submatrix k+1:N)
-                
-                if c > k && my_row >= c # Ensure we stay in lower triangle
-                    
-                    # Load the multiplier for this specific column (L_ck)
+                # only update valid columns that are to the right of the diagonal
+                # keeping it strictly lower triangular
+                if c > k && my_row >= c 
                     L_ck = @inbounds tile[c]
-                    
-                    # The Register Math
+                    # doing the math directly in registers. fast!
                     @inbounds my_vals[i] -= L_rk * L_ck
                 end
             end
@@ -460,15 +434,13 @@ const STRIP_WIDTH = 4
         @synchronize
     end
 
-    # ========================================================================================
-    # STEP 3: WRITE BACK (Empty Pockets)
-    # ========================================================================================
-    
+    # ---------------------------------------------------------------------
+    # 3. write back
+    # ---------------------------------------------------------------------
+    # all done. dumping the registers back to global memory.
     if my_row <= N
         for i in 1:STRIP_WIDTH
             c = col_start + (i - 1)
-            
-            # Write back only if it's a valid coordinate in the lower triangle
             if c <= N && my_row >= c
                 @inbounds A[my_row, c] = my_vals[i]
             end
@@ -480,10 +452,12 @@ function cholesky_lower_left!(A)
     N = size(A, 1)
     backend = CUDABackend()
     
-    for k in 1:BLOCK_SIZE:N
-        k_end = min(k + BLOCK_SIZE - 1, N)
+    # looping through the matrix in 64x64 blocks
+    for k in 1:N_MATRIX:N
+        k_end = min(k + N_MATRIX - 1, N)
         blk_len = k_end - k + 1
         
+        # if not the first block, we need to update the current panel using previous results
         if k > 1
             L_prev_cols = view(A, k:N, 1:k-1) 
             L_prev_top  = view(A, k:k_end, 1:k-1)
@@ -492,17 +466,16 @@ function cholesky_lower_left!(A)
             CUBLAS.gemm!('N', 'T', -one(eltype(A)), L_prev_cols, L_prev_top, one(eltype(A)), A_panel)
         end
         
+        # grabbing the diagonal block to solve with our custom kernel
         A_diag = view(A, k:k_end, k:k_end)
         
         kernel = chol_kernel_register!(backend, REG_THREADS)
+        # crucial: we must force workgroupsize to be 768 so all threads are in the same block
         kernel(A_diag, Val(blk_len); ndrange=REG_THREADS, workgroupsize=REG_THREADS)
-        # KernelAbstractions.synchronize(backend)
         
+        # update the panel to the right if we aren't at the end yet
         if k_end < N
             A_off_diag = view(A, (k_end + 1):N, k:k_end)
-            
-            # CUBLAS.trsm!('R', 'L', 'T', 'N', one(eltype(A)), A_diag, A_off_diag)
-            # RightUpperTRSM!(Transpose(A_diag), A_panel)
             unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A_diag, A_off_diag)
         end
     end
