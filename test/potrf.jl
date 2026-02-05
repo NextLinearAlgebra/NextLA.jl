@@ -20,8 +20,8 @@ function benchmark_op(op, reset_op, backend)
 end
 
 @testset "Cholesky Accuracy Check" begin
-    # n_sizes = [32, 64, 128, 256, 512] 
-    n_sizes = [64] 
+    n_sizes = [32, 64, 128, 256, 512] 
+    # n_sizes = [64] 
     tolerance = 1e-4 # Relaxed slightly for Float32 accumulations
 
     println("\nRunning Accuracy Tests...")
@@ -56,8 +56,8 @@ end
 
 function run_chol_benchmark()
     # Benchmark sizes
-    # n_sizes = [32, 64, 128, 256, 512, 1024, 2048, 4096]
-    n_sizes = [64]
+    n_sizes = [32, 64, 128, 256, 512, 1024, 2048, 4096]
+    # n_sizes = [64]
 
     println("="^110)
     @printf("%-6s | %-12s | %-12s | %-12s | %-15s | %-15s\n", 
