@@ -9,8 +9,9 @@ using Test
     for T in [Float32, Float64]
         starting = -T(1e3)
         ending = T(1e3)
-        for j in 8:2:100
-            for i in 1:1
+        for j in 8:10:500
+            for i in 1:10
+
                 block_size = j ÷ 2
                 
                 nl = block_size - 1
@@ -75,7 +76,6 @@ using Test
                 c = [T(0)]
                 s = [T(0)]
                 info = [0]
-
             
                 k_native = Ref{BlasInt}(T(0))
                 D_native  = deepcopy(D)

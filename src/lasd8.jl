@@ -86,7 +86,7 @@ Parameters
 
 =#
 
-function slasd8!(icompq::S, k::S, d::AbstractVector{T}, z::AbstractVector{T},
+function lasd8!(icompq::S, k::S, d::AbstractVector{T}, z::AbstractVector{T},
                 vf::AbstractVector{T}, vl::AbstractVector{T}, difl::AbstractVector{T},
                 difr::AbstractMatrix{T}, lddifr::S,
                 dsigma::AbstractVector{T}, work::AbstractVector{T}, info::AbstractVector{S}) where {T <: AbstractFloat, S<:Integer}
@@ -95,7 +95,7 @@ function slasd8!(icompq::S, k::S, d::AbstractVector{T}, z::AbstractVector{T},
             can preallocate the memory
     =#
     
-    info[1] = 0
+    info .= 0
     # println("Starting function")
     if icompq < 0 || icompq > 1
         info[1] = -1
@@ -168,7 +168,11 @@ function slasd8!(icompq::S, k::S, d::AbstractVector{T}, z::AbstractVector{T},
 
         work[iwk3i + j] = work[iwk3i + j] * work[j]*work[iwk2i+j]
         difl[j] = -work[j]
-        difr[j,1] = -work[j+1]
+        if icompq == 1
+            difr[j,1] = -work[j+1]
+        else
+            difr[j] = -work[j+1]
+        end
 
         for i in 1:j-1
             work[iwk3i+i] = (work[iwk3i+i]*work[i]*
@@ -195,7 +199,7 @@ function slasd8!(icompq::S, k::S, d::AbstractVector{T}, z::AbstractVector{T},
         dsigj = -dsigma[j]
 
         if j < k
-            difrj = -difr[j, 1]
+            difrj = icompq == 1 ? -difr[j, 1] : -difr[j]
             dsigjp = -dsigma[j+1]
         end
 

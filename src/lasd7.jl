@@ -72,7 +72,6 @@ function lasd7!(icompq::S, nl::S, nr::S, sqre::S, k::AbstractVector{<:Integer},
         z[i] = beta*vf[i]
         vf[i] = zero(T)
     end
-    
 
     # Sort the singular values into increasing order
     idxq[nlp2:n] .+= nlp1
@@ -117,7 +116,6 @@ function lasd7!(icompq::S, nl::S, nr::S, sqre::S, k::AbstractVector{<:Integer},
     else
         mach_eps = eps(T)
     end
-    # tol = T(64)*eps(T)*max(abs(d[n]), tol)
     tol = T(64)*mach_eps*max(abs(d[n]), tol)
 
     #=

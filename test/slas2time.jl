@@ -43,7 +43,7 @@ for T in [Float32, Float64]
         ssmax = Ref{T}()
 
 
-        j = @belapsed NextLA.slas2!($A)
+        j = @belapsed NextLA.las2!($A)
 
         n = slas2_time(f, g, h, ssmin, ssmax)
 

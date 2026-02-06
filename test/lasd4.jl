@@ -18,7 +18,6 @@ end
 @testset "laed4! test random input" begin
     for T in [Float32, Float64]
     
-    # for T in [Float32, ]
         starting = T(-1e3)
         ending = T(1e3)
         for i in 1:20
@@ -47,8 +46,6 @@ end
                 info = Int64[0]
                 info_copy = Ref{Int64}(0)
                 
-
-
                 if T == Float32
                     ccall(
                         (@blasfunc(slasd4_), libblastrampoline),
@@ -74,6 +71,7 @@ end
                 @test isapprox_nan(work, work_copy)
                 @test info[1] == info_copy[]
             end
+
             for j in 3:3:50
 
 		        n = Int64(j)
@@ -99,8 +97,6 @@ end
                 info = Int64[0]
                 info_copy = Ref{Int64}(0)
                 
-
-
                 if T == Float32
 		    
                     ccall(
@@ -121,6 +117,7 @@ end
                         n, i, d_copy, z_copy, delta_copy, rho, sigma_copy, work_copy, info_copy
                         )
                 end
+
                 NextLA.lasd4!(n, i, d, z, delta, rho, sigma, work, info)
                 # if info[1] == info_copy[] && info[1] == 0
                 @test isapprox_nan(delta, delta_copy)

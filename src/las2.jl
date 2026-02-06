@@ -13,7 +13,7 @@ computes singular values of a 2-by-2 triangular matrix of the form:
 
 write singular values to the diagonal
 """
-function slas2!(A::UpperTriangular{T, <:AbstractMatrix{T}}) where {T<:AbstractFloat}
+function las2!(A::UpperTriangular{T, <:AbstractMatrix{T}}) where {T<:AbstractFloat}
     fa = abs(A[1,1])
     ga = abs(A[1,2])
     ha = abs(A[2,2])

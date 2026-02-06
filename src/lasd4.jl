@@ -46,6 +46,7 @@ function lasd4!(n::S, i::S, d::AbstractVector{T}, z::AbstractVector{T},
     else
         mach_eps = eps(T)
     end
+
     rhoinv = one(T)/rho
 
     tau2 = zero(T)
@@ -195,6 +196,8 @@ function lasd4!(n::S, i::S, d::AbstractVector{T}, z::AbstractVector{T},
 
         if eta + sigma[1]^2 < 0
             # println("Returning here")
+            # println("$T Returning here2")
+
             info .= 1
             sigma .= NaN
             delta .= NaN
@@ -273,6 +276,7 @@ function lasd4!(n::S, i::S, d::AbstractVector{T}, z::AbstractVector{T},
             end
 
             if eta + sigma[1]^2 < 0
+                # println("$T Returning here1")
                 info .= 1
                 sigma .= NaN
                 delta .= NaN
@@ -313,7 +317,7 @@ function lasd4!(n::S, i::S, d::AbstractVector{T}, z::AbstractVector{T},
             w = rhoinv + phi + psi
 
         end
-        println("Returning with fail")
+        # println("Returning with fail")
         #return with info = 1, niter = maxit and not converged
         info .= 1
         return

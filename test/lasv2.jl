@@ -47,15 +47,6 @@ using Test
                         Ref{Float64}, Ref{Float64}, Ref{Float64},),
                         f, g, h, ssmin, ssmax, snr, csr, snl, csl
                     )
-            else
-                U, S, V = svd(A_copy)
-                ssmax[] = S[1]
-                ssmin[] = S[2]
-                csl[] = U[1,1]
-                snl[] = (U[2,1])
-                csr[] = V[1,1]
-                snr[] = V[2,1]
-
             end
 
             @test isapprox(ssmax[], out_vec[1])
@@ -64,12 +55,6 @@ using Test
             @test isapprox(csr[], A[2,2])
             @test isapprox(snl[], A[2,1])
             @test isapprox(csl[], A[1,1])
-            # if ssmax[] < 0
-            #     println("ssmax less than zero: $(ssmax[])")
-            # end
-            # if ssmin[] < 0
-            #     println("ssmin less than zero: $(ssmin[])")
-            # end
         end
         
     end
@@ -443,16 +428,6 @@ end
                     Ref{Float64}, Ref{Float64}, Ref{Float64},),
                     f, g, h, ssmin, ssmax, snr, csr, snl, csl
                 )
-
-        else
-            U, S, V = svd(A_copy)
-            ssmax[] = S[1]
-            ssmin[] = S[2]
-            csl[] = U[1,1]
-            snl[] = (U[2,1])
-            csr[] = V[1,1]
-            snr[] = V[2,1]
-
         end
 
         @test isapprox(ssmax[], out_vec[1])

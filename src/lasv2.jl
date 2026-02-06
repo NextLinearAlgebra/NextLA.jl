@@ -3,7 +3,7 @@ using LinearAlgebra: BlasInt, libblastrampoline
 using LinearAlgebra.BLAS: @blasfunc
 
 #Smaller than zero cases will be -1 and >= 0 will be 1
-function lasv2!(A::AbstractMatrix{T}, out_vec::AbstractVector{T}, compute_vectors=true) where {T <: AbstractFloat}
+function lasv2!(A::AbstractMatrix{T}, out_vec::AbstractVector{T}) where {T <: AbstractFloat}
     fa = abs(A[1,1])
     ha = abs(A[2,2])
     pmax = 1
@@ -26,12 +26,10 @@ function lasv2!(A::AbstractMatrix{T}, out_vec::AbstractVector{T}, compute_vector
         out_vec[ssmin] = ha
         out_vec[ssmax] = fa
 
-        if compute_vectors
-            A[2,1] = zero(T) #slt
-            A[2,2] = one(T) #crt
-            A[1,1] = one(T) #clt
-            A[1,2] = zero(T) #srt
-        end
+        A[2,1] = zero(T) #slt
+        A[2,2] = one(T) #crt
+        A[1,1] = one(T) #clt
+        A[1,2] = zero(T) #srt
     else
         gasmal = true
 
@@ -68,12 +66,10 @@ function lasv2!(A::AbstractMatrix{T}, out_vec::AbstractVector{T}, compute_vector
                     out_vec[ssmin] = (fa / ga) * ha
                 end
 
-                if compute_vectors
-                    A[2,1] = A[2,2]/A[1,2] #slt
-                    A[2,2] = A[1,1]/A[1,2] #crt
-                    A[1,1] = one(T) #clt
-                    A[1,2] = one(T) #srt
-                end
+                A[2,1] = A[2,2]/A[1,2] #slt
+                A[2,2] = A[1,1]/A[1,2] #crt
+                A[1,1] = one(T) #clt
+                A[1,2] = one(T) #srt
             end
         end
 
@@ -116,39 +112,31 @@ function lasv2!(A::AbstractMatrix{T}, out_vec::AbstractVector{T}, compute_vector
             out_vec[ssmin] = ha/a
             out_vec[ssmax] = fa*a
 
-            if compute_vectors
-                if mm == zero(T)
-                    #Note that m is very tiny
+            if mm == zero(T)
+                #Note that m is very tiny
 
-                    if l == zero(T)
-                        t = copysign(T(2), A[1,1])*copysign(one(T), A[1,2])
-                    else
-                        t = A[1,2] / copysign(d, A[1,1]) + m/t
-                    end
+                if l == zero(T)
+                    t = copysign(T(2), A[1,1])*copysign(one(T), A[1,2])
                 else
-                    t = (m / (s + t)+m / (A[2,1] + l)) * (one(T) + a)
+                    t = A[1,2] / copysign(d, A[1,1]) + m/t
                 end
-                
-                l = sqrt(t*t + T(4))
-
-                A[1,2] = t/l #srt
-                A[2,1] = (A[2,2] / A[1,1])*A[1,2] / a #slt
-                A[2,2] = T(2)/l #crt
-                A[1,1] = (A[2,2] + A[1,2]*m)/a #clt
             else
-                A[2,1] = zero(T)
+                t = (m / (s + t)+m / (A[2,1] + l)) * (one(T) + a)
             end
+            
+            l = sqrt(t*t + T(4))
+
+            A[1,2] = t/l #srt
+            A[2,1] = (A[2,2] / A[1,1])*A[1,2] / a #slt
+            A[2,2] = T(2)/l #crt
+            A[1,1] = (A[2,2] + A[1,2]*m)/a #clt
         end
     end
 
     if swap
         #swap each row.
-        if compute_vectors
-            A[1,1], A[1,2] = A[1,2], A[1,1]
-            A[2,1], A[2,2] = A[2,2], A[2,1]
-        else
-            A[2,2], A[1,1] = A[1,1], A[2,2]
-        end
+        A[1,1], A[1,2] = A[1,2], A[1,1]
+        A[2,1], A[2,2] = A[2,2], A[2,1]
     end
 
     #=
@@ -163,17 +151,6 @@ function lasv2!(A::AbstractMatrix{T}, out_vec::AbstractVector{T}, compute_vector
     elseif pmax == 3
         tsign = (A[1,2]*A[2,1] < 0 ? -1 : 1)*tsign
     end
-
-    # if compute_vectors
-    #     if tsign < 0
-    #         A[:,1] .*= -1
-    #     end
-
-    #     if tsign*fh_sign < 0
-
-    #     end
-
-    # end
 
     out_vec[ssmax] = copysign(out_vec[ssmax], tsign)
     out_vec[ssmin] = copysign(out_vec[ssmin], tsign*fh_sign)
