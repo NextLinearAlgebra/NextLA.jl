@@ -2,14 +2,14 @@ using LinearAlgebra
 using LinearAlgebra: BlasInt, libblastrampoline
 using LinearAlgebra.BLAS: @blasfunc
 
-function lasd7!(icompq::S, nl::S, nr::S, sqre::S, k::AbstractVector{<:Integer},
+function lasd7!(icompq::S, nl::S, nr::S, sqre::S, k::AbstractArray{<:Integer},
     d::AbstractVector{T}, z::AbstractVector{T}, zw::AbstractVector{T},
     vf::AbstractVector{T}, vfw::AbstractVector{T}, vl::AbstractVector{T},
     vlw::AbstractVector{T}, alpha::T, beta::T,
     dsigma::AbstractVector{T}, idx::AbstractVector{<:Integer}, idxp::AbstractVector{<:Integer},
-    idxq::AbstractVector{<:Integer}, perm::AbstractVector{<:Integer}, givptr::AbstractVector{<:Integer}, givcol::AbstractMatrix{<:Integer},
-    ldgcol::S, givnum::AbstractMatrix{T}, ldgnum::S, c::AbstractVector{T},
-    s::AbstractVector{T}, info::AbstractVector{<:Integer}) where {T <:AbstractFloat, S <:Integer}
+    idxq::AbstractVector{<:Integer}, perm::AbstractVector{<:Integer}, givptr::AbstractArray{<:Integer}, givcol::AbstractMatrix{<:Integer},
+    ldgcol::S, givnum::AbstractMatrix{T}, ldgnum::S, c::AbstractArray{T},
+    s::AbstractArray{T}, info::AbstractArray{<:Integer}) where {T <:AbstractFloat, S <:Integer}
 
     #=
         k, givptr, c, and s are in vectors of size one so that we can 
@@ -38,7 +38,7 @@ function lasd7!(icompq::S, nl::S, nr::S, sqre::S, k::AbstractVector{<:Integer},
         info .= -24
     end
 
-    if info[1] != 0
+    if info[] != 0
         return
     end
 
@@ -175,12 +175,12 @@ function lasd7!(icompq::S, nl::S, nr::S, sqre::S, k::AbstractVector{<:Integer},
                     # Find sqrt(a**2+b**2) without overflow or
                     # destructive underflow.
 
-                    tau = hypot(c[1], s[1])
+                    tau = hypot(c[], s[])
  
                     z[j] = tau
                     z[jprev] = zero(T)
-                    c .= c[1] / tau
-                    s .= -s[1] / tau
+                    c ./=  tau
+                    s ./= -tau
 
                     # Record the appropriate Givens rotation
 
@@ -198,23 +198,23 @@ function lasd7!(icompq::S, nl::S, nr::S, sqre::S, k::AbstractVector{<:Integer},
                             idxj -= 1
                         end
 
-                        givcol[givptr[1], 2] = idxjp
-                        givcol[givptr[1], 1] = idxj
-                        givnum[givptr[1], 2] = c[1]
-                        givnum[givptr[1], 1] = s[1]
+                        givcol[givptr[], 2] = idxjp
+                        givcol[givptr[], 1] = idxj
+                        givnum[givptr[], 2] = c[]
+                        givnum[givptr[], 1] = s[]
                     end
 
-                    srot!(1, view(vf, jprev:jprev), 1, view(vf, j:j), 1, c[1], s[1])
-                    srot!(1, view(vl,jprev:jprev), 1, view(vl, j:j), 1, c[1], s[1])
+                    srot!(1, view(vf, jprev:jprev), 1, view(vf, j:j), 1, c[], s[])
+                    srot!(1, view(vl,jprev:jprev), 1, view(vl, j:j), 1, c[], s[])
 
                     k2 -= 1
                     idxp[k2] = jprev
                     jprev = j
                 else
                     k .+= 1
-                    zw[k[1]] = z[jprev]
-                    dsigma[k[1]] = d[jprev]
-                    idxp[k[1]] = jprev
+                    zw[k[]] = z[jprev]
+                    dsigma[k[]] = d[jprev]
+                    idxp[k[]] = jprev
                     jprev = j
                 end
 
@@ -224,9 +224,9 @@ function lasd7!(icompq::S, nl::S, nr::S, sqre::S, k::AbstractVector{<:Integer},
         # Record the last singular value
 
         k .+= 1
-        zw[k[1]] = z[jprev]
-        dsigma[k[1]] = d[jprev]
-        idxp[k[1]] = jprev
+        zw[k[]] = z[jprev]
+        dsigma[k[]] = d[jprev]
+        idxp[k[]] = jprev
 
     end
 
@@ -250,7 +250,7 @@ function lasd7!(icompq::S, nl::S, nr::S, sqre::S, k::AbstractVector{<:Integer},
             end
         end
     end
-    r = k[1]+1:n
+    r = k[]+1:n
     copyto!(view(d, r), view(dsigma, r))
 
     dsigma[1] = zero(T)
@@ -265,16 +265,16 @@ function lasd7!(icompq::S, nl::S, nr::S, sqre::S, k::AbstractVector{<:Integer},
 
         if z[1] <= tol
             
-            c  .= one(c[1])
-            s .= zero(s[1])
+            c  .= one(T)
+            s .= zero(T)
             z[1] = tol
         else
             c .= z1/z[1]
             s .= -z[m]/z[1]
         end
 
-        srot!(1, view(vf, m:m), 1, view(vf, 1:1), 1, c[1], s[1])
-        srot!(1, view(vl, m:m), 1, view(vl, 1:1), 1, c[1], s[1])
+        srot!(1, view(vf, m:m), 1, view(vf, 1:1), 1, c[], s[])
+        srot!(1, view(vl, m:m), 1, view(vl, 1:1), 1, c[], s[])
     else
         if abs(z1) <= tol
             z[1] = tol
@@ -283,7 +283,7 @@ function lasd7!(icompq::S, nl::S, nr::S, sqre::S, k::AbstractVector{<:Integer},
         end
     end
 
-    r = 2:k[1]
+    r = 2:k[]
     copyto!(view(z, r), view(zw, r))
     r = 2:n
     copyto!(view(vf, r), view(vfw,r))

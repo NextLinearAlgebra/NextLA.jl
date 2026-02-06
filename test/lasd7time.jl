@@ -117,6 +117,11 @@ function slasd7_time(icompq::Int64, nl::Int64, nr::Int64, sqre::Int64,
         return minimum(run(b, samples=100)).time
 end
 
+plt = plot(
+    ylabel = "Time (ns)",
+    xlabel = "Matrix Size (n × n)",
+    yscale = :log10
+)
 for T in [Float32, Float64]
     jul = Float64[]
     lapk = Float64[]
@@ -249,8 +254,22 @@ for T in [Float32, Float64]
     end
 
     xs = Vector(range)
-    plt = plot(xs, jul, label="lasd7!", yscale=:log10)
-    plot!(plt, xs, lapk, label="lapack lasd7")
-    savefig(plt, "../images/lasd7_timings_$(T).png")
-
+    plot!(
+        plt,
+        xs, jul, 
+        label="lasd7! $(T)",
+        linestyle = (T == Float32 ? :solid : :dot),
+        marker = :circle,
+        color = :blue
+        )
+    plot!(
+        plt, xs,
+        lapk,
+        label="lapack lasd7 $(T)",
+        linestyle = (T == Float32 ? :dash : :dashdot),
+        marker = :circle,
+        color = :orange
+        )
+        
 end
+savefig(plt, "../images/lasd7_timings.png")

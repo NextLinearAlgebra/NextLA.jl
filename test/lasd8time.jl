@@ -69,7 +69,11 @@ function slasd8_time!(icompq::Int64, k::Int64, d::AbstractVector{Float32}, z::Ab
 
         return minimum(run(b, samples=100)).time
 end
-
+plt = plot(
+    ylabel = "Time (ns)",
+    xlabel = "Vector Input Size",
+    yscale = :log10
+)
 for T in [Float32, Float64]
     jul = Float64[]
     lapk = Float64[]
@@ -131,7 +135,21 @@ for T in [Float32, Float64]
         push!(lapk, accum_lapk/10)
     end
     xs = Vector(range)
-    plt = plot(xs, jul, label="lasd8!", yscale=:log10)
-    plot!(plt, xs, lapk, label="lapack lasd8")
-    savefig(plt, "../images/lasd8_timings_$(T).png")
+    plot!(
+        plt,
+        xs, jul, 
+        label="lasd8! $(T)",
+        linestyle = (T == Float32 ? :solid : :dot),
+        marker = :circle,
+        color = :blue
+        )
+    plot!(
+        plt, xs,
+        lapk,
+        label="lapack lasd8 $(T)",
+        linestyle = (T == Float32 ? :dash : :dashdot),
+        marker = :circle,
+        color = :orange
+        )
 end
+savefig(plt, "../images/lasd8_timings.png")

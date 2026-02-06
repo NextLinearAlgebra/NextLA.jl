@@ -89,7 +89,7 @@ Parameters
 function lasd8!(icompq::S, k::S, d::AbstractVector{T}, z::AbstractVector{T},
                 vf::AbstractVector{T}, vl::AbstractVector{T}, difl::AbstractVector{T},
                 difr::AbstractMatrix{T}, lddifr::S,
-                dsigma::AbstractVector{T}, work::AbstractVector{T}, info::AbstractVector{S}) where {T <: AbstractFloat, S<:Integer}
+                dsigma::AbstractVector{T}, work::AbstractVector{T}, info::AbstractArray{S}) where {T <: AbstractFloat, S<:Integer}
     #=
         Important to note that info is just a vector of 1x1. We used a vector so we
             can preallocate the memory
@@ -98,14 +98,14 @@ function lasd8!(icompq::S, k::S, d::AbstractVector{T}, z::AbstractVector{T},
     info .= 0
     # println("Starting function")
     if icompq < 0 || icompq > 1
-        info[1] = -1
+        info .= -1
     elseif k < 1
-        info[1] = -2
+        info .= -2
     elseif lddifr < k 
-        info[1] = -9
+        info .= -9
     end
 
-    if info[1] != 0
+    if info[] != 0
         return
     end
 
@@ -162,7 +162,7 @@ function lasd8!(icompq::S, k::S, d::AbstractVector{T}, z::AbstractVector{T},
         # println("")
         # println("Finishing slasd4")
 
-        if info[1] != 0
+        if info[] != 0
             return
         end
 

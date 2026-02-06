@@ -3,8 +3,8 @@ using LinearAlgebra: BlasInt, libblastrampoline
 using LinearAlgebra.BLAS: @blasfunc
 
 function lasd4!(n::S, i::S, d::AbstractVector{T}, z::AbstractVector{T},
-                delta::AbstractVector{T}, rho::T, sigma::AbstractVector{T}, work::AbstractVector{T},
-                info::AbstractVector{S}) where {T <: AbstractFloat, S<:Integer}
+                delta::AbstractVector{T}, rho::T, sigma::AbstractArray{T}, work::AbstractVector{T},
+                info::AbstractArray{S}) where {T <: AbstractFloat, S<:Integer}
     # println("Starting lasd4")
     zz = zeros(T, 3)
     dd = zeros(T, 3) 
@@ -171,7 +171,7 @@ function lasd4!(n::S, i::S, d::AbstractVector{T}, z::AbstractVector{T},
         end
 
         if c == 0
-            eta = rho - sigma[1]^2
+            eta = rho - sigma[]^2
         elseif a >= 0
             eta = (a + sqrt(abs(a^2 - T(4)*b*c)))/(T(2)*c)
         else
@@ -194,7 +194,7 @@ function lasd4!(n::S, i::S, d::AbstractVector{T}, z::AbstractVector{T},
             eta = rho + dtnsq
         end
 
-        if eta + sigma[1]^2 < 0
+        if eta + sigma[]^2 < 0
             # println("Returning here")
             # println("$T Returning here2")
 
@@ -204,7 +204,7 @@ function lasd4!(n::S, i::S, d::AbstractVector{T}, z::AbstractVector{T},
             work .= NaN
             return
         end
-        eta /= ( sigma[1] + sqrt(eta + sigma[1]^2))
+        eta /= ( sigma[] + sqrt(eta + sigma[]^2))
         tau += eta
         # println("lasd4 sigma before: $sigma")
         sigma .+= eta
@@ -275,7 +275,7 @@ function lasd4!(n::S, i::S, d::AbstractVector{T}, z::AbstractVector{T},
                 eta /= T(2)
             end
 
-            if eta + sigma[1]^2 < 0
+            if eta + sigma[]^2 < 0
                 # println("$T Returning here1")
                 info .= 1
                 sigma .= NaN
@@ -284,7 +284,7 @@ function lasd4!(n::S, i::S, d::AbstractVector{T}, z::AbstractVector{T},
                 return
             end
 
-            eta /= (sigma[1] + sqrt(eta + sigma[1]^2))
+            eta /= (sigma[] + sqrt(eta + sigma[]^2))
             tau +=  eta
             # println("lasd4 sigma before: $sigma")
             sigma .+= eta
@@ -557,7 +557,7 @@ function lasd4!(n::S, i::S, d::AbstractVector{T}, z::AbstractVector{T},
             laed6!(niter, orgati, c, dd, zz, w, tau_laed6, info)
             eta = tau_laed6[1]
 
-            if info[1] != 0
+            if info[] != 0
                 # if info is not equal to zero, the laed6 failed, switch back to 2 pole interpolation
 
                 swtch3 = false
@@ -604,14 +604,14 @@ function lasd4!(n::S, i::S, d::AbstractVector{T}, z::AbstractVector{T},
             eta = -w /dw
         end
 
-        if sigma[1]^2 + eta < 0
+        if sigma[]^2 + eta < 0
             info .= 1
             sigma .= NaN
             delta .= NaN
             work .= NaN
             return
         end
-        eta /= (sigma[1] + sqrt(sigma[1]^2 + eta))
+        eta /= (sigma[] + sqrt(sigma[]^2 + eta))
         temp = tau + eta
 
         if temp > sgub || temp < sglb
@@ -798,7 +798,7 @@ function lasd4!(n::S, i::S, d::AbstractVector{T}, z::AbstractVector{T},
                 laed6!(niter, orgati, c, dd, zz, w, tau_laed6, info)
                 eta = tau_laed6[1]
 
-                if info[1] != 0
+                if info[] != 0
                     #=
                     If info is not 0, i.e, laed6 fialed, switch back to two pole
                         interpolation
@@ -861,14 +861,14 @@ function lasd4!(n::S, i::S, d::AbstractVector{T}, z::AbstractVector{T},
             if w*eta >= 0
                 eta = -w/dw
             end
-            if sigma[1]^2+eta < 0
+            if sigma[]^2+eta < 0
                 info .= 1
                 sigma .= NaN
                 delta .= NaN
                 work .= NaN
                 return
             end
-            eta /= (sigma[1]+sqrt(sigma[1]^2+eta))
+            eta /= (sigma[]+sqrt(sigma[]^2+eta))
             temp = tau+eta
 
             if temp > sgub || temp < sglb

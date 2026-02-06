@@ -55,7 +55,11 @@ function slasd4_time!(n::Int64, i::Int64, d::AbstractVector{Float32},
         end
         return minimum(run(b, samples=100)).time
 end
-
+plt = plot(
+    ylabel = "Time (ns)",
+    xlabel = "Vector Input Size",
+    yscale = :log10
+)
 for T in [Float32, Float64]
     jul = Float64[]
     lapk = Float64[]
@@ -105,8 +109,23 @@ for T in [Float32, Float64]
     end
 
     xs = Vector(1:10:500)
-    plt = plot(xs, jul, label="lasd4!", yscale=:log10)
-    plot!(plt, xs, lapk, label="lapack lasd4")
-    savefig(plt, "../images/lasd4_timings_$(T).png")
-
+    xs = Vector(range)
+    plot!(
+        plt,
+        xs, jul, 
+        label="lasd4! $(T)",
+        linestyle = (T == Float32 ? :solid : :dot),
+        marker = :circle,
+        color = :blue
+        )
+    plot!(
+        plt, xs,
+        lapk,
+        label="lapack lasd4 $(T)",
+        linestyle = (T == Float32 ? :dash : :dashdot),
+        marker = :circle,
+        color = :orange
+        )
+    
 end
+savefig(plt, "../images/lasd4_timings.png")

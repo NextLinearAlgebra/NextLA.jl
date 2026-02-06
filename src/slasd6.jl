@@ -167,9 +167,8 @@ function slasd6!(icompq::Integer, nl::Integer, nr::Integer, sqre::Integer, d::Ab
         3n + 2 = k
         3n + 3 = info
     =#
-    givptr = 3n + 1
-    k = givptr + 1
-    info = k + 1
+    k = 3n + 2
+    k = 3n + 2
 
     #=
     for work:
@@ -178,39 +177,39 @@ function slasd6!(icompq::Integer, nl::Integer, nr::Integer, sqre::Integer, d::Ab
         4m + 3 = c
         4m + 4 = s
     =#
-
-    alpha = 4m + 1
-    beta = alpha + 1
-    c = beta + 1
-    s = c + 1
-
-    iwork[info] = 0
+    
+    alpha = view(work, 4m + 1:4m + 1)
+    beta =  view(work, 4m + 2:4m + 2)
+    c = view(work, 4m + 3:4m + 3)
+    s = view(work, 4m + 4:4m + 4)
+    info = view(iwork, 3n + 3:3n + 3)
+    info .= 0
 
     if icompq < 0 || icompq > 1
-        iwork[info] = -1
+        info .= -1
 
     elseif nl < 1
-        iwork[info] = -1
+        info .= -1
     elseif nr < 1
-        iwork[info] = -3
+        info .= -3
     elseif sqre < - || sqre > 1
-        iwork[info] = -4
+        info .= -4
     elseif ldgcol < n
-        iwork[info] = -14
+        info .= -14
     elseif ldfnum < N
-        iwork[info] = -16
+        info .= -16
     end
 
-    if iwork[info] != 0
+    if info[1] != 0
         return
     end
     
 
-"""
+#=
     The following values are for bookkeeping purposes only.  They are
     integer pointers which indicate the portion of the workspace
     used by a particular array in SLASD7 and SLASD8.
-"""
+=#
 
     isigma = 1
     iw = isigma + n
@@ -221,7 +220,7 @@ function slasd6!(icompq::Integer, nl::Integer, nr::Integer, sqre::Integer, d::Ab
     idxc = idx + n
     idxp = idxc + n
 
-    orgnrm = max(abs(work[alpha]), abs(work[beta]))
+    orgnrm = max(abs(alpha[1]), abs(beta[1]))
 
     d[nl+1] = zero(eltype(d))
 
@@ -232,22 +231,22 @@ function slasd6!(icompq::Integer, nl::Integer, nr::Integer, sqre::Integer, d::Ab
     end
 
     d ./= orgnrm
-    work[alpha] = work[alpha]/orgnrm
-    work[beta] = work[beta]/orgnrm
+    alpha ./= /orgnrm
+    beta ./= orgnrm
 
-    slasd7!(icompq, nl, nr, sqre, @view iwork[k:k], d, z, @view work[iw:ivfw-1], vf, @view work[ivfw:ivlw-1], vl,
-            @view work[ivlw:4*m], work[alpha], @view work[beta:beta], @view work[isigma:iw-1], @view iwork[idx:idxc-1], @view iwork[idxp:3*n],
-            idxq, perm, @view iwork[givptr:givptr], givcol, ldgcol, givnum, ldgnum, @view work[c:c], @view work[s:s], @view iwork[info:info])
+    slasd7!(icompq, nl, nr, sqre, view(iwork, 3n + 2:3n + 2), d, z, view(work, iw:ivfw-1), vf, view(work, ivfw:ivlw-1), vl,
+            view(work, ivlw:4*m), work[alpha], beta, view(work, isigma:iw-1), view(iwork, idx:idxc-1), view(iwork, idxp:3*n),
+            idxq, perm, view(iwork, 3n + 1:3n + 1), givcol, ldgcol, givnum, ldgnum, c, c, info)
 
-    slasd8!(icompq, iwork[k], d, z, vf, vl, difl, difr, ldgnum, @view work[isigma:isigma+iwork[k]], @view work[iw:iw+3*iwork[k]], @view iwork[info:info])
+    slasd8!(icompq, iwork[k], d, z, vf, vl, difl, difr, ldgnum, view(work, isigma:isigma+iwork[k]), view(work, iw:iw+3*iwork[k]), info)
 
-    if iwork[info] != 0
+    if info[1] != 0
         return
     end
 
     if icompq == 1
-        copyto!(@view poles[1:iwork[k], 1], @view d[1:iwork[k]])
-        copyto!(@view poles[1:iwork[k], 2], @view word[isigma:isigma+iwork[k]])
+        copyto!(view(poles, 1:iwork[k], 1), view(d, 1:iwork[k]))
+        copyto!(view(poles, 1:iwork[k], 2), view(word, isigma:isigma+iwork[k]))
     end
 
     d .*= orgnrm
