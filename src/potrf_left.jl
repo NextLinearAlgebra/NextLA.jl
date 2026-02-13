@@ -6,9 +6,16 @@ using LinearAlgebra
 # const REG_THREADS = 768 
 # const N_MATRIX = 64
 # const STRIP_WIDTH = 4
-const REG_THREADS = 384 
+
+# for strip width 8, 12µs for 64x64
+# const REG_THREADS = 384 
+# const N_MATRIX = 64
+# const STRIP_WIDTH = 8
+
+# for strip width 16
+const REG_THREADS = 192
 const N_MATRIX = 64
-const STRIP_WIDTH = 8
+const STRIP_WIDTH = 16
 
 # left looking cholesky kernel
 # @kernel function chol_kernel_left!(A, N)
@@ -333,21 +340,32 @@ using KernelAbstractions.Extras: @unroll
     #     strip_idx = 8 + (warp_id - 16)
     #     my_row = lane_id + 33 
     # end
-    if warp_id < 8  # First 8 warps handle cols 1-32 (strips 0-3)
+    # if warp_id < 8  # First 8 warps handle cols 1-32 (strips 0-3)
+    #     strip_idx = warp_id ÷ 2
+    #     is_bottom = (warp_id % 2) == 1
+    #     my_row = lane_id + 1 + (is_bottom ? 32 : 0)
+    # else  # Last 4 warps handle cols 33-64 (strips 4-7)
+    #     strip_idx = 4 + (warp_id - 8)
+    #     my_row = lane_id + 33 
+    # end
+    if warp_id < 4  # Warps 0-3: cols 1-32
         strip_idx = warp_id ÷ 2
         is_bottom = (warp_id % 2) == 1
         my_row = lane_id + 1 + (is_bottom ? 32 : 0)
-    else  # Last 4 warps handle cols 33-64 (strips 4-7)
-        strip_idx = 4 + (warp_id - 8)
-        my_row = lane_id + 33 
+    else  # Warps 4-5: cols 33-64
+        strip_idx = 2 + (warp_id - 4)
+        my_row = lane_id + 33
     end
+
+    
 
     # calculating the start index of the 4 columns this thread is responsible for
     col_start = (strip_idx * STRIP_WIDTH) + 1
     
     # load global -> registers
     # my_vals = @private eltype(A) (4,)
-    my_vals = @private eltype(A) (8,)
+    # my_vals = @private eltype(A) (8,)
+    my_vals = @private eltype(A) (16,)
     
     # grabbing the data from global memory.
     if my_row <= N
