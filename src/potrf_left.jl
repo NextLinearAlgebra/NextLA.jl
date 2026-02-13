@@ -374,16 +374,39 @@ using KernelAbstractions.Extras: @unroll
         @synchronize
         
         # sqrt and normalize the rest of the column by dividing by the diagonal
-        if tx == 1
-            @inbounds tile[k] = sqrt(tile[k])
-        end
+        # if tx == 1
+        #     @inbounds tile[k] = sqrt(tile[k])
+        # end
         
+        # @synchronize
+
+        # if tx > k && tx <= N
+        #     @inbounds tile[tx] /= tile[k]
+        # end
+        
+        # @synchronize
+        
+        if my_row == k && k >= col_start && k < (col_start + STRIP_WIDTH)
+            local_idx = (k - col_start) + 1
+            @inbounds my_vals[local_idx] = sqrt(my_vals[local_idx])
+            @inbounds tile[k] = my_vals[local_idx] 
+        end
+
+        # Wait for the diagonal element to be shared
         @synchronize
 
-        if tx > k && tx <= N
-            @inbounds tile[tx] /= tile[k]
+        # 2. Local division and broadcast to shared memory
+        # Every thread owning a part of column 'k' divides its values by the diagonal sqrt.
+        diag_val = @inbounds tile[k]
+        if k >= col_start && k < (col_start + STRIP_WIDTH)
+            local_idx = (k - col_start) + 1
+            if my_row > k && my_row <= N
+                @inbounds my_vals[local_idx] /= diag_val
+                @inbounds tile[my_row] = my_vals[local_idx] # This "broadcasts" the column to others
+            end
         end
-        
+
+        # Final sync: ensures the entire column L[:, k] is ready in tile for the elimination step
         @synchronize
 
         # update registers
