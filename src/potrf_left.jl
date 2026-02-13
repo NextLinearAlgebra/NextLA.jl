@@ -390,31 +390,29 @@ using KernelAbstractions.Extras: @unroll
             local_idx = (k - col_start) + 1
             
             if my_row == k && my_row <= N
-                # I own the diagonal - compute sqrt
                 @inbounds my_vals[local_idx] = sqrt(my_vals[local_idx])
-                # Broadcast to shared memory at the diagonal position
                 @inbounds tile[k] = my_vals[local_idx]
             end
         end
         
         @synchronize
         
+        # Phase 2: Column owners divide and broadcast
         if k >= col_start && k < (col_start + STRIP_WIDTH)
             local_idx = (k - col_start) + 1
-            
-            # Read the diagonal value
             diag_val = @inbounds tile[k]
             
-            # Divide my element (if below diagonal)
             if my_row > k && my_row <= N
                 @inbounds my_vals[local_idx] /= diag_val
             end
             
-            # Broadcast the FINISHED column element to shared memory
-            if my_row <= N
+            # only broadcast if on or below diagonal
+            if my_row >= k && my_row <= N  # Changed condition
                 @inbounds tile[my_row] = my_vals[local_idx]
             end
         end
+
+        @synchronize
 
         # update registers
         # if i owned that column k originally, the values in shared mem just got updated/scaled.
