@@ -461,19 +461,19 @@ using KernelAbstractions.Extras: @unroll
         
         # elimination A = A - L * L'
         # we only update if we are below the current diagonal (row > k)
-        if my_row > k && my_row <= N
-            # grabbing the multiplier for my row
-            L_rk = @inbounds tile[my_row]
+        # if my_row > k && my_row <= N
+        #     # grabbing the multiplier for my row
+        #     L_rk = @inbounds tile[my_row]
             
-            @unroll for i in 1:STRIP_WIDTH
-                c = col_start + (i - 1)
-                # only update valid columns that are to the right of the diagonal
-                if c > k && my_row >= c 
-                    L_ck = @inbounds tile[c]
-                    @inbounds my_vals[i] -= L_rk * L_ck
-                end
-            end
-        end
+        #     @unroll for i in 1:STRIP_WIDTH
+        #         c = col_start + (i - 1)
+        #         # only update valid columns that are to the right of the diagonal
+        #         if c > k && my_row >= c 
+        #             L_ck = @inbounds tile[c]
+        #             @inbounds my_vals[i] -= L_rk * L_ck
+        #         end
+        #     end
+        # end
 
         @synchronize
     end
