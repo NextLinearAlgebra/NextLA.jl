@@ -299,13 +299,10 @@ const STRIP_WIDTH = 4
 #     end
 # end
 
-
+using KernelAbstractions.Extras: @unroll
 
 @kernel cpu=false inbounds=true unsafe_indices=false function chol_kernel_register!(A, ::Val{N}) where N
-    # ---------------------------------------------------------------------
-    # 0. thread mapping
-    # ---------------------------------------------------------------------
-    # ok so we need to figure out which part of the matrix this specific thread owns.
+    # thread mapping: figuring out which part of the matrix this specific thread owns.
     # we have 768 threads total (24 warps) and we're splitting the 64x64 matrix 
     # into vertical strips that are 4 columns wide.
     
@@ -337,17 +334,12 @@ const STRIP_WIDTH = 4
     # calculating the start index of the 4 columns this thread is responsible for
     col_start = (strip_idx * STRIP_WIDTH) + 1
     
-    # ---------------------------------------------------------------------
-    # 1. load global -> registers
-    # ---------------------------------------------------------------------
-    # defining our private register array to hold the 4 values.
-    # using ka's native @private syntax instead of mvector to keep the compiler happy.
+    # load global -> registers
     my_vals = @private eltype(A) (4,)
     
     # grabbing the data from global memory.
-    # we gotta make sure we don't read out of bounds.
     if my_row <= N
-        for i in 1:STRIP_WIDTH
+        @unroll for i in 1:STRIP_WIDTH
             c = col_start + (i - 1)
             if c <= N 
                 @inbounds my_vals[i] = A[my_row, c]
@@ -358,21 +350,18 @@ const STRIP_WIDTH = 4
         end
     end
 
-    # allocating a sliver of shared memory.
+    # allocating a col of shared memory
     # we only need enough space to hold ONE column (the active one) at a time.
     tile = @localmem eltype(A) N
 
     # making sure everyone is loaded up before we start mathing
     @synchronize
 
-    # ---------------------------------------------------------------------
-    # 2. main loop
-    # ---------------------------------------------------------------------
-    # iterating down the diagonal...
+    # iterating thru diag
     for k in 1:N
         
-        # --- a. broadcast active column ---
-        # if i own the data for the current column k, i need to share it with the class.
+        # broadcast active column
+        # if i own the data for the current column k, i need to share it
         # copying from my private register to the shared memory tile.
         if k >= col_start && k < (col_start + STRIP_WIDTH)
             local_idx = (k - col_start) + 1
@@ -384,25 +373,20 @@ const STRIP_WIDTH = 4
         # wait for the owner to finish writing to shared mem
         @synchronize
         
-        # --- b. sqrt & scale ---
-        # step 1: square root the diagonal element (just one thread does this)
+        # sqrt and normalize the rest of the column by dividing by the diagonal
         if tx == 1
             @inbounds tile[k] = sqrt(tile[k])
         end
         
         @synchronize
 
-        # step 2: normalize the rest of the column by dividing by the diagonal.
-        # all threads help out here to make it fast.
         if tx > k && tx <= N
             @inbounds tile[tx] /= tile[k]
         end
         
         @synchronize
 
-        # --- c. update registers ---
-        
-        # c1. update my own pocket
+        # update registers
         # if i owned that column k originally, the values in shared mem just got updated/scaled.
         # i need to pull those new values back into my private register so i stay up to date.
         if k >= col_start && k < (col_start + STRIP_WIDTH)
@@ -412,20 +396,17 @@ const STRIP_WIDTH = 4
             end
         end
         
-        # c2. elimination (the outer product update)
-        # this is the heavy lifting: A = A - L * L'
+        # elimination A = A - L * L'
         # we only update if we are below the current diagonal (row > k)
         if my_row > k && my_row <= N
             # grabbing the multiplier for my row
             L_rk = @inbounds tile[my_row]
             
-            for i in 1:STRIP_WIDTH
+            @unroll for i in 1:STRIP_WIDTH
                 c = col_start + (i - 1)
                 # only update valid columns that are to the right of the diagonal
-                # keeping it strictly lower triangular
                 if c > k && my_row >= c 
                     L_ck = @inbounds tile[c]
-                    # doing the math directly in registers. fast!
                     @inbounds my_vals[i] -= L_rk * L_ck
                 end
             end
@@ -434,12 +415,9 @@ const STRIP_WIDTH = 4
         @synchronize
     end
 
-    # ---------------------------------------------------------------------
-    # 3. write back
-    # ---------------------------------------------------------------------
-    # all done. dumping the registers back to global memory.
+    # write back
     if my_row <= N
-        for i in 1:STRIP_WIDTH
+        @unroll for i in 1:STRIP_WIDTH
             c = col_start + (i - 1)
             if c <= N && my_row >= c
                 @inbounds A[my_row, c] = my_vals[i]
