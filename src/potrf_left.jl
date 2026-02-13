@@ -3,9 +3,12 @@ using CUDA
 using LinearAlgebra
 
 
-const REG_THREADS = 768 
+# const REG_THREADS = 768 
+# const N_MATRIX = 64
+# const STRIP_WIDTH = 4
+const REG_THREADS = 384 
 const N_MATRIX = 64
-const STRIP_WIDTH = 4
+const STRIP_WIDTH = 8
 
 # left looking cholesky kernel
 # @kernel function chol_kernel_left!(A, N)
@@ -317,17 +320,25 @@ using KernelAbstractions.Extras: @unroll
     # logic for warps 0-15 (cols 1-32):
     # these columns are "tall" (full height), so one warp isn't enough.
     # we use 2 warps per strip here. even warps take the top half, odd warps take the bottom.
-    if warp_id < 16
+    # if warp_id < 16
+    #     strip_idx = warp_id ÷ 2
+    #     is_bottom = (warp_id % 2) == 1
+    #     my_row = lane_id + 1 + (is_bottom ? 32 : 0)
+
+    # # logic for warps 16-23 (cols 33-64):
+    # # these columns are "short" because it's a lower triangular matrix.
+    # # rows 1-32 are just zeros here, so we only care about rows 33-64.
+    # # one warp is enough to cover that.
+    # else
+    #     strip_idx = 8 + (warp_id - 16)
+    #     my_row = lane_id + 33 
+    # end
+    if warp_id < 8  # First 8 warps handle cols 1-32 (strips 0-3)
         strip_idx = warp_id ÷ 2
         is_bottom = (warp_id % 2) == 1
         my_row = lane_id + 1 + (is_bottom ? 32 : 0)
-
-    # logic for warps 16-23 (cols 33-64):
-    # these columns are "short" because it's a lower triangular matrix.
-    # rows 1-32 are just zeros here, so we only care about rows 33-64.
-    # one warp is enough to cover that.
-    else
-        strip_idx = 8 + (warp_id - 16)
+    else  # Last 4 warps handle cols 33-64 (strips 4-7)
+        strip_idx = 4 + (warp_id - 8)
         my_row = lane_id + 33 
     end
 
@@ -335,7 +346,8 @@ using KernelAbstractions.Extras: @unroll
     col_start = (strip_idx * STRIP_WIDTH) + 1
     
     # load global -> registers
-    my_vals = @private eltype(A) (4,)
+    # my_vals = @private eltype(A) (4,)
+    my_vals = @private eltype(A) (8,)
     
     # grabbing the data from global memory.
     if my_row <= N
@@ -386,6 +398,17 @@ using KernelAbstractions.Extras: @unroll
         
         # @synchronize
 
+        # update registers
+        # if i owned that column k originally, the values in shared mem just got updated/scaled.
+        # i need to pull those new values back into my private register so i stay up to date.
+        # if k >= col_start && k < (col_start + STRIP_WIDTH)
+        #     local_idx = (k - col_start) + 1
+        #     if my_row <= N
+        #          @inbounds my_vals[local_idx] = tile[my_row]
+        #     end
+        # end
+
+        # diagonal owner computes sqrt
         if k >= col_start && k < (col_start + STRIP_WIDTH)
             local_idx = (k - col_start) + 1
             
@@ -397,7 +420,7 @@ using KernelAbstractions.Extras: @unroll
         
         @synchronize
         
-        # Phase 2: Column owners divide and broadcast
+        # column owners divide and broadcast
         if k >= col_start && k < (col_start + STRIP_WIDTH)
             local_idx = (k - col_start) + 1
             diag_val = @inbounds tile[k]
@@ -407,22 +430,14 @@ using KernelAbstractions.Extras: @unroll
             end
             
             # only broadcast if on or below diagonal
-            if my_row >= k && my_row <= N  # Changed condition
+            if my_row >= k && my_row <= N 
                 @inbounds tile[my_row] = my_vals[local_idx]
             end
         end
 
         @synchronize
 
-        # update registers
-        # if i owned that column k originally, the values in shared mem just got updated/scaled.
-        # i need to pull those new values back into my private register so i stay up to date.
-        # if k >= col_start && k < (col_start + STRIP_WIDTH)
-        #     local_idx = (k - col_start) + 1
-        #     if my_row <= N
-        #          @inbounds my_vals[local_idx] = tile[my_row]
-        #     end
-        # end
+        
         
         # elimination A = A - L * L'
         # we only update if we are below the current diagonal (row > k)
