@@ -363,17 +363,17 @@ using KernelAbstractions.Extras: @unroll
         # broadcast active column
         # if i own the data for the current column k, i need to share it
         # copying from my private register to the shared memory tile.
-        if k >= col_start && k < (col_start + STRIP_WIDTH)
-            local_idx = (k - col_start) + 1
-            if my_row <= N
-                @inbounds tile[my_row] = my_vals[local_idx]
-            end
-        end
+        # if k >= col_start && k < (col_start + STRIP_WIDTH)
+        #     local_idx = (k - col_start) + 1
+        #     if my_row <= N
+        #         @inbounds tile[my_row] = my_vals[local_idx]
+        #     end
+        # end
 
-        # wait for the owner to finish writing to shared mem
-        @synchronize
+        # # wait for the owner to finish writing to shared mem
+        # @synchronize
         
-        # sqrt and normalize the rest of the column by dividing by the diagonal
+        # # sqrt and normalize the rest of the column by dividing by the diagonal
         # if tx == 1
         #     @inbounds tile[k] = sqrt(tile[k])
         # end
@@ -385,28 +385,33 @@ using KernelAbstractions.Extras: @unroll
         # end
         
         # @synchronize
-        
-        if my_row == k && k >= col_start && k < (col_start + STRIP_WIDTH)
-            local_idx = (k - col_start) + 1
-            @inbounds my_vals[local_idx] = sqrt(my_vals[local_idx])
-            @inbounds tile[k] = my_vals[local_idx] 
-        end
 
-        # Wait for the diagonal element to be shared
-        @synchronize
-
-        # 2. Local division and broadcast to shared memory
-        # Every thread owning a part of column 'k' divides its values by the diagonal sqrt.
-        diag_val = @inbounds tile[k]
         if k >= col_start && k < (col_start + STRIP_WIDTH)
             local_idx = (k - col_start) + 1
-            if my_row > k && my_row <= N
-                @inbounds my_vals[local_idx] /= diag_val
-                @inbounds tile[my_row] = my_vals[local_idx] # This "broadcasts" the column to others
+            
+            if my_row == k
+                my_vals[local_idx] = sqrt(my_vals[local_idx])
+                tile[diag_temp_idx] = my_vals[local_idx]  # Share diagonal
             end
         end
-
-        # Final sync: ensures the entire column L[:, k] is ready in tile for the elimination step
+        
+        @synchronize  # Minimal sync for diagonal only
+        
+        # Step 2: All owners in this strip divide
+        if k >= col_start && k < (col_start + STRIP_WIDTH)
+            local_idx = (k - col_start) + 1
+            diag_val = tile[diag_temp_idx]
+            
+            if my_row > k && my_row <= N
+                my_vals[local_idx] /= diag_val
+            end
+            
+            # Broadcast finished column
+            if my_row <= N
+                tile[my_row] = my_vals[local_idx]
+            end
+        end
+        
         @synchronize
 
         # update registers
