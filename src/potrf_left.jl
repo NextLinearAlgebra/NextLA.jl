@@ -389,40 +389,42 @@ using KernelAbstractions.Extras: @unroll
         if k >= col_start && k < (col_start + STRIP_WIDTH)
             local_idx = (k - col_start) + 1
             
-            if my_row == k
-                my_vals[local_idx] = sqrt(my_vals[local_idx])
-                tile[diag_temp_idx] = my_vals[local_idx]  # Share diagonal
-            end
-        end
-        
-        @synchronize  # Minimal sync for diagonal only
-        
-        # Step 2: All owners in this strip divide
-        if k >= col_start && k < (col_start + STRIP_WIDTH)
-            local_idx = (k - col_start) + 1
-            diag_val = tile[diag_temp_idx]
-            
-            if my_row > k && my_row <= N
-                my_vals[local_idx] /= diag_val
-            end
-            
-            # Broadcast finished column
-            if my_row <= N
-                tile[my_row] = my_vals[local_idx]
+            if my_row == k && my_row <= N
+                # I own the diagonal - compute sqrt
+                @inbounds my_vals[local_idx] = sqrt(my_vals[local_idx])
+                # Broadcast to shared memory at the diagonal position
+                @inbounds tile[k] = my_vals[local_idx]
             end
         end
         
         @synchronize
+        
+        if k >= col_start && k < (col_start + STRIP_WIDTH)
+            local_idx = (k - col_start) + 1
+            
+            # Read the diagonal value
+            diag_val = @inbounds tile[k]
+            
+            # Divide my element (if below diagonal)
+            if my_row > k && my_row <= N
+                @inbounds my_vals[local_idx] /= diag_val
+            end
+            
+            # Broadcast the FINISHED column element to shared memory
+            if my_row <= N
+                @inbounds tile[my_row] = my_vals[local_idx]
+            end
+        end
 
         # update registers
         # if i owned that column k originally, the values in shared mem just got updated/scaled.
         # i need to pull those new values back into my private register so i stay up to date.
-        if k >= col_start && k < (col_start + STRIP_WIDTH)
-            local_idx = (k - col_start) + 1
-            if my_row <= N
-                 @inbounds my_vals[local_idx] = tile[my_row]
-            end
-        end
+        # if k >= col_start && k < (col_start + STRIP_WIDTH)
+        #     local_idx = (k - col_start) + 1
+        #     if my_row <= N
+        #          @inbounds my_vals[local_idx] = tile[my_row]
+        #     end
+        # end
         
         # elimination A = A - L * L'
         # we only update if we are below the current diagonal (row > k)
