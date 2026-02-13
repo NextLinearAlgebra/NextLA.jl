@@ -615,8 +615,8 @@ function cholesky_lower_left!(A)
         # update the panel to the right if we aren't at the end yet
         if k_end < N
             A_off_diag = view(A, (k_end + 1):N, k:k_end)
-            # unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A_diag, A_off_diag)
-            CUBLAS.trsm!('R', 'L', 'T', 'N', one(eltype(A)), A_diag, A_off_diag)
+            unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A_diag, A_off_diag)
+            # CUBLAS.trsm!('R', 'L', 'T', 'N', one(eltype(A)), A_diag, A_off_diag)
         end
     end
 
