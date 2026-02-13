@@ -470,13 +470,15 @@ using KernelAbstractions.Extras: @unroll
                 # only update valid columns that are to the right of the diagonal
                 if c > k && my_row >= c 
                     L_ck = @inbounds tile[c]
-                    @inbounds my_vals[i] -= L_rk * L_ck
+                    @inbounds my_vals[i] -= L_rk * L_ck #try muladd?
                 end
             end
         end
 
         @synchronize
     end
+
+    #this is the double buffer code 
     # k = 1
     # current_buf = 1  # Start with buffer 1
 
