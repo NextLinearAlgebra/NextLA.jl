@@ -1,45 +1,32 @@
-using Test
-using NextLA
-using LinearAlgebra
+@testset "LAUUM" begin
+    @testset "$T" for T in TEST_TYPES
+        rtol = test_rtol(T)
 
-@testset "NextLA.lauum! test" begin
-    for T in [Float32, Float64, ComplexF32, ComplexF64]
-        for uplo in ['U', 'L']
-            # Test different matrix sizes including edge cases
-            for n in [16, 32, 64, 128, 256]
-                # Test a variety of block sizes including edge cases
-                for block_size in [2, 3, 4, 5, 8]
-                    if uplo == 'U'
-                        # Create an upper triangular matrix with values centered around 0.5
-                        A = Matrix(UpperTriangular(0.5 .+ rand(T, n, n)))
-                    else
-                        # Create a lower triangular matrix with values centered around -0.5
-                        A = Matrix(LowerTriangular(-0.5 .+ rand(T, n, n)))
-                    end
-                    Ac = copy(A)             
-                    NextLA.lauum!(uplo, n, A, block_size)                  
-                    # @test info == 0  # Function now returns nothing instead of error code
-                    # Set tolerance based on type
-                    tolerance = T <: Union{Float64, ComplexF64} ? 1e-12 : 1e-6
-                    if uplo == 'U'
-                        expected_result = Matrix(UpperTriangular(Ac * Ac'))
-                        result_diff = norm(Matrix(A) - expected_result) / n
-                        @test result_diff < tolerance  # Use adjusted tolerance
-                        if result_diff >= tolerance
-                            println("Failure in NextLA.lauum! test for T: $T, uplo: $uplo, n: $n, block_size: $block_size")
-                            println("Difference norm: $result_diff")
-                        end
-                    else
-                        expected_result = Matrix(LowerTriangular(Ac' * Ac))
-                        result_diff = norm(Matrix(A) - expected_result) / n
-                        @test result_diff < tolerance  # Use adjusted tolerance
-                        if result_diff >= tolerance
-                            println("Failure in NextLA.lauum! test for T: $T, uplo: $uplo, n: $n, block_size: $block_size")
-                            println("Difference norm: $result_diff")
-                        end
-                    end
-                end
+        @testset "uplo=$uplo, n=$n, ib=$ib" for uplo in ['U', 'L'],
+                                                 n  in [16, 32, 64, 128],
+                                                 ib in [2, 4, 8]
+            A = if uplo == 'U'
+                Matrix(UpperTriangular(0.5 .+ rand(T, n, n)))
+            else
+                Matrix(LowerTriangular(-0.5 .+ rand(T, n, n)))
             end
+            A_orig = copy(A)
+
+            NextLA.lauum!(uplo, n, A, ib)
+
+            # Reference: U*Uᴴ (upper) or Lᴴ*L (lower), keep only the relevant triangle
+            if uplo == 'U'
+                expected = Matrix(UpperTriangular(A_orig * A_orig'))
+            else
+                expected = Matrix(LowerTriangular(A_orig' * A_orig))
+            end
+
+            @test norm(A - expected) / n < rtol
         end
+    end
+
+    @testset "Error handling" begin
+        @test_throws ArgumentError NextLA.lauum!('X', 4, zeros(4, 4), 2)
+        @test_throws ArgumentError NextLA.lauum!('U', -1, zeros(0, 0), 2)
     end
 end

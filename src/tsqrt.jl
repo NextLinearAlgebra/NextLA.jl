@@ -56,8 +56,12 @@ function tsqrt!(m::Integer, n::Integer, ib::Integer, A1::AbstractMatrix{T}, A2::
         throw(ArgumentError("ib must be non-negative, got $ib"))
     end
 
+    m1 = size(A1, 1)
+    # Number of available reflectors equals the number of rows in A1
+    k = min(m1, n)
+
     # Quick return for degenerate cases
-    if m == 0 || n == 0 || ib == 0
+    if m == 0 || n == 0 || ib == 0 || k == 0
         return
     end
 
@@ -66,8 +70,8 @@ function tsqrt!(m::Integer, n::Integer, ib::Integer, A1::AbstractMatrix{T}, A2::
     plus = LinearAlgebra.MulAddMul(Tone, Tone)
 
     # Process matrix in blocks of size ib
-    for ii in 1:ib:n
-        sb = min(n-ii+1, ib)
+    for ii in 1:ib:k
+        sb = min(k - ii + 1, ib)
 
         # Generate elementary reflectors for current block
         for i in 1:sb
@@ -152,6 +156,7 @@ Uses blocked algorithm for efficiency with large matrices. The compact WY
 representation (stored in T) enables efficient application of the Q factor.
 """
 function tsqrt!(A1::AbstractMatrix{T}, A2::AbstractMatrix{T}, T_matrix::AbstractMatrix{T}) where{T}
+    m1 = size(A1, 1)
     n = size(A1, 2)
     m = size(A2, 1) 
     ib, nb = size(T_matrix)
@@ -160,7 +165,8 @@ function tsqrt!(A1::AbstractMatrix{T}, A2::AbstractMatrix{T}, T_matrix::Abstract
         throw(ArgumentError("Block size ib must be positive, got $ib"))
     end
     
-    tau = Vector{T}(undef, n)
+    k = min(m1, n)
+    tau = Vector{T}(undef, k)
     work = zeros(T, ib * n)
     
     # Call the core computational routine

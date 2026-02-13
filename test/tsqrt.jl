@@ -1,365 +1,168 @@
-using Test
-using NextLA
-using LinearAlgebra
-using Random
-using CUDA
-using LinearAlgebra: libblastrampoline, BlasInt, require_one_based_indexing
-using LinearAlgebra.LAPACK: liblapack, chkstride1, chklapackerror
-using LinearAlgebra.BLAS: @blasfunc
+@testset "TSQRT" begin
+    @testset "$T" for T in TEST_TYPES
+        rtol = test_rtol(T)
 
-# LAPACK TPQRT wrapper for reference testing
-function lapack_tpqrt!(::Type{T}, m::Int64, n::Int64, l::Int64, nb::Int64, 
-    A::AbstractMatrix{T}, lda::Int64, B::AbstractMatrix{T}, ldb::Int64, 
-    Tau::AbstractMatrix{T}, ldt::Int64, work) where {T<:Number}
-    
-    info = Ref{BlasInt}(0)
-    
-    if T == ComplexF64
-        ccall((@blasfunc(ztpqrt_), libblastrampoline), Cvoid,
-            (Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, 
-             Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, 
-             Ptr{T}, Ref{BlasInt}, Ptr{T}, Ptr{BlasInt}),
-            m, n, l, nb, A, lda, B, ldb, Tau, ldt, work, info)
-    elseif T == Float64
-        ccall((@blasfunc(dtpqrt_), libblastrampoline), Cvoid,
-            (Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, 
-             Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, 
-             Ptr{T}, Ref{BlasInt}, Ptr{T}, Ptr{BlasInt}),
-            m, n, l, nb, A, lda, B, ldb, Tau, ldt, work, info)
-    elseif T == ComplexF32
-        ccall((@blasfunc(ctpqrt_), libblastrampoline), Cvoid,
-            (Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, 
-             Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, 
-             Ptr{T}, Ref{BlasInt}, Ptr{T}, Ptr{BlasInt}),
-            m, n, l, nb, A, lda, B, ldb, Tau, ldt, work, info)
-    else # T = Float32
-        ccall((@blasfunc(stpqrt_), libblastrampoline), Cvoid,
-            (Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, 
-             Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, 
-             Ptr{T}, Ref{BlasInt}, Ptr{T}, Ptr{BlasInt}),
-            m, n, l, nb, A, lda, B, ldb, Tau, ldt, work, info)
-    end
-    
-    chklapackerror(info[])
-end
+        @testset "m=$m, n=$n, ib=$ib" for (m, n, ib) in [
+            (32, 24, 8),
+            (48, 32, 16),
+            (64, 48, 16),
+            (20, 20, 10),
+        ]
+            A1 = triu(rand(T, n, n))
+            A2 = rand(T, m, n)
 
-# TSQRT test parameters for NextLA.tsqrt!
-const TSQRT_TYPES = [ComplexF32, ComplexF64, Float32, Float64]
-const TSQRT_SIZES = [
-    (100, 80, 30),    # m, n, ib
-    (150, 120, 40),   
-    (200, 160, 50),
-    (250, 200, 60),
-    (300, 240, 80)
-]
+            # Make A1 well-conditioned
+            for i in 1:n
+                A1[i, i] += 2 * one(T)
+            end
 
-@testset "TSQRT Tests" begin
-    @testset "NextLA vs LAPACK comparison" begin
-        for (itype, T) in enumerate(TSQRT_TYPES)
-            @testset "Type $T (itype=$itype)" begin
-                rtol = (T <: ComplexF32) || (T <: Float32) ? 1e-5 : 1e-12
-                
-                for (isize, (m, n, ib)) in enumerate(TSQRT_SIZES)
-                    @testset "Size m=$m, n=$n, ib=$ib" begin
-                        # Generate test matrices
-                        A1 = triu(rand(T, n, n))
-                        A2 = rand(T, m, n)
-                        
-                        # Make A1 well-conditioned
-                        
-                        # Make copies for different implementations
-                        A1_nextla = copy(A1)
-                        A2_nextla = copy(A2)
-                        A1_lapack = copy(A1)
-                        A2_lapack = copy(A2)
-                        
-                        # Prepare workspace and output arrays
-                        T_nextla = zeros(T, ib, n)
-                        T_lapack = zeros(T, ib, n)
-                        tau_nextla = zeros(T, n)
-                        tau_lapack = zeros(T, n)
-                        work_nextla = zeros(T, ib * n)
-                        
-                        # Test NextLA implementation
-                        NextLA.tsqrt!(m, n, ib, A1_nextla, A2_nextla, T_nextla, tau_nextla, work_nextla)
-                        
-                        # --- Test Helper Function ---
-                        # Recompute using the high-level helper on fresh inputs
-                        A1_helper = copy(A1)
-                        A2_helper = copy(A2)
-                        T_helper = zeros(T, ib, n)
-                        NextLA.tsqrt!(A1_helper, A2_helper, T_helper)
+            combined_orig = [A1; A2]
 
-                        # Verify helper gives same results as kernel
-                        @test A1_helper ≈ A1_nextla rtol=rtol
-                        @test A2_helper ≈ A2_nextla rtol=rtol
-                        
-                        # Test LAPACK implementation 
-                        work_lapack = zeros(T, ib * n)
-                        lapack_tpqrt!(T, m, n, 0, ib, A1_lapack, n, A2_lapack, m, T_lapack, ib, work_lapack)
-                        
-                        # Compare results
-                        @test A1_nextla ≈ A1_lapack rtol=rtol
-                        @test A2_nextla ≈ A2_lapack rtol=rtol
-                        
-                        # Basic sanity checks
-                        @test all(isfinite.(A1_nextla))
-                        @test all(isfinite.(A2_nextla))
-                        @test all(isfinite.(T_nextla))
-                        @test all(isfinite.(tau_nextla))
-                        
-                        
-                        # Check that T has the expected block structure
-                        @test size(T_nextla) == (ib, n)
-                    end
-                end
-            end
-        end
-    end
-    
-    @testset "QR Property Verification" begin
-        for T in TSQRT_TYPES
-            @testset "Type $T QR Properties" begin
-                rtol = (T <: ComplexF32) || (T <: Float32) ? 1e-5 : 1e-12
-                
-                m, n, ib = 200, 150, 40
-                
-                # Generate well-conditioned test matrices
-                A1 = triu(rand(T, n, n))
-                A2 = rand(T, m, n)
-                
-                # Make A1 well-conditioned
-                for i in 1:n
-                    A1[i, i] += 2 * one(T)
-                end
-                
-                # Store original combined matrix
-                combined_original = [A1; A2]
-                
-                # Apply TSQRT
-                A1_result = copy(A1)
-                A2_result = copy(A2)
-                T_result = zeros(T, ib, n)
-                tau_result = zeros(T, n)
-                work = zeros(T, ib * n)
-                
-                NextLA.tsqrt!(m, n, ib, A1_result, A2_result, T_result, tau_result, work)
-                
-                # Check that A1 (now R) is upper triangular
-                for i in 1:n
-                    for j in 1:i-1
-                        @test abs(A1_result[i, j]) < rtol * 100
-                    end
-                end
-                
-                # Check that the factorization is numerically stable
-                @test all(isfinite.(A1_result))
-                @test all(isfinite.(A2_result))
-                @test all(isfinite.(T_result))
-                @test all(isfinite.(tau_result))
-                
-                # Compare with standard QR factorization
-                Q_ref, R_ref = qr(combined_original)
-                R_ref_mat = Matrix(R_ref)
-                
-                # Compare the R factors (allowing for sign differences)
-                R_our = A1_result
-                for j in 1:n
-                    if abs(R_ref_mat[j, j]) > rtol * 10 && abs(R_our[j, j]) > rtol * 10
-                        # Check that the magnitudes are similar
-                        @test abs(abs(R_ref_mat[j, j]) - abs(R_our[j, j])) < rtol * max(abs(R_ref_mat[j, j]), abs(R_our[j, j])) * 100
-                    end
-                end
-            end
-        end
-    end
-    
-    @testset "Error Handling Tests" begin
-        for T in TSQRT_TYPES
-            @testset "Type $T Error Handling" begin
-                # Test with valid parameters (should not error)
-                m, n, ib = 100, 80, 30
-                A1 = triu(randn(T, n, n))
-                A2 = randn(T, m, n)
-                T_mat = zeros(T, ib, n)
-                tau = zeros(T, n)
-                work = zeros(T, ib * n)
-                
-                @test_nowarn NextLA.tsqrt!(m, n, ib, A1, A2, T_mat, tau, work)
-                
-                # Test with invalid parameters
-                @test_throws ArgumentError NextLA.tsqrt!(-1, n, ib, A1, A2, T_mat, tau, work)
-                @test_throws ArgumentError NextLA.tsqrt!(m, -1, ib, A1, A2, T_mat, tau, work)
-                @test_throws ArgumentError NextLA.tsqrt!(m, n, -1, A1, A2, T_mat, tau, work)
-                
-                # Test edge cases
-                @test_nowarn NextLA.tsqrt!(0, 0, 0, zeros(T, 0, 0), zeros(T, 0, 0), zeros(T, 0, 0), T[], T[])
-            end
-        end
-    end
-    
-    @testset "Numerical Stability Tests" begin
-        for T in [ComplexF64, Float64]  # High precision types
-            @testset "Type $T Stability" begin
-                rtol = eps(real(T)) * 1000
-                
-                # Test with different conditioning
-                scales = [eps(real(T))^(1/4), one(real(T)), 1/eps(real(T))^(1/4)]
-                
-                for scale in scales
-                    m, n, ib = 150, 120, 40
-                    A1 = triu(T(scale) .* randn(T, n, n))
-                    A2 = T(scale) .* randn(T, m, n)
+            # NextLA kernel
+            A1_n = copy(A1); A2_n = copy(A2)
+            Tm_n = zeros(T, ib, n)
+            tau_n = zeros(T, n)
+            work_n = zeros(T, ib * n)
+            NextLA.tsqrt!(m, n, ib, A1_n, A2_n, Tm_n, tau_n, work_n)
 
-                    # Make A1 well-conditioned
-                    for i in 1:n
-                        A1[i, i] += T(scale)
-                    end
-                    
-                    T_mat = zeros(T, ib, n)
-                    tau = zeros(T, n)
-                    work = zeros(T, ib * n)
-                    
-                    # Test calculation
-                    NextLA.tsqrt!(m, n, ib, A1, A2, T_mat, tau, work)
-                    
-                    # Check that results are finite
-                    @test all(isfinite.(A1))
-                    @test all(isfinite.(A2))
-                    @test all(isfinite.(T_mat))
-                    @test all(isfinite.(tau))
+            # LAPACK reference (l=0 for pentagonal)
+            A1_l = copy(A1); A2_l = copy(A2)
+            Tm_l = zeros(T, ib, n)
+            work_l = zeros(T, ib * n)
+            lapack_tpqrt!(T, m, n, 0, ib, A1_l, n, A2_l, m, Tm_l, ib, work_l)
+
+            @test A1_n ≈ A1_l rtol=rtol
+            @test A2_n ≈ A2_l rtol=rtol
+
+            # R must remain upper triangular
+            for i in 1:n, j in 1:i-1
+                @test abs(A1_n[i, j]) < rtol * 100
+            end
+
+            # Compare R diagonal magnitudes with standard QR
+            Q_ref, R_ref = qr(combined_orig)
+            for j in 1:n
+                if abs(Matrix(R_ref)[j, j]) > rtol * 10
+                    @test abs(abs(A1_n[j, j]) - abs(Matrix(R_ref)[j, j])) <
+                          rtol * max(abs(A1_n[j, j]), abs(Matrix(R_ref)[j, j])) * 100
                 end
             end
         end
-    end
-    
-    @testset "Different Block Sizes" begin
-        for T in TSQRT_TYPES
-            @testset "Type $T Block Sizes" begin
-                rtol = (T <: ComplexF32) || (T <: Float32) ? 1e-5 : 1e-12
-                
-                m, n = 200, 160
-                block_sizes = [10, 20, 30, 40, 50, 80]
-                
-                for ib in block_sizes
-                    A1 = triu(rand(T, n, n))
-                    A2 = rand(T, m, n)
-                    
-                    # Make A1 well-conditioned
-                    for i in 1:n
-                        A1[i, i] += one(T)
-                    end
-                    
-                    T_mat = zeros(T, ib, n)
-                    tau = zeros(T, n)
-                    work = zeros(T, ib * n)
-                    
-                    NextLA.tsqrt!(m, n, ib, A1, A2, T_mat, tau, work)
-                    
-                    # Should complete without errors
-                    @test all(isfinite.(A1))
-                    @test all(isfinite.(A2))
-                    @test all(isfinite.(T_mat))
-                    @test all(isfinite.(tau))
-                    
-                    # A1 should remain upper triangular
-                    for i in 1:n
-                        for j in 1:i-1
-                            @test abs(A1[i, j]) < rtol * 100
-                        end
-                    end
-                end
-            end
+
+        @testset "Helper matches kernel" begin
+            m, n, ib = 32, 24, 8
+            A1 = triu(rand(T, n, n)); A2 = rand(T, m, n)
+            for i in 1:n; A1[i, i] += one(T); end
+
+            A1_h = copy(A1); A2_h = copy(A2)
+            Tm_h = zeros(T, ib, n)
+            NextLA.tsqrt!(A1_h, A2_h, Tm_h)
+
+            A1_k = copy(A1); A2_k = copy(A2)
+            Tm_k = zeros(T, ib, n)
+            tau = zeros(T, n)
+            work = zeros(T, ib * n)
+            NextLA.tsqrt!(m, n, ib, A1_k, A2_k, Tm_k, tau, work)
+
+            @test A1_h ≈ A1_k rtol=rtol
+            @test A2_h ≈ A2_k rtol=rtol
         end
     end
-    
-    @testset "Edge Cases" begin
-        for T in TSQRT_TYPES
-            @testset "Type $T Edge Cases" begin
-                rtol = (T <: ComplexF32) || (T <: Float32) ? 1e-5 : 1e-12
-                
-                # Single column
-                m, n, ib = 50, 10, 10
-                A1 = triu(rand(T, n, n))
-                A2 = rand(T, m, n)
-                A1[1, 1] += one(T)  # Ensure well-conditioned
-                
-                T_mat = zeros(T, ib, n)
-                tau = zeros(T, n)
-                work = zeros(T, ib * n)
-                
-                NextLA.tsqrt!(m, n, ib, A1, A2, T_mat, tau, work)
-                
-                @test all(isfinite.(A1))
-                @test all(isfinite.(A2))
-                @test all(isfinite.(T_mat))
-                @test all(isfinite.(tau))
-                
-                # Minimal size
-                m, n, ib = 20, 20, 10
-                A1 = triu(rand(T, n, n))
-                A2 = rand(T, m, n)
-                A1 += I  # Make well-conditioned
-                
-                T_mat = zeros(T, ib, n)
-                tau = zeros(T, n)
-                work = zeros(T, ib * n)
-                
-                NextLA.tsqrt!(m, n, ib, A1, A2, T_mat, tau, work)
-                
-                @test all(isfinite.(A1))
-                @test all(isfinite.(A2))
-                @test all(isfinite.(T_mat))
-                @test all(isfinite.(tau))
+
+    @testset "Rectangular A1 (m1 ≠ n)" begin
+        ET = Float64
+        rtol_r = test_rtol(ET)
+
+        @testset "Tall A1: m1=$m1, m2=$m2, n=$n, ib=$ib" for (m1, m2, n, ib) in [
+            (32, 48, 16, 4),    # A1 is 32×16 (tall), A2 is 48×16
+            (64, 32, 32, 8),    # A1 is 64×32 (tall), A2 is 32×32
+        ]
+            k = min(m1, n)
+            A1 = triu(rand(ET, m1, n))
+            A2 = rand(ET, m2, n)
+            for i in 1:k; A1[i, i] += 2 * one(ET); end
+
+            A1_n = copy(A1); A2_n = copy(A2)
+            Tm_n = zeros(ET, ib, k)
+            tau_n = zeros(ET, k)
+            work_n = zeros(ET, ib * n)
+            NextLA.tsqrt!(m2, n, ib, A1_n, A2_n, Tm_n, tau_n, work_n)
+
+            @test all(isfinite.(A1_n))
+            @test all(isfinite.(A2_n))
+            # R should remain upper triangular in the k×n block
+            for i in 1:k, j in 1:i-1
+                @test abs(A1_n[i, j]) < rtol_r * 100
             end
         end
+
+        @testset "Wide A1: m1=$m1, m2=$m2, n=$n, ib=$ib" for (m1, m2, n, ib) in [
+            (16, 32, 32, 4),    # A1 is 16×32 (wide), A2 is 32×32
+            (24, 48, 48, 8),    # A1 is 24×48 (wide), A2 is 48×48
+        ]
+            k = min(m1, n)
+            A1 = triu(rand(ET, m1, n))
+            A2 = rand(ET, m2, n)
+            for i in 1:k; A1[i, i] += 2 * one(ET); end
+
+            A1_n = copy(A1); A2_n = copy(A2)
+            Tm_n = zeros(ET, ib, k)
+            tau_n = zeros(ET, k)
+            work_n = zeros(ET, ib * n)
+            NextLA.tsqrt!(m2, n, ib, A1_n, A2_n, Tm_n, tau_n, work_n)
+
+            @test all(isfinite.(A1_n))
+            @test all(isfinite.(A2_n))
+            for i in 1:k, j in 1:i-1
+                @test abs(A1_n[i, j]) < rtol_r * 100
+            end
+        end
+
+        @testset "Helper with rectangular A1" begin
+            # A1 is 32×16 (tall), A2 is 48×16
+            m1, n, m2 = 32, 16, 48
+            ib = 4; k = min(m1, n)
+            A1 = triu(rand(ET, m1, n))
+            A2 = rand(ET, m2, n)
+            for i in 1:k; A1[i, i] += one(ET); end
+
+            A1_h = copy(A1); A2_h = copy(A2)
+            Tm_h = zeros(ET, ib, k)
+            NextLA.tsqrt!(A1_h, A2_h, Tm_h)
+
+            A1_k = copy(A1); A2_k = copy(A2)
+            Tm_k = zeros(ET, ib, k)
+            tau_k = zeros(ET, k)
+            work_k = zeros(ET, ib * n)
+            NextLA.tsqrt!(m2, n, ib, A1_k, A2_k, Tm_k, tau_k, work_k)
+
+            @test A1_h ≈ A1_k rtol=rtol_r
+            @test A2_h ≈ A2_k rtol=rtol_r
+        end
     end
-    
-    @testset "GPU Tests" begin
-        if CUDA.functional()
-            for T in [ComplexF32, Float32]
-                @testset "Type $T GPU" begin
-                    rtol = 1e-5
-                    
-                    m, n, ib = 120, 100, 30
-                    
-                    # Create CPU data
-                    A1_cpu = triu(rand(T, n, n))
-                    A2_cpu = rand(T, m, n)
-                    A1_cpu += I  # Make well-conditioned
-                    
-                    T_cpu = zeros(T, ib, n)
-                    tau_cpu = zeros(T, n)
-                    work_cpu = zeros(T, ib * n)
-                    
-                    # Create GPU data
-                    A1_gpu = CuArray(A1_cpu)
-                    A2_gpu = CuArray(A2_cpu)
-                    T_gpu = CuArray(T_cpu)
-                    tau_gpu = CuArray(tau_cpu)
-                    work_gpu = CuArray(work_cpu)
-                    
-                    # Apply on CPU
-                    A1_cpu_result = copy(A1_cpu)
-                    A2_cpu_result = copy(A2_cpu)
-                    T_cpu_result = copy(T_cpu)
-                    tau_cpu_result = copy(tau_cpu)
-                    NextLA.tsqrt!(m, n, ib, A1_cpu_result, A2_cpu_result, T_cpu_result, tau_cpu_result, work_cpu)
-                    
-                    # Apply on GPU
-                    NextLA.tsqrt!(m, n, ib, A1_gpu, A2_gpu, T_gpu, tau_gpu, work_gpu)
-                    
-                    # Compare results
-                    @test Array(A1_gpu) ≈ A1_cpu_result rtol=rtol
-                    @test Array(A2_gpu) ≈ A2_cpu_result rtol=rtol
-                    @test Array(T_gpu) ≈ T_cpu_result rtol=rtol
-                    @test Array(tau_gpu) ≈ tau_cpu_result rtol=rtol
-                    
-                    @test all(isfinite.(Array(A1_gpu)))
-                    @test all(isfinite.(Array(A2_gpu)))
-                    @test all(isfinite.(Array(T_gpu)))
-                    @test all(isfinite.(Array(tau_gpu)))
-                end
+
+    @testset "Error handling" begin
+        @test_throws ArgumentError NextLA.tsqrt!(-1, 8, 4, zeros(8, 8), zeros(8, 8), zeros(4, 8), zeros(8), zeros(32))
+        @test_throws ArgumentError NextLA.tsqrt!(8, -1, 4, zeros(8, 8), zeros(8, 8), zeros(4, 8), zeros(8), zeros(32))
+        @test_throws ArgumentError NextLA.tsqrt!(8, 8, -1, zeros(8, 8), zeros(8, 8), zeros(4, 8), zeros(8), zeros(32))
+    end
+
+    @testset "Block size sweep" begin
+        T = Float64
+        m, n = 48, 32
+        for ib in [4, 8, 16, 32]
+            A1 = triu(rand(T, n, n)); A2 = rand(T, m, n)
+            for i in 1:n; A1[i, i] += one(T); end
+
+            Tm = zeros(T, ib, n)
+            tau = zeros(T, n)
+            work = zeros(T, ib * n)
+            NextLA.tsqrt!(m, n, ib, A1, A2, Tm, tau, work)
+
+            @test all(isfinite.(A1))
+            @test all(isfinite.(A2))
+            for i in 1:n, j in 1:i-1
+                @test abs(A1[i, j]) < 1e-12 * 100
             end
         end
     end

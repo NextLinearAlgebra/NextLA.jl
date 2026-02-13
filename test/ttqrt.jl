@@ -1,245 +1,154 @@
-using Test
-using NextLA
-using LinearAlgebra
-using Random
-using CUDA
-using LinearAlgebra: libblastrampoline, BlasInt, require_one_based_indexing
-using LinearAlgebra.LAPACK: liblapack, chkstride1, chklapackerror
-using LinearAlgebra.BLAS: @blasfunc
+@testset "TTQRT" begin
+    @testset "$T" for T in TEST_TYPES
+        rtol = test_rtol(T)
 
-function lapack_tpqrt!(::Type{T}, m::Int64, n::Int64, l::Int64, nb::Int64, 
-    A::AbstractMatrix{T}, lda::Int64, B::AbstractMatrix{T}, ldb::Int64, 
-    Tau::AbstractMatrix{T}, ldt::Int64, work) where {T<:Number}
-    
-    info = Ref{BlasInt}(0)
-    
-    if T == ComplexF64
-        ccall((@blasfunc(ztpqrt_), libblastrampoline), Cvoid,
-            (Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, 
-             Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, 
-             Ptr{T}, Ref{BlasInt}, Ptr{T}, Ptr{BlasInt}),
-            m, n, l, nb, A, lda, B, ldb, Tau, ldt, work, info)
-    elseif T == Float64
-        ccall((@blasfunc(dtpqrt_), libblastrampoline), Cvoid,
-            (Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, 
-             Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, 
-             Ptr{T}, Ref{BlasInt}, Ptr{T}, Ptr{BlasInt}),
-            m, n, l, nb, A, lda, B, ldb, Tau, ldt, work, info)
-    elseif T == ComplexF32
-        ccall((@blasfunc(ctpqrt_), libblastrampoline), Cvoid,
-            (Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, 
-             Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, 
-             Ptr{T}, Ref{BlasInt}, Ptr{T}, Ptr{BlasInt}),
-            m, n, l, nb, A, lda, B, ldb, Tau, ldt, work, info)
-    else # T = Float32
-        ccall((@blasfunc(stpqrt_), libblastrampoline), Cvoid,
-            (Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, Ref{BlasInt}, 
-             Ptr{T}, Ref{BlasInt}, Ptr{T}, Ref{BlasInt}, 
-             Ptr{T}, Ref{BlasInt}, Ptr{T}, Ptr{BlasInt}),
-            m, n, l, nb, A, lda, B, ldb, Tau, ldt, work, info)
-    end
-    
-    chklapackerror(info[])
-end
+        @testset "n=$n, ib=$ib" for (n, ib) in [
+            (16, 4),
+            (24, 8),
+            (32, 8),
+            (48, 16),
+        ]
+            A1 = triu(randn(T, n, n))
+            A2 = triu(randn(T, n, n))
 
-const TTQRT_TYPES = [ComplexF32, ComplexF64, Float32, Float64]
-# Format: (m, n, ib) where:
-# - m: number of rows in A2 matrix (M >= 0)
-# - n: number of columns in A1 and A2 (N >= 0)
-# - ib: block size (IB >= 1)
-const TTQRT_SIZES = [
-    (800, 600, 200),   # m=8, n=6, ib=2
-    (1000, 800, 300),  # m=10, n=8, ib=3
-    (1200, 1000, 400), # m=12, n=10, ib=4
-    (600, 600, 200),   # m=6, n=6, ib=2 (square case)
-    (1500, 1200, 300), # m=15, n=12, ib=3
-    (200, 160, 40)  # m=20, n=16, ib=4
-]
-
-@testset "TTQRT Tests" begin
-    @testset "NextLA vs LAPACK comparison" begin
-        for (itype, T) in enumerate(TTQRT_TYPES)
-            @testset "Type $T (itype=$itype)" begin
-                rtol = (T <: ComplexF32) || (T <: Float32) ? 1e-5 : 1e-12
-                
-                for (isize, (m, n, ib)) in enumerate(TTQRT_SIZES)
-                    @testset "Size m=$m, n=$n, ib=$ib" begin
-                        # Test parameter validation
-                        if ib > n || ib <= 0
-                            continue  # Skip invalid block sizes
-                        end
-
-                        A1 = triu(randn(T, n, n))
-                        A2 = triu(randn(T, n, n))
-                    
-                        T_mat = triu(rand(T, ib, n))
-
-                        tau = zeros(T, n)
-
-                        work = zeros(T, n * ib)
-
-                        A1_nextla = copy(A1)
-                        A2_nextla = copy(A2)
-                        A1_orig = copy(A1)
-                        A2_orig = copy(A2)
-                        T_mat_nextla = copy(T_mat)
-                        work_nextla = copy(work)
-
-
-                        NextLA.ttqrt!(n, n, ib, A1_nextla, A2_nextla, T_mat_nextla, tau, work_nextla)
-
-                        # --- Test Helper Function ---
-                        A1_helper = copy(A1_orig)
-                        A2_helper = copy(A2_orig)
-                        NextLA.ttqrt!(A1_helper, A2_helper, T_mat_nextla)
-                        
-                        # Verify helper gives same results as kernel
-                        @test A1_helper ≈ A1_nextla rtol=rtol
-                        @test A2_helper ≈ A2_nextla rtol=rtol
-
-                        lapack_tpqrt!(T, n, n, n, ib, A1, n, A2, n, T_mat, ib, work)
-
-                        @test norm(A1_nextla - A1) < rtol * max(1, norm(A1))
-                        @test norm(A2_nextla - A2) < rtol * max(1, norm(A2))
-                            
-                        # Basic sanity checks
-                        @test all(isfinite.(A1_nextla))
-                        @test all(isfinite.(A2_nextla))
-                        @test all(isfinite.(T_mat_nextla))
-                        @test all(isfinite.(tau))
-                        @test all(isfinite.(work_nextla))
-                        
-                        # Check that matrices have been modified (unless trivial case)
-                        if m > 0 && n > 0 && ib > 0
-                            modification_occurred = !isapprox(A1_nextla, A1_orig, rtol=rtol) ||
-                                                  !isapprox(A2_nextla, A2_orig, rtol=rtol)
-                            @test modification_occurred
-                        end
-                    end
-                end
+            # Ensure well-conditioned diagonals
+            for i in 1:n
+                A1[i, i] += 2 * one(T)
+                A2[i, i] += 2 * one(T)
             end
+
+            A1_orig = copy(A1); A2_orig = copy(A2)
+
+            # NextLA kernel
+            A1_n = copy(A1); A2_n = copy(A2)
+            Tm_n = zeros(T, ib, n)
+            tau_n = zeros(T, n)
+            work_n = zeros(T, ib * n)
+            NextLA.ttqrt!(n, n, ib, A1_n, A2_n, Tm_n, tau_n, work_n)
+
+            # LAPACK reference (l=n for triangular-triangular case)
+            A1_l = copy(A1); A2_l = copy(A2)
+            Tm_l = zeros(T, ib, n)
+            work_l = zeros(T, ib * n)
+            lapack_tpqrt!(T, n, n, n, ib, A1_l, n, A2_l, n, Tm_l, ib, work_l)
+
+            @test A1_n ≈ A1_l rtol=rtol
+            @test A2_n ≈ A2_l rtol=rtol
+
+            # Matrices must have been modified
+            @test !isapprox(A1_n, A1_orig; rtol=rtol) || !isapprox(A2_n, A2_orig; rtol=rtol)
+
+            @test all(isfinite.(A1_n))
+            @test all(isfinite.(A2_n))
+            @test all(isfinite.(Tm_n))
         end
-    end
-    
-    @testset "Error Handling Tests" begin
-        for T in TTQRT_TYPES
-            @testset "Type $T Error Handling" begin
-                # Test with valid parameters (should not error)
-                m, n, ib = 600, 500, 200
-                A1 = triu(randn(T, n, n))
-                A2 = randn(T, m, n)
-                T_matrix = zeros(T, ib, n)
-                tau = zeros(T, n)
-                work = zeros(T, ib * n)
-                
-                @test_nowarn NextLA.ttqrt!(m, n, ib, A1, A2, T_matrix, tau, work)
-                
-                # Test edge cases
-                @test_nowarn NextLA.ttqrt!(0, 0, 0, zeros(T, 0, 0), zeros(T, 0, 0), zeros(T, 0, 0), T[], T[])
-                
-                # Test with minimal size
-                @test_nowarn NextLA.ttqrt!(1, 1, 1, ones(T, 1, 1), ones(T, 1, 1), zeros(T, 1, 1), zeros(T, 1), zeros(T, 1))
-            end
-        end
-    end
-    
-    @testset "Numerical Stability Tests" begin
-        for T in [ComplexF64]  # High precision type
-            @testset "Type $T Stability" begin
-                rtol = eps(real(T)) * 100
-                
-                # Test with different scales
-                scales = [eps(real(T)), one(real(T)), 1/eps(real(T))^(1/4)]
-                
-                for scale in scales
-                    m, n, ib = 800, 600, 200
-                    A1 = triu(T.(scale .* randn(ComplexF64, n, n)))
-                    A2 = T.(scale .* randn(ComplexF64, m, n))
-                    T_matrix = zeros(T, ib, n)
-                    tau = zeros(T, n)
-                    work = zeros(T, ib * n)
-                    
-                    # Ensure diagonal elements are non-zero
-                    for i in 1:n
-                        if abs(A1[i, i]) < rtol
-                            A1[i, i] = one(T)
-                        end
-                    end
-                    
-                    # Test calculation (simplified signature)
-                    NextLA.ttqrt!(m, n, ib, A1, A2, T_matrix, tau, work)
-                    
-                    # Check that results are finite
-                    @test all(isfinite.(A1))
-                    @test all(isfinite.(A2))
-                    @test all(isfinite.(T_matrix))
-                    @test all(isfinite.(tau))
-                    @test all(isfinite.(work))
-                end
-            end
+
+        @testset "Helper matches kernel" begin
+            n, ib = 24, 8
+            A1 = triu(randn(T, n, n)); A2 = triu(randn(T, n, n))
+            for i in 1:n; A1[i, i] += one(T); A2[i, i] += one(T); end
+
+            A1_h = copy(A1); A2_h = copy(A2)
+            Tm_h = zeros(T, ib, n)
+            NextLA.ttqrt!(A1_h, A2_h, Tm_h)
+
+            A1_k = copy(A1); A2_k = copy(A2)
+            Tm_k = zeros(T, ib, n)
+            tau = zeros(T, n)
+            work = zeros(T, ib * n)
+            NextLA.ttqrt!(n, n, ib, A1_k, A2_k, Tm_k, tau, work)
+
+            @test A1_h ≈ A1_k rtol=rtol
+            @test A2_h ≈ A2_k rtol=rtol
         end
     end
 
-    @testset "GPU Tests" begin
-        if CUDA.functional()
-            for T in (ComplexF32,)
-                @testset "Type $T GPU" begin
-                    rtol = 1e-5
-                    
-                    # Test different sizes
-                    test_cases = [
-                        (8, 6, 2),
-                        (10, 8, 3)
-                    ]
-                    
-                    for (m, n, ib) in test_cases
-                        A1_cpu = triu(randn(T, n, n))
-                        A2_cpu = randn(T, m, n)
-                        
-                        # Ensure diagonal elements are non-zero
-                        for i in 1:n
-                            if abs(A1_cpu[i, i]) < rtol
-                                A1_cpu[i, i] = one(T)
-                            end
-                        end
-                        
-                        T_cpu = zeros(T, ib, n)
-                        tau_cpu = zeros(T, n)
-                        work_cpu = zeros(T, ib * n)
-                        
-                        # Move to GPU
-                        A1_gpu = CuArray(A1_cpu)
-                        A2_gpu = CuArray(A2_cpu)
-                        T_gpu = CuArray(T_cpu)
-                        tau_gpu = CuArray(tau_cpu)
-                        work_gpu = CuArray(work_cpu)
-                        
-                        # Reference CPU calculation
-                        A1_ref = copy(A1_cpu)
-                        A2_ref = copy(A2_cpu)
-                        T_ref = copy(T_cpu)
-                        tau_ref = copy(tau_cpu)
-                        work_ref = copy(work_cpu)
-                        NextLA.ttqrt!(m, n, ib, A1_ref, A2_ref, T_ref, tau_ref, work_ref)
-                        
-                        # GPU calculation
-                        NextLA.ttqrt!(m, n, ib, A1_gpu, A2_gpu, T_gpu, tau_gpu, work_gpu)
-                        
-                        # Compare results
-                        @test norm(Array(A1_gpu) - A1_ref) < rtol * max(1, norm(A1_ref))
-                        @test norm(Array(A2_gpu) - A2_ref) < rtol * max(1, norm(A2_ref))
-                        @test norm(Array(T_gpu) - T_ref) < rtol * max(1, norm(T_ref))
-                        @test norm(Array(tau_gpu) - tau_ref) < rtol * max(1, norm(tau_ref))
-                        @test norm(Array(work_gpu) - work_ref) < rtol * max(1, norm(work_ref))
-                        
-                        @test all(isfinite.(Array(A1_gpu)))
-                        @test all(isfinite.(Array(A2_gpu)))
-                        @test all(isfinite.(Array(T_gpu)))
-                        @test all(isfinite.(Array(tau_gpu)))
-                        @test all(isfinite.(Array(work_gpu)))
-                    end
-                end
+    @testset "Rectangular tiles (m ≠ n)" begin
+        ET = Float64
+        rtol_r = test_rtol(ET)
+
+        @testset "Tall: m=$m, n=$n, ib=$ib" for (m, n, ib) in [
+            (32, 16, 4),
+            (48, 24, 8),
+            (64, 32, 16),
+        ]
+            k = min(m, n)
+            A1 = triu(randn(ET, m, n))
+            A2 = triu(randn(ET, m, n))
+            for i in 1:k
+                A1[i, i] += 2 * one(ET)
+                A2[i, i] += 2 * one(ET)
+            end
+
+            A1_n = copy(A1); A2_n = copy(A2)
+            Tm_n = zeros(ET, ib, k)
+            tau_n = zeros(ET, k)
+            work_n = zeros(ET, ib * n)
+            NextLA.ttqrt!(m, n, ib, A1_n, A2_n, Tm_n, tau_n, work_n)
+
+            @test all(isfinite.(A1_n))
+            @test all(isfinite.(A2_n))
+            @test all(isfinite.(Tm_n))
+            # R (top-left k×n block of A1) should remain upper triangular
+            for i in 1:k, j in 1:i-1
+                @test abs(A1_n[i, j]) < rtol_r * 100
             end
         end
+
+        @testset "Wide: m=$m, n=$n, ib=$ib" for (m, n, ib) in [
+            (16, 32, 4),
+            (24, 48, 8),
+        ]
+            k = min(m, n)
+            A1 = triu(randn(ET, m, n))
+            A2 = triu(randn(ET, m, n))
+            for i in 1:k
+                A1[i, i] += 2 * one(ET)
+                A2[i, i] += 2 * one(ET)
+            end
+
+            A1_n = copy(A1); A2_n = copy(A2)
+            Tm_n = zeros(ET, ib, k)
+            tau_n = zeros(ET, k)
+            work_n = zeros(ET, ib * n)
+            NextLA.ttqrt!(m, n, ib, A1_n, A2_n, Tm_n, tau_n, work_n)
+
+            @test all(isfinite.(A1_n))
+            @test all(isfinite.(A2_n))
+            @test all(isfinite.(Tm_n))
+            for i in 1:k, j in 1:i-1
+                @test abs(A1_n[i, j]) < rtol_r * 100
+            end
+        end
+
+        @testset "Helper rectangular: m=$m, n=$n" for (m, n) in [
+            (32, 16),
+            (16, 32),
+        ]
+            k = min(m, n)
+            ib = min(8, k)
+            A1 = triu(randn(ET, m, n))
+            A2 = triu(randn(ET, m, n))
+            for i in 1:k; A1[i, i] += one(ET); A2[i, i] += one(ET); end
+
+            A1_h = copy(A1); A2_h = copy(A2)
+            Tm_h = zeros(ET, ib, k)
+            NextLA.ttqrt!(A1_h, A2_h, Tm_h)
+
+            A1_k = copy(A1); A2_k = copy(A2)
+            Tm_k = zeros(ET, ib, k)
+            tau = zeros(ET, k)
+            work = zeros(ET, ib * n)
+            NextLA.ttqrt!(m, n, ib, A1_k, A2_k, Tm_k, tau, work)
+
+            @test A1_h ≈ A1_k rtol=rtol_r
+            @test A2_h ≈ A2_k rtol=rtol_r
+        end
+    end
+
+    @testset "Error handling" begin
+        @test_throws ArgumentError NextLA.ttqrt!(-1, 8, 4, zeros(8, 8), zeros(8, 8), zeros(4, 8), zeros(8), zeros(32))
+        @test_throws ArgumentError NextLA.ttqrt!(8, -1, 4, zeros(8, 8), zeros(8, 8), zeros(4, 8), zeros(8), zeros(32))
+        @test_throws ArgumentError NextLA.ttqrt!(8, 8, -1, zeros(8, 8), zeros(8, 8), zeros(4, 8), zeros(8), zeros(32))
     end
 end

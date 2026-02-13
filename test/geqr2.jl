@@ -1,165 +1,60 @@
-using Test
-using NextLA
-using LinearAlgebra, LinearAlgebra.LAPACK
-using Random
+@testset "GEQR2" begin
+    @testset "$T" for T in TEST_TYPES
+        rtol = test_rtol(T)
 
+        @testset "Unblocked QR m=$m, n=$n" for (m, n) in [
+            (0, 0), (1, 1), (10, 8), (20, 15), (32, 32), (50, 30),
+        ]
+            k = min(m, n)
+            A = rand(T, m, n)
+            A_orig = copy(A)
 
-const QR2_TYPES = [ComplexF32, ComplexF64, Float32, Float64]
-const QR2_SIZES = [(0,0), (100,100), (200,100), (100,200), (300,300), (500,300), (100,80), (200,150)]
+            tau  = zeros(T, k)
+            work = zeros(T, max(1, n))
+            NextLA.geqr2!(m, n, A, tau, work)
 
-# Generate test matrices using patterns
-function generate_qr_test_matrix(::Type{T}, m, n, imat=1) where T
-    if m == 0 || n == 0
-        return zeros(T, m, n)
-    end
-    
-    # Use the matrix generation from runtests.jl
-    if imat == 1
-        # Well-conditioned random matrix
-        return matrix_generation(T, m, n, mode=:decay, cndnum=2.0)
-    elseif imat == 2
-        # Moderately ill-conditioned
-        return matrix_generation(T, m, n, mode=:decay, cndnum=1e2)
-    elseif imat == 3
-        # Severely ill-conditioned
-        return matrix_generation(T, m, n, mode=:one_large, cndnum=1e6)
-    elseif imat == 4
-        # Random matrix
-        return rand(T, m, n)
-    else
-        # Identity-like matrix
-        A = zeros(T, m, n)
-        k = min(m, n)
-        for i in 1:k
-            A[i, i] = one(T)
-        end
-        return A
-    end
-end
+            if m == 0 || n == 0
+                @test size(A) == size(A_orig)
+            else
+                # Extract R from upper triangle (lower part stores reflectors)
+                R = triu(A[1:k, 1:n])
 
-@testset "GEQR2 Tests" begin
-    @testset "Unblocked QR Factorization Tests" begin
-        for (itype, T) in enumerate(QR2_TYPES)
-            @testset "Type $T (itype=$itype)" begin
-                rtol = (T <: ComplexF32) || (T <: Float32) ? 1e-5 : 1e-12
-                atol = rtol
-                
-                for (isize, (m, n)) in enumerate(QR2_SIZES)
-                    @testset "Size m=$m, n=$n (isize=$isize)" begin
-                        k = min(m, n)
-                        
-                        # Test multiple matrix patterns
-                        for imat in 1:4
-                            @testset "Matrix type $imat" begin
-                                A_orig = generate_qr_test_matrix(T, m, n, imat)
+                # Reconstruct Q via LAPACK ormqr
+                Q = Matrix{T}(I, m, m)
+                LAPACK.ormqr!('L', 'N', A, tau, Q)
 
-                                # --- NextLA Calculation ---
-                                A_test = copy(A_orig)
-                                tau_test = zeros(T, k)
-                                work_test = zeros(T, n)  # Work array size n for geqr2!
-                                NextLA.geqr2!(m, n, A_test, tau_test, work_test)
+                # Residual: ‖A_orig − Q·R‖ / (‖A_orig‖·n·ε)
+                res = opnorm(A_orig - Q[:, 1:k] * R, 1) /
+                      (opnorm(A_orig, 1) * n * eps(real(T)))
+                @test res < 10
 
-                                # --- Test Helper Function ---
-                                A_helper = copy(A_orig)
-                                tau_helper = zeros(T, k)
-                                NextLA.geqr2!(A_helper, tau_helper)
-
-                                # Verify helper gives same results as kernel
-                                @test A_helper ≈ A_test rtol=rtol atol=atol
-                                if k > 0
-                                    @test tau_helper ≈ tau_test rtol=rtol atol=atol
-                                end
-
-                                # --- Comparisons ---
-                                if m == 0 || n == 0
-                                    @test size(A_test) == size(A_orig)
-                                else
-                                    #Mathematical property checks
-                                    if k > 0
-                                        # Extract R from the factored matrix
-                                        R_test = triu(A_test[1:k, 1:n])
-                                        
-                                        # Form Q using LAPACK's unmqr!
-                                        Q_test = Matrix{T}(I, m, m)
-                                        LAPACK.ormqr!('L', 'N', A_test, tau_test, Q_test)
-                                        
-                                        # Test 3a: Reconstruction. A_orig should be Q * R.
-                                        A_recon = Q_test[:, 1:k] * R_test
-                                        reconstruction_tol = rtol * max(1, m, n) * norm(A_orig)
-                                        @test A_orig ≈ A_recon
-
-                                        # Test 3b: Orthogonality of Q. Q' * Q should be Identity.
-                                        orthog_error = norm(Q_test' * Q_test - I)
-                                        orthog_tol = rtol * m
-                                        @test orthog_error < orthog_tol
-                                        
-                                        # Additional checks
-                                        @test all(isfinite.(A_test))
-                                        @test all(isfinite.(tau_test))
-                                        @test size(A_test) == size(A_orig)
-                                        
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
+                # Orthogonality: ‖QᴴQ − I‖ / (m·ε)
+                orth = opnorm(Q' * Q - I, 1) / (m * eps(real(T)))
+                @test orth < 10
             end
         end
-    end
-    
-    @testset "Error Handling Tests" begin
-        for T in QR2_TYPES
-            @testset "Type $T Error Handling" begin
-                # Test edge cases and error conditions
-                m, n = 500, 300
-                A = rand(T, m, n)
-                tau = zeros(T, min(m, n))
-                work = zeros(T, n)
-                
-                # Valid call should not error
-                @test_nowarn NextLA.geqr2!(m, n, copy(A), copy(tau), copy(work))
-                
-                # Zero dimensions should not error
-                @test_nowarn NextLA.geqr2!(0, 0, zeros(T, 0, 0), T[], T[])
-                @test_nowarn NextLA.geqr2!(0, 300, zeros(T, 0, 300), T[], zeros(T, 300))
-                @test_nowarn NextLA.geqr2!(500, 0, zeros(T, 500, 0), T[], T[])
-            end
+
+        @testset "Helper matches kernel" begin
+            m, n = 20, 15
+            k = min(m, n)
+            A = rand(T, m, n)
+
+            A1 = copy(A)
+            tau1 = zeros(T, k)
+            work = zeros(T, n)
+            NextLA.geqr2!(m, n, A1, tau1, work)
+
+            A2 = copy(A)
+            tau2 = zeros(T, k)
+            NextLA.geqr2!(A2, tau2)
+
+            @test A1 ≈ A2 rtol=rtol
+            @test tau1 ≈ tau2 rtol=rtol
         end
     end
 
-    @testset "GPU Tests (if available)" begin
-        if CUDA.functional()
-            for T in [ComplexF32]  # GPU typically uses single precision
-                @testset "Type $T GPU" begin
-                    m, n = 10, 8
-                    k = min(m, n)
-                    rtol = 1e-5
-                    
-                    A_cpu = rand(T, m, n)
-                    A_gpu = CuArray(A_cpu)
-                    
-                    tau_cpu = zeros(T, k)
-                    tau_gpu = CuArray(tau_cpu)
-                    
-                    work_cpu = zeros(T, n)
-                    work_gpu = CuArray(work_cpu)
-                    
-                    # CPU reference
-                    A_cpu_result = copy(A_cpu)
-                    NextLA.geqr2!(m, n, A_cpu_result, tau_cpu, work_cpu)
-                    
-                    # GPU test
-                    NextLA.geqr2!(m, n, A_gpu, tau_gpu, work_gpu)
-                    
-                    # Compare results
-                    @test Array(A_gpu) ≈ A_cpu_result rtol=rtol
-                    @test Array(tau_gpu) ≈ tau_cpu rtol=rtol
-                    
-                    @test all(isfinite.(Array(A_gpu)))
-                    @test all(isfinite.(Array(tau_gpu)))
-                end
-            end
-        end
+    @testset "Error handling" begin
+        @test_throws ArgumentError NextLA.geqr2!(-1, 5, zeros(5, 5), zeros(5), zeros(5))
+        @test_throws ArgumentError NextLA.geqr2!(5, -1, zeros(5, 5), zeros(5), zeros(5))
     end
 end

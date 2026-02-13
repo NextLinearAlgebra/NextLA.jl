@@ -75,9 +75,12 @@ function unmqr!(side::Char, trans::Char, m::Integer, n::Integer, k::Integer, ib:
         throw(ArgumentError("n must be non-negative, got $n"))
     end
 
-    if k < 0 || k > nq
-        throw(ArgumentError("k must satisfy 0 ≤ k ≤ $nq, got $k"))
+    if k < 0
+        throw(ArgumentError("k must be non-negative, got $k"))
     end
+    # Clamp k to the applicable dimension for rectangular tiles
+    # Also clamp to the number of columns of A (reflectors stored in A)
+    k = min(k, nq, size(A, 2))
 
     if ib < 0 
         throw(ArgumentError("ib must be non-negative, got $ib"))
@@ -139,7 +142,7 @@ function unmqr!(side::Char, trans::Char, m::Integer, n::Integer, k::Integer, ib:
 
         # Apply current block of reflectors
         larfb!(side, trans, 'F', 'C', mi, ni, kb,
-            (@view A[i:lda, i:i+kb-1]), lda-i+1,
+            (@view A[i:size(A, 1), i:i+kb-1]), size(A, 1)-i+1,
             (@view T_matrix[1:kb, i:i+kb-1]),
             cv, (@view wwork[:, 1:kb]))
     end
@@ -195,7 +198,9 @@ function unmqr!(side::Char, trans::Char, A::AbstractMatrix{T}, T_matrix::Abstrac
     m, n = size(C)
     ib, k = size(T_matrix)
 
-    
+    nq = side == 'L' ? m : n
+    k = min(k, nq)
+
     # Validate input dimensions
     if ib <= 0
         throw(ArgumentError("Block size ib must be positive, got $ib"))

@@ -84,7 +84,8 @@ Helper function for blocked QR factorization. Computes A = Q*R where Q is orthog
 function geqrt!(A::AbstractMatrix{T}, T_matrix::AbstractMatrix{T}) where {T}
     m, n = size(A)
     ib, nb = size(T_matrix)
-    tau = Vector{T}(undef, n)
+    k = min(m, n)
+    tau = Vector{T}(undef, k)
     work = zeros(T, ib * n)
 
     geqrt!(m, n, ib, A, T_matrix, tau, work)

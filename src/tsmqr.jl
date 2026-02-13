@@ -1,3 +1,5 @@
+
+
 """
     tsmqr!(side, trans, m1, n1, m2, n2, k, ib, A1, A2, V, T, work)
 
@@ -78,14 +80,20 @@ function tsmqr!(side::Char, trans::Char, m1::Integer, n1::Integer, m2::Integer, 
         end
     end
 
-    if k < 0 || (side == 'L' && k > m1) || (side == 'R' && k > n1)
-        max_k = side == 'L' ? m1 : n1
-        throw(ArgumentError("k must be between 0 and $max_k for side='$side', got $k"))
+    if k < 0
+        throw(ArgumentError("k must be non-negative, got $k"))
     end
 
     if ib < 0
         throw(ArgumentError("ib must be non-negative, got $ib"))
     end
+
+    # Clamp the number of reflectors to the available triangular dimension and
+    # the storage provided by V and T. This mirrors LAPACK's behaviour of using
+    # min(k, m1) (or min(k, n1)) when applying compact WY blocks.
+    kmax = side == 'L' ? m1 : n1
+    stored_k = min(size(V, 2), size(T_mat, 2))
+    k = min(k, kmax, stored_k)
 
     # Quick return for degenerate cases
     if m1 == 0 || n1 == 0 || m2 == 0 || n2 == 0 || k == 0 || ib == 0

@@ -21,7 +21,7 @@ Base.setindex!(A::NextLAMatrix, v, i::Integer) = A.data[i] = v
 Base.setindex!(A::NextLAMatrix, v, i::Integer, j::Integer) = A.data[i,j] = v
 
 #This temp
-LinearAlgebra.BLAS.axpy!(α::Number, x::NextLAMatrix, y::NextLAMatrix) = LinearAlgebra.BLAS.axpy!(α, x.data, y.data)
+LinearAlgebra.BLAS.axpy!(α::Number, x::NextLAMatrix, y::NextLAMatrix) = axpy!(α, vec(x.data), vec(y.data))
 LinearAlgebra.BLAS.gemv!(tA::Char, α::Number, A::NextLAMatrix, x::NextLAMatrix, β::Number, y::NextLAMatrix) = LinearAlgebra.BLAS.gemv!(tA, α, A.data, x.data, β, y.data)
 LinearAlgebra.BLAS.gemm!(tA::Char, tB::Char, α::Number, A::NextLAMatrix, B::NextLAMatrix, β::Number, C::NextLAMatrix) = LinearAlgebra.BLAS.gemm!(tA, tB, α, A.data, B.data, β, C.data)
 LinearAlgebra.BLAS.trmm!(tA::Char, tB::Char, tC::Char, α::Number, A::NextLAMatrix, B::NextLAMatrix) = LinearAlgebra.BLAS.trmm!(tA, tB, tC, α, A.data, B.data)

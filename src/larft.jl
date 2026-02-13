@@ -98,9 +98,9 @@ function larft!(direct::Char, storev::Char, n::Integer, k::Integer, V::AbstractM
 
                     # Add contribution from off-diagonal part
                     j = min(lastv, prevlastv)
-                    if i-1 > 0
-                        LinearAlgebra.generic_matmatmul!((@view T_mat[1:i-1, i]), 'N', 'C', (@view V[1:i-1, i:j]), 
-                            (@view V[i:i, i:j]), LinearAlgebra.MulAddMul(-tau[i], one0))
+                    if i-1 > 0 && i+1 <= j
+                        LinearAlgebra.generic_matmatmul!((@view T_mat[1:i-1, i]), 'N', 'C', (@view V[1:i-1, i+1:j]), 
+                            (@view V[i:i, i+1:j]), LinearAlgebra.MulAddMul(-tau[i], one0))
                     end
                 end
 

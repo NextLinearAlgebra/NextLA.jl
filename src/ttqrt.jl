@@ -24,8 +24,9 @@ function ttqrt!(m::Integer, n::Integer, ib::Integer, A1::AbstractMatrix{T}, A2::
     one = oneunit(eltype(A1))
     Tzero = zero(eltype(A1))
 
-    for ii in 1:ib:n
-        sb = min(n - ii + 1, ib)
+    k = min(m, n)
+    for ii in 1:ib:k
+        sb = min(k - ii + 1, ib)
 
         for i in 1:sb
             j = ii + i - 1 # index
@@ -61,9 +62,9 @@ function ttqrt!(m::Integer, n::Integer, ib::Integer, A1::AbstractMatrix{T}, A2::
             T_mat[i, j] = tau[j]
         end
 
-        if (n >= ii + sb)
+        if (n > ii + sb - 1)
             mi = min(ii + sb - 1, m)
-            ni = n - (ii + sb - 1)
+            ni = n - (ii + sb) + 1
             l = min(sb, max(0, mi - ii + 1))
             # Workspace reshape for this call: sb x ni (left side)
             W = reshape(@view(work[1:sb*ni]), sb, ni)
@@ -79,26 +80,27 @@ function ttqrt!(m::Integer, n::Integer, ib::Integer, A1::AbstractMatrix{T}, A2::
 end
 
 """
-    ttqrt!(A, B, ib) -> (A, B, T, tau)
+    ttqrt!(A, B, T_mat) -> nothing
     
 Helper for triangular-triangular QR factorization.
 
 # Arguments
-- `A`: Upper triangular matrix (n × n)
-- `B`: Upper triangular matrix (n × n)
-- `ib`: Block size
+- `A`: Upper triangular matrix (m × n), only upper triangle is accessed
+- `B`: Upper triangular matrix (m2 × n2), m2 and n2 must equal size of A
+- `T_mat`: ib × nb block reflector matrix
 
 # Returns
-- Modified `A` and `B` matrices
-- `T`: Block reflector matrix  
-- `tau`: Scalar factors
+- Modified `A` and `B` matrices in-place
 """
 function ttqrt!(A::AbstractMatrix{T}, B::AbstractMatrix{T}, T_mat::AbstractMatrix{T}) where {T}
     m, n = size(A)
     m2, n2 = size(B)
     ib, nb = size(T_mat)
-    tau = Vector{T}(undef, nb)
-    @assert m2 == m && n2 == n "A and B must have same dimensions"
+    if n2 != n
+        throw(ArgumentError("A and B must have the same number of columns: got $n and $n2"))
+    end
+    k = min(m, n)
+    tau = Vector{T}(undef, k)
 
     work = zeros(T, ib * n)
     

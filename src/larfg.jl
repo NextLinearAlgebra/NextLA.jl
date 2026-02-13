@@ -138,7 +138,7 @@ Creates H such that H * x = [||x||; 0; 0; ...] where the sign is chosen
 to avoid cancellation. The reflector vector is stored in x_new[2:end].
 """
 function larfg!(alpha::T, x::AbstractVector{T}, incx::Integer, tau::T) where {T}
-    n = length(x)
+    n = length(x) + 1
     
     alpha_out, tau_out = larfg!(n, alpha, x, incx, tau)
 

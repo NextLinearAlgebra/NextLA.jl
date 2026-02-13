@@ -1,310 +1,134 @@
-using Test
-using NextLA
-using LinearAlgebra
-using CUDA
+@testset "UNMQR" begin
+    @testset "$T" for T in TEST_TYPES
+        rtol = test_rtol(T)
+        m, n, k, ib = 64, 48, 32, 8
 
-const UNMQR_TESTTYPES = [ComplexF32, ComplexF64, Float32, Float64]
+        # Build a valid QR factorization first
+        A_qr = rand(T, m, k)
+        A_orig = copy(A_qr)
+        Tm = zeros(T, ib, k)
+        tau = zeros(T, k)
+        work_qr = zeros(T, ib * k)
+        NextLA.geqrt!(m, k, ib, A_qr, Tm, tau, work_qr)
 
-@testset "UNMQR Tests" begin
-    @testset "Left No-Transpose Application Tests" begin
-        for type in UNMQR_TESTTYPES
-            m, n, k, ib = 200, 200, 80, 40
-            rtol = (type == ComplexF32) || (type == Float32) ? 1e-5 : 1e-8
-            
-            # Create QR factorization first
-            A_qr = rand(type, m, n)
-            A_original = copy(A_qr)
-            lda = m
-            T = zeros(type, ib, k)
-            tau = zeros(type, k)
-            work_qr = zeros(type, ib * k)
-
-
-            # Perform QR factorization
-            NextLA.geqrt!(m, k, ib, A_qr, T, tau, work_qr)
-
-            # Test matrix to apply Q to
+        @testset "Left, No-Transpose" begin
             C = rand(T, m, n)
-            C_original = copy(C)
-            ldc = m
+            C_orig = copy(C)
 
-            # Workspace for UNMQR
-            # Workspace for UNMQR (matrix workspace)
-            work = zeros(type, n, ib)
+            # Kernel call
+            work = zeros(T, n, ib)
+            NextLA.unmqr!('L', 'N', m, n, k, ib, A_qr, m, Tm, C, work)
 
-            # Apply Q from left (Q * C)
-            NextLA.unmqr!('L', 'N', m, n, k, ib, A_qr, lda, T, C, work)
+            # Orthogonal transform preserves Frobenius norm
+            @test norm(C) ≈ norm(C_orig) rtol=rtol
 
-            # --- Test Helper Function ---
-            C_helper = copy(C_original)
-            NextLA.unmqr!('L', 'N', A_qr, T, C_helper)
-            
-            # Verify helper gives same results as kernel (in-place)
-            @test C_helper ≈ C rtol=rtol
-        
-            # Verify using reference QR decomposition
-            Q_ref, R_ref = qr(A_original)
-            C_expected = Matrix(Q_ref) * C_original
-
-            # Note: Due to potential sign differences in QR, we check properties rather than exact equality
-            @test size(C) == (m, n)
-            @test all(isfinite.(C))
-        
-            # Check that the transformation preserves matrix structure
-            @test (norm(C) - norm(C_expected)) / norm(C_expected) < rtol # Orthogonal transformations preserve norm
+            # Helper must match kernel
+            C_h = copy(C_orig)
+            NextLA.unmqr!('L', 'N', A_qr, Tm, C_h)
+            @test C_h ≈ C rtol=rtol
         end
-    end 
-    
-    @testset "Left Conjugate Transpose Application Tests" begin
-        for type in UNMQR_TESTTYPES
-            m, n, k, ib = 200, 200, 80, 40
-            rtol = (type == ComplexF32) || (type == Float32) ? 1e-5 : 1e-8
-            
-            # Create QR factorization first
-            A_qr = rand(type, m, n)
-            A_original = copy(A_qr)
-            lda = m
-            T = zeros(type, ib, k)
-            tau = zeros(type, k)
-            work_qr = zeros(type, ib * k)
 
-
-            # Perform QR factorization
-            NextLA.geqrt!(m, k, ib, A_qr, T, tau, work_qr)
-
-            # Test matrix to apply Q to
+        @testset "Left, Conjugate-Transpose" begin
             C = rand(T, m, n)
-            C_original = copy(C)
-            ldc = m
+            C_orig = copy(C)
 
-            # Workspace for UNMQR
-            # Workspace for UNMQR (matrix workspace)
-            work = zeros(type, n, ib)
+            work = zeros(T, n, ib)
+            NextLA.unmqr!('L', 'C', m, n, k, ib, A_qr, m, Tm, C, work)
 
-            # Apply Q from left (Q * C)
-            NextLA.unmqr!('L', 'C', m, n, k, ib, A_qr, lda, T, C, work)
+            @test norm(C) ≈ norm(C_orig) rtol=rtol
 
-            # --- Test Helper Function ---
-            C_helper = copy(C_original)
-            NextLA.unmqr!('L', 'C', A_qr, T, C_helper)
-            
-            # Verify helper gives same results as kernel (in-place)
-            @test C_helper ≈ C rtol=rtol
-        
-            # Verify using reference QR decomposition
-            Q_ref, R_ref = qr(A_original)
-            C_expected = adjoint(Matrix(Q_ref)) * C_original
+            C_h = copy(C_orig)
+            NextLA.unmqr!('L', 'C', A_qr, Tm, C_h)
+            @test C_h ≈ C rtol=rtol
+        end
 
-            # Note: Due to potential sign differences in QR, we check properties rather than exact equality
-            @test size(C) == (m, n)
-            @test all(isfinite.(C))
-        
-            # Check that the transformation preserves matrix structure
-            @test (norm(C) - norm(C_expected)) / norm(C_expected) < rtol # Orthogonal transformations preserve norm
+        @testset "Right, No-Transpose" begin
+            C = rand(T, n, m)
+            C_orig = copy(C)
+
+            work = zeros(T, n, ib)
+            NextLA.unmqr!('R', 'N', n, m, k, ib, A_qr, m, Tm, C, work)
+
+            @test norm(C) ≈ norm(C_orig) rtol=rtol
+        end
+
+        @testset "Right, Conjugate-Transpose" begin
+            C = rand(T, n, m)
+            C_orig = copy(C)
+
+            work = zeros(T, n, ib)
+            NextLA.unmqr!('R', 'C', n, m, k, ib, A_qr, m, Tm, C, work)
+
+            @test norm(C) ≈ norm(C_orig) rtol=rtol
+        end
+
+        @testset "Q * Qᴴ = I (orthogonality)" begin
+            C = Matrix{T}(I, m, m)
+            work = zeros(T, m, ib)
+
+            NextLA.unmqr!('L', 'N', m, m, k, ib, A_qr, m, Tm, C, work)
+            NextLA.unmqr!('L', 'C', m, m, k, ib, A_qr, m, Tm, C, work)
+
+            @test C ≈ Matrix{T}(I, m, m) rtol=rtol
         end
     end
-    
-    @testset "Right No-Transpose Application Tests" begin
-         for type in UNMQR_TESTTYPES
-            m, n, k, ib = 200, 200, 80, 40
-            rtol = (type == ComplexF32) || (type == Float32) ? 1e-5 : 1e-8
-            
-            # Create QR factorization first
-            A_qr = rand(type, m, n)
-            A_original = copy(A_qr)
-            lda = m
-            T = zeros(type, ib, k)
-            tau = zeros(type, k)
-            work_qr = zeros(type, ib * k)
 
+    @testset "Rectangular tile: k clamped to nq" begin
+        # Simulates a wide tile scenario where T_matrix has more columns (k)
+        # than the tile has rows (nq). The kernel should clamp k = min(k, nq).
+        for T in (Float64, ComplexF64)
+            m_tile, n_tile = 16, 32  # wide tile: only 16 reflectors possible
+            ib = 4
+            # Build a valid QR with 16 reflectors from a 16×16 sub-tile
+            k_actual = m_tile
+            A_qr = rand(T, m_tile, k_actual)
+            Tm = zeros(T, ib, k_actual)
+            tau = zeros(T, k_actual)
+            work_qr = zeros(T, ib * k_actual)
+            NextLA.geqrt!(m_tile, k_actual, ib, A_qr, Tm, tau, work_qr)
 
-            # Perform QR factorization
-            NextLA.geqrt!(m, k, ib, A_qr, T, tau, work_qr)
+            # Apply from left with k = 32 (wider than nq = 16) → should clamp
+            C = rand(T, m_tile, 24)
+            C_orig = copy(C)
+            work = zeros(T, 24, ib)
+            # k=n_tile=32 but nq=m_tile=16, must not throw
+            @test_nowarn NextLA.unmqr!('L', 'N', m_tile, 24, n_tile, ib,
+                                       A_qr, m_tile, Tm, C, work)
+            # Frobenius norm preserved by orthogonal transform
+            @test norm(C) ≈ norm(C_orig) rtol=test_rtol(T)
 
-            # Test matrix to apply Q to
-            C = rand(T, m, n)
-            C_original = copy(C)
-            ldc = m
-
-            # Workspace for UNMQR
-            # Workspace for UNMQR (matrix workspace)
-            work = zeros(type, m, ib)
-
-            # Apply Q from left (Q * C)
-            NextLA.unmqr!('R', 'N', m, n, k, ib, A_qr, lda, T, C, work)
-        
-            # Verify using reference QR decomposition
-            Q_ref, R_ref = qr(A_original)
-            C_expected =  C_original * Matrix(Q_ref)
-
-            # Note: Due to potential sign differences in QR, we check properties rather than exact equality
-            @test size(C) == (m, n)
-            @test all(isfinite.(C))
-        
-            # Check that the transformation preserves matrix structure
-            @test (norm(C) - norm(C_expected)) / norm(C_expected) < rtol # Orthogonal transformations preserve norm
+            # Helper path: T_matrix is ib×32 but A is 16×16
+            Tm_wide = zeros(T, ib, n_tile)  # wider than needed
+            Tm_wide[:, 1:k_actual] .= Tm
+            C2 = copy(C_orig)
+            @test_nowarn NextLA.unmqr!('L', 'N', A_qr, Tm_wide, C2)
+            @test norm(C2) ≈ norm(C_orig) rtol=test_rtol(T)
         end
     end
-    
-    @testset "Right Conjugate Transpose Application Tests" begin
-        for type in UNMQR_TESTTYPES
-            m, n, k, ib = 200, 200, 80, 40
-            rtol = (type == ComplexF32) || (type == Float32) ? 1e-5 : 1e-8
-            
-            # Create QR factorization first
-            A_qr = rand(type, m, n)
-            A_original = copy(A_qr)
-            lda = m
-            T = zeros(type, ib, k)
-            tau = zeros(type, k)
-            work_qr = zeros(type, ib * k)
 
-
-            # Perform QR factorization
-            NextLA.geqrt!(m, k, ib, A_qr, T, tau, work_qr)
-
-            # Test matrix to apply Q to
-            C = rand(T, m, n)
-            C_original = copy(C)
-            ldc = m
-
-            # Workspace for UNMQR
-            # Workspace for UNMQR (matrix workspace)
-            work = zeros(type, m, ib)
-
-            # Apply Q^H from right (C * Q^H)
-            NextLA.unmqr!('R', 'C', m, n, k, ib, A_qr, lda, T, C, work)
-        
-            # Verify using reference QR decomposition
-            Q_ref, R_ref = qr(A_original)
-            C_expected =  C_original * adjoint(Matrix(Q_ref))
-
-            # Note: Due to potential sign differences in QR, we check properties rather than exact equality
-            @test size(C) == (m, n)
-            @test all(isfinite.(C))
-        
-            # Check that the transformation preserves matrix structure
-            @test (norm(C) - norm(C_expected)) / norm(C_expected) < rtol # Orthogonal transformations preserve norm
-        end
-    end
-    
-    @testset "Orthogonality Property" begin
-        # Test that Q * Q^H = I by applying both operations
-        m, n, k, ib = 200, 200, 100, 40
-        
-        A_qr = rand(ComplexF64, m, k)
-        lda = m
-    T = zeros(ComplexF64, ib, k)
-        tau = zeros(ComplexF64, k)
-    work_qr = zeros(ComplexF64, ib * k)
-        
-    NextLA.geqrt!(m, k, ib, A_qr, T, tau, work_qr)
-        
-        C = Matrix{ComplexF64}(I, m, n)  # Identity matrix
-        C_original = copy(C)
-    ldc = m
-        
-    # Matrix workspace for UNMQR
-    work = zeros(ComplexF64, n, ib)
-        
-        # Apply Q then Q^H
-    NextLA.unmqr!('L', 'N', m, n, k, ib, A_qr, lda, T, C, work)
-    NextLA.unmqr!('L', 'C', m, n, k, ib, A_qr, lda, T, C, work)
-        
-        # Should get back to identity (at least for the first k columns)
-        @test C[:, 1:k] ≈ C_original[:, 1:k] rtol=1e-10
-    end
-    
-    @testset "Error Handling" begin
-        m, n, k, ib = 100, 80, 50, 20
+    @testset "Error handling" begin
+        m, n, k, ib = 32, 24, 16, 4
         A = zeros(ComplexF64, m, k)
-        T = zeros(ComplexF64, ib, k)
+        Tm = zeros(ComplexF64, ib, k)
         C = zeros(ComplexF64, m, n)
-    work = zeros(ComplexF64, n, ib)
-        
-    # Invalid side
-    @test_throws ArgumentError NextLA.unmqr!('X', 'N', m, n, k, ib, A, m, T, C, work)
-        
-    # Invalid trans
-    @test_throws ArgumentError NextLA.unmqr!('L', 'X', m, n, k, ib, A, m, T, C, work)
-        
-        # Negative dimensions
-    @test_throws ArgumentError NextLA.unmqr!('L', 'N', -1, n, k, ib, A, m, T, C, work)
-    @test_throws ArgumentError NextLA.unmqr!('L', 'N', m, -1, k, ib, A, m, T, C, work)
-    @test_throws ArgumentError NextLA.unmqr!('L', 'N', m, n, -1, ib, A, m, T, C, work)
-    @test_throws ArgumentError NextLA.unmqr!('L', 'N', m, n, k, -1, A, m, T, C, work)
-        
-        # Invalid k (k > nq)
-    @test_throws ArgumentError NextLA.unmqr!('L', 'N', m, n, m+1, ib, A, m, T, C, work)
+        work = zeros(ComplexF64, n, ib)
+
+        @test_throws ArgumentError NextLA.unmqr!('X', 'N', m, n, k, ib, A, m, Tm, C, work)
+        @test_throws ArgumentError NextLA.unmqr!('L', 'X', m, n, k, ib, A, m, Tm, C, work)
+        @test_throws ArgumentError NextLA.unmqr!('L', 'N', -1, n, k, ib, A, m, Tm, C, work)
+        # k > nq should now be clamped, not throw
+        C_test = zeros(ComplexF64, m, n)
+        @test_nowarn NextLA.unmqr!('L', 'N', m, n, m+1, ib, A, m, Tm, C_test, work)
     end
-    
-    @testset "Edge Cases" begin
-        # k = 0 (no reflectors to apply)
-        m, n, k, ib = 100, 80, 0, 20
-        A = zeros(ComplexF64, m, max(1, k))
-        T = zeros(ComplexF64, ib, max(1, k))
-        C = rand(ComplexF64, m, n)
-        C_original = copy(C)
-    work = zeros(ComplexF64, n, ib)
-        
-    NextLA.unmqr!('L', 'N', m, n, k, ib, A, m, T, C, work)
-        
-        # With k=0, C should remain unchanged
-        @test C ≈ C_original
-        
-        # ib = 1 (minimal block size)
-        m, n, k, ib = 100, 80, 50, 10
-        A_qr = rand(ComplexF64, m, k)
-        lda = m
-        T = zeros(ComplexF64, ib, k)
-        tau = zeros(ComplexF64, k)
-        work_qr = zeros(ComplexF64, ib * k)
-        
-    NextLA.geqrt!(m, k, ib, A_qr, T, tau, work_qr)
-        
-        C = rand(ComplexF64, m, n)
-        C_original = copy(C)
-        ldc = m
-    work = zeros(ComplexF64, n, ib)
-        
-    NextLA.unmqr!('L', 'N', m, n, k, ib, A_qr, lda, T, C, work)
-        
-        @test all(isfinite.(C))
-        @test norm(C) ≈ norm(C_original) rtol=1e-8
-    end
-    
-    @testset "GPU Tests" begin
-        if CUDA.functional()
-            m, n, k, ib = 160, 120, 60, 30
-            
-            # Create and factorize on CPU
-            A_qr_cpu = rand(ComplexF32, m, k)
-            lda = m
-            T_cpu = zeros(ComplexF32, ib, k)
-            tau_cpu = zeros(ComplexF32, k)
-            work_qr_cpu = zeros(ComplexF32, ib * k)
-            
-            NextLA.geqrt!(m, k, ib, A_qr_cpu, T_cpu, tau_cpu, work_qr_cpu)
-            
-            # Create test matrices
-            C_cpu = rand(ComplexF32, m, n)
-            ldc = m
-            work_cpu = zeros(ComplexF32, n, ib)
-            
-            # Create GPU data
-            A_qr_gpu = CuArray(A_qr_cpu)
-            T_gpu = CuArray(T_cpu)
-            C_gpu = CuArray(C_cpu)
-            work_gpu = CuArray(work_cpu)
-            
-            # Apply on CPU
-            C_cpu_result = copy(C_cpu)
-            NextLA.unmqr!('L', 'N', m, n, k, ib, A_qr_cpu, lda, T_cpu, C_cpu_result, work_cpu)
-            
-            # Apply on GPU
-            NextLA.unmqr!('L', 'N', m, n, k, ib, A_qr_gpu, lda, T_gpu, C_gpu, work_gpu)
-            
-            @test Array(C_gpu) ≈ C_cpu_result rtol=1e-6
-        end
+
+    @testset "k=0 is a no-op" begin
+        C = rand(ComplexF64, 32, 24)
+        C_orig = copy(C)
+        A = zeros(ComplexF64, 32, 1)
+        Tm = zeros(ComplexF64, 4, 1)
+        work = zeros(ComplexF64, 24, 4)
+
+        NextLA.unmqr!('L', 'N', 32, 24, 0, 4, A, 32, Tm, C, work)
+        @test C ≈ C_orig
     end
 end

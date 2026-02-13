@@ -35,359 +35,116 @@ Implemented with Julia internal functions for matrix multiplication
 - 'work': dimension (ldwork, k)
 """
 function larfb!(side::Char, trans::Char, direct::Char, storev::Char, m::Integer, n::Integer, k::Integer, V::AbstractMatrix{T}, ldv::Integer, T_mat::AbstractMatrix{T}, C::AbstractMatrix{T}, work::AbstractMatrix{T}) where {T}
-
-    if m <= 0 || n <= 0
+    if m <= 0 || n <= 0 || k <= 0
         return
     end
 
-    one = oneunit(eltype(C))
-    plus = LinearAlgebra.MulAddMul(one, one)
-    minus = LinearAlgebra.MulAddMul(one*(-1),one)
+    if storev != 'C' || direct != 'F'
+        throw(ArgumentError("larfb! currently supports only forward, columnwise reflectors"))
+    end
 
-    if storev == 'C'
-        if direct == 'F'
-            """
-            V = (V1) (first k rows)
-                (V2)
-            where V1 is unit lower triangular
-            """
-            if side == 'L'
-                """
-                Form H*C or H^H * C where C = (C1)
-                                              (C2)
-                """
+    if side != 'L' && side != 'R'
+        throw(ArgumentError("side must be 'L' or 'R', got '$side'"))
+    end
 
-                c1 = @view C[1:k,:] 
-                c2 = @view C[k+1:m,:]
-                v1 = @view V[1:k,:]
-                v2 = @view V[k+1:m,:]
-            
-                work .= c1'
+    if trans != 'N' && trans != 'C' && trans != 'T'
+        throw(ArgumentError("trans must be 'N', 'C', or 'T', got '$trans'"))
+    end
 
-                # W = W*V1           
-                LinearAlgebra.generic_mattrimul!(work, 'L', 'U', identity, work, v1)
+    Tzero = zero(T)
+    one = oneunit(T)
 
-                if m > k
-                    # W = W + C2^H * V2
-                    LinearAlgebra.generic_matmatmul!(work, 'C', 'N', c2, v2, plus)
-                end
-                
-                # W = W * T^H or W*T
+    if side == 'L'
+        W = @view work[1:n, 1:k]
+        fill!(W, Tzero)
 
-                if trans == 'N' # W = W*T^H
-                    LinearAlgebra.generic_mattrimul!(work, 'U', 'N', adjoint, work, T_mat)
-                else
-                    LinearAlgebra.generic_mattrimul!(work, 'U', 'N', identity, work, T_mat)
-                end
+        C1 = @view C[1:k, :]
 
-                if m > k 
-                    #C2 = C2 - V2*W^H
-                    LinearAlgebra.generic_matmatmul!(c2, 'N', 'C', v2, work, minus)
-                end
+        V1 = UnitLowerTriangular(@view V[1:k, 1:k])
+        Tblock = UpperTriangular(@view T_mat[1:k, 1:k])
 
-                # w = w*v1^H
-                LinearAlgebra.generic_mattrimul!(work, 'L', 'U', adjoint, work, v1)
-
-                c1 .-= (work)'
-
-            else 
-                if side == 'R'
-                    """
-                    Form C*H or C*H^H where C = (c1 c2)
-                    """
-                    c1 = @view C[:, 1:k]
-                    c2 = @view C[:, k+1:n]
-                    v1 = @view V[1:k,:]
-                    v2 = @view V[k+1:n,:]
-
-                    work .= c1
-
-                    # w = w*v1
-                    LinearAlgebra.generic_mattrimul!(work, 'L', 'U', identity, work, v1)
-
-
-                    if n > k
-                        # w = w + c2*V2
-                        LinearAlgebra.generic_matmatmul!(work, 'N', 'N', c2, v2, plus)
-                    end
-                    
-                    #w = w*t or w*t^H
-
-                    if trans == 'C' # W = W*T^H
-                        LinearAlgebra.generic_mattrimul!(work, 'U', 'N', adjoint, work, T_mat)
-                    else
-                        LinearAlgebra.generic_mattrimul!(work, 'U', 'N', identity, work, T_mat)
-                    end
-
-                    if n > k
-                        # c2 = c2 - w*v2^h
-                        LinearAlgebra.generic_matmatmul!(c2, 'N', 'C', work, v2, minus)
-                    end
-
-                    #work = work*(v1')
-                    LinearAlgebra.generic_mattrimul!(work, 'L', 'U', adjoint, work, v1)
-
-                    c1 .-= work
-                end
-            end
-        else
-            """
-            V = (v1)
-                (v2) (last k rows)
-            where v2 is unit upper triangular
-            """
-            if side == 'L'
-                """
-                Form H*C or H^H*C where C = (c1)
-                                            (c2)
-                """
-                c1 = @view C[1:m-k,:]
-                c2 = @view C[m-k+1:m,:]
-                v1 = @view V[1:ldv-k,:]
-                v2 = @view V[ldv-k+1:ldv,:]
-                
-                work .= c2'
-
-                #work = work*v2
-                LinearAlgebra.generic_mattrimul!(work, 'U', 'U', identity, work, v2)
-
-                if m > k
-                    #work = work + (c1')*V1
-                    LinearAlgebra.generic_matmatmul!(work, 'C', 'N', c1, v1, plus)
-                end
-
-                if trans == 'N'
-                    #work = work*(t')
-                    LinearAlgebra.generic_mattrimul!(work, 'L', 'N', adjoint, work, T_mat)
-                else
-                    #work = work*t
-                    LinearAlgebra.generic_mattrimul!(work, 'L', 'N', identity, work, T_mat)
-                end
-
-                #c1 = c1 - v1*w^H
-                if m > k
-                    LinearAlgebra.generic_matmatmul!(c1, 'N', 'C', v1, work, minus)                    
-                end
-
-                #work = work*(v2')
-                LinearAlgebra.generic_mattrimul!(work, 'U', 'U', adjoint, work, v2)
-
-                #c2 = c2 - w^H
-                for j in 1:k
-                    for i in 1:n
-                        C[m-k+j,i] = C[m-k+j,i] - conj(work[i,j])
-                    end
-                end
-            else 
-                if side == 'R'
-                    """
-                    Form C*H or C*H^H where C = (c1 c2)
-                    """
-                    c1 = @view C[:,1:n-k]
-                    c2 = @view C[:,n-k+1:n]
-                    v1 = @view V[1:ldv-k,:]
-                    v2 = @view V[ldv-k+1:ldv,:]
-
-                    work .= c2
-
-                    #work = work*v2
-                    LinearAlgebra.generic_mattrimul!(work, 'U', 'U', identity, work, v2)
-
-                    if n > k
-                        #work = work + c1*V1
-                        LinearAlgebra.generic_matmatmul!(work, 'N', 'N', c1, v1, plus)
-                    end
-
-                    if trans == 'C'
-                        #work = work*(t')
-                        LinearAlgebra.generic_mattrimul!(work, 'L', 'N', adjoint, work, T_mat)
-                    else
-                        #work = work*t
-                        LinearAlgebra.generic_mattrimul!(work, 'L', 'N', identity, work, T_mat)
-                    end
-                    
-                    #c1 = c1 - w*v1^H
-                    if n > k
-                        LinearAlgebra.generic_matmatmul!(c1, 'N', 'C', work, v1, minus)
-                    end
-
-                    #work = work*(v2')
-                    LinearAlgebra.generic_mattrimul!(work, 'U', 'U', adjoint, work, v2)
-
-                    c2 .-= work
-                end
-            end
+        # W := C1^H  (conjugate transpose)
+        for j in 1:k, i in 1:n
+            W[i, j] = conj(C1[j, i])
         end
-    else 
-        if storev == 'R'
-            if direct == 'F'
-                """
-                Let V = (V1 V2) (v1: first k columns)
-                where v1 is unit upper triangular
-                """
 
-                if side == 'L'
-                    """
-                    Form H*C or H^H*C where C = (c1)
-                                                (c2)
-                    """
+        # W := W * V1
+        LinearAlgebra.mul!(W, W, V1)
 
-                    v1 = @view V[:, 1:k]
-                    v2 = @view V[:, k+1:m]
-                    c1 = @view C[1:k, :]
-                    c2 = @view C[k+1:m, :]
+        if m > k
+            C2 = @view C[k+1:m, :]
+            V2 = @view V[k+1:m, 1:k]
+            # W += C2' * V2
+            LinearAlgebra.mul!(W, adjoint(C2), V2, one, one)
+        end
 
-                    work .= c1'
+        if trans == 'N'
+            # W := W * T'
+            LinearAlgebra.mul!(W, W, adjoint(Tblock))
+        else
+            # W := W * T
+            LinearAlgebra.mul!(W, W, Tblock)
+        end
 
-                    #work = work*(v1')
-                    LinearAlgebra.generic_mattrimul!(work, 'U', 'U', adjoint, work, v1)
+        if m > k
+            C2 = @view C[k+1:m, :]
+            V2 = @view V[k+1:m, 1:k]
+            # C2 -= V2 * W'
+            LinearAlgebra.mul!(C2, V2, adjoint(W), -one, one)
+        end
 
-                    if m > k
-                        #work = work + (c2')*(v2')
-                        LinearAlgebra.generic_matmatmul!(work, 'C', 'C', c2, v2, plus)
-                    end
+        # W := W * V1'
+        LinearAlgebra.mul!(W, W, adjoint(V1))
 
-                    if trans == 'N'
-                        #work = work*(t')
-                        LinearAlgebra.generic_mattrimul!(work, 'U', 'N', adjoint, work, T_mat)
-                    else
-                        #work = work*t
-                        LinearAlgebra.generic_mattrimul!(work, 'U', 'N', identity, work, T_mat)
-                    end
+        # C1 -= W^H  (conjugate transpose)
+        for j in 1:k, i in 1:n
+            C1[j, i] -= conj(W[i, j])
+        end
+    else
+        W = @view work[1:m, 1:k]
+        fill!(W, Tzero)
 
-                    #c2 = c2 - v2^h*w^h
-                    if m > k
-                        LinearAlgebra.generic_matmatmul!(c2, 'C', 'C', v2, work, minus)
-                    end
+        C1 = @view C[:, 1:k]
 
-                    #work = work*v1
-                    LinearAlgebra.generic_mattrimul!(work, 'U', 'U', identity, work, v1)
+        V1 = UnitLowerTriangular(@view V[1:k, 1:k])
+        Tblock = UpperTriangular(@view T_mat[1:k, 1:k])
 
-                    c1 .-= work'
+        # W := C1
+        for i in 1:m, j in 1:k
+            W[i, j] = C1[i, j]
+        end
 
-                else 
-                    if side == 'R' || side == 'r'
-                        """
-                        Form C*H or C*H^H where C = (c1 c2)
-                        """
-                        
-                        v1 = @view V[:, 1:k]
-                        v2 = @view V[:, k+1:n]
-                        c1 = @view C[:, 1:k]
-                        c2 = @view C[:, k+1:n]
+        # W := W * V1
+        LinearAlgebra.mul!(W, W, V1)
 
-                        work .= c1
+        if n > k
+            C2 = @view C[:, k+1:n]
+            V2 = @view V[k+1:n, 1:k]
+            # W += C2 * V2
+            LinearAlgebra.mul!(W, C2, V2, one, one)
+        end
 
-                        #work = work*(v1')
-                        LinearAlgebra.generic_mattrimul!(work, 'U', 'U', adjoint, work, v1)
+        if trans == 'N'
+            # W := W * T
+            LinearAlgebra.mul!(W, W, Tblock)
+        else
+            # W := W * T'
+            LinearAlgebra.mul!(W, W, adjoint(Tblock))
+        end
 
-                        if n > k
-                            #work = work + c2*(v2')
-                            LinearAlgebra.generic_matmatmul!(work, 'N', 'C', c2, v2, plus)
-                        end
+        if n > k
+            C2 = @view C[:, k+1:n]
+            V2 = @view V[k+1:n, 1:k]
+            # C2 -= W * V2'
+            LinearAlgebra.mul!(C2, W, adjoint(V2), -one, one)
+        end
 
-                        if trans == 'C'
-                            #work = work*(t')
-                            LinearAlgebra.generic_mattrimul!(work, 'U', 'N', adjoint, work, T_mat)
-                        else
-                            #work = work*t
-                            LinearAlgebra.generic_mattrimul!(work, 'U', 'N', identity, work, T_mat)
-                        end
+        # W := W * V1'
+        LinearAlgebra.mul!(W, W, adjoint(V1))
 
-                        #c2 = c2 - w*v2
-                        if n > k
-                            LinearAlgebra.generic_matmatmul!(c2, 'N', 'N', work, v2, minus)
-                        end
-
-                        #work = work*v1
-                        LinearAlgebra.generic_mattrimul!(work, 'U', 'U', identity, work, v1)
-                        
-                        c1 .-= work
-                    end
-                end
-            else # direct = B
-                """
-                Let V = (v1  v2) (v2: last k columns)
-                where v2 is unit lower triangular
-                """
-                if side == 'L' || side == 'l'
-                    """
-                    Form H*C or H^H*C where C = (c1)
-                                                (c2)
-                    """
-                    v1 = @view V[:, 1:m-k]
-                    v2 = @view V[:, m-k+1:m]
-                    c1 = @view C[1:m-k,:]
-                    c2 = @view C[m-k+1:m,:]
-
-                    work .= c2'
-
-                    #work = work * (v2')
-                    LinearAlgebra.generic_mattrimul!(work, 'L', 'U', adjoint, work, v2)
-                    
-                    if m > k
-                        #work = work + (c1')*(v1')
-                        LinearAlgebra.generic_matmatmul!(work, 'C', 'C', c1, v1, plus)
-                    end
-
-                    if trans == 'N'
-                        #work = work*(t')
-                        LinearAlgebra.generic_mattrimul!(work, 'L', 'N', adjoint, work, T_mat)
-                    else
-                        #work = work*t
-                        LinearAlgebra.generic_mattrimul!(work, 'L', 'N', identity, work, T_mat)
-                    end
-
-                    #c1 = c1 - v1^h * w^h
-                    if m > k
-                        LinearAlgebra.generic_matmatmul!(c1, 'C', 'C', v1, work, minus)
-                    end
-
-                    #work = work*v2
-                    LinearAlgebra.generic_mattrimul!(work, 'L', 'U', identity, work, v2)
-                
-                    c2 .-= work'
-
-                else 
-                    if side == 'R'
-                        """
-                        Form C*H or C*H^H where C = (c1 c2)
-                        """
-                        v1 = @view V[:, 1:n-k]
-                        v2 = @view V[:, n-k+1:n]
-                        c1 = @view C[:, 1:n-k]
-                        c2 = @view C[:,n-k+1:n]
-
-                        work .= c2
-                        
-                        #work = work * (v2')
-                        LinearAlgebra.generic_mattrimul!(work, 'L', 'U', adjoint, work, v2)
-
-                        if n > k
-                            #work = work + c1*(v1')
-                            LinearAlgebra.generic_matmatmul!(work, 'N', 'C', c1, v1, plus)
-                        end
-
-                        if trans == 'C'
-                            #work = work*(t')
-                            LinearAlgebra.generic_mattrimul!(work, 'L', 'N', adjoint, work, T_mat)
-                        else
-                            #work = work*t
-                            LinearAlgebra.generic_mattrimul!(work, 'L', 'N', identity, work, T_mat)
-                        end
-
-                        #c1 = c1 - w*v1
-                        if n > k
-                            LinearAlgebra.generic_matmatmul!(c1, 'N', 'N', work, v1, minus)
-                        end
-
-                        #work = work*v2
-                        LinearAlgebra.generic_mattrimul!(work, 'L', 'U', identity, work, v2)
-
-                        c2 .-= work
-                    end
-                end
-            end
+        # C1 -= W
+        for i in 1:m, j in 1:k
+            C1[i, j] -= W[i, j]
         end
     end
 end 
@@ -444,17 +201,15 @@ larfb!('L', 'N', 'F', 'C', V, T, C)  # Apply H*C
 function larfb!(side::Char, trans::Char, direct::Char, storev::Char, V::AbstractMatrix{T}, T_mat::AbstractMatrix{T}, C::AbstractMatrix{T}) where {T}
     # Determine dimensions
     m, n = size(C)
-    k = size(T, 1)
+    k = size(T_mat, 1)
     
     # Set leading dimensions
     ldv = size(V, 1) 
     
-    # Allocate workspace
+    # Allocate workspace: LAPACK convention is (ldwork, k) where ldwork=n (L) or m (R)
     if side == 'L'
-        ldwork = n
-        work = similar(C, k, n)
+        work = similar(C, n, k)
     else
-        ldwork = m
         work = similar(C, m, k)
     end
     

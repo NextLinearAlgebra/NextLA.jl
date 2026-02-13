@@ -4,7 +4,7 @@ function ttmqr!(side::Char, trans::Char, m1::Integer, n1::Integer, m2::Integer, 
         throw(ArgumentError("illegal value of side"))
     end
 
-    if trans != 'N' && trans != 'C' 
+    if trans != 'N' && trans != 'C' && trans != 'T'
         throw(ArgumentError("illegal value of trans"))
     end
 
@@ -24,9 +24,12 @@ function ttmqr!(side::Char, trans::Char, m1::Integer, n1::Integer, m2::Integer, 
         throw(ArgumentError("illegal value of n2"))
     end
 
-    if (k < 0) || (side == 'L' && k > m1) || (side == 'R' && k > n1)
+    if (k < 0)
         throw(ArgumentError("illegal value of k"))
     end
+    # Clamp k to the applicable dimension for rectangular tiles
+    kmax = side == 'L' ? m1 : n1
+    k = min(k, kmax)
 
     if ib < 0
         throw(ArgumentError("illegal value of ib"))
@@ -113,8 +116,12 @@ function ttmqr!(side::Char, trans::Char, A1::AbstractMatrix{T}, A2::AbstractMatr
     m1, n1 = size(A1)
     m2, n2 = size(A2)
     ib = size(T_matrix, 1)
-    # Use the common number of reflectors available in V and T
-    k = size(T_matrix, 2)
+    # Number of reflectors = min of T columns, the applicable dimension,
+    # and the actual reflector columns stored in V.
+    # For rectangular tiles, ttqrt! produces min(m, n) reflectors, which may
+    # be less than the T tile width.
+    kmax = side == 'L' ? m1 : n1
+    k = min(size(T_matrix, 2), kmax, size(V, 2))
 
     # Workspace size follows parfb!/TPMQRT requirements
     # - Left: W is (ib x n1) at most
