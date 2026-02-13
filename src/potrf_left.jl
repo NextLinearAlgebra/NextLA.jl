@@ -463,15 +463,13 @@ using KernelAbstractions.Extras: @unroll
         # we only update if we are below the current diagonal (row > k)
         if my_row > k && my_row <= N
             # grabbing the multiplier for my row
-            # L_rk = @inbounds tile[my_row]
-            L_rk = 1.0
+            L_rk = @inbounds tile[my_row]
             
             @unroll for i in 1:STRIP_WIDTH
                 c = col_start + (i - 1)
                 # only update valid columns that are to the right of the diagonal
                 if c > k && my_row >= c 
-                    # L_ck = @inbounds tile[c]
-                    L_ck = 1.0
+                    L_ck = @inbounds tile[c]
                     @inbounds my_vals[i] -= L_rk * L_ck
                 end
             end
@@ -617,7 +615,8 @@ function cholesky_lower_left!(A)
         # update the panel to the right if we aren't at the end yet
         if k_end < N
             A_off_diag = view(A, (k_end + 1):N, k:k_end)
-            unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A_diag, A_off_diag)
+            # unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A_diag, A_off_diag)
+            CUBLAS.trsm!('R', 'L', 'T', 'N', one(eltype(A)), A_diag, A_off_diag)
         end
     end
 
