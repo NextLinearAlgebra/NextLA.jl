@@ -8,14 +8,14 @@ using LinearAlgebra
 # const STRIP_WIDTH = 4
 
 # for strip width 8, 12µs for 64x64
-# const REG_THREADS = 384 
-# const N_MATRIX = 64
-# const STRIP_WIDTH = 8
-
-# for strip width 16
-const REG_THREADS = 192
+const REG_THREADS = 384 
 const N_MATRIX = 64
-const STRIP_WIDTH = 16
+const STRIP_WIDTH = 8
+
+# for strip width 16 - slower than widht 8
+# const REG_THREADS = 192
+# const N_MATRIX = 64
+# const STRIP_WIDTH = 16
 
 # left looking cholesky kernel
 # @kernel function chol_kernel_left!(A, N)
@@ -340,22 +340,22 @@ using KernelAbstractions.Extras: @unroll
     #     strip_idx = 8 + (warp_id - 16)
     #     my_row = lane_id + 33 
     # end
-    # if warp_id < 8  # First 8 warps handle cols 1-32 (strips 0-3)
-    #     strip_idx = warp_id ÷ 2
-    #     is_bottom = (warp_id % 2) == 1
-    #     my_row = lane_id + 1 + (is_bottom ? 32 : 0)
-    # else  # Last 4 warps handle cols 33-64 (strips 4-7)
-    #     strip_idx = 4 + (warp_id - 8)
-    #     my_row = lane_id + 33 
-    # end
-    if warp_id < 4  # Warps 0-3: cols 1-32
+    if warp_id < 8  # First 8 warps handle cols 1-32 (strips 0-3)
         strip_idx = warp_id ÷ 2
         is_bottom = (warp_id % 2) == 1
         my_row = lane_id + 1 + (is_bottom ? 32 : 0)
-    else  # Warps 4-5: cols 33-64
-        strip_idx = 2 + (warp_id - 4)
-        my_row = lane_id + 33
+    else  # Last 4 warps handle cols 33-64 (strips 4-7)
+        strip_idx = 4 + (warp_id - 8)
+        my_row = lane_id + 33 
     end
+    # if warp_id < 4  # Warps 0-3: cols 1-32
+    #     strip_idx = warp_id ÷ 2
+    #     is_bottom = (warp_id % 2) == 1
+    #     my_row = lane_id + 1 + (is_bottom ? 32 : 0)
+    # else  # Warps 4-5: cols 33-64
+    #     strip_idx = 2 + (warp_id - 4)
+    #     my_row = lane_id + 33
+    # end
 
     
 
@@ -364,8 +364,8 @@ using KernelAbstractions.Extras: @unroll
     
     # load global -> registers
     # my_vals = @private eltype(A) (4,)
-    # my_vals = @private eltype(A) (8,)
-    my_vals = @private eltype(A) (16,)
+    my_vals = @private eltype(A) (8,)
+    # my_vals = @private eltype(A) (16,)
     
     # grabbing the data from global memory.
     if my_row <= N
@@ -382,97 +382,196 @@ using KernelAbstractions.Extras: @unroll
 
     # allocating a col of shared memory
     # we only need enough space to hold ONE column (the active one) at a time.
-    tile = @localmem eltype(A) N
+    # 2 cols with double buffering 
+    tile = @localmem eltype(A) (2, N)
 
     # making sure everyone is loaded up before we start mathing
     @synchronize
 
     # iterating thru diag
-    for k in 1:N
+    # for k in 1:N
         
-        # broadcast active column
-        # if i own the data for the current column k, i need to share it
-        # copying from my private register to the shared memory tile.
-        # if k >= col_start && k < (col_start + STRIP_WIDTH)
-        #     local_idx = (k - col_start) + 1
-        #     if my_row <= N
-        #         @inbounds tile[my_row] = my_vals[local_idx]
-        #     end
-        # end
+    #     # broadcast active column
+    #     # if i own the data for the current column k, i need to share it
+    #     # copying from my private register to the shared memory tile.
+    #     # if k >= col_start && k < (col_start + STRIP_WIDTH)
+    #     #     local_idx = (k - col_start) + 1
+    #     #     if my_row <= N
+    #     #         @inbounds tile[my_row] = my_vals[local_idx]
+    #     #     end
+    #     # end
 
-        # # wait for the owner to finish writing to shared mem
-        # @synchronize
+    #     # # wait for the owner to finish writing to shared mem
+    #     # @synchronize
         
-        # # sqrt and normalize the rest of the column by dividing by the diagonal
-        # if tx == 1
-        #     @inbounds tile[k] = sqrt(tile[k])
-        # end
+    #     # # sqrt and normalize the rest of the column by dividing by the diagonal
+    #     # if tx == 1
+    #     #     @inbounds tile[k] = sqrt(tile[k])
+    #     # end
         
-        # @synchronize
+    #     # @synchronize
 
-        # if tx > k && tx <= N
-        #     @inbounds tile[tx] /= tile[k]
-        # end
+    #     # if tx > k && tx <= N
+    #     #     @inbounds tile[tx] /= tile[k]
+    #     # end
         
-        # @synchronize
+    #     # @synchronize
 
-        # update registers
-        # if i owned that column k originally, the values in shared mem just got updated/scaled.
-        # i need to pull those new values back into my private register so i stay up to date.
-        # if k >= col_start && k < (col_start + STRIP_WIDTH)
-        #     local_idx = (k - col_start) + 1
-        #     if my_row <= N
-        #          @inbounds my_vals[local_idx] = tile[my_row]
-        #     end
-        # end
+    #     # update registers
+    #     # if i owned that column k originally, the values in shared mem just got updated/scaled.
+    #     # i need to pull those new values back into my private register so i stay up to date.
+    #     # if k >= col_start && k < (col_start + STRIP_WIDTH)
+    #     #     local_idx = (k - col_start) + 1
+    #     #     if my_row <= N
+    #     #          @inbounds my_vals[local_idx] = tile[my_row]
+    #     #     end
+    #     # end
 
-        # diagonal owner computes sqrt
-        if k >= col_start && k < (col_start + STRIP_WIDTH)
-            local_idx = (k - col_start) + 1
+    #     # diagonal owner computes sqrt
+    #     if k >= col_start && k < (col_start + STRIP_WIDTH)
+    #         local_idx = (k - col_start) + 1
             
-            if my_row == k && my_row <= N
-                @inbounds my_vals[local_idx] = sqrt(my_vals[local_idx])
-                @inbounds tile[k] = my_vals[local_idx]
-            end
+    #         if my_row == k && my_row <= N
+    #             @inbounds my_vals[local_idx] = sqrt(my_vals[local_idx])
+    #             @inbounds tile[k] = my_vals[local_idx]
+    #         end
+    #     end
+        
+    #     @synchronize
+        
+    #     # column owners divide and broadcast
+    #     if k >= col_start && k < (col_start + STRIP_WIDTH)
+    #         local_idx = (k - col_start) + 1
+    #         diag_val = @inbounds tile[k]
+            
+    #         if my_row > k && my_row <= N
+    #             @inbounds my_vals[local_idx] /= diag_val
+    #         end
+            
+    #         # only broadcast if on or below diagonal
+    #         if my_row >= k && my_row <= N 
+    #             @inbounds tile[my_row] = my_vals[local_idx]
+    #         end
+    #     end
+
+    #     @synchronize
+
+        
+        
+    #     # elimination A = A - L * L'
+    #     # we only update if we are below the current diagonal (row > k)
+    #     if my_row > k && my_row <= N
+    #         # grabbing the multiplier for my row
+    #         L_rk = @inbounds tile[my_row]
+            
+    #         @unroll for i in 1:STRIP_WIDTH
+    #             c = col_start + (i - 1)
+    #             # only update valid columns that are to the right of the diagonal
+    #             if c > k && my_row >= c 
+    #                 L_ck = @inbounds tile[c]
+    #                 @inbounds my_vals[i] -= L_rk * L_ck
+    #             end
+    #         end
+    #     end
+
+    #     @synchronize
+    # end
+    k = 1
+    current_buf = 1  # Start with buffer 1
+
+    # Prepare column k=1
+    if k >= col_start && k < (col_start + STRIP_WIDTH)
+        local_idx = (k - col_start) + 1
+        
+        if my_row == k && my_row <= N
+            @inbounds my_vals[local_idx] = sqrt(my_vals[local_idx])
+            @inbounds tile[current_buf, k] = my_vals[local_idx]
         end
-        
-        @synchronize
-        
-        # column owners divide and broadcast
-        if k >= col_start && k < (col_start + STRIP_WIDTH)
-            local_idx = (k - col_start) + 1
-            diag_val = @inbounds tile[k]
-            
-            if my_row > k && my_row <= N
-                @inbounds my_vals[local_idx] /= diag_val
-            end
-            
-            # only broadcast if on or below diagonal
-            if my_row >= k && my_row <= N 
-                @inbounds tile[my_row] = my_vals[local_idx]
-            end
-        end
+    end
+    @synchronize
 
-        @synchronize
-
+    if k >= col_start && k < (col_start + STRIP_WIDTH)
+        local_idx = (k - col_start) + 1
+        diag_val = @inbounds tile[current_buf, k]
         
-        
-        # elimination A = A - L * L'
-        # we only update if we are below the current diagonal (row > k)
         if my_row > k && my_row <= N
-            # grabbing the multiplier for my row
-            L_rk = @inbounds tile[my_row]
+            @inbounds my_vals[local_idx] /= diag_val
+        end
+        
+        if my_row >= k && my_row <= N 
+            @inbounds tile[current_buf, my_row] = my_vals[local_idx]
+        end
+    end
+    @synchronize
+
+    # ===================================
+    # MAIN DOUBLE-BUFFERED LOOP
+    # ===================================
+    for k in 1:(N-1)
+        next_buf = (current_buf % 2) + 1  # Ping-pong: 1→2→1→2
+        k_next = k + 1
+        
+        # PHASE 1: Elimination with column k (current_buf) 
+        #          + Prepare diagonal of column k+1 (next_buf) in parallel
+        if my_row > k && my_row <= N
+            L_rk = @inbounds tile[current_buf, my_row]
             
             @unroll for i in 1:STRIP_WIDTH
                 c = col_start + (i - 1)
-                # only update valid columns that are to the right of the diagonal
                 if c > k && my_row >= c 
-                    L_ck = @inbounds tile[c]
+                    L_ck = @inbounds tile[current_buf, c]
                     @inbounds my_vals[i] -= L_rk * L_ck
                 end
             end
         end
+        
+        # Simultaneously: prepare next column's diagonal
+        if k_next >= col_start && k_next < (col_start + STRIP_WIDTH)
+            local_idx_next = (k_next - col_start) + 1
+            
+            if my_row == k_next && my_row <= N
+                @inbounds my_vals[local_idx_next] = sqrt(my_vals[local_idx_next])
+                @inbounds tile[next_buf, k_next] = my_vals[local_idx_next]
+            end
+        end
+        
+        @synchronize
+        
+        # PHASE 2: Finish preparing column k+1
+        if k_next >= col_start && k_next < (col_start + STRIP_WIDTH)
+            local_idx_next = (k_next - col_start) + 1
+            diag_val_next = @inbounds tile[next_buf, k_next]
+            
+            if my_row > k_next && my_row <= N
+                @inbounds my_vals[local_idx_next] /= diag_val_next
+            end
+            
+            if my_row >= k_next && my_row <= N 
+                @inbounds tile[next_buf, my_row] = my_vals[local_idx_next]
+            end
+        end
+        
+        @synchronize
+        
+        current_buf = next_buf  # Swap buffers
+    end
 
+    # ===================================
+    # FINAL ITERATION: k = N (no next column to prepare)
+    # ===================================
+    if N > 1
+        k = N
+        if my_row > k && my_row <= N
+            L_rk = @inbounds tile[current_buf, my_row]
+            
+            @unroll for i in 1:STRIP_WIDTH
+                c = col_start + (i - 1)
+                if c > k && my_row >= c 
+                    L_ck = @inbounds tile[current_buf, c]
+                    @inbounds my_vals[i] -= L_rk * L_ck
+                end
+            end
+        end
         @synchronize
     end
 
