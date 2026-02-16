@@ -2,15 +2,14 @@ using KernelAbstractions
 using CUDA
 using LinearAlgebra
 
-
-# const REG_THREADS = 768 
-# const N_MATRIX = 64
-# const STRIP_WIDTH = 4
+ const REG_THREADS = 768 
+ const N_MATRIX = 64
+ const STRIP_WIDTH = 4
 
 # for strip width 8, 12µs for 64x64
-const REG_THREADS = 384 
-const N_MATRIX = 64
-const STRIP_WIDTH = 8
+#const REG_THREADS = 384 
+#const N_MATRIX = 64
+#const STRIP_WIDTH = 8
 
 # for strip width 16 - slower than widht 8
 # const REG_THREADS = 192
@@ -327,27 +326,27 @@ using KernelAbstractions.Extras: @unroll
     # logic for warps 0-15 (cols 1-32):
     # these columns are "tall" (full height), so one warp isn't enough.
     # we use 2 warps per strip here. even warps take the top half, odd warps take the bottom.
-    # if warp_id < 16
-    #     strip_idx = warp_id ÷ 2
-    #     is_bottom = (warp_id % 2) == 1
-    #     my_row = lane_id + 1 + (is_bottom ? 32 : 0)
+     if warp_id < 16
+         strip_idx = warp_id ÷ 2
+         is_bottom = (warp_id % 2) == 1
+         my_row = lane_id + 1 + (is_bottom ? 32 : 0)
 
     # # logic for warps 16-23 (cols 33-64):
     # # these columns are "short" because it's a lower triangular matrix.
     # # rows 1-32 are just zeros here, so we only care about rows 33-64.
     # # one warp is enough to cover that.
-    # else
-    #     strip_idx = 8 + (warp_id - 16)
-    #     my_row = lane_id + 33 
-    # end
-    if warp_id < 8  # First 8 warps handle cols 1-32 (strips 0-3)
-        strip_idx = warp_id ÷ 2
-        is_bottom = (warp_id % 2) == 1
-        my_row = lane_id + 1 + (is_bottom ? 32 : 0)
-    else  # Last 4 warps handle cols 33-64 (strips 4-7)
-        strip_idx = 4 + (warp_id - 8)
-        my_row = lane_id + 33 
-    end
+     else
+         strip_idx = 8 + (warp_id - 16)
+         my_row = lane_id + 33 
+     end
+    #if warp_id < 8  # First 8 warps handle cols 1-32 (strips 0-3)
+    #    strip_idx = warp_id ÷ 2
+    #    is_bottom = (warp_id % 2) == 1
+    #    my_row = lane_id + 1 + (is_bottom ? 32 : 0)
+    #else  # Last 4 warps handle cols 33-64 (strips 4-7)
+    #    strip_idx = 4 + (warp_id - 8)
+    #    my_row = lane_id + 33 
+    #end
     # if warp_id < 4  # Warps 0-3: cols 1-32
     #     strip_idx = warp_id ÷ 2
     #     is_bottom = (warp_id % 2) == 1
@@ -364,19 +363,14 @@ using KernelAbstractions.Extras: @unroll
     
     # load global -> registers
     # my_vals = @private eltype(A) (4,)
-    my_vals = @private eltype(A) (8,)
+    my_vals = @private eltype(A) (STRIP_WIDTH,)
     # my_vals = @private eltype(A) (16,)
     
     # grabbing the data from global memory.
     if my_row <= N
         @unroll for i in 1:STRIP_WIDTH
             c = col_start + (i - 1)
-            if c <= N 
-                @inbounds my_vals[i] = A[my_row, c]
-            else
-                # if we're padding or out of bounds, just fill with zero
-                my_vals[i] = zero(eltype(A))
-            end
+            @inbounds my_vals[i] = c <= N ? A[my_row, c] : zero(eltype(A))
         end
     end
 
@@ -385,13 +379,22 @@ using KernelAbstractions.Extras: @unroll
     # 2 cols with double buffering 
     # tile = @localmem eltype(A) (2, N)
     tile = @localmem eltype(A) N
+    diag_val_next = @localmem eltype(A) 1
 
     # making sure everyone is loaded up before we start mathing
     @synchronize
 
+    # pipelined: compute sqrt for first column before entering loop
+    if tx==1
+        @inbounds my_vals[1] = sqrt(my_vals[1])
+        @inbounds diag_val_next[1] = my_vals[1]
+    end
+
+    @synchronize
+
     # iterating thru diag
-    for k in 1:N
-        
+    @unroll 4 for k in 1:N
+        local_idx = (k - col_start) + 1
         # broadcast active column
         # if i own the data for the current column k, i need to share it
         # copying from my private register to the shared memory tile.
@@ -428,40 +431,32 @@ using KernelAbstractions.Extras: @unroll
         #     end
         # end
 
-        # diagonal owner computes sqrt
-        if k >= col_start && k < (col_start + STRIP_WIDTH)
-            local_idx = (k - col_start) + 1
-            
-            if my_row == k && my_row <= N
-                @inbounds my_vals[local_idx] = sqrt(my_vals[local_idx])
-                @inbounds tile[k] = my_vals[local_idx]
-            end
-        end
         
-        @synchronize
-        
-        # column owners divide and broadcast
+        diag_val = diag_val_next[1]
+        curr_val=my_vals[local_idx]
+        # column owners divide and broadcast (sqrt was pipelined from previous iteration)
         if k >= col_start && k < (col_start + STRIP_WIDTH)
-            local_idx = (k - col_start) + 1
-            diag_val = @inbounds tile[k]
-            
-            if my_row > k && my_row <= N
-                @inbounds my_vals[local_idx] /= diag_val
-            end
-            
-            # only broadcast if on or below diagonal
-            if my_row >= k && my_row <= N 
-                @inbounds tile[my_row] = my_vals[local_idx]
+            if my_row == k
+                # diagonal owner: sqrt already done, save to tile
+                tile[k] = curr_val
+            elseif my_row > k
+                curr_val /= diag_val    
+                my_vals[local_idx] = curr_val
+                tile[my_row] = curr_val
             end
         end
 
+        
         @synchronize
+        c_write = k - STRIP_WIDTH
+        if c_write >= col_start && c_write < col_start + STRIP_WIDTH && my_row <= N && my_row >= c_write
+            A[my_row, c_write] = my_vals[c_write - col_start + 1]
+        end
 
-        
-        
+
         # elimination A = A - L * L'
         # we only update if we are below the current diagonal (row > k)
-        if my_row > k && my_row <= N
+        if my_row > k && my_row <= N && k < (col_start + STRIP_WIDTH)
             # grabbing the multiplier for my row
             L_rk = @inbounds tile[my_row]
             
@@ -470,8 +465,18 @@ using KernelAbstractions.Extras: @unroll
                 # only update valid columns that are to the right of the diagonal
                 if c > k && my_row >= c 
                     L_ck = @inbounds tile[c]
-                    @inbounds my_vals[i] -= L_rk * L_ck #try muladd?
+                    @inbounds my_vals[i] -= L_ck * L_rk #try muladd?
                 end
+            end
+        end
+
+        # pipelined: compute sqrt for next column
+        if k < N
+            k_next = k + 1
+            if k_next >= col_start && k_next < (col_start + STRIP_WIDTH) && my_row == k_next
+                local_idx_next = (k_next - col_start) + 1
+                @inbounds my_vals[local_idx_next] = sqrt(my_vals[local_idx_next])
+                @inbounds diag_val_next[1] = my_vals[local_idx_next]
             end
         end
 
@@ -579,10 +584,12 @@ using KernelAbstractions.Extras: @unroll
     # end
 
     # write back
-    if my_row <= N
+
+    
+    if my_row <= N && col_start + STRIP_WIDTH - 1 > N - STRIP_WIDTH
         @unroll for i in 1:STRIP_WIDTH
             c = col_start + (i - 1)
-            if c <= N && my_row >= c
+            if c <= N && my_row >= c && c > N - STRIP_WIDTH
                 @inbounds A[my_row, c] = my_vals[i]
             end
         end
