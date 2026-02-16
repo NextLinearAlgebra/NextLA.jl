@@ -433,9 +433,9 @@ using KernelAbstractions.Extras: @unroll
 
         
         diag_val = diag_val_next[1]
-        curr_val=my_vals[local_idx]
         # column owners divide and broadcast (sqrt was pipelined from previous iteration)
         if k >= col_start && k < (col_start + STRIP_WIDTH)
+            curr_val = my_vals[local_idx]
             if my_row == k
                 # diagonal owner: sqrt already done, save to tile
                 tile[k] = curr_val
