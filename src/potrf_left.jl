@@ -439,7 +439,7 @@ using KernelAbstractions.Extras: @unroll
             if my_row == k
                 # diagonal owner: sqrt already done, save to tile
                 tile[k] = curr_val
-            elseif my_row > k
+            elseif my_row > k && my_row <= N
                 curr_val /= diag_val    
                 my_vals[local_idx] = curr_val
                 tile[my_row] = curr_val
