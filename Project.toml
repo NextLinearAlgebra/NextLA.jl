@@ -1,7 +1,7 @@
 name = "NextLA"
 uuid = "d37ed344-79c4-486d-9307-6d11355a15a3"
 authors = ["Rabab Alomairy, Evelyne Ringoot, Sophie Xuan, Vicki Carrica, Maxwell Onyango, Julian Samaroo, and Felipe Tome"]
-version = "0.2.0"
+version = "0.2.1"
 
 [deps]
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
