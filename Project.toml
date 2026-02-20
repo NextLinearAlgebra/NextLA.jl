@@ -1,7 +1,7 @@
 name = "NextLA"
 uuid = "d37ed344-79c4-486d-9307-6d11355a15a3"
 authors = ["Rabab Alomairy, Evelyne Ringoot, Sophie Xuan, Vicki Carrica, Maxwell Onyango, Julian Samaroo, and Felipe Tome"]
-version = "0.2.1"
+version = "0.2.2"
 
 [deps]
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
@@ -10,9 +10,9 @@ Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 
 [compat]
 KernelAbstractions = "0.9.34"
-LinearAlgebra = "1.11.0"
-Random = "1.11.0"
-julia = "1.11"
+LinearAlgebra = "1"
+Random = "1"
+julia = "1.9"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
