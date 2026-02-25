@@ -261,7 +261,8 @@ function run_all_cholesky_tests()
 
         A_gpu = CuArray(A_cpu)
         # A_spd_fp64 = A_gpu' * A_gpu + (n * 0.01) * I
-        A_spd_fp64 = (A_gpu + transpose(A_gpu)) ./ 2.0
+        # A_spd_fp64 = (A_gpu + transpose(A_gpu)) ./ 2.0
+        A_spd_fp64 = A_gpu
         
         A_raw = nothing
         A_cpu = nothing
