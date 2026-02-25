@@ -119,26 +119,18 @@ function get_runtime_cusolver(A_spd_fp64, n::Int, T_prec::DataType)
 end
 
 function get_accuracy_pure(A_spd_fp64::CuMatrix, T_prec::DataType)
-    local A_to_factor, scale_factor
-    
-    if T_prec == Float16
-        scale_factor = Float64(maximum(abs, A_spd_fp64))
-        A_to_factor = Float16.(A_spd_fp64 ./ scale_factor)
-    else
-        scale_factor = 1.0
-        A_to_factor = T_prec.(A_spd_fp64)
-    end
+    # No more scaling! Just a direct cast.
+    A_to_factor = T_prec.(A_spd_fp64)
     
     potrf_recursive!(A_to_factor, 4096)
     A_tri = tril(A_to_factor)
-    A_reconstructed = Float64.(A_tri * Transpose(A_tri)) .* scale_factor
+    A_reconstructed = Float64.(A_tri * Transpose(A_tri))
     
     A_to_factor = nothing
     A_tri = nothing
     GC.gc(true); CUDA.reclaim()
     
-    # NO IF/ELSE NEEDED HERE ANYMORE!
-    # Just the pure, unified math for the relative error:
+    # Pure, unified math for the relative error:
     orig_norm = norm(A_spd_fp64)
     error_norm = norm(A_reconstructed .- A_spd_fp64)
     
