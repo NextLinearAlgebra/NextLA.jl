@@ -68,7 +68,7 @@ function get_runtime_pure(A_spd_fp64, n::Int, T_prec::DataType)
     
     if T_prec == Float16
         scale_factor = maximum(abs, A_spd_fp64)
-        A_clean = Float16.(A_spd_fp64 ./ scale_factor) + 100*I
+        A_clean = Float16.(A_spd_fp64 ./ scale_factor)
     else
         A_clean = T_prec.(A_spd_fp64)
     end
@@ -122,8 +122,8 @@ function get_accuracy_pure(A_spd_fp64::CuMatrix, T_prec::DataType)
     local A_to_factor, scale_factor
     
     if T_prec == Float16
-        scale_factor = maximum(abs, A_spd_fp64)
-        A_to_factor = Float16.(A_spd_fp64 ./ scale_factor) + 100*I
+        scale_factor = Float64(maximum(abs, A_spd_fp64))
+        A_to_factor = Float16.(A_spd_fp64 ./ scale_factor)
     else
         scale_factor = 1.0
         A_to_factor = T_prec.(A_spd_fp64)
@@ -131,19 +131,16 @@ function get_accuracy_pure(A_spd_fp64::CuMatrix, T_prec::DataType)
     
     potrf_recursive!(A_to_factor, 4096)
     A_tri = tril(A_to_factor)
-    A_reconstructed = Float64.(A_tri * Transpose(A_tri) * scale_factor)
+    A_reconstructed = Float64.(A_tri * Transpose(A_tri)) .* scale_factor
+    
     A_to_factor = nothing
     A_tri = nothing
     GC.gc(true); CUDA.reclaim()
     
-    if T_prec == Float16
-        error_norm = norm(A_reconstructed - (A_spd_fp64 + scale_factor*100*I))
-        orig_norm = norm(A_spd_fp64 + scale_factor*100*I)
-    else
-        orig_norm = norm(A_spd_fp64)
-        A_reconstructed .-= A_spd_fp64
-        error_norm = norm(A_reconstructed)
-    end
+    # NO IF/ELSE NEEDED HERE ANYMORE!
+    # Just the pure, unified math for the relative error:
+    orig_norm = norm(A_spd_fp64)
+    error_norm = norm(A_reconstructed .- A_spd_fp64)
     
     return max(error_norm / orig_norm, 1e-20)
 end
@@ -260,7 +257,8 @@ function run_all_cholesky_tests()
         println("Matrix Size (n x n) = $n x $n")
 
         A_gpu = CuArray(A_cpu)
-        A_spd_fp64 = A_gpu' * A_gpu + (n * 0.01) * I
+        # A_spd_fp64 = A_gpu' * A_gpu + (n * 0.01) * I
+        A_spd_fp64 = (A_gpu + transpose(A_gpu)) ./ 2.0
         
         A_raw = nothing
         A_cpu = nothing
