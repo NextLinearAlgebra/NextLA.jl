@@ -256,6 +256,9 @@ function run_all_cholesky_tests()
         n = size(A_cpu, 1)
         println("Matrix Size (n x n) = $n x $n")
 
+        max_val = maximum(abs, A_cpu)
+        println("Max Absolute Value: $max_val")
+
         A_gpu = CuArray(A_cpu)
         # A_spd_fp64 = A_gpu' * A_gpu + (n * 0.01) * I
         A_spd_fp64 = (A_gpu + transpose(A_gpu)) ./ 2.0
