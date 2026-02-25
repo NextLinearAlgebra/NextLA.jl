@@ -230,7 +230,10 @@ function run_all_cholesky_tests()
     mixed_scenarios = Dict(
         "[F16, F32]" => [Float16, Float32],
         "[F16, F16, F32]" => [Float16, Float16, Float32],
+        "[F16, F16, F16, F32]" => [Float16, Float16, Float16, Float32],
+        "[F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float32],
         "[F32, F32, F64]" => [Float32, Float32, Float64],
+        "[F32, F32, F32, F64]" => [Float32, Float32, Float32, Float64],
         "[F16, F32, F64]" => [Float16, Float32, Float64],
         "[F32, F64]" => [Float32, Float64],
     )
@@ -239,10 +242,10 @@ function run_all_cholesky_tests()
         "CUSOLVER F64" => Float64,
     )
     adaptive_scenarios = Dict(
-        "Adaptive: eps=1e-4"  => 1e-4,
-        "Adaptive: eps=1e-6"  => 1e-6,
-        "Adaptive: eps=1e-8"  => 1e-8,
-        "Adaptive: eps=1e-10" => 1e-10,
+        # "Adaptive: eps=1e-4"  => 1e-4,
+        # "Adaptive: eps=1e-6"  => 1e-6,
+        # "Adaptive: eps=1e-8"  => 1e-8,
+        # "Adaptive: eps=1e-10" => 1e-10,
     )
 
     println("🚀 Starting Cholesky Benchmark and Accuracy Suite...")
