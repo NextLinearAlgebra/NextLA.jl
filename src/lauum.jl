@@ -102,36 +102,33 @@ For each diagonal block:
 """
 function compute_upper!(n::Integer, ib::Integer, A::AbstractMatrix{T}) where T
     Threads.@threads for i in 1:ib:n
-        ib = min(ib, n - i + 1)  # Actual block size
+        b = min(ib, n - i + 1)  # Actual block size for this iteration
+        j_end = i + b - 1
 
-        # Update off-diagonal blocks: A[1:i-1, i:i+ib-1] = A[1:i-1, i:i+ib-1] * A[i:i+ib-1, i:i+ib-1]^H
+        # Update off-diagonal blocks: A[1:i-1, i:j_end] = A[1:i-1, i:j_end] * A[i:j_end, i:j_end]^H
         if i > 1
-            view(A, 1:i-1, i:i+ib-1) .= view(A, 1:i-1, i:i+ib-1) * view(A, i:i+ib-1, i:i+ib-1)'
+            view(A, 1:i-1, i:j_end) .= view(A, 1:i-1, i:j_end) * view(A, i:j_end, i:j_end)'
         end
 
         # Compute diagonal block: U_block * U_block^H
-        U_block = view(A, i:i+ib-1, i:i+ib-1)
+        U_block = view(A, i:j_end, i:j_end)
         U_Ut = U_block * U_block'
-        
-        # Store only upper triangular part
-        for j in 1:ib, k in j:ib
-            A[i + j - 1, i + k - 1] = U_Ut[j, k]
-        end
-        
+
+        # Store only upper triangular part (GPU-agnostic: use triu broadcast instead of scalar indexing)
+        view(A, i:j_end, i:j_end) .= triu(U_Ut)
+
         # Add contribution from trailing blocks if they exist
-        if i + ib <= n
-            # Update off-diagonal: add A[1:i-1, i+ib:n] * A[i:i+ib-1, i+ib:n]^H
+        if j_end < n
+            # Update off-diagonal: add A[1:i-1, j_end+1:n] * A[i:j_end, j_end+1:n]^H
             if i > 1
-                view(A, 1:i-1, i:i+ib-1) .+= view(A, 1:i-1, i+ib:n) * view(A, i:i+ib-1, i+ib:n)'
+                view(A, 1:i-1, i:j_end) .+= view(A, 1:i-1, j_end+1:n) * view(A, i:j_end, j_end+1:n)'
             end
 
-            # Rank-k update: add A[i:i+ib-1, i+ib:n] * A[i:i+ib-1, i+ib:n]^H to diagonal block
-            trailing_block = view(A, i:i+ib-1, i+ib:n)
+            # Rank-k update: add A[i:j_end, j_end+1:n] * A[i:j_end, j_end+1:n]^H to diagonal block
+            trailing_block = view(A, i:j_end, j_end+1:n)
             syrk_result = trailing_block * trailing_block'
-            
-            for j in 1:ib, k in j:ib
-                A[i + j - 1, i + k - 1] += syrk_result[j, k]
-            end
+
+            view(A, i:j_end, i:j_end) .+= triu(syrk_result)
         end
     end
 end
@@ -157,36 +154,33 @@ For each diagonal block:
 """
 function compute_lower!(n::Integer, ib::Integer, A::AbstractMatrix{T}) where T
     Threads.@threads for i in 1:ib:n
-        ib = min(ib, n - i + 1)  # Actual block size
+        b = min(ib, n - i + 1)  # Actual block size for this iteration
+        j_end = i + b - 1
 
-        # Update off-diagonal blocks: A[i:i+ib-1, 1:i-1] = A[i:i+ib-1, i:i+ib-1]^H * A[i:i+ib-1, 1:i-1]
+        # Update off-diagonal blocks: A[i:j_end, 1:i-1] = A[i:j_end, i:j_end]^H * A[i:j_end, 1:i-1]
         if i > 1
-            view(A, i:i+ib-1, 1:i-1) .= view(A, i:i+ib-1, i:i+ib-1)' * view(A, i:i+ib-1, 1:i-1)
+            view(A, i:j_end, 1:i-1) .= view(A, i:j_end, i:j_end)' * view(A, i:j_end, 1:i-1)
         end
 
-        # Compute diagonal block: L_block^H * L_block  
-        L_block = view(A, i:i+ib-1, i:i+ib-1)
+        # Compute diagonal block: L_block^H * L_block
+        L_block = view(A, i:j_end, i:j_end)
         Lt_L = L_block' * L_block
 
-        # Store only lower triangular part
-        for j in 1:ib, k in 1:j
-            A[i + j - 1, i + k - 1] = Lt_L[j, k]
-        end
+        # Store only lower triangular part (GPU-agnostic: use tril broadcast instead of scalar indexing)
+        view(A, i:j_end, i:j_end) .= tril(Lt_L)
 
         # Add contribution from trailing blocks if they exist
-        if i + ib <= n
-            # Update off-diagonal: add A[i+ib:n, i:i+ib-1]^H * A[i+ib:n, 1:i-1]
+        if j_end < n
+            # Update off-diagonal: add A[j_end+1:n, i:j_end]^H * A[j_end+1:n, 1:i-1]
             if i > 1
-                view(A, i:i+ib-1, 1:i-1) .+= view(A, i+ib:n, i:i+ib-1)' * view(A, i+ib:n, 1:i-1)
+                view(A, i:j_end, 1:i-1) .+= view(A, j_end+1:n, i:j_end)' * view(A, j_end+1:n, 1:i-1)
             end
 
-            # Rank-k update: add A[i+ib:n, i:i+ib-1]^H * A[i+ib:n, i:i+ib-1] to diagonal block
-            trailing_block = view(A, i+ib:n, i:i+ib-1)
+            # Rank-k update: add A[j_end+1:n, i:j_end]^H * A[j_end+1:n, i:j_end] to diagonal block
+            trailing_block = view(A, j_end+1:n, i:j_end)
             syrk_result = trailing_block' * trailing_block
-            
-            for j in 1:ib, k in 1:j
-                A[i + j - 1, i + k - 1] += syrk_result[j, k]
-            end
+
+            view(A, i:j_end, i:j_end) .+= tril(syrk_result)
         end
     end
 end

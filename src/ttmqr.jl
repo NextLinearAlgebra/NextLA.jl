@@ -127,7 +127,7 @@ function ttmqr!(side::Char, trans::Char, A1::AbstractMatrix{T}, A2::AbstractMatr
     # - Left: W is (ib x n1) at most
     # - Right: W is (m1 x ib) at most
     work_size = side == 'L' ? ib * n1 : m1 * ib
-    work = zeros(T, work_size)
+    work = similar(A1, work_size)
 
     ttmqr!(side, trans, m1, n1, m2, n2, k, ib, A1, A2,
         V, T_matrix, work)

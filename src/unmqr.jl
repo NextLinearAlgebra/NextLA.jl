@@ -114,12 +114,12 @@ function unmqr!(side::Char, trans::Char, m::Integer, n::Integer, k::Integer, ib:
     ni = n
     mi = m
 
-    # Allocate workspace for block operations
+    # Use caller-provided workspace (must match backend of A, C, T_matrix)
     if side == 'L'
-        wwork = ones(eltype(A), n, ib)
+        wwork = work  # work is (n, ib)
         ldw = n
     else
-        wwork = ones(eltype(A), m, ib)
+        wwork = work  # work is (m, ib)
         ldw = m
     end
 
@@ -227,9 +227,9 @@ function unmqr!(side::Char, trans::Char, A::AbstractMatrix{T}, T_matrix::Abstrac
     
     # Allocate workspace based on side (matrix workspace expected by low-level)
     if side == 'L'
-        work = zeros(T, n, ib)
+        work = similar(C, n, ib)
     else
-        work = zeros(T, m, ib)
+        work = similar(C, m, ib)
     end
     
     # Call the core computational routine

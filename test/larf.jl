@@ -1,47 +1,53 @@
-@testset "LARF" begin
-    @testset "$T" for T in TEST_TYPES
-        rtol = test_rtol(T)
+for (backend_name, ArrayType, synchronize) in available_backends()
+    @testset "LARF [$backend_name]" begin
+        @testset "$T" for T in TEST_TYPES
+                rtol = test_rtol(T)
 
-        @testset "side=$side, m=$m, n=$n" for side in ['L', 'R'],
-                                               (m, n) in [(1, 1), (5, 4), (10, 8), (20, 15)]
-            v_len = side == 'L' ? m : n
-            C = randn(T, m, n)
-            v = randn(T, v_len)
-            tau = randn(T)
-            work = zeros(T, side == 'L' ? n : m)
+                @testset "side=$side, m=$m, n=$n" for side in ['L', 'R'],
+                                                       (m, n) in [(1, 1), (5, 4), (10, 8), (20, 15)]
+                    v_len = side == 'L' ? m : n
+                    C_init = randn(T, m, n)
+                    C_orig = copy(C_init)
+                    v = ArrayType(randn(T, v_len))
+                    tau = randn(T)
+                    work = ArrayType(zeros(T, side == 'L' ? n : m))
+                    C = ArrayType(copy(C_init))
 
-            C_orig = copy(C)
+                    NextLA.larf!(side, m, n, v, 1, tau, C, work)
+                    synchronize(C)
 
-            # Kernel call
-            NextLA.larf!(side, m, n, v, 1, tau, C, work)
+                    v_cpu = Array(v)
+                    H = I - tau * (v_cpu * v_cpu')
+                    C_ref = side == 'L' ? H * C_orig : C_orig * H
+                    @test Array(C) ≈ C_ref rtol=rtol
+                end
 
-            # Reference: H = I − τ·v·vᴴ, then H*C (left) or C*H (right)
-            H = I - tau * (v * v')
-            C_ref = side == 'L' ? H * C_orig : C_orig * H
+                @testset "Helper matches kernel" begin
+                    m, n = 10, 8
+                    C_init = randn(T, m, n)
+                    v = ArrayType(randn(T, m))
+                    tau = randn(T)
+                    C1 = ArrayType(copy(C_init))
+                    work = ArrayType(zeros(T, n))
+                    NextLA.larf!('L', m, n, v, 1, tau, C1, work)
+                    synchronize(C1)
 
-            @test C ≈ C_ref rtol=rtol
-        end
+                    C2 = ArrayType(copy(C_init))
+                    NextLA.larf!('L', v, 1, tau, C2)
+                    synchronize(C2)
 
-        @testset "Helper matches kernel" begin
-            m, n = 10, 8
-            C = randn(T, m, n)
-            v = randn(T, m)
-            tau = randn(T)
+                    @test Array(C1) ≈ Array(C2) rtol=rtol
+                end
 
-            C1 = copy(C)
-            work = zeros(T, n)
-            NextLA.larf!('L', m, n, v, 1, tau, C1, work)
-
-            C2 = copy(C)
-            NextLA.larf!('L', v, 1, tau, C2)
-
-            @test C1 ≈ C2 rtol=rtol
-        end
-
-        @testset "τ=0 leaves C unchanged" begin
-            C = randn(T, 6, 5);  C0 = copy(C)
-            NextLA.larf!('L', 6, 5, randn(T, 6), 1, zero(T), C, zeros(T, 5))
-            @test C == C0
+                @testset "τ=0 leaves C unchanged" begin
+                    C_init = randn(T, 6, 5)
+                    C = ArrayType(copy(C_init))
+                    v = ArrayType(randn(T, 6))
+                    work = ArrayType(zeros(T, 5))
+                    NextLA.larf!('L', 6, 5, v, 1, zero(T), C, work)
+                    synchronize(C)
+                    @test Array(C) == C_init
+                end
         end
     end
 end

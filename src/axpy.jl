@@ -6,10 +6,9 @@ function axpy!(a::T, x::AbstractVector{T}, y::AbstractVector{T}) where {T}
     end
 
     if abs(real(a)) + abs(imag(a)) == zero(eltype(x))
-        return 
+        return
     end
 
-    for i in 1:n
-        y[i] = y[i] + a*x[i]
-    end
+    # Broadcast is GPU-agnostic (no scalar indexing)
+    y .= y .+ a .* x
 end

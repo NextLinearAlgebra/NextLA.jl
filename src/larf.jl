@@ -33,65 +33,40 @@ This is a low-level computational routine used internally by higher-level
 QR factorization algorithms. The workspace array must be properly allocated.
 """
 function larf!(side::Char, m::Integer, n::Integer, v::AbstractVector{T}, incv::Integer, tau::T, C::AbstractMatrix{T}, work::AbstractVector{T}) where {T}
-    lastv = 0
-    lastc = 0
     one0 = oneunit(eltype(C))
     zero0 = zero(eltype(C))
-    
-    if tau != zero0
-        # Determine the effective length of the reflector vector v
-        if side == 'L' 
-            lastv = m
-        else
-            lastv = n
-        end
-        
-        # Find the index of the last element to check
-        if incv > 0
-            i = 1 + (lastv-1)*incv
-        else
-            i = 1
-        end
 
-        # Scan backwards to find the last non-zero element in v
-        while lastv > 0 && v[i] == zero0
-            lastv -= 1
-            i -= incv
-        end
-
-        # Determine the effective dimensions of C to operate on
-        if side == 'L'
-            # Find last non-zero column in C[1:lastv, :]
-            lastc = ilazlc(lastv, n, C)
-        else
-            # Find last non-zero row in C[:, 1:lastv]
-            lastc = ilazlr(m, lastv, C)
-        end
+    if tau == zero0
+        return
     end
+
+    # Use full dimensions (GPU-agnostic: avoids scalar indexing in ilazlc/ilazlr and v-scan)
+    lastv = side == 'L' ? m : n
+    lastc = side == 'L' ? n : m
+
+    # Strided view of v (handles incv; for incv≠1 uses 1:incv:1+(lastv-1)*incv)
+    vv = incv == 1 ? (@view v[1:lastv]) : (@view v[1:incv:1+(lastv-1)*incv])
 
     if side == 'L'
         # Form H*C = (I - tau * v * v^H) * C
-        if lastv > 0
-            vv = @view v[1:lastv, 1]
-            cv = @view C[1:lastv, 1:lastc]
-            wv = @view work[1:lastc]
-            
-            # Step 1: w = C^H * v (compute v^H * C as w^T)
-            LinearAlgebra.generic_matvecmul!(wv, 'C', cv, vv, LinearAlgebra.MulAddMul(one0, zero0))
+        cv = @view C[1:lastv, 1:lastc]
+        wv = @view work[1:lastc]
 
-            # Step 2: C := C - tau * v * w^H (rank-1 update)
-            gerc!(-tau, vv, wv, cv)
-        end
+        # Step 1: w = C^H * v
+        LinearAlgebra.generic_matvecmul!(wv, 'C', cv, vv, LinearAlgebra.MulAddMul(one0, zero0))
+
+        # Step 2: C := C - tau * v * w^H (rank-1 update)
+        gerc!(-tau, vv, wv, cv)
     else
         # Form C*H = C * (I - tau * v * v^H)
-        if lastv > 0
-            # Step 1: w = C * v
-            LinearAlgebra.generic_matvecmul!((@view work[1:lastc, 1]), 'N', (@view C[1:lastc, 1:lastv]),
-                (@view v[1:lastv, 1]), LinearAlgebra.MulAddMul(one0, zero0))
+        cv = @view C[1:lastc, 1:lastv]
+        wv = @view work[1:lastc]
 
-            # Step 2: C := C - tau * w * v^H (rank-1 update)
-            gerc!(-tau, (@view work[1:lastc, 1]), (@view v[1:lastv, 1]), (@view C[1:lastc, 1:lastv]))
-        end
+        # Step 1: w = C * v
+        LinearAlgebra.generic_matvecmul!(wv, 'N', cv, vv, LinearAlgebra.MulAddMul(one0, zero0))
+
+        # Step 2: C := C - tau * w * v^H (rank-1 update)
+        gerc!(-tau, wv, vv, cv)
     end
 end
 
@@ -204,23 +179,20 @@ larf!('R', v, tau, C)
 """
 function larf!(side::Char,  v::AbstractVector{T}, incv::Integer, tau::T, C::AbstractMatrix{T}) where {T}
     m, n = size(C)
-    
     # Input validation with descriptive error messages
     if side == 'L'
         if length(v) != m
             throw(ArgumentError("For side='L', reflector length ($(length(v))) must equal matrix row dimension ($m)"))
         end
-        work = zeros(T, n)
+        work = similar(C, n)
     elseif side == 'R'
         if length(v) != n
             throw(ArgumentError("For side='R', reflector length ($(length(v))) must equal matrix column dimension ($n)"))
         end
-        work = zeros(T, m)
+        work = similar(C, m)
     else
         throw(ArgumentError("Invalid side parameter: '$side'. Must be 'L' or 'R'"))
     end
-    
-    
     # Call the core computational routine
     larf!(side, m, n, v, incv, tau, C, work)
 end

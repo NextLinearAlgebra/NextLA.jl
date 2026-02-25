@@ -220,7 +220,7 @@ function tsmqr!(side::Char, trans::Char, A1::AbstractMatrix{T}, A2::AbstractMatr
     else
         work_size = m1 * ib
     end
-    work = zeros(T, work_size)
+    work = similar(A1, work_size)
     
     # Call the core computational routine
     tsmqr!(side, trans, m1, n1, m2, n2, k, ib, A1, A2, 

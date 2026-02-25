@@ -105,15 +105,21 @@ function pamm_w!(left::Bool, colmajor::Bool, forward::Bool, m::Integer, n::Integ
         mp = min(m-l+1, m)
         kp = min(l+1, k)
 
-        for i in 1:l
-            copyto!((@view W[i, 1:n]), (@view A2[m-l + i, 1:n]))
+        if l > 0
+            for i in 1:l
+                copyto!((@view W[i, 1:n]), (@view A2[m-l + i, 1:n]))
+            end
+
+            LinearAlgebra.generic_trimatmul!((@view W[1:l, 1:n]), 'U', 'N', adjoint, (@view V[mp:mp+l-1, 1:l]), (@view W[1:l, 1:n]))
+
+            if m > l
+                LinearAlgebra.generic_matmatmul!((@view W[1:l, 1:n]), 'C', 'N', (@view V[1:m-l, 1:l]), (@view A2[1:m-l, 1:n]), plus)
+            end
         end
 
-        LinearAlgebra.generic_trimatmul!((@view W[1:l, 1:n]), 'U', 'N', adjoint, (@view V[mp:mp+l-1, 1:l]), (@view W[1:l, 1:n]))
-    
-        LinearAlgebra.generic_matmatmul!((@view W[1:l, 1:n]), 'C', 'N', (@view V[1:m-l, 1:l]), (@view A2[1:m-l, 1:n]), plus)
-
-        LinearAlgebra.generic_matmatmul!((@view W[kp:kp+k-l-1, 1:n]), 'C', 'N', (@view V[1:m, kp:kp+k-l-1]), (@view A2[1:m, 1:n]), eqa)
+        if k > l
+            LinearAlgebra.generic_matmatmul!((@view W[kp:kp+k-l-1, 1:n]), 'C', 'N', (@view V[1:m, kp:kp+k-l-1]), (@view A2[1:m, 1:n]), eqa)
+        end
 
         for i in 1:k
             LinearAlgebra.axpy!(one, (@view A1[i, 1:n]), (@view W[i, 1:n]))
@@ -124,15 +130,21 @@ function pamm_w!(left::Bool, colmajor::Bool, forward::Bool, m::Integer, n::Integ
         mp = min(m-l+1, m)
         kp = min(l+1, k)
 
-        for i in 1:l
-            copyto!((@view W[i, 1:n]), (@view A2[m-l+i, 1:n]))
+        if l > 0
+            for i in 1:l
+                copyto!((@view W[i, 1:n]), (@view A2[m-l+i, 1:n]))
+            end
+
+            LinearAlgebra.generic_trimatmul!((@view W[1:l, 1:n]), 'L', 'N', identity, (@view V[1:l, mp:mp+l-1]), (@view W[1:l, 1:n]))
+
+            if m > l
+                LinearAlgebra.generic_matmatmul!((@view W[1:l, 1:n]), 'N', 'N', (@view V[1:l, 1:m-l]), (@view A2[1:m-l, 1:n]), plus)
+            end
         end
 
-        LinearAlgebra.generic_trimatmul!((@view W[1:l, 1:n]), 'L', 'N', identity, (@view V[1:l, mp:mp+l-1]), (@view W[1:l, 1:n]))
-
-        LinearAlgebra.generic_matmatmul!((@view W[1:l, 1:n]), 'N', 'N', (@view V[1:l, 1:m-l]), (@view A2[1:m-l, 1:n]), plus)
-
-        LinearAlgebra.generic_matmatmul!((@view W[kp:kp+k-l-1, 1:n]), 'N', 'N', (@view V[kp:kp+k-l-1, 1:m]), (@view A2[1:m, 1:n]), eqa)
+        if k > l
+            LinearAlgebra.generic_matmatmul!((@view W[kp:kp+k-l-1, 1:n]), 'N', 'N', (@view V[kp:kp+k-l-1, 1:m]), (@view A2[1:m, 1:n]), eqa)
+        end
 
         for i in 1:k
             LinearAlgebra.axpy!(one, (@view A1[i, 1:n]), (@view W[i, 1:n]))
@@ -142,15 +154,21 @@ function pamm_w!(left::Bool, colmajor::Bool, forward::Bool, m::Integer, n::Integ
         np = min(n-l+1, n)
         kp = min(l+1, k)
 
-        for j in 1:l
-            copyto!((@view W[1:m, j]), (@view A2[1:m, n-l+j]))
+        if l > 0
+            for j in 1:l
+                copyto!((@view W[1:m, j]), (@view A2[1:m, n-l+j]))
+            end
+
+            LinearAlgebra.generic_mattrimul!((@view W[1:m, 1:l]), 'U', 'N', identity, (@view W[1:m, 1:l]), (@view V[np:np+l-1, 1:l]))
+
+            if n > l
+                LinearAlgebra.generic_matmatmul!((@view W[1:m, 1:l]), 'N', 'N', (@view A2[1:m, 1:n-l]), (@view V[1:n-l, 1:l]), plus)
+            end
         end
 
-        LinearAlgebra.generic_mattrimul!((@view W[1:m, 1:l]), 'U', 'N', identity, (@view W[1:m, 1:l]), (@view V[np:np+l-1, 1:l]))
-
-        LinearAlgebra.generic_matmatmul!((@view W[1:m, 1:l]), 'N', 'N', (@view A2[1:m, 1:n-l]), (@view V[1:n-l, 1:l]), plus)
-
-        LinearAlgebra.generic_matmatmul!((@view W[1:m, kp:kp+k-l-1]), 'N', 'N', (@view A2[1:m, 1:n]), (@view V[1:n, kp:kp+k-l-1]), eqa)
+        if k > l
+            LinearAlgebra.generic_matmatmul!((@view W[1:m, kp:kp+k-l-1]), 'N', 'N', (@view A2[1:m, 1:n]), (@view V[1:n, kp:kp+k-l-1]), eqa)
+        end
 
         for j in 1:k
             LinearAlgebra.axpy!(one, (@view A1[1:m, j]), (@view W[1:m, j]))
@@ -160,15 +178,21 @@ function pamm_w!(left::Bool, colmajor::Bool, forward::Bool, m::Integer, n::Integ
         np = min(n-l+1, n)
         kp = min(l+1, k)
 
-        for j in 1:l
-            copyto!((@view W[1:m, j]), (@view A2[1:m, n-l+j]))
+        if l > 0
+            for j in 1:l
+                copyto!((@view W[1:m, j]), (@view A2[1:m, n-l+j]))
+            end
+
+            LinearAlgebra.generic_mattrimul!((@view W[1:m, 1:l]), 'L', 'N', adjoint, (@view W[1:m, 1:l]), (@view V[1:l,  np:np+l-1]))
+
+            if n > l
+                LinearAlgebra.generic_matmatmul!((@view W[1:m, 1:l]), 'N', 'C', (@view A2[1:m, 1:n-l]), (@view V[1:l, 1:n-l]), plus)
+            end
         end
 
-        LinearAlgebra.generic_mattrimul!((@view W[1:m, 1:l]), 'L', 'N', adjoint, (@view W[1:m, 1:l]), (@view V[1:l,  np:np+l-1]))
-
-        LinearAlgebra.generic_matmatmul!((@view W[1:m, 1:l]), 'N', 'C', (@view A2[1:m, 1:n-l]), (@view V[1:l, 1:n-l]), plus)
-
-        LinearAlgebra.generic_matmatmul!((@view W[1:m, kp:kp+k-l-1]), 'N', 'C', (@view A2[1:m, 1:n]), (@view V[kp:kp+k-l-1, 1:n]), eqa)
+        if k > l
+            LinearAlgebra.generic_matmatmul!((@view W[1:m, kp:kp+k-l-1]), 'N', 'C', (@view A2[1:m, 1:n]), (@view V[kp:kp+k-l-1, 1:n]), eqa)
+        end
 
         for j in 1:k
             LinearAlgebra.axpy!(one, (@view A1[1:m, j]), (@view W[1:m, j]))
@@ -178,15 +202,21 @@ function pamm_w!(left::Bool, colmajor::Bool, forward::Bool, m::Integer, n::Integ
         mp = min(l+1, m)
         kp = min(k-l+1, k)
 
-        for i in 1:l
-            copyto!((@view W[k-l + i, 1:n]), (@view A2[i, 1:n]))
+        if l > 0
+            for i in 1:l
+                copyto!((@view W[k-l + i, 1:n]), (@view A2[i, 1:n]))
+            end
+
+            LinearAlgebra.generic_trimatmul!((@view W[kp:kp+l-1, 1:n]), 'L', 'N', adjoint, (@view V[1:l, kp:kp+l-1]), (@view W[kp:kp+l-1, 1:n]))
+
+            if m > l
+                LinearAlgebra.generic_matmatmul!((@view W[kp:kp+l-1, 1:n]), 'C', 'N', (@view V[mp:mp+m-l-1, kp:kp+l-1]), (@view A2[mp:mp+m-l-1, 1:n]), plus)
+            end
         end
 
-        LinearAlgebra.generic_trimatmul!((@view W[kp:kp+l-1, 1:n]), 'L', 'N', adjoint, (@view V[1:l, kp:kp+l-1]), (@view W[kp:kp+l-1, 1:n]))
-
-        LinearAlgebra.generic_matmatmul!((@view W[kp:kp+l-1, 1:n]), 'C', 'N', (@view V[mp:mp+m-l-1, kp:kp+l-1]), (@view A2[mp:mp+m-l-1, 1:n]), plus)
-
-        LinearAlgebra.generic_matmatmul!((@view W[1:k-l, 1:n]), 'C', 'N', (@view V[1:m, 1:k-l]), (@view A2[1:m, 1:n]), eqa)
+        if k > l
+            LinearAlgebra.generic_matmatmul!((@view W[1:k-l, 1:n]), 'C', 'N', (@view V[1:m, 1:k-l]), (@view A2[1:m, 1:n]), eqa)
+        end
 
         for i in 1:k
             LinearAlgebra.axpy!(one, (@view A1[i, 1:n]), (@view W[i, 1:n]))
@@ -197,15 +227,21 @@ function pamm_w!(left::Bool, colmajor::Bool, forward::Bool, m::Integer, n::Integ
         mp = min(l+1, m)
         kp = min(k-l+1, k)
 
-        for i in 1:l 
-            copyto!((@view W[k-l + i, 1:n]), (@view A2[i, 1:n]))
+        if l > 0
+            for i in 1:l 
+                copyto!((@view W[k-l + i, 1:n]), (@view A2[i, 1:n]))
+            end
+
+            LinearAlgebra.generic_trimatmul!((@view W[kp:kp+l-1, 1:n]), 'U', 'N', identity, (@view V[kp:kp+l-1, 1:l]), (@view W[kp:kp+l-1, 1:n]))
+            
+            if m > l
+                LinearAlgebra.generic_matmatmul!((@view W[kp:kp+l-1, 1:n]), 'N', 'N', (@view V[kp:kp+l-1, mp:mp+m-l-1]), (@view A2[mp:mp+m-l-1, 1:n]), plus)
+            end
         end
 
-        LinearAlgebra.generic_trimatmul!((@view W[kp:kp+l-1, 1:n]), 'U', 'N', identity, (@view V[kp:kp+l-1, 1:l]), (@view W[kp:kp+l-1, 1:n]))
-        
-        LinearAlgebra.generic_matmatmul!((@view W[kp:kp+l-1, 1:n]), 'N', 'N', (@view V[kp:kp+l-1, mp:mp+m-l-1]), (@view A2[mp:mp+m-l-1, 1:n]), plus)
-
-        LinearAlgebra.generic_matmatmul!((@view W[1:k-l, 1:n]), 'N', 'N', (@view V[1:k-l, 1:m]), (@view A2[1:m, 1:n]), eqa)
+        if k > l
+            LinearAlgebra.generic_matmatmul!((@view W[1:k-l, 1:n]), 'N', 'N', (@view V[1:k-l, 1:m]), (@view A2[1:m, 1:n]), eqa)
+        end
 
         for i in 1:k
             LinearAlgebra.axpy!(one, (@view A1[i, 1:n]), (@view W[i, 1:n]))
@@ -215,15 +251,21 @@ function pamm_w!(left::Bool, colmajor::Bool, forward::Bool, m::Integer, n::Integ
         np = min(l+1, n)
         kp = min(k-l+1, k)
 
-        for j in 1:l
-            copyto!((@view W[1:m, k-l+j]), (@view A2[1:m, j]))
+        if l > 0
+            for j in 1:l
+                copyto!((@view W[1:m, k-l+j]), (@view A2[1:m, j]))
+            end
+
+            LinearAlgebra.generic_mattrimul!((@view W[1:m, kp:kp+l-1]), 'U', 'N', adjoint, (@view W[1:m, kp:kp+l-1]), (@view V[kp:kp+l-1, 1:l]))
+            
+            if n > l
+                LinearAlgebra.generic_matmatmul!((@view W[1:m, kp:kp+l-1]), 'N', 'C', (@view A2[1:m, np:np+n-l-1]), (@view V[kp:kp+l-1, np:np+n-l-1]), plus)
+            end
         end
 
-        LinearAlgebra.generic_mattrimul!((@view W[1:m, kp:kp+l-1]), 'U', 'N', adjoint, (@view W[1:m, kp:kp+l-1]), (@view V[kp:kp+l-1, 1:l]))
-        
-        LinearAlgebra.generic_matmatmul!((@view W[1:m, kp:kp+l-1]), 'N', 'C', (@view A2[1:m, np:np+n-l-1]), (@view V[kp:kp+l-1, np:np+n-l-1]), plus)
-
-        LinearAlgebra.generic_matmatmul!((@view W[1:m, 1:k-l]), 'N', 'C', (@view A2[1:m, 1:n]), (@view V[1:k-l, 1:n]), eqa)
+        if k > l
+            LinearAlgebra.generic_matmatmul!((@view W[1:m, 1:k-l]), 'N', 'C', (@view A2[1:m, 1:n]), (@view V[1:k-l, 1:n]), eqa)
+        end
 
         for j in 1:k
             LinearAlgebra.axpy!(one, (@view A1[1:m, j]), (@view W[1:m, j]))
@@ -233,15 +275,21 @@ function pamm_w!(left::Bool, colmajor::Bool, forward::Bool, m::Integer, n::Integ
         np = min(l+1, n) 
         kp = min(k-l+1, k)
 
-        for j in 1:l
-            copyto!((@view W[1:m, k-l+j]), (@view A2[1:m, j]))
+        if l > 0
+            for j in 1:l
+                copyto!((@view W[1:m, k-l+j]), (@view A2[1:m, j]))
+            end
+
+            LinearAlgebra.generic_mattrimul!((@view W[1:m, kp:kp+l-1]), 'L', 'N', identity, (@view W[1:m, kp:kp+l-1]), (@view V[1:l, kp:kp+l-1]))
+            
+            if n > l
+                LinearAlgebra.generic_matmatmul!((@view W[1:m, kp:kp+l-1]), 'N', 'N', (@view A2[1:m, np:np+n-l-1]), (@view V[np:np+n-l-1, kp:kp+l-1]), plus)
+            end
         end
 
-        LinearAlgebra.generic_mattrimul!((@view W[1:m, kp:kp+l-1]), 'L', 'N', identity, (@view W[1:m, kp:kp+l-1]), (@view V[1:l, kp:kp+l-1]))
-        
-        LinearAlgebra.generic_matmatmul!((@view W[1:m, kp:kp+l-1]), 'N', 'N', (@view A2[1:m, np:np+n-l-1]), (@view V[np:np+n-l-1, kp:kp+l-1]), plus)
-
-        LinearAlgebra.generic_matmatmul!((@view W[1:m, 1:k-l]), 'N', 'N', (@view A2[1:m, 1:n]), (@view V[1:n, 1:k-l]), eqa)
+        if k > l
+            LinearAlgebra.generic_matmatmul!((@view W[1:m, 1:k-l]), 'N', 'N', (@view A2[1:m, 1:n]), (@view V[1:n, 1:k-l]), eqa)
+        end
 
         for j in 1:k
             LinearAlgebra.axpy!(one, (@view A1[1:m, j]), (@view W[1:m, j]))
@@ -259,14 +307,20 @@ function pamm_a!(left::Bool, colmajor::Bool, forward::Bool, m::Integer, n::Integ
             mp = min( m-l+1, m )
             kp = min( l+1, k )
 
-            LinearAlgebra.generic_matmatmul!((@view A2[1:m-l, 1:n]), 'N', 'N', (@view V[1:m-l, 1:k]), (@view W[1:k, 1:n]), minus)
+            if m > l
+                LinearAlgebra.generic_matmatmul!((@view A2[1:m-l, 1:n]), 'N', 'N', (@view V[1:m-l, 1:k]), (@view W[1:k, 1:n]), minus)
+            end
 
-            LinearAlgebra.generic_matmatmul!((@view A2[mp:mp+l-1, 1:n]), 'N', 'N', (@view V[mp:mp+l-1, kp:kp+k-l-1]), (@view W[kp:kp+k-l-1, 1:n]), minus)
+            if l > 0
+                if k > l
+                    LinearAlgebra.generic_matmatmul!((@view A2[mp:mp+l-1, 1:n]), 'N', 'N', (@view V[mp:mp+l-1, kp:kp+k-l-1]), (@view W[kp:kp+k-l-1, 1:n]), minus)
+                end
 
-            LinearAlgebra.generic_trimatmul!((@view W[1:l, 1:n]), 'U', 'N', identity, (@view V[mp:mp+l-1, 1:l]), (@view W[1:l, 1:n]))
+                LinearAlgebra.generic_trimatmul!((@view W[1:l, 1:n]), 'U', 'N', identity, (@view V[mp:mp+l-1, 1:l]), (@view W[1:l, 1:n]))
 
-            for i in 1:l 
-                LinearAlgebra.axpy!(-one, (@view W[i, 1:n]), (@view A2[m-l+i, 1:n]))
+                for i in 1:l 
+                    LinearAlgebra.axpy!(-one, (@view W[i, 1:n]), (@view A2[m-l+i, 1:n]))
+                end
             end
         end
 
@@ -274,14 +328,20 @@ function pamm_a!(left::Bool, colmajor::Bool, forward::Bool, m::Integer, n::Integ
             mp = min(m-l+1, m)
             kp = min(l+1, k)
 
-            LinearAlgebra.generic_matmatmul!((@view A2[1:m-l, 1:n]), 'C', 'N', (@view V[1:k, 1:m-l]), (@view W[1:k, 1:n]), minus)
+            if m > l
+                LinearAlgebra.generic_matmatmul!((@view A2[1:m-l, 1:n]), 'C', 'N', (@view V[1:k, 1:m-l]), (@view W[1:k, 1:n]), minus)
+            end
 
-            LinearAlgebra.generic_matmatmul!((@view A2[mp:mp+l-1, 1:n]), 'C', 'N', (@view V[kp:kp+k-l-1, mp:mp+l-1]), (@view W[kp:kp+k-l-1, 1:n]), minus)
+            if l > 0
+                if k > l
+                    LinearAlgebra.generic_matmatmul!((@view A2[mp:mp+l-1, 1:n]), 'C', 'N', (@view V[kp:kp+k-l-1, mp:mp+l-1]), (@view W[kp:kp+k-l-1, 1:n]), minus)
+                end
 
-            LinearAlgebra.generic_trimatmul!((@view W[1:l, 1:n]), 'L', 'N', adjoint, (@view V[1:l, mp:mp+l-1]), (@view W[1:l, 1:n]))
+                LinearAlgebra.generic_trimatmul!((@view W[1:l, 1:n]), 'L', 'N', adjoint, (@view V[1:l, mp:mp+l-1]), (@view W[1:l, 1:n]))
 
-            for i in 1:l 
-                LinearAlgebra.axpy!((-one), (@view W[i, 1:n]), (@view A2[m-l+i, 1:n])) 
+                for i in 1:l 
+                    LinearAlgebra.axpy!((-one), (@view W[i, 1:n]), (@view A2[m-l+i, 1:n])) 
+                end
             end
         end
 
@@ -290,14 +350,20 @@ function pamm_a!(left::Bool, colmajor::Bool, forward::Bool, m::Integer, n::Integ
             np = min(n-l+1, n)
             kp = min(l+1, k)
 
-            LinearAlgebra.generic_matmatmul!((@view A2[1:m, 1:n-l]), 'N', 'C', (@view W[1:m, 1:k]), (@view V[1:n-l, 1:k]), minus)
+            if n > l
+                LinearAlgebra.generic_matmatmul!((@view A2[1:m, 1:n-l]), 'N', 'C', (@view W[1:m, 1:k]), (@view V[1:n-l, 1:k]), minus)
+            end
 
-            LinearAlgebra.generic_matmatmul!((@view A2[1:m, np:np+l-1]), 'N', 'C', (@view W[1:m, kp:kp+k-l-1]), (@view V[np:np+l-1, kp:kp+k-l-1]), minus)
+            if l > 0
+                if k > l
+                    LinearAlgebra.generic_matmatmul!((@view A2[1:m, np:np+l-1]), 'N', 'C', (@view W[1:m, kp:kp+k-l-1]), (@view V[np:np+l-1, kp:kp+k-l-1]), minus)
+                end
 
-            LinearAlgebra.generic_mattrimul!((@view W[1:m, 1:l]), 'U', 'N', adjoint, (@view W[1:m, 1:l]), (@view V[np:np+l-1, 1:l]))
+                LinearAlgebra.generic_mattrimul!((@view W[1:m, 1:l]), 'U', 'N', adjoint, (@view W[1:m, 1:l]), (@view V[np:np+l-1, 1:l]))
 
-            for j in 1:l 
-                LinearAlgebra.axpy!(-one, (@view W[1:m, j]), (@view A2[1:m, n-l+j]))
+                for j in 1:l 
+                    LinearAlgebra.axpy!(-one, (@view W[1:m, j]), (@view A2[1:m, n-l+j]))
+                end
             end
         end
 
@@ -305,14 +371,20 @@ function pamm_a!(left::Bool, colmajor::Bool, forward::Bool, m::Integer, n::Integ
             np = min(n-l+1, n)
             kp = min(l+1, k)
 
-            LinearAlgebra.generic_matmatmul!((@view A2[1:m, 1:n-l]), 'N', 'N', (@view W[1:m, 1:k]), (@view V[1:k, 1:n-l]), minus)
+            if n > l
+                LinearAlgebra.generic_matmatmul!((@view A2[1:m, 1:n-l]), 'N', 'N', (@view W[1:m, 1:k]), (@view V[1:k, 1:n-l]), minus)
+            end
  
-            LinearAlgebra.generic_matmatmul!((@view A2[1:m, np:np+l-1]), 'N', 'N', (@view W[1:m, kp:kp+k-l-1]), (@view V[kp:kp+k-l-1, np:np+l-1]), minus)
+            if l > 0
+                if k > l
+                    LinearAlgebra.generic_matmatmul!((@view A2[1:m, np:np+l-1]), 'N', 'N', (@view W[1:m, kp:kp+k-l-1]), (@view V[kp:kp+k-l-1, np:np+l-1]), minus)
+                end
 
-            LinearAlgebra.generic_mattrimul!((@view W[1:m, 1:l]), 'L', 'N', identity, (@view W[1:m, 1:l]), (@view V[1:l, np:np+l-1]))
+                LinearAlgebra.generic_mattrimul!((@view W[1:m, 1:l]), 'L', 'N', identity, (@view W[1:m, 1:l]), (@view V[1:l, np:np+l-1]))
 
-            for j in 1:l 
-                LinearAlgebra.axpy!(-one, (@view W[1:m, j]), (@view A2[1:m, n-l+j]))
+                for j in 1:l 
+                    LinearAlgebra.axpy!(-one, (@view W[1:m, j]), (@view A2[1:m, n-l+j]))
+                end
             end
         end
 
@@ -320,14 +392,20 @@ function pamm_a!(left::Bool, colmajor::Bool, forward::Bool, m::Integer, n::Integ
             mp = min(l+1, m)
             kp = min(k-l+1, k)
             
-            LinearAlgebra.generic_matmatmul!((@view A2[mp:mp+m-l-1, 1:n]), 'N', 'N', (@view V[mp:mp+m-l-1, 1:k]), (@view W[1:k, 1:n]), minus)
+            if m > l
+                LinearAlgebra.generic_matmatmul!((@view A2[mp:mp+m-l-1, 1:n]), 'N', 'N', (@view V[mp:mp+m-l-1, 1:k]), (@view W[1:k, 1:n]), minus)
+            end
             
-            LinearAlgebra.generic_matmatmul!((@view A2[1:l, 1:n]), 'N', 'N', (@view V[1:l, 1:k-l]), (@view W[1:k-l, 1:n]), minus)
+            if l > 0
+                if k > l
+                    LinearAlgebra.generic_matmatmul!((@view A2[1:l, 1:n]), 'N', 'N', (@view V[1:l, 1:k-l]), (@view W[1:k-l, 1:n]), minus)
+                end
 
-            LinearAlgebra.generic_trimatmul!((@view W[kp:kp+l-1, 1:n]), 'L', 'N', identity, (@view V[1:l, kp:kp+l-1]), (@view W[kp:kp+l-1, 1:n]))
+                LinearAlgebra.generic_trimatmul!((@view W[kp:kp+l-1, 1:n]), 'L', 'N', identity, (@view V[1:l, kp:kp+l-1]), (@view W[kp:kp+l-1, 1:n]))
 
-            for i in 1:l 
-                LinearAlgebra.axpy!(-one, (@view W[k-l+i, 1:n]), (@view A2[i, 1:n]))
+                for i in 1:l 
+                    LinearAlgebra.axpy!(-one, (@view W[k-l+i, 1:n]), (@view A2[i, 1:n]))
+                end
             end
         end
         
@@ -335,28 +413,40 @@ function pamm_a!(left::Bool, colmajor::Bool, forward::Bool, m::Integer, n::Integ
             mp = min(l+1, m)
             kp = min(k-l+1, k)
 
-            LinearAlgebra.generic_matmatmul!((@view A2[mp:mp+m-l-1, 1:n]), 'C', 'N', (@view V[1:k, mp:mp+m-l-1]), (@view W[1:k, 1:n]), minus)
+            if m > l
+                LinearAlgebra.generic_matmatmul!((@view A2[mp:mp+m-l-1, 1:n]), 'C', 'N', (@view V[1:k, mp:mp+m-l-1]), (@view W[1:k, 1:n]), minus)
+            end
 
-            LinearAlgebra.generic_matmatmul!((@view A2[1:l, 1:n]), 'C', 'N', (@view V[1:k-l, 1:l]), (@view W[1:k-l, 1:n]), minus)
+            if l > 0
+                if k > l
+                    LinearAlgebra.generic_matmatmul!((@view A2[1:l, 1:n]), 'C', 'N', (@view V[1:k-l, 1:l]), (@view W[1:k-l, 1:n]), minus)
+                end
 
-            LinearAlgebra.generic_trimatmul!((@view W[kp:kp+l-1, 1:n]), 'U', 'N', adjoint, (@view V[kp:kp+l-1, 1:l]), (@view W[kp:kp+l-1, 1:n]))
+                LinearAlgebra.generic_trimatmul!((@view W[kp:kp+l-1, 1:n]), 'U', 'N', adjoint, (@view V[kp:kp+l-1, 1:l]), (@view W[kp:kp+l-1, 1:n]))
 
-            for i in 1:l 
-                LinearAlgebra.axpy!(-one, (@view W[k-l+i, 1:n]), (@view A2[i, 1:n]))
+                for i in 1:l 
+                    LinearAlgebra.axpy!(-one, (@view W[k-l+i, 1:n]), (@view A2[i, 1:n]))
+                end
             end
         end
         
         if !colmajor && !forward && !left # rowmajor, backward, right
             np = min(l+1, n)
             kp = min(k-l+1, k)
-            LinearAlgebra.generic_matmatmul!((@view A2[1:m, np:np+n-l-1]), 'N', 'N', (@view W[1:m, 1:k]), (@view V[1:k, np:np+n-l-1]), minus)
+            if n > l
+                LinearAlgebra.generic_matmatmul!((@view A2[1:m, np:np+n-l-1]), 'N', 'N', (@view W[1:m, 1:k]), (@view V[1:k, np:np+n-l-1]), minus)
+            end
 
-            LinearAlgebra.generic_matmatmul!((@view A2[1:m, 1:l]), 'N', 'N', (@view W[1:m, 1:k-l]), (@view V[1:k-l, 1:l]), minus)
+            if l > 0
+                if k > l
+                    LinearAlgebra.generic_matmatmul!((@view A2[1:m, 1:l]), 'N', 'N', (@view W[1:m, 1:k-l]), (@view V[1:k-l, 1:l]), minus)
+                end
 
-            LinearAlgebra.generic_mattrimul!((@view W[1:m, kp:kp+l-1]), 'U', 'N', identity, (@view W[1:m, kp:kp+l-1]), (@view V[kp:kp+l-1, 1:l]))
+                LinearAlgebra.generic_mattrimul!((@view W[1:m, kp:kp+l-1]), 'U', 'N', identity, (@view W[1:m, kp:kp+l-1]), (@view V[kp:kp+l-1, 1:l]))
 
-            for j in 1:l 
-                LinearAlgebra.axpy!(-one, (@view W[1:m, k-l+j]), (@view A2[1:m, j]))
+                for j in 1:l 
+                    LinearAlgebra.axpy!(-one, (@view W[1:m, k-l+j]), (@view A2[1:m, j]))
+                end
             end
         end
         
@@ -364,14 +454,20 @@ function pamm_a!(left::Bool, colmajor::Bool, forward::Bool, m::Integer, n::Integ
             np = min(l+1, n)
             kp = min(k-l+1, k)
 
-            LinearAlgebra.generic_matmatmul!((@view A2[1:m, np:np+n-l-1]), 'N', 'C', (@view W[1:m, 1:k]), (@view V[np:np+n-l-1, 1:k]), minus)
+            if n > l
+                LinearAlgebra.generic_matmatmul!((@view A2[1:m, np:np+n-l-1]), 'N', 'C', (@view W[1:m, 1:k]), (@view V[np:np+n-l-1, 1:k]), minus)
+            end
 
-            LinearAlgebra.generic_matmatmul!((@view A2[1:m, 1:l]), 'N', 'C', (@view W[1:m, 1:k-l]), (@view V[1:l, 1:k-l]), minus)
+            if l > 0
+                if k > l
+                    LinearAlgebra.generic_matmatmul!((@view A2[1:m, 1:l]), 'N', 'C', (@view W[1:m, 1:k-l]), (@view V[1:l, 1:k-l]), minus)
+                end
 
-            LinearAlgebra.generic_mattrimul!((@view W[1:m, kp:kp+l-1]), 'L', 'N', adjoint, (@view W[1:m, kp:kp+l-1]), (@view V[1:l, kp:kp+l-1]))
+                LinearAlgebra.generic_mattrimul!((@view W[1:m, kp:kp+l-1]), 'L', 'N', adjoint, (@view W[1:m, kp:kp+l-1]), (@view V[1:l, kp:kp+l-1]))
 
-            for j in 1:l 
-                LinearAlgebra.axpy!(-one, (@view W[1:m, k-l+j]), (@view A2[1:m, j]))
+                for j in 1:l 
+                    LinearAlgebra.axpy!(-one, (@view W[1:m, k-l+j]), (@view A2[1:m, j]))
+                end
             end
         end
 end

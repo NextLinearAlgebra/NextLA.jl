@@ -10,6 +10,9 @@ H = I - V * T * V^H
 where V is n-by-k and contains the elementary reflector vectors, and T is
 the k-by-k upper triangular factor computed by this routine.
 
+Implemented as a KernelAbstractions kernel (single work item), runs on any KA backend
+(CPU, CUDA, ROCm, oneAPI, Metal) without CPU copies.
+
 # Arguments
 - `direct`: Character indicating the order of the elementary reflectors
   - 'F': H = H(1) H(2) ... H(k) (Forward)  
@@ -40,153 +43,173 @@ For backward direction (direct='B'):
 This is the core computational routine for forming block reflector coefficients.
 The matrix T enables efficient application of multiple reflectors simultaneously.
 """
-function larft!(direct::Char, storev::Char, n::Integer, k::Integer, V::AbstractMatrix{T}, tau::AbstractVector{T}, T_mat::AbstractMatrix{T}) where {T}
-    if n == 0
-        return
-    end
-
-    zero0 = zero(eltype(V))
-    one0 = oneunit(eltype(V))
+# Kernel: single work item runs full sequential larft loop (no scalar indexing from host)
+# unsafe_indices=true: no @index(Global) needed for single work-item
+@kernel unsafe_indices=true function larft_kernel!(direct::Char, storev::Char, V, tau, T_mat, work, n::Int, k::Int)
+    @uniform T = eltype(V)
+    @uniform zero0 = zero(T)
+    @uniform one0 = oneunit(T)
 
     if direct == 'F'
         prevlastv = n
-
         for i in 1:k
             prevlastv = max(prevlastv, i)
-
-            if tau[i] == zero0
-                # H(i) = I (no reflection)
+            tau_i = @inbounds tau[i]
+            if tau_i == zero0
                 for j in 1:i
-                    T_mat[j,i] = zero0
+                    @inbounds T_mat[j, i] = zero0
                 end
             else
-                # General case: compute T column
                 if storev == 'C'
-                    # Find the last non-zero element in v[:,i]
                     lastv = n
-                    while lastv >= i+1
-                        if V[lastv, i] != zero0
+                    while lastv >= i + 1
+                        if @inbounds V[lastv, i] != zero0
                             break
                         end
                         lastv -= 1
                     end
-
-                    # Initialize T[1:i-1,i] with diagonal contribution
-                    for j in 1:i-1
-                        T_mat[j,i] = -tau[i] * conj(V[i,j])
-                    end
-
-                    # Add contribution from off-diagonal part
                     j = min(lastv, prevlastv)
-                    LinearAlgebra.generic_matvecmul!((@view T_mat[1:i-1, i]), 'C', (@view V[i+1:j, 1:i-1]), 
-                        (@view V[i+1:j,i]), LinearAlgebra.MulAddMul(-tau[i], one0))
-
+                    # T[1:i-1,i] := -tau[i] * conj(V[i,1:i-1])
+                    for p in 1:i-1
+                        @inbounds T_mat[p, i] = -tau_i * conj(@inbounds V[i, p])
+                    end
+                    # T[1:i-1,i] += -tau[i] * V[i+1:j,1:i-1]^H * V[i+1:j,i]
+                    if i + 1 <= j
+                        for p in 1:i-1
+                            acc = zero0
+                            for r in (i+1):j
+                                acc += conj(@inbounds V[r, p]) * @inbounds V[r, i]
+                            end
+                            @inbounds T_mat[p, i] += (-tau_i) * acc
+                        end
+                    end
+                    prevlastv = (i > 1) ? max(prevlastv, lastv) : lastv
                 else  # storev == 'R'
-                    # Find the last non-zero element in v[i,:]
                     lastv = n
-                    while lastv >= i+1
-                        if V[i, lastv] != zero0
+                    while lastv >= i + 1
+                        if @inbounds V[i, lastv] != zero0
                             break
                         end
                         lastv -= 1
                     end
-
-                    # Initialize T[1:i-1,i] with diagonal contribution
-                    for j in 1:i-1
-                        T_mat[j,i] = -tau[i] * V[j,i]
-                    end
-
-                    # Add contribution from off-diagonal part
                     j = min(lastv, prevlastv)
-                    if i-1 > 0 && i+1 <= j
-                        LinearAlgebra.generic_matmatmul!((@view T_mat[1:i-1, i]), 'N', 'C', (@view V[1:i-1, i+1:j]), 
-                            (@view V[i:i, i+1:j]), LinearAlgebra.MulAddMul(-tau[i], one0))
+                    # T[1:i-1,i] := -tau[i] * V[1:i-1,i]
+                    for p in 1:i-1
+                        @inbounds T_mat[p, i] = -tau_i * @inbounds V[p, i]
                     end
+                    # T[1:i-1,i] += -tau[i] * V[1:i-1,i+1:j] * V[i,i+1:j]^H
+                    if i - 1 > 0 && i + 1 <= j
+                        for p in 1:i-1
+                            acc = zero0
+                            for r in (i+1):j
+                                acc += @inbounds V[p, r] * conj(@inbounds V[i, r])
+                            end
+                            @inbounds T_mat[p, i] += (-tau_i) * acc
+                        end
+                    end
+                    prevlastv = (i > 1) ? max(prevlastv, lastv) : lastv
                 end
-
-                # Apply triangular solve: T[1:i-1,i] = T[1:i-1,1:i-1] * T[1:i-1,i]
-                LinearAlgebra.generic_trimatmul!((@view T_mat[1:i-1,i]), 'U', 'N', identity, 
-                    (@view T_mat[1:i-1, 1:i-1]), (@view T_mat[1:i-1, i]))
-
-                # Set diagonal element
-                T_mat[i,i] = tau[i]
-
-                # Update tracking variable
-                if i > 1
-                    prevlastv = max(prevlastv, lastv)
-                else
-                    prevlastv = lastv
+                # work[1:i-1] := T[1:i-1,i] (copy for triangular multiply)
+                for p in 1:i-1
+                    @inbounds work[p] = @inbounds T_mat[p, i]
                 end
+                # T[1:i-1,i] := T[1:i-1,1:i-1] * work[1:i-1] (upper tri mat-vec)
+                for p in 1:i-1
+                    acc = zero0
+                    for q in p:i-1
+                        acc += @inbounds T_mat[p, q] * @inbounds work[q]
+                    end
+                    @inbounds T_mat[p, i] = acc
+                end
+                @inbounds T_mat[i, i] = tau_i
             end
         end
     else  # direct == 'B'
         prevlastv = 1
         for i in k:-1:1
-            if tau[i] == zero0
-                # H(i) = I (no reflection)
+            tau_i = @inbounds tau[i]
+            if tau_i == zero0
                 for j in i:k
-                    T_mat[j,i] = zero0
+                    @inbounds T_mat[j, i] = zero0
                 end
             else
                 if i < k
                     if storev == 'C'
-                        # Find the first non-zero element in v[:,i]
                         lastv = 1
-                        while lastv <= i-1
-                            if V[lastv,i] != zero0
+                        while lastv <= i - 1
+                            if @inbounds V[lastv, i] != zero0
                                 break
                             end
                             lastv += 1
                         end
-
-                        # Initialize T[i+1:k,i] with diagonal contribution
-                        for j in i+1:k
-                            T_mat[j,i] = -tau[i] * conj(V[n-k+i, j])
-                        end
-                        
-                        # Add contribution from off-diagonal part
                         j = max(lastv, prevlastv)
-                        LinearAlgebra.generic_matvecmul!((@view T_mat[i+1:k, i]), 'C', (@view V[j:n-k+i, i+1:k]), 
-                            (@view V[j:n-k+i, k]), LinearAlgebra.MulAddMul(-tau[i], one0))
-                            
+                        # T[i+1:k,i] := -tau[i] * conj(V[n-k+i, i+1:k])
+                        for p in (i+1):k
+                            @inbounds T_mat[p, i] = -tau_i * conj(@inbounds V[n - k + i, p])
+                        end
+                        # T[i+1:k,i] += -tau[i] * V[j:n-k+i, i+1:k]^H * V[j:n-k+i, k]
+                        if j <= n - k + i
+                            for p in (i+1):k
+                                acc = zero0
+                                for r in j:(n - k + i)
+                                    acc += conj(@inbounds V[r, p]) * @inbounds V[r, k]
+                                end
+                                @inbounds T_mat[p, i] += (-tau_i) * acc
+                            end
+                        end
+                        prevlastv = (i > 1) ? min(prevlastv, lastv) : lastv
                     else  # storev == 'R'
-                        # Find the first non-zero element in v[i,:]
                         lastv = 1
-                        while lastv <= i-1
-                            if V[lastv,i] != zero0
+                        while lastv <= i - 1
+                            if @inbounds V[lastv, i] != zero0
                                 break
                             end
                             lastv += 1
                         end
-
-                        # Initialize T[i+1:k,i] with diagonal contribution
-                        for j in i+1:k
-                            T_mat[j,i] = -tau[i] * V[j, n-k+i]
-                        end
-                        
-                        # Add contribution from off-diagonal part
                         j = max(lastv, prevlastv)
-                        LinearAlgebra.generic_matmatmul!((@view T_mat[i+1:k, i]), 'N', 'C', (@view V[i+1:k, j:n-k+i-1]), 
-                            (@view V[i:i, j:n-k+i-1]), LinearAlgebra.MulAddMul(-tau[i], one0))
+                        # T[i+1:k,i] := -tau[i] * V[i+1:k, n-k+i]
+                        for p in (i+1):k
+                            @inbounds T_mat[p, i] = -tau_i * @inbounds V[p, n - k + i]
+                        end
+                        # T[i+1:k,i] += -tau[i] * V[i+1:k, j:n-k+i-1] * V[i, j:n-k+i-1]^H
+                        if i + 1 <= k && j <= n - k + i - 1
+                            for p in (i+1):k
+                                acc = zero0
+                                for r in j:(n - k + i - 1)
+                                    acc += @inbounds V[p, r] * conj(@inbounds V[i, r])
+                                end
+                                @inbounds T_mat[p, i] += (-tau_i) * acc
+                            end
+                        end
+                        prevlastv = (i > 1) ? min(prevlastv, lastv) : lastv
                     end
-
-                    # Apply triangular solve: T[i+1:k,i] = T[i+1:k,i+1:k] * T[i+1:k,i]
-                    LinearAlgebra.generic_trimatmul!((@view T_mat[i+1:k, i]), 'L', 'N', identity, 
-                        (@view T_mat[i+1:k, i+1:k]), (@view T_mat[i+1:k, i]))
-
-                    # Update tracking variable
-                    if i > 1
-                        prevlastv = min(prevlastv, lastv)
-                    else
-                        prevlastv = lastv
+                    # work[i+1:k] := T[i+1:k,i]
+                    for p in (i+1):k
+                        @inbounds work[p] = @inbounds T_mat[p, i]
+                    end
+                    # T[i+1:k,i] := T[i+1:k,i+1:k] * work[i+1:k] (lower tri mat-vec)
+                    for p in (i+1):k
+                        acc = zero0
+                        for q in (i+1):p
+                            acc += @inbounds T_mat[p, q] * @inbounds work[q]
+                        end
+                        @inbounds T_mat[p, i] = acc
                     end
                 end
-
-                # Set diagonal element
-                T_mat[i,i] = tau[i]
+                @inbounds T_mat[i, i] = tau_i
             end
         end
     end
+end
+
+function larft!(direct::Char, storev::Char, n::Integer, k::Integer, V::AbstractMatrix{T}, tau::AbstractVector{T}, T_mat::AbstractMatrix{T}) where {T}
+    if n == 0
+        return
+    end
+    work = similar(tau, k)
+    backend = KernelAbstractions.get_backend(V)
+    larft_kernel!(backend, 1)(direct, storev, V, tau, T_mat, work, n, k, ndrange=1)
+    KernelAbstractions.synchronize(backend)
 end
 
 """

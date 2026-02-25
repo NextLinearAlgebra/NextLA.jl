@@ -64,9 +64,7 @@ function larfb!(side::Char, trans::Char, direct::Char, storev::Char, m::Integer,
         Tblock = UpperTriangular(@view T_mat[1:k, 1:k])
 
         # W := C1^H  (conjugate transpose)
-        for j in 1:k, i in 1:n
-            W[i, j] = conj(C1[j, i])
-        end
+        W .= conj.(transpose(C1))
 
         # W := W * V1
         LinearAlgebra.mul!(W, W, V1)
@@ -97,9 +95,7 @@ function larfb!(side::Char, trans::Char, direct::Char, storev::Char, m::Integer,
         LinearAlgebra.mul!(W, W, adjoint(V1))
 
         # C1 -= W^H  (conjugate transpose)
-        for j in 1:k, i in 1:n
-            C1[j, i] -= conj(W[i, j])
-        end
+        C1 .-= conj.(transpose(W))
     else
         W = @view work[1:m, 1:k]
         fill!(W, Tzero)
@@ -110,9 +106,7 @@ function larfb!(side::Char, trans::Char, direct::Char, storev::Char, m::Integer,
         Tblock = UpperTriangular(@view T_mat[1:k, 1:k])
 
         # W := C1
-        for i in 1:m, j in 1:k
-            W[i, j] = C1[i, j]
-        end
+        W .= C1
 
         # W := W * V1
         LinearAlgebra.mul!(W, W, V1)
@@ -143,9 +137,7 @@ function larfb!(side::Char, trans::Char, direct::Char, storev::Char, m::Integer,
         LinearAlgebra.mul!(W, W, adjoint(V1))
 
         # C1 -= W
-        for i in 1:m, j in 1:k
-            C1[i, j] -= W[i, j]
-        end
+        C1 .-= W
     end
 end 
 

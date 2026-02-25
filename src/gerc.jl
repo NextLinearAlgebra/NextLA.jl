@@ -59,13 +59,7 @@ function gerc!(alpha::T, x::AbstractVector{T}, y::AbstractVector{T}, A::Abstract
         return
     end
 
-    # Perform rank-1 update: A := A + alpha * x * y^H
-    for j in 1:n
-        if y[j] != zero(T)
-            temp = alpha * conj(y[j])
-            for i in 1:m
-                A[i, j] += x[i] * temp
-            end
-        end
-    end
+    # Rank-1 update: A := A + alpha * x * y^H (GPU-agnostic: broadcast instead of scalar indexing)
+    # y' is adjoint (conjugate transpose), so y'[1,j] = conj(y[j])
+    A .+= alpha .* (x .* y')
 end

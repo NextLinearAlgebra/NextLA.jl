@@ -85,8 +85,7 @@ function geqrt!(A::AbstractMatrix{T}, T_matrix::AbstractMatrix{T}) where {T}
     m, n = size(A)
     ib, nb = size(T_matrix)
     k = min(m, n)
-    tau = Vector{T}(undef, k)
-    work = zeros(T, ib * n)
-
+    tau = similar(A, k)
+    work = similar(A, ib * n)
     geqrt!(m, n, ib, A, T_matrix, tau, work)
 end

@@ -5,6 +5,9 @@ using LinearAlgebra.LAPACK
 using Random
 
 include("lapack_helpers.jl")
+include("gpu_backends.jl")
+backends = available_backends()
+@info "Test backends" backends=[b[1] for b in backends]
 
 # ── Helpers required by lu.jl ─────────────────────────────────────────────────
 function parameter_creation(path::String, imat::Int, M::Int, N::Int)
