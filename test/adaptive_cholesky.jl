@@ -198,14 +198,28 @@ function run_all_cholesky_tests()
     base_case_size = 256
 
     matrices_to_test = [  
-        "Zhao/zhao2",
-        "HB/saylr3",
-        "DRIVCAV/cavity18",        
-        "HB/psmigr_1",            
-        "LeGresley/LeGresley_2508",
-        "FIDAP/ex37",
-        "HB/1138_bus",              
-        "HB/bcsstk08"
+        # "Zhao/zhao2",
+        # "HB/saylr3",
+        # "DRIVCAV/cavity18",        
+        # "HB/psmigr_1",            
+        # "LeGresley/LeGresley_2508",
+        # "FIDAP/ex37",
+        # "HB/1138_bus",              
+        # "HB/bcsstk08",
+        "ACUSIM/Pres_Poisson",
+        "Boeing/msc01440",
+        "Cannizzo/sts4098",
+        "Cylshell/s1rmq4m1",
+        "Cylshell/s3rmq4m1",
+        "Cylshell/s3rmt3m3",
+        "HB/bcsstk15",
+        "HB/bcsstk26",
+        "HB/bcsstk27",
+        "HB/bcsstm26",
+        "Nasa/nasa2146",
+        "Pothen/bodyy4",
+        "Pothen/bodyy5",
+        "Simon/raefsky4"
     ]
 
     pure_scenarios = Dict(
