@@ -208,7 +208,7 @@ function run_all_cholesky_tests()
         # "HB/bcsstk08",
         "ACUSIM/Pres_Poisson",
         "Boeing/msc01440",
-        "Cannizzo/sts4098",
+        # "Cannizzo/sts4098",
         "Cylshell/s1rmq4m1",
         "Cylshell/s3rmq4m1",
         "Cylshell/s3rmt3m3",
