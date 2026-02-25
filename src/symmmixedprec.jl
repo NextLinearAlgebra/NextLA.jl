@@ -39,7 +39,7 @@ function SymmMixedPrec(
     n = size(A, 1)
     @assert n == size(A, 2) "A must be square"
 
-    if length(precisions) == 1
+    if length(precisions) == 1 || n <= 1
         T_Base = precisions[1]
         local base_matrix
         local base_scale
