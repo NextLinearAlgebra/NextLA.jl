@@ -55,7 +55,8 @@ function slamrg!(n1::T, n2::T, a::AbstractVector{S},
         ind2 = n1 + n2
     end
     i = 1
-    while n1sv > 0 && n2sv > 0
+    
+    @inbounds while n1sv > 0 && n2sv > 0
         if a[ind1] <= a[ind2]
             index[i] = ind1
             i = i+1
@@ -70,13 +71,13 @@ function slamrg!(n1::T, n2::T, a::AbstractVector{S},
     end
 
     if n1sv == 0
-        for n1sv in 1:n2sv
+        @inbounds @simd for n1sv in 1:n2sv
             index[i] = ind2
             i = i+1
             ind2 = ind2 + strd2
         end
     else
-        for n2sv in 1:n1sv
+        @inbounds @simd for n2sv in 1:n1sv
             index[i] = ind1
             i = i+1
             ind1 = ind1 + strd1

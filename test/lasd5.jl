@@ -4,7 +4,7 @@ using LinearAlgebra.BLAS: @blasfunc
 using NextLA
 using Test
 
-@testset "laed6! test random input" begin
+@testset "laed5! test random input" begin
 
     for T in [Float32, Float64]
         starting = T(-1e3)

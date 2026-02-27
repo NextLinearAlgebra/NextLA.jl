@@ -54,10 +54,8 @@ for T in [Float32, Float64]
         for l in 1:10
            kniter = i%2 == 0 ? Int64(1) : Int64(2)
             orgati = i%2 == 0 ? true : false
-            d1 = starting + (ending - starting)*rand(T)
-            d2 = d1 + (ending - d1)*rand(T)
-            d3 = d2 + (ending - d2)*rand(T)
-            d = [d1, d2, d3]
+            d = starting .+ (ending - starting) .* rand(T, n)
+            sort!(d)
             d_copy = deepcopy(d)
             z = one(T) .+ (ending - one(T)).*rand(T, 3)
             z_copy = deepcopy(z)

@@ -10,7 +10,10 @@ using LinearAlgebra: BlasInt, libblastrampoline
 using NextLA
 
 const lib = "../OpenBLAS/libopenblas_cooperlakep-r0.3.31.dev.so"
-
+start = 10
+stop = 10000010
+npts = 15
+xs = unique(round.(Int, 10 .^ range(log10(start), log10(stop), length=npts)))
 function slasd4_time!(n::Int64, i::Int64, d::AbstractVector{Float64},
                         z::AbstractVector{Float64},
                 delta::AbstractVector{Float64}, rho::Float64, 
@@ -55,17 +58,27 @@ function slasd4_time!(n::Int64, i::Int64, d::AbstractVector{Float32},
         end
         return minimum(run(b, samples=100)).time
 end
+
 plt = plot(
     ylabel = "Time (ns)",
     xlabel = "Vector Input Size",
-    yscale = :log10
+    yscale = :log10,
+    xscale = :log10,
+    legend = :outertopright,
+    legendfontsize = 12,
+    size=(1600, 900),
+    guidefontsize = 14,
+    tickfontsize = 12,
+    xticks = 10 .^ (1:6),
+    yticks = 10 .^ (1:9),
+    margin = 10Plots.mm
 )
 for T in [Float32, Float64]
     jul = Float64[]
     lapk = Float64[]
     starting = -(floatmax(T)/T(1e10))
     ending = (floatmax(T)/T(1e10))
-    for i in 1:10:500
+    for i in xs
         accum_jul = zero(Float64)
         accum_lapk = zero(Float64)
         for l in 1:10
@@ -88,7 +101,6 @@ for T in [Float32, Float64]
             info = Int64[0]
             info_copy = Ref{Int64}(0)
 
-
             b = @benchmarkable begin NextLA.lasd4!($n, $i, $d, $z,
                                         delta, 
                                         $rho, sigma, 
@@ -108,22 +120,22 @@ for T in [Float32, Float64]
         push!(lapk, accum_lapk/10)
     end
 
-    xs = Vector(1:10:500)
-    xs = Vector(range)
     plot!(
         plt,
         xs, jul, 
         label="lasd4! $(T)",
         linestyle = (T == Float32 ? :solid : :dot),
-        marker = :circle,
-        color = :blue
+        marker = (T == Float32 ? :circle : :rect),
+        markersize = 5,
+        color = :blue,
         )
     plot!(
         plt, xs,
         lapk,
         label="lapack lasd4 $(T)",
         linestyle = (T == Float32 ? :dash : :dashdot),
-        marker = :circle,
+        marker = (T == Float32 ? :star4 : :octagon),
+        markersize = 5,
         color = :orange
         )
     

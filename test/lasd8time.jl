@@ -10,7 +10,11 @@ using LinearAlgebra: BlasInt, libblastrampoline
 using NextLA
 
 const lib = "../OpenBLAS/libopenblas_cooperlakep-r0.3.31.dev.so"
-const range = 16:16:3200
+# const range = 16:128:3216
+start = 10
+stop = 10000010
+npts = 15
+xs = unique(round.(Int, 10 .^ range(log10(start), log10(stop), length=npts)))
 
 function slasd8_time!(icompq::Int64, k::Int64, d::AbstractVector{Float64}, z::AbstractVector{Float64},
                 vf::AbstractVector{Float64}, vl::AbstractVector{Float64}, difl::AbstractVector{Float64},
@@ -69,17 +73,26 @@ function slasd8_time!(icompq::Int64, k::Int64, d::AbstractVector{Float32}, z::Ab
 
         return minimum(run(b, samples=100)).time
 end
+
 plt = plot(
     ylabel = "Time (ns)",
     xlabel = "Vector Input Size",
-    yscale = :log10
+    yscale = :log10,
+    xscale = :log10,
+    legend = :outertopright,
+    legendfontsize = 12,
+    size=(1600, 900),
+    guidefontsize = 14,
+    tickfontsize = 12,
+    xticks = 10 .^ (1:6),
+    margin = 10Plots.mm
 )
 for T in [Float32, Float64]
     jul = Float64[]
     lapk = Float64[]
     starting = -(floatmax(T)/T(1e10))
     ending = (floatmax(T)/T(1e10))
-    for i in range
+    for i in xs
         accum_jul = zero(Float64)
         accum_lapk = zero(Float64)
         for l in 1:10
@@ -134,13 +147,13 @@ for T in [Float32, Float64]
         push!(jul, accum_jul/10)
         push!(lapk, accum_lapk/10)
     end
-    xs = Vector(range)
+    # xs = Vector(range)
     plot!(
         plt,
         xs, jul, 
         label="lasd8! $(T)",
         linestyle = (T == Float32 ? :solid : :dot),
-        marker = :circle,
+        marker = (T == Float32 ? :circle : :rect),
         color = :blue
         )
     plot!(
@@ -148,7 +161,8 @@ for T in [Float32, Float64]
         lapk,
         label="lapack lasd8 $(T)",
         linestyle = (T == Float32 ? :dash : :dashdot),
-        marker = :circle,
+        marker = (T == Float32 ? :star4 : :octagon),
+        markersize = 5,
         color = :orange
         )
 end
