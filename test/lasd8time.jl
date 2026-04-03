@@ -8,6 +8,7 @@ using LinearAlgebra
 using LinearAlgebra.BLAS: @blasfunc
 using LinearAlgebra: BlasInt, libblastrampoline
 using NextLA
+using CSV, DataFrames
 
 const lib = "../OpenBLAS/libopenblas_cooperlakep-r0.3.31.dev.so"
 # const range = 16:128:3216
@@ -15,6 +16,10 @@ start = 10
 stop = 10000010
 npts = 15
 xs = unique(round.(Int, 10 .^ range(log10(start), log10(stop), length=npts)))
+jul_f32 = zeros(Float64, 0)
+jul_f64 = zeros(Float64, 0)
+lapk_f32 = zeros(Float64, 0)
+lapk_f64 = zeros(Float64, 0)
 
 function slasd8_time!(icompq::Int64, k::Int64, d::AbstractVector{Float64}, z::AbstractVector{Float64},
                 vf::AbstractVector{Float64}, vl::AbstractVector{Float64}, difl::AbstractVector{Float64},
@@ -165,5 +170,20 @@ for T in [Float32, Float64]
         markersize = 5,
         color = :orange
         )
+    if T == Float32
+        append!(jul_f32, jul)
+        append!(lapk_f32, lapk)
+    elseif T == Float64
+        append!(jul_f64, jul)
+        append!(lapk_f64, lapk)
+    end
 end
+results = DataFrame(
+    input_size = xs,
+    julia_float32 = jul_f32,
+    lapack_float32 = lapk_f32,
+    julia_float64 = jul_f64,
+    lapack_float64 = lapk_f64
+)
+CSV.write("../timing-data/lasd8_timings.csv", results)
 savefig(plt, "../images/lasd8_timings.png")

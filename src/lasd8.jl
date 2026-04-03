@@ -121,6 +121,7 @@ function lasd8!(icompq::S, k::S, d::AbstractVector{T}, z::AbstractVector{T},
 
     #Book keeping
 
+    
     iwk1 = one(k)
     iwk2 = iwk1 + k
     iwk3 = iwk2 + k
@@ -142,25 +143,8 @@ function lasd8!(icompq::S, k::S, d::AbstractVector{T}, z::AbstractVector{T},
     #Compute the updated singular values, the arrays difl, difr, and the updated z
     # println("k: $k")
     for j in 1:k
-        #Need to add this function
-        # println("Starting slasd4")
-        # println("slasd8 disgma length: $(length(dsigma))")
-        # println("work: $work")
-        # println("dsigma: $dsigma")
-        # println("z: $z")
-        # println("d: $d")
-        # println("info: $info")
-        # println("lasd8 sigma before: $(d[j])")
         lasd4!(k, j, dsigma, z, view(work, iwk1:iwk2-1), rho,
         view(d, j:j), view(work, iwk2:iwk3-1), info)
-        # println("lasd8 sigma after: $(d[j])")
-        # println("work: $work")
-        # println("dsigma: $dsigma")
-        # println("z: $z")
-        # println("d: $d")
-        # println("info: $info")
-        # println("")
-        # println("Finishing slasd4")
 
         if info[] != 0
             return

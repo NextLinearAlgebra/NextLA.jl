@@ -197,14 +197,78 @@ Parameters
 !>          > 0:  if INFO = 1, a singular value did not converge
 !> 
 =#
+
 function lasd6!(icompq::S, nl::S, nr::S, sqre::S, d::AbstractVector{T},
                 vf::AbstractVector{T}, vl::AbstractVector{T}, alpha::AbstractVector{T},
                 beta::AbstractVector{T}, idxq::AbstractVector{S}, perm::AbstractVector{S},
                 givptr::AbstractVector{S}, givcol::AbstractMatrix{S}, ldgcol::S, givnum::AbstractMatrix{T},
-                ldgnum::S, poles::AbstractMatrix{T}, difl::AbstractMatrix{T},
+                ldgnum::S, poles::AbstractMatrix{T}, difl::AbstractVector{T}, difr::AbstractArray{T}, 
                 z::AbstractVector{T}, k::AbstractVector{S}, c::AbstractVector{T},
                 s::AbstractVector{T}, work::AbstractVector{T}, iwork::AbstractVector{S},
                 info::AbstractVector{S}) where {T <:AbstractFloat, S <:Integer}
 
+    info .= 0
+    n = nl + nr + 1
+    m = n + sqre
 
+    if icompq < 0  || icompq >  1
+        info .= -1
+    elseif nl < 1
+        info .= -2
+    elseif nr < 1
+        info .= -3
+    elseif sqre < 0 || sqre  > 1
+        info .= -4
+    elseif ldgcol < n
+        info .= -14
+    elseif ldgnum < n
+        info .= -16
+    end
+
+    if info[] != 0
+        return
+    end
+    @assert length(d) == n
+    
+    isigma = 1
+    iw = isigma + n
+    ivfw = iw + m
+    ivlw = ivfw + m
+
+    idx = 1
+    idxc = idx + n
+    idxp = idxc + n
+
+    orgnrm = max( abs( alpha[] ), abs( beta[] ) )
+    d[nl+1] = zero(T)
+    @inbounds @simd for i in 1:n
+        if ( abs( d[i] ) > orgnrm )
+            orgnrm = abs( d[i] )
+        end
+    end
+    d ./= orgnrm
+    alpha ./= orgnrm
+    beta ./= orgnrm
+
+    lasd7!(icompq, nl, nr, sqre, k, d, z, view(work, iw:ivfw-1), vf, view(work, ivfw:ivlw-1),
+            vl, view(work,  ivlw:ivlw + m - 1), alpha[], beta[], view(work, isigma:iw-1),
+            view(iwork, idx:idxc-1), view(iwork, idxp:idxp + n - 1), idxq, perm, givptr,
+            givcol, ldgcol, givnum, ldgnum, c, s, info)
+
+    lasd8!(icompq, k[], d, z, view(vf, 1:k[]), view(vl, 1:k[]), difl, difr, ldgnum, view(work, isigma:isigma + k[]-1), view(work, iw:iw + 3*k[]-1), info)
+
+    if info[] != 0
+        return
+    end
+
+    if icompq == 1
+        @views poles[1:k[], 1] .= d[1:k[]]
+        @views poles[1:k[], 2] .= work[isigma:isigma+k[]-1]
+    end
+
+
+    d .*= orgnrm
+    n1 = k[]
+    n2 =    n - k[]
+    slamrg!(n1, n2, d, 1, -1, idxq)
 end
