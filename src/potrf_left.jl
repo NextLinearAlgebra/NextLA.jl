@@ -632,3 +632,52 @@ function cholesky_lower_left!(A)
     KernelAbstractions.synchronize(backend)
     return A
 end
+
+
+function cholesky_lower_left_profiled!(A)
+    N = size(A, 1)
+    backend = CUDABackend()
+    
+    t_gemm = 0.0
+    t_chol = 0.0
+    t_trsm = 0.0
+    
+    # looping through the matrix in 64x64 blocks
+    for k in 1:N_MATRIX:N
+        k_end = min(k + N_MATRIX - 1, N)
+        blk_len = k_end - k + 1
+        
+        # --- 1. GEMM UPDATE ---
+        if k > 1
+            L_prev_cols = view(A, k:N, 1:k-1) 
+            L_prev_top  = view(A, k:k_end, 1:k-1)
+            A_panel     = view(A, k:N, k:k_end)
+            
+            # CUBLAS syncs inherently with CUDA.@elapsed
+            t_gemm += CUDA.@elapsed CUBLAS.gemm!('N', 'T', -one(eltype(A)), L_prev_cols, L_prev_top, one(eltype(A)), A_panel)
+        end
+        
+        # --- 2. CHOLESKY DIAGONAL ---
+        A_diag = view(A, k:k_end, k:k_end)
+        kernel = chol_kernel_register!(backend, REG_THREADS)
+        
+        t_chol += CUDA.@elapsed begin
+            kernel(A_diag, Val(blk_len); ndrange=REG_THREADS, workgroupsize=REG_THREADS)
+            # Force sync so the timer captures actual execution, not just launch
+            KernelAbstractions.synchronize(backend) 
+        end
+        
+        # --- 3. TRSM PANEL ---
+        if k_end < N
+            A_off_diag = view(A, (k_end + 1):N, k:k_end)
+            
+            t_trsm += CUDA.@elapsed begin
+                unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A_diag, A_off_diag)
+                KernelAbstractions.synchronize(backend) 
+            end
+        end
+    end
+
+    KernelAbstractions.synchronize(backend)
+    return t_chol, t_trsm, t_gemm
+end
