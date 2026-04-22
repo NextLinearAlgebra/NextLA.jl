@@ -87,4 +87,8 @@ include("laed6.jl")
 include("lasd5.jl")
 include("lasd4.jl")
 include("lasd8.jl")
+include("lasq6.jl")
+include("lasq4.jl")
+include("lasq5.jl")
+include("lasq3.jl")
 end

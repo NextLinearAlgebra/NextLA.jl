@@ -9,6 +9,7 @@ using LinearAlgebra.BLAS: @blasfunc
 using LinearAlgebra: BlasInt, libblastrampoline
 using NextLA
 using CSV, DataFrames
+using CUDA
 
 const lib = "../OpenBLAS/libopenblas_cooperlakep-r0.3.31.dev.so"
 
@@ -52,9 +53,9 @@ function slasd4_time_gpu!(n::Int64, i::Int64, d::AbstractVector{Float64},
                         z::AbstractVector{Float64},
                 delta::AbstractVector{Float64}, rho::Float64, 
                 sigma::AbstractArray{Float64},
-                work::AbstractVector{Float64}, info::Ref{Int64})
+                work::AbstractVector{Float64}, info::AbstractArray{Int64})
         b =  @benchmarkable begin 
-            NextLA.lasd4_gpu!($n, $i, $d, z_gpu,
+            NextLA.lasd4_gpu!($n, $i, d_gpu, z_gpu,
                                         delta_gpu, 
                                         $rho, sigma_gpu, 
                                         work_gpu, info_gpu)
@@ -62,9 +63,9 @@ function slasd4_time_gpu!(n::Int64, i::Int64, d::AbstractVector{Float64},
             d_gpu = CuArray{Float64}($d)
             z_gpu = CuArray{Float64}($z)
             delta_gpu = CuArray{Float64}($delta)
-            sigma_gpu = CuArray{Float64}($sigma)
+            sigma_gpu = deepcopy{Float64}($sigma)
             work_gpu = CuArray{Float64}($work)
-            work_gpu = CuArray{Int64}($info)
+            info_gpu = deepcopy($info)
         end
 
         return minimum(run(b, samples=100)).time
@@ -73,9 +74,9 @@ function slasd4_time_gpu!(n::Int64, i::Int64, d::AbstractVector{Float32},
                         z::AbstractVector{Float32},
                 delta::AbstractVector{Float32}, rho::Float32, 
                 sigma::AbstractArray{Float32},
-                work::AbstractVector{Float32}, info::Ref{Int64})
+                work::AbstractVector{Float32}, info::AbstractArray{Int64})
         b =  @benchmarkable begin 
-            NextLA.lasd4_gpu!($n, $i, $d, z_gpu,
+            NextLA.lasd4_gpu!($n, $i, d_gpu, z_gpu,
                                         delta_gpu, 
                                         $rho, sigma_gpu, 
                                         work_gpu, info_gpu)
@@ -83,9 +84,9 @@ function slasd4_time_gpu!(n::Int64, i::Int64, d::AbstractVector{Float32},
             d_gpu = CuArray{Float32}($d)
             z_gpu = CuArray{Float32}($z)
             delta_gpu = CuArray{Float32}($delta)
-            sigma_gpu = CuArray{Float32}($sigma)
+            sigma_gpu = deepcopy($sigma)
             work_gpu = CuArray{Float32}($work)
-            work_gpu = CuArray{Int64}($info)
+            info_gpu = deepcopy($info)
         end
 
         return minimum(run(b, samples=100)).time
@@ -169,13 +170,13 @@ for T in [Float32, Float64]
                 work = deepcopy($work)
             end
             j = minimum(run(b, samples=100)).time
-            n = slasd4_time!(n, i, (d_copy), (z_copy), (delta_copy), 
-                            (rho), (sigma_copy), (work_copy), info_copy)
             if run_gpu
                 m = slasd4_time_gpu!(n, i, (d_copy), (z_copy), (delta_copy), 
-                                (rho), (sigma_copy), (work_copy), info_copy)
+                                (rho), (sigma), (work_copy), info)
                 accum_gpu += m
             end
+            n = slasd4_time!(n, i, (d_copy), (z_copy), (delta_copy), 
+                            (rho), (sigma_copy), (work_copy), info_copy)
             accum_jul += j
             accum_lapk += n
         end
@@ -231,15 +232,26 @@ for T in [Float32, Float64]
     
 end
 
-results = DataFrame(
-    input_size = xs,
-    julia_float32 = jul_f32,
-    lapack_float32 = lapk_f32,
-    julia_float64 = jul_f64,
-    lapack_float64 = lapk_f64
-    gpu_float32 = gpu_f32
-    gpu_float64 = gpu_f64
-)
+results = nothing
+savefig(plt, "../images/lasd4_timings-gpu.png")
+if run_gpu
 
-CSV.write("../timing-data/lasd4_timings.csv", results)
-savefig(plt, "../images/lasd4_timings.png")
+    results = DataFrame(
+        input_size = xs,
+        julia_float32 = jul_f32,
+        lapack_float32 = lapk_f32,
+        julia_float64 = jul_f64,
+        lapack_float64 = lapk_f64,
+        gpu_float32 = gpu_f32,
+        gpu_float64 = gpu_f64,
+    )
+else 
+    results = DataFrame(
+        input_size = xs,
+        julia_float32 = jul_f32,
+        lapack_float32 = lapk_f32,
+        julia_float64 = jul_f64,
+        lapack_float64 = lapk_f64,
+    )
+end
+CSV.write("../timing-data/lasd4_timings-gpu.csv", results)

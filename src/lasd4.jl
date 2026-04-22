@@ -2,7 +2,7 @@ using LinearAlgebra
 using LinearAlgebra: BlasInt, libblastrampoline
 using LinearAlgebra.BLAS: @blasfunc
 using CUDA
-
+# Use GPU vectors instead of CuArrays
 
 function lasd4!(n::S, i::S, d::AbstractVector{T}, z::AbstractVector{T},
                 delta::AbstractVector{T}, rho::T, sigma::AbstractArray{T}, work::AbstractVector{T},
@@ -944,9 +944,10 @@ function lasd4!(n::S, i::S, d::AbstractVector{T}, z::AbstractVector{T},
     end
 end
 function lasd4_gpu!(n::S, i::S, d::CuVector{T}, z::CuVector{T},
-                delta::CuVector{T}, rho::T, sigma::CuArray{T}, work::CuVector{T},
-                info::CuArray{S}) where {T <: AbstractFloat, S<:Integer}
+                delta::CuVector{T}, rho::T, sigma::AbstractArray{T}, work::CuVector{T},
+                info::AbstractArray{S}) where {T <: AbstractFloat, S<:Integer}
     # println("Starting lasd4")
+    CUDA.@allowscalar begin
     zz = zeros(T, 3)
     dd = zeros(T, 3) 
     # println("Done allocating starting arrays")
@@ -1863,5 +1864,6 @@ function lasd4_gpu!(n::S, i::S, d::CuVector{T}, z::CuVector{T},
         end
         info .= 1
 
+    end
     end
 end

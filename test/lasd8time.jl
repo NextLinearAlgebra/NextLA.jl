@@ -183,7 +183,7 @@ results = DataFrame(
     julia_float32 = jul_f32,
     lapack_float32 = lapk_f32,
     julia_float64 = jul_f64,
-    lapack_float64 = lapk_f64
+    lapack_float64 = lapk_f64,
 )
 CSV.write("../timing-data/lasd8_timings.csv", results)
 savefig(plt, "../images/lasd8_timings.png")

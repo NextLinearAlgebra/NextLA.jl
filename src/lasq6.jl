@@ -76,50 +76,50 @@ function lasq6!(i0::S, n0::S, z::AbstractVector{T}, pp::S,
         safmin = floatmin(T)
     end
 
-    j4 = 4*i0 + pp - 3
+    j4 = S(4*i0 + pp - 3)
     emin = z[j4+4]
     d = z[j4]
     dmin .= d
 
     if pp == 0
         for i in 4*i0:4:4*(n0 -3)
-            z[j4 - 2] = d + z[j4 - 1]
-            if z[j4 - 2] == 0
-                z[j4] = zero(T)
-                d == z[j4 + 1]
+            z[i - 2] = d + z[i - 1]
+            if z[i - 2] == 0
+                z[i] = zero(T)
+                d == z[i + 1]
                 dmin .= d
                 emin = zero(T)
-            elseif (safmin*z[j4 + 1] < z[j4 - 2] &&
-                    safmin*z[j4 - 2] < z[j4 + 1])
-                    temp = z[j4 + 1] / z[j4 - 2]
-                    z[j4] = z[j4-1] * temp
+            elseif (safmin*z[i + 1] < z[i - 2] &&
+                    safmin*z[i - 2] < z[i + 1])
+                    temp = z[i + 1] / z[i - 2]
+                    z[i] = z[i-1] * temp
                     d *= temp
             else
-                z[j4] = z[j4 + 1] * (z[j4 - 1] / z[j4 - 2])
-                d = z[j4 + 1]*(d/z[j4 - 2])
+                z[i] = z[i + 1] * (z[i - 1] / z[i - 2])
+                d = z[i + 1]*(d/z[i - 2])
             end
             dmin .= min(dmin[], d)
-            emin = min(emin, z[j4])
+            emin = min(emin, z[i])
         end
     else
         for i in 4*i0:4:4*(n0 -3)
-            z[j4 - 3] = d + z[j4 - 1]
-            if z[j4 - 3] == 0
-                z[j4 - 1] = zero(T)
-                d == z[j4 + 2]
+            z[i - 3] = d + z[i - 1]
+            if z[i - 3] == 0
+                z[i - 1] = zero(T)
+                d == z[i + 2]
                 dmin .= d
                 emin = zero(T)
-            elseif (safmin*z[j4 + 2] < z[j4 - 3] &&
-                    safmin*z[j4 - 3] < z[j4 + 2])
-                    temp = z[j4 + 2] / z[j4 - 3]
-                    z[j4 - 1] = z[j4] * temp
+            elseif (safmin*z[i + 2] < z[i - 3] &&
+                    safmin*z[i - 3] < z[i + 2])
+                    temp = z[i + 2] / z[i - 3]
+                    z[i - 1] = z[i] * temp
                     d *= temp
             else
-                z[j4 - 1] = z[j4 + 2] * (z[j4] / z[j4 - 3])
-                d = z[j4 + 2]*(d/z[j4 - 3])
+                z[i - 1] = z[i + 2] * (z[i] / z[i - 3])
+                d = z[i + 2]*(d/z[i - 3])
             end
             dmin .= min(dmin[], d)
-            emin = min(emin, z[j4 - 1])
+            emin = min(emin, z[i - 1])
         end
     end
 
@@ -128,7 +128,7 @@ function lasq6!(i0::S, n0::S, z::AbstractVector{T}, pp::S,
     dnm2 .= d
     dmin2 .= dmin[]
     j4 = 4*(n0 - 2) - pp
-    j4p2 = j4 + 2*pp - 1
+    j4p2 = S(j4 + 2*pp - 1)
     z[j4 - 2] = dnm2[] + z[j4p2]
 
     if z[j4 - 2] == 0
@@ -149,14 +149,14 @@ function lasq6!(i0::S, n0::S, z::AbstractVector{T}, pp::S,
     dmin1 .= dmin[]
 
     j4 = j4 + 4
-    j4p2 = j4 + d*pp - 1
+    j4p2 = S(j4 + d*pp - 1)
     z[j4 - 2] = dnm1[] + z[j4p2]
     if z[j4 - 2] == 0
         z[j4] = zero(T)
         dn .= z[j4p2 + 2]
         dmin .= dn[]
         emin = zero(T)
-    else if safmin * z[j4p2 + 2] < z[j4 - 2] && safmin * z[j4 - 2] < z[j4p2 + 2]
+    elseif safmin * z[j4p2 + 2] < z[j4 - 2] && safmin * z[j4 - 2] < z[j4p2 + 2]
         temp = z[j4p2 + 2] / z[j4 - 2]
         z[j4] = z[j4p2] * temp
         dn .= temp * dnm1
