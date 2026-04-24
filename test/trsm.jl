@@ -1,6 +1,9 @@
+# using NextLA
 using Test
 using CUDA
 using LinearAlgebra
+using KernelAbstractions
+using Printf
 
 include("benchmark.jl")
 

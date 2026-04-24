@@ -62,16 +62,16 @@ const TILE_DIM = 32
 end
 
 # wrapper function for the GEMM_ADD kernel
-function GEMM_ADD!(A, B, C; nthreads = (16, 16))
-    backend = get_backend(A)
-    TILE_DIM = 32
-    N, R, M = size(A, 1), size(B, 1), size(B, 2)
-    matmul!(backend, (TILE_DIM, TILE_DIM))(C, A, B, N, R, M, 1.0, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
-end
+# function GEMM_ADD!(A, B, C; nthreads = (16, 16))
+#     backend = get_backend(A)
+#     TILE_DIM = 32
+#     N, R, M = size(A, 1), size(B, 1), size(B, 2)
+#     matmul!(backend, (TILE_DIM, TILE_DIM))(C, A, B, N, R, M, 1.0, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
+# end
 
-function GEMM_SUB!(A, B, C)
-    backend = get_backend(A)
-    TILE_DIM = 32
-    N, R, M = size(A, 1), size(C, 1), size(A, 2)
-    matmul!(backend, (TILE_DIM, TILE_DIM))(A, B, C, N, R, M, -1.0, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
-end
+# function GEMM_SUB!(A, B, C)
+#     backend = get_backend(A)
+#     TILE_DIM = 32
+#     N, R, M = size(A, 1), size(C, 1), size(A, 2)
+#     matmul!(backend, (TILE_DIM, TILE_DIM))(A, B, C, N, R, M, -1.0, ndrange = (ceil(Int, N / TILE_DIM) * TILE_DIM, ceil(Int, M / TILE_DIM) * TILE_DIM))
+# end

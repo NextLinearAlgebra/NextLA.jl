@@ -82,7 +82,7 @@ include("trmm.jl")
 include("trsm.jl")
 include("rectrxm.jl")
 include("matmul.jl")
-include("zlauu2.jl") 
-include("zlauum.jl")
+include("lauu2.jl") 
+include("lauum.jl")
 
 end

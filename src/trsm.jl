@@ -6,24 +6,24 @@ export LeftLowerTRSM!, LeftUpperTRSM!, RightLowerTRSM!, RightUpperTRSM!
     col = @index(Group)
     row = @index(Local)
 
-    # Allocate shared memory for diagonal, B column, and A column
-    diag = @localmem eltype(A) 1024
+    # Allocate shared memory for B column
     B_c = @localmem eltype(B) 1024
-    A_col = @localmem eltype(A) 1024
 
     # Initialize diagonal and B column
     if row <= n
         @inbounds d = A[row, row]
-        @inbounds diag[row] = iszero(d) ? eps(eltype(A)) : d
-        @inbounds B_c[row] = B[row, col] / diag[row]
+        d = iszero(d) ? eps(eltype(A)) : d
+        @inbounds B_c[row] = B[row, col] / d
     end
 
     # Forward substitution
     for i in 1:n
         @synchronize
         if row > i
-            @inbounds A_col[i] = A[i, row] / diag[row]
-            @inbounds B_c[row] -= A_col[i] * B_c[i]
+            @inbounds d = A[row, row]
+            d = iszero(d) ? eps(eltype(A)) : d
+            @inbounds val = A[i, row] / d
+            @inbounds B_c[row] -= val * B_c[i]
         end
     end
 
@@ -38,24 +38,24 @@ end
     col = @index(Group)
     row = @index(Local)
 
-    # Allocate shared memory for diagonal, B column, and A column
-    diag = @localmem eltype(A) 1024
+    # Allocate shared memory for B column
     B_c = @localmem eltype(B) 1024
-    A_col = @localmem eltype(A) 1024
 
     # Initialize diagonal and B column
     if row <= n
         @inbounds d = A[row, row]
-        @inbounds diag[row] = iszero(d) ? eps(eltype(A)) : d
-        @inbounds B_c[row] = B[row, col] / diag[row]
+        d = iszero(d) ? eps(eltype(A)) : d
+        @inbounds B_c[row] = B[row, col] / d
     end
 
     # Backward substitution
     for i in n:-1:1
         @synchronize
         if row < i
-            @inbounds A_col[i] = A[row, i] / diag[row]
-            @inbounds B_c[row] -= A_col[i] * B_c[i]
+            @inbounds d = A[row, row]
+            d = iszero(d) ? eps(eltype(A)) : d
+            @inbounds val = A[row, i] / d
+            @inbounds B_c[row] -= val * B_c[i]
         end
     end
 
@@ -70,24 +70,24 @@ end
     row = @index(Group)
     col = @index(Local)
 
-    # Allocate shared memory for diagonal, B row, and A row
-    diag = @localmem eltype(A) 1024
+    # Allocate shared memory for B row
     B_r = @localmem eltype(B) 1024
-    A_row = @localmem eltype(A) 1024
 
     # Initialize diagonal and B row
     if col <= n
         @inbounds d = A[col, col]
-        @inbounds diag[col] = iszero(d) ? eps(eltype(A)) : d
-        @inbounds B_r[col] = B[row, col] / diag[col]
+        d = iszero(d) ? eps(eltype(A)) : d
+        @inbounds B_r[col] = B[row, col] / d
     end
 
     # Backward substitution
     for i in n:-1:1
         @synchronize
         if col < i
-            @inbounds A_row[i] = A[i, col] / diag[col]
-            @inbounds B_r[col] -= B_r[i] * A_row[i] 
+            @inbounds d = A[col, col]
+            d = iszero(d) ? eps(eltype(A)) : d
+            @inbounds val = A[i, col] / d
+            @inbounds B_r[col] -= B_r[i] * val 
         end
     end
 
@@ -102,24 +102,24 @@ end
     row = @index(Group)
     col = @index(Local)
 
-    # Allocate shared memory for diagonal, B row, and A row
-    diag = @localmem eltype(A) 1024
+    # Allocate shared memory for B row
     B_r = @localmem eltype(B) 1024
-    A_row = @localmem eltype(A) 1024
 
     # Initialize diagonal and B row
     if col <= n
         @inbounds d = A[col, col]
-        @inbounds diag[col] = iszero(d) ? eps(eltype(A)) : d
-        @inbounds B_r[col] = B[row, col] / diag[col]
+        d = iszero(d) ? eps(eltype(A)) : d
+        @inbounds B_r[col] = B[row, col] / d
     end
     
     # Forward substitution
     for i in 1:n
         @synchronize
         if col > i
-            @inbounds A_row[i] = A[col, i] / diag[col]
-            @inbounds B_r[col] -= B_r[i] * A_row[i]
+            @inbounds d = A[col, col]
+            d = iszero(d) ? eps(eltype(A)) : d
+            @inbounds val = A[col, i] / d
+            @inbounds B_r[col] -= B_r[i] * val
         end
     end
 
