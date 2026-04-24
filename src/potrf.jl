@@ -217,10 +217,6 @@ const STRIDE = BLOCK_SIZE + PAD
             # precalculate how much R/C change per stride to avoid division inside loop
             stride_c = div(stride, len)
             stride_r = rem(stride, len)
-
-            #register for tile[idx_ck] (because it is repeated sometimes)
-            last_c = Int32(-1)
-            current_L_ck = zero(eltype(A))
             
             # loop until this thread has finished its share of the submatrix
             while t_idx < limit
@@ -229,22 +225,13 @@ const STRIDE = BLOCK_SIZE + PAD
                 c = col_offset + Int32(k + 1)
                 r = row_offset + Int32(k + 1)
                 
-                # the top multiplier (tile[k, c]) stays the same for a whole column
-                # if 'c' hasn't changed, reuse the value from the register.
-                if c != last_c
-                    idx_ck = (k - 1) * STRIDE + c
-                    current_L_ck = @inbounds tile[idx_ck]
-                    last_c = c
-                end
-                # indices for the Target (rc) and the Left Multiplier (rk)
+                # indices for the Target (rc), the Left Multiplier (rk), and Top Multiplier (ck)
+                idx_ck = (k - 1) * STRIDE + c
                 idx_rc = (c - 1) * STRIDE + r
                 idx_rk = (k - 1) * STRIDE + r
                 
                 # perform the update: A[r,c] = A[r,c] - L[r,k] * L[c,k]
-                # idx_ck = (k - 1) * STRIDE + c
-                # use muladd instead of * and - for speed
-                # @inbounds tile[idx_rc] = muladd(-tile[idx_rk], current_L_ck, tile[idx_rc])
-                @inbounds tile[idx_rc] -= tile[idx_rk] * current_L_ck
+                @inbounds tile[idx_rc] -= tile[idx_rk] * tile[idx_ck]
 
                 # manual index updates to avoid modulo operations; update by stride
                 t_idx += stride
