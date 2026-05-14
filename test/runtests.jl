@@ -18,6 +18,8 @@ function parameter_creation(path::String, imat::Int, M::Int, N::Int)
         elseif imat == 2; mode = :decay; cndnum = 1e2
         elseif imat == 3; mode = :one_large; cndnum = 1e6
         elseif imat == 4; kl = 2; ku = 2; mode = :decay; cndnum = 1e2
+        elseif imat == 5; mode = :decay; cndnum = 1e8
+        elseif imat == 6; mode = :decay; cndnum = 1e12
         end
     end
     return (; type, kl, ku, anorm, mode, cndnum, dist)
@@ -70,3 +72,10 @@ include("ttqrt.jl")
 include("ttmqr.jl")
 include("pamm.jl")
 include("pemv.jl")
+include("xpartition.jl")
+include("scqr3.jl")
+include("geqrf_2p5d.jl")
+include("test_hessenberg.jl")
+include("test_bulge_chase.jl")
+include("test_qdwh.jl")
+include("test_schur.jl")
