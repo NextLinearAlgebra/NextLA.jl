@@ -42,6 +42,10 @@ echo "  julia=$(julia --version)"
 echo "=========================================================="
 
 SIZES="${BENCH_SIZES:-2000,4000,8000}"
+# Trim the b-sweep to 3 values per N to keep all 6 configs inside the 1 h limit.
+# Each cell (N, b, ortho, type) is ~(nwarm + nrun) = 6 calls of geqrf_2p5d!, and
+# the first call per N×b×type warms the JIT (~20-90 s) — wide sweeps blow the budget.
+export BENCH_BS="${BENCH_BS:-128,256,512}"
 
 run_config () {
   local label="$1"; shift

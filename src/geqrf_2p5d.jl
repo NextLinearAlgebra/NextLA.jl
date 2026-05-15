@@ -434,47 +434,54 @@ function geqrf_2p5d!(m::Integer, n::Integer,
         # panels (graph `update` would fail and re-instantiate every time).
         capture_eligible = use_graph && ortho === :fast && c_eff == 1 && sb == b_full
 
-        panel_body = function()
-            scqr3!(m_panel, sb, A_panel, Rp, Gp, infop; params = p_panel, partials = partials_use,
-                   racc = sb == b_full ? racc_buf : nothing,
-                   rwrk = sb == b_full ? rwrk_buf : nothing,
-                   trace_src = (sb == b_full && use_trace_scratch) ? trace_src_buf : nothing,
-                   trace_out = (sb == b_full && use_trace_scratch) ? trace_out_buf : nothing)
-            # A_panel now holds Q_k (explicit orthonormal columns).
-            _geqrf_write_R_panel!(be, R_acc, Rp, k, sb)
-
-            n_tr_local = n - (k + sb - 1)
-            if n_tr_local > 0
-                A_trailing_local = @view A[1:m, (k + sb):n]
-                fits_local(buf) = size(buf, 1) >= sb && size(buf, 2) >= n_tr_local
-                W_local  = fits_local(W_buf)  ? @view(W_buf[1:sb,  1:n_tr_local]) : similar(A, sb, n_tr_local)
-                if c_eff > 1
-                    _geqrf_qta_partitioned!(be, W_local, A_panel, A_trailing_local, m_panel, sb, n_tr_local, tile, p)
-                else
-                    _geqrf_qta!(be, W_local, A_panel, A_trailing_local, m_panel, sb, n_tr_local, tile)
-                end
-                _geqrf_apply!(be, A_trailing_local, A_panel, W_local, m_panel, sb, n_tr_local, tile)
-                _geqrf_write_W_block!(be, R_acc, W_local, k, k + sb, sb, n_tr_local)
-            end
-            return nothing
-        end
-
         n_tr = n - (k + sb - 1)
+
+        # Panel + trailing update. Inlined sequence rather than a closure to avoid
+        # the per-iteration Julia anonymous-function dispatch overhead (each
+        # iteration would otherwise instantiate a new closure with boxed captured
+        # variables — measured 4× regression at N=8000 FP64).
         if capture_eligible
-            capture_panel!(be, panel_exec_ref, panel_body)
-        elseif ortho === :fast
-            # Non-capturable but otherwise identical to the captured body — just
-            # invoke the closure to avoid duplicating the inlined sequence.
-            panel_body()
+            # Capture-only path: the only place we pay the closure cost is when
+            # graph capture is actually requested. capture_panel! falls back to
+            # direct execution if capture fails (lifetime issues, etc.).
+            capture_panel!(be, panel_exec_ref, () -> begin
+                scqr3!(m_panel, sb, A_panel, Rp, Gp, infop; params = p_panel, partials = partials_use,
+                       racc = racc_buf, rwrk = rwrk_buf,
+                       trace_src = use_trace_scratch ? trace_src_buf : nothing,
+                       trace_out = use_trace_scratch ? trace_out_buf : nothing)
+                _geqrf_write_R_panel!(be, R_acc, Rp, k, sb)
+                if n_tr > 0
+                    A_tr_ = @view A[1:m, (k + sb):n]
+                    W_ = (size(W_buf, 1) >= sb && size(W_buf, 2) >= n_tr) ?
+                         @view(W_buf[1:sb, 1:n_tr]) : similar(A, sb, n_tr)
+                    _geqrf_qta!(be, W_, A_panel, A_tr_, m_panel, sb, n_tr, tile)
+                    _geqrf_apply!(be, A_tr_, A_panel, W_, m_panel, sb, n_tr, tile)
+                    _geqrf_write_W_block!(be, R_acc, W_, k, k + sb, sb, n_tr)
+                end
+                nothing
+            end)
         else
-            # :safe path: call scqr3!, write R, then run the :safe trailing-update
-            # path below (kept out of the closure because of the device→host check).
-            scqr3!(m_panel, sb, A_panel, Rp, Gp, infop; params = p_panel, partials = partials_use,
-                   racc = sb == b_full ? racc_buf : nothing,
-                   rwrk = sb == b_full ? rwrk_buf : nothing,
-                   trace_src = (sb == b_full && use_trace_scratch) ? trace_src_buf : nothing,
-                   trace_out = (sb == b_full && use_trace_scratch) ? trace_out_buf : nothing)
+            # Non-capture path: do NOT pass preallocated scqr3 scratch. Threading
+            # SubArray views (view(racc_buf, 1:b, 1:b)) through scqr3 measured ~4×
+            # slower at N=8000 FP64 — the inner `mul!(Rwrk, UpperTriangular(Gv),
+            # Racc)` falls off the StridedCuMatrix fast path when all three args
+            # are SubArrays. The capture path above explicitly passes the buffers
+            # because graph capture forbids allocations inside the recorded body.
+            scqr3!(m_panel, sb, A_panel, Rp, Gp, infop; params = p_panel, partials = partials_use)
             _geqrf_write_R_panel!(be, R_acc, Rp, k, sb)
+            # :fast first-pass trailing update (the only one needed in :fast mode).
+            if ortho === :fast && n_tr > 0
+                A_trailing = @view A[1:m, (k + sb):n]
+                fits(buf) = size(buf, 1) >= sb && size(buf, 2) >= n_tr
+                W = fits(W_buf) ? @view(W_buf[1:sb, 1:n_tr]) : similar(A, sb, n_tr)
+                if c_eff > 1
+                    _geqrf_qta_partitioned!(be, W, A_panel, A_trailing, m_panel, sb, n_tr, tile, p)
+                else
+                    _geqrf_qta!(be, W, A_panel, A_trailing, m_panel, sb, n_tr, tile)
+                end
+                _geqrf_apply!(be, A_trailing, A_panel, W, m_panel, sb, n_tr, tile)
+                _geqrf_write_W_block!(be, R_acc, W, k, k + sb, sb, n_tr)
+            end
         end
 
         # --- :safe extra projection (Fix B) — outside the captured region ----

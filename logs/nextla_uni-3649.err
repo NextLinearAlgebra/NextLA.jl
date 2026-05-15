@@ -1,0 +1,92 @@
+┌ Warning: 2D fallback (c_calc < 1): PM=8177664 < N^2=16000000; using c=1
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:80
+┌ Warning: 2D fallback (c_calc < 1): PM=8177664 < N^2=64000000; using c=1
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:80
+┌ Warning: 2D fallback (c_calc < 1): PM=16355328 < N^2=64000000; using c=1
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:80
+┌ Warning: b above b_max; clamping
+│   b = 256
+│   b_max = 181
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:121
+┌ Warning: b above b_max; clamping
+│   b = 512
+│   b_max = 181
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:121
+┌ Warning: b above b_max; clamping
+│   b = 512
+│   b_max = 363
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:121
+┌ Warning: b above b_max; clamping
+│   b = 256
+│   b_max = 250
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:121
+┌ Warning: b above b_max; clamping
+│   b = 512
+│   b_max = 250
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:121
+┌ Warning: 2D fallback (c_calc < 1): PM=8177664 < N^2=16000000; using c=1
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:80
+┌ Warning: 2D fallback (c_calc < 1): PM=8177664 < N^2=16000000; using c=1
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:80
+┌ Warning: 2D fallback (c_calc < 1): PM=8177664 < N^2=16000000; using c=1
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:80
+┌ Warning: b above b_max; clamping
+│   b = 512
+│   b_max = 363
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:121
+┌ Warning: 2D fallback (c_calc < 1): PM=8177664 < N^2=64000000; using c=1
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:80
+┌ Warning: 2D fallback (c_calc < 1): PM=8177664 < N^2=64000000; using c=1
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:80
+┌ Warning: 2D fallback (c_calc < 1): PM=8177664 < N^2=64000000; using c=1
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:80
+┌ Warning: b above b_max; clamping
+│   b = 256
+│   b_max = 181
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:121
+┌ Warning: b above b_max; clamping
+│   b = 512
+│   b_max = 181
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:121
+┌ Warning: b above b_max; clamping
+│   b = 512
+│   b_max = 363
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:121
+┌ Warning: b above b_max; clamping
+│   b = 256
+│   b_max = 181
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:121
+┌ Warning: b above b_max; clamping
+│   b = 512
+│   b_max = 181
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:121
+┌ Warning: b above b_max; clamping
+│   b = 512
+│   b_max = 363
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:121
+┌ Warning: b above b_max; clamping
+│   b = 256
+│   b_max = 181
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:121
+┌ Warning: b above b_max; clamping
+│   b = 512
+│   b_max = 181
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:121
+┌ Warning: b above b_max; clamping
+│   b = 512
+│   b_max = 363
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:121
+┌ Warning: b above b_max; clamping
+│   b = 256
+│   b_max = 181
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:121
+┌ Warning: b above b_max; clamping
+│   b = 512
+│   b_max = 181
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:121
+┌ Warning: b above b_max; clamping
+│   b = 512
+│   b_max = 363
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:121
+┌ Warning: 2D fallback (c_calc < 1): PM=8177664 < N^2=16777216; using c=1
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:80

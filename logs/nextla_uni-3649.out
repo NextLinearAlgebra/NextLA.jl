@@ -1,0 +1,127 @@
+==========================================================
+ H200 unified NextLA bench   1.778848922680294e9
+  host=dgx01  gpu=NVIDIA H200  CUDA functional=true
+==========================================================
+
+### Phase A — regime probe ###
+  T=Float64 N=1000  c=8 b=248 M=61952 words  P=132  Px=4
+  T=Float32 N=1000  c=16 b=352 M=123904 words  P=132  Px=2
+  T=Float64 N=2000  c=2 b=248 M=61952 words  P=132  Px=8
+  T=Float32 N=2000  c=4 b=352 M=123904 words  P=132  Px=5
+  T=Float64 N=4000  c=1 b=248 M=61952 words  P=132  Px=11
+  T=Float32 N=4000  c=1 b=352 M=123904 words  P=132  Px=11
+  T=Float64 N=8000  c=1 b=248 M=61952 words  P=132  Px=11
+  T=Float32 N=8000  c=1 b=352 M=123904 words  P=132  Px=11
+
+──────────────────────────────────────────────────────────────────
+ Config: Default (M=smem+regs, SYRK, FORCE_C1=0, TF32=off)
+ knobs: ortho=:fast c=1 tf32=default use_syrk=true m_bytes=nothing force_c1=false
+──────────────────────────────────────────────────────────────────
+  Float64    N=2000  b=128   cu= 13.81 ms  nl=228.80 ms  0.06x  c=1  res=9.1e-16 ortho=4.5e-12
+  Float64    N=2000  b=256   cu= 13.81 ms  nl=256.95 ms  0.05x  c=1  res=9.2e-16 ortho=4.0e-12
+  Float64    N=2000  b=512   cu= 13.81 ms  nl=254.30 ms  0.05x  c=1  res=9.2e-16 ortho=4.0e-12
+  Float64    N=4000  b=128   cu= 30.68 ms  nl=608.94 ms  0.05x  c=1  res=1.3e-15 ortho=1.1e-11
+  Float64    N=4000  b=256   cu= 30.68 ms  nl=476.42 ms  0.06x  c=1  res=1.3e-15 ortho=1.1e-11
+  Float64    N=4000  b=512   cu= 30.68 ms  nl=342.11 ms  0.09x  c=1  res=1.3e-15 ortho=1.0e-11
+  Float64    N=8000  b=128   cu= 83.02 ms  nl=1476.25 ms  0.06x  c=1  res=1.8e-15 ortho=2.7e-11
+  Float64    N=8000  b=256   cu= 83.02 ms  nl=970.04 ms  0.09x  c=1  res=1.8e-15 ortho=2.8e-11
+  Float64    N=8000  b=512   cu= 83.02 ms  nl=517.09 ms  0.16x  c=1  res=1.8e-15 ortho=2.9e-11
+
+──────────────────────────────────────────────────────────────────
+ Config: Default + c=auto (fanout active at N=1000/2000)
+ knobs: ortho=:fast c=nothing tf32=default use_syrk=true m_bytes=nothing force_c1=false
+──────────────────────────────────────────────────────────────────
+  Float64    N=2000  b=128   cu= 13.41 ms  nl=397.11 ms  0.03x  c=2  res=9.1e-16 ortho=3.8e-12
+  Float64    N=2000  b=256   cu= 13.41 ms  nl=381.16 ms  0.04x  c=2  res=9.2e-16 ortho=3.7e-12
+  Float64    N=2000  b=512   cu= 13.41 ms  nl=379.95 ms  0.04x  c=2  res=9.2e-16 ortho=3.7e-12
+  Float64    N=4000  b=128   cu= 28.45 ms  nl=600.89 ms  0.05x  c=1  res=1.3e-15 ortho=1.1e-11
+  Float64    N=4000  b=256   cu= 28.45 ms  nl=471.88 ms  0.06x  c=1  res=1.3e-15 ortho=1.1e-11
+  Float64    N=4000  b=512   cu= 28.45 ms  nl=331.89 ms  0.09x  c=1  res=1.3e-15 ortho=1.0e-11
+  Float64    N=8000  b=128   cu= 82.39 ms  nl=1449.09 ms  0.06x  c=1  res=1.8e-15 ortho=2.7e-11
+  Float64    N=8000  b=256   cu= 82.39 ms  nl=996.08 ms  0.08x  c=1  res=1.8e-15 ortho=2.8e-11
+  Float64    N=8000  b=512   cu= 82.39 ms  nl=516.00 ms  0.16x  c=1  res=1.8e-15 ortho=2.9e-11
+
+──────────────────────────────────────────────────────────────────
+ Config: Step 4 baseline (SYRK off — uses cuBLAS GEMM)
+ knobs: ortho=:fast c=1 tf32=default use_syrk=false m_bytes=nothing force_c1=true
+──────────────────────────────────────────────────────────────────
+  Float64    N=2000  b=128   cu= 13.88 ms  nl=205.78 ms  0.07x  c=1  res=9.1e-16 ortho=3.1e-12
+  Float64    N=2000  b=256   cu= 13.88 ms  nl=261.38 ms  0.05x  c=1  res=9.2e-16 ortho=2.4e-12
+  Float64    N=2000  b=512   cu= 13.88 ms  nl=239.75 ms  0.06x  c=1  res=9.2e-16 ortho=2.4e-12
+  Float64    N=4000  b=128   cu= 30.67 ms  nl=552.84 ms  0.06x  c=1  res=1.3e-15 ortho=7.3e-12
+  Float64    N=4000  b=256   cu= 30.67 ms  nl=471.89 ms  0.06x  c=1  res=1.3e-15 ortho=7.5e-12
+  Float64    N=4000  b=512   cu= 30.67 ms  nl=339.44 ms  0.09x  c=1  res=1.3e-15 ortho=6.6e-12
+  Float64    N=8000  b=128   cu= 83.02 ms  nl=1422.65 ms  0.06x  c=1  res=1.8e-15 ortho=1.4e-11
+  Float64    N=8000  b=256   cu= 83.02 ms  nl=978.75 ms  0.08x  c=1  res=1.8e-15 ortho=1.5e-11
+  Float64    N=8000  b=512   cu= 83.02 ms  nl=510.00 ms  0.16x  c=1  res=1.8e-15 ortho=1.7e-11
+
+──────────────────────────────────────────────────────────────────
+ Config: Step 3 baseline (M = smem only, no register file)
+ knobs: ortho=:fast c=1 tf32=default use_syrk=true m_bytes=233472 force_c1=true
+──────────────────────────────────────────────────────────────────
+  Float64    N=2000  b=128   cu= 13.96 ms  nl=225.96 ms  0.06x  c=1  res=9.1e-16 ortho=4.5e-12
+  Float64    N=2000  b=256   cu= 13.96 ms  nl=256.96 ms  0.05x  c=1  res=9.2e-16 ortho=4.0e-12
+  Float64    N=2000  b=512   cu= 13.96 ms  nl=259.95 ms  0.05x  c=1  res=9.2e-16 ortho=4.0e-12
+  Float64    N=4000  b=128   cu= 27.93 ms  nl=624.88 ms  0.04x  c=1  res=1.3e-15 ortho=1.1e-11
+  Float64    N=4000  b=256   cu= 27.93 ms  nl=471.89 ms  0.06x  c=1  res=1.3e-15 ortho=1.1e-11
+  Float64    N=4000  b=512   cu= 27.93 ms  nl=346.29 ms  0.08x  c=1  res=1.3e-15 ortho=1.0e-11
+  Float64    N=8000  b=128   cu= 83.02 ms  nl=1460.01 ms  0.06x  c=1  res=1.8e-15 ortho=2.7e-11
+  Float64    N=8000  b=256   cu= 83.02 ms  nl=1008.08 ms  0.08x  c=1  res=1.8e-15 ortho=2.8e-11
+  Float64    N=8000  b=512   cu= 83.02 ms  nl=511.00 ms  0.16x  c=1  res=1.8e-15 ortho=2.9e-11
+
+──────────────────────────────────────────────────────────────────
+ Config: FP32 TF32 off (FP32 ALU)
+ knobs: ortho=:fast c=1 tf32=off use_syrk=true m_bytes=nothing force_c1=true
+──────────────────────────────────────────────────────────────────
+  Float32    N=2000  b=128   cu= 11.97 ms  nl=322.57 ms  0.04x  c=1  res=4.9e-07 ortho=6.5e-03
+  Float32    N=2000  b=256   cu= 11.97 ms  nl=334.97 ms  0.04x  c=1  res=4.9e-07 ortho=6.7e-03
+  Float32    N=2000  b=512   cu= 11.97 ms  nl=304.97 ms  0.04x  c=1  res=4.9e-07 ortho=6.7e-03
+  Float32    N=4000  b=128   cu= 26.95 ms  nl=759.93 ms  0.04x  c=1  res=6.8e-07 ortho=1.6e-02
+  Float32    N=4000  b=256   cu= 26.95 ms  nl=483.51 ms  0.06x  c=1  res=6.9e-07 ortho=1.7e-02
+  Float32    N=4000  b=512   cu= 26.95 ms  nl=356.93 ms  0.08x  c=1  res=6.9e-07 ortho=1.7e-02
+  Float32    N=8000  b=128   cu= 75.02 ms  nl=1506.09 ms  0.05x  c=1  res=6.5e-07 ortho=2.2e-02
+  Float32    N=8000  b=256   cu= 75.02 ms  nl=1012.22 ms  0.07x  c=1  res=6.6e-07 ortho=2.2e-02
+  Float32    N=8000  b=512   cu= 75.02 ms  nl=514.00 ms  0.15x  c=1  res=6.6e-07 ortho=2.2e-02
+
+──────────────────────────────────────────────────────────────────
+ Config: FP32 TF32 on (Tensor Cores)
+ knobs: ortho=:fast c=1 tf32=on use_syrk=true m_bytes=nothing force_c1=true
+──────────────────────────────────────────────────────────────────
+  Float32    N=2000  b=128   cu= 11.97 ms  nl=256.97 ms  0.05x  c=1  res=2.2e-04 ortho=1.3e+00
+  Float32    N=2000  b=256   cu= 11.97 ms  nl=320.96 ms  0.04x  c=1  res=2.2e-04 ortho=1.3e+00
+  Float32    N=2000  b=512   cu= 11.97 ms  nl=323.95 ms  0.04x  c=1  res=2.2e-04 ortho=1.3e+00
+  Float32    N=4000  b=128   cu= 26.95 ms  nl=763.93 ms  0.04x  c=1  res=2.0e-04 ortho=1.6e+00
+  Float32    N=4000  b=256   cu= 26.95 ms  nl=503.93 ms  0.05x  c=1  res=2.0e-04 ortho=1.7e+00
+  Float32    N=4000  b=512   cu= 26.95 ms  nl=347.32 ms  0.08x  c=1  res=2.0e-04 ortho=1.7e+00
+  Float32    N=8000  b=128   cu= 75.02 ms  nl=1511.09 ms  0.05x  c=1  res=2.2e-04 ortho=1.9e+00
+  Float32    N=8000  b=256   cu= 75.02 ms  nl=1002.09 ms  0.07x  c=1  res=2.2e-04 ortho=1.9e+00
+  Float32    N=8000  b=512   cu= 75.02 ms  nl=520.47 ms  0.14x  c=1  res=2.2e-04 ortho=1.9e+00
+
+### Phase D — N=4096 :safe orthogonality gate ###
+  N=4096 FP64 :safe  |Q'Q - I|_F = 1.2341222540158937e-13  residual = 1.4657669067515652e-15
+
+==========================================================================================
+ Summary (best b per Config × T × N):
+==========================================================================================
+Config                                                     T         N        cu(ms)   nl(ms) speedup   c
+------------------------------------------------------------------------------------------
+Default (M=smem+regs, SYRK, FORCE_C1=0, TF32=off)          Float64   2000      13.81   228.80   0.06x   1
+Default (M=smem+regs, SYRK, FORCE_C1=0, TF32=off)          Float64   4000      30.68   342.11   0.09x   1
+Default (M=smem+regs, SYRK, FORCE_C1=0, TF32=off)          Float64   8000      83.02   517.09   0.16x   1
+Default + c=auto (fanout active at N=1000/2000)            Float64   2000      13.41   379.95   0.04x   2
+Default + c=auto (fanout active at N=1000/2000)            Float64   4000      28.45   331.89   0.09x   1
+Default + c=auto (fanout active at N=1000/2000)            Float64   8000      82.39   516.00   0.16x   1
+FP32 TF32 off (FP32 ALU)                                   Float32   2000      11.97   304.97   0.04x   1
+FP32 TF32 off (FP32 ALU)                                   Float32   4000      26.95   356.93   0.08x   1
+FP32 TF32 off (FP32 ALU)                                   Float32   8000      75.02   514.00   0.15x   1
+FP32 TF32 on (Tensor Cores)                                Float32   2000      11.97   256.97   0.05x   1
+FP32 TF32 on (Tensor Cores)                                Float32   4000      26.95   347.32   0.08x   1
+FP32 TF32 on (Tensor Cores)                                Float32   8000      75.02   520.47   0.14x   1
+Step 3 baseline (M = smem only, no register file)          Float64   2000      13.96   225.96   0.06x   1
+Step 3 baseline (M = smem only, no register file)          Float64   4000      27.93   346.29   0.08x   1
+Step 3 baseline (M = smem only, no register file)          Float64   8000      83.02   511.00   0.16x   1
+Step 4 baseline (SYRK off — uses cuBLAS GEMM)              Float64   2000      13.88   205.78   0.07x   1
+Step 4 baseline (SYRK off — uses cuBLAS GEMM)              Float64   4000      30.67   339.44   0.09x   1
+Step 4 baseline (SYRK off — uses cuBLAS GEMM)              Float64   8000      83.02   510.00   0.16x   1
+==========================================================================================
+ Done at 1.778849235187543e9

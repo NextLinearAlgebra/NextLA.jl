@@ -1,0 +1,130 @@
+Precompiling cudaext...
+   3635.9 ms  ✓ NextLA → cudaext
+  1 dependency successfully precompiled in 4 seconds. 114 already precompiled.
+┌ Warning: 2D fallback (c_calc < 1): PM=3852288 < N^2=4000000; using c=1
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:65
+┌ Warning: 2D fallback (c_calc < 1): PM=3852288 < N^2=16000000; using c=1
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:65
+┌ Warning: 2D fallback (c_calc < 1): PM=7704576 < N^2=16000000; using c=1
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:65
+┌ Warning: 2D fallback (c_calc < 1): PM=3852288 < N^2=64000000; using c=1
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:65
+┌ Warning: 2D fallback (c_calc < 1): PM=7704576 < N^2=64000000; using c=1
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:65
+┌ Warning: 2D fallback (c_calc < 1): PM=3852288 < N^2=256000000; using c=1
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:65
+┌ Warning: 2D fallback (c_calc < 1): PM=7704576 < N^2=256000000; using c=1
+└ @ NextLA ~/comparative-bench/NextLA.jl/src/xpartition.jl:65
+slurmstepd-dgx01: error: *** JOB 3640 ON dgx01 CANCELLED AT 2026-05-15T09:27:14 ***
+
+[1472780] signal 15: Terminated
+in expression starting at /home/ftome_local/comparative-bench/NextLA.jl/scripts/bench_gpu_vs_cusolver.jl:170
+unknown function (ip: 0x7699ce098d6f)
+pthread_cond_wait at /lib/x86_64-linux-gnu/libc.so.6 (unknown line)
+uv_cond_wait at /workspace/srcdir/libuv/src/unix/thread.c:822
+ijl_task_get_next at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/scheduler.c:584
+poptask at ./task.jl:1012
+wait at ./task.jl:1021
+#wait#731 at ./condition.jl:130
+wait at ./condition.jl:125 [inlined]
+take! at /home/ftome_local/.julia/packages/CUDACore/gtlJx/lib/cudadrv/synchronization.jl:53
+synchronization_worker at /home/ftome_local/.julia/packages/CUDACore/gtlJx/lib/cudadrv/synchronization.jl:119
+jfptr_synchronization_worker_11104 at /home/ftome_local/.julia/compiled/v1.11/CUDACore/mcKyc_1jFmB.so (unknown line)
+jlcapi_synchronization_worker_11130 at /home/ftome_local/.julia/compiled/v1.11/CUDACore/mcKyc_1jFmB.so (unknown line)
+unknown function (ip: 0x7699ce09caa3)
+unknown function (ip: 0x7699ce129c3b)
+unknown function (ip: (nil))
+unknown function (ip: 0x7699ce098d6f)
+pthread_cond_wait at /lib/x86_64-linux-gnu/libc.so.6 (unknown line)
+uv_cond_wait at /workspace/srcdir/libuv/src/unix/thread.c:822
+ijl_task_get_next at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/scheduler.c:584
+poptask at ./task.jl:1012
+wait at ./task.jl:1021
+#wait#731 at ./condition.jl:130
+wait at ./condition.jl:125 [inlined]
+take! at /home/ftome_local/.julia/packages/CUDACore/gtlJx/lib/cudadrv/synchronization.jl:53
+synchronization_worker at /home/ftome_local/.julia/packages/CUDACore/gtlJx/lib/cudadrv/synchronization.jl:119
+jfptr_synchronization_worker_11104 at /home/ftome_local/.julia/compiled/v1.11/CUDACore/mcKyc_1jFmB.so (unknown line)
+jlcapi_synchronization_worker_11130 at /home/ftome_local/.julia/compiled/v1.11/CUDACore/mcKyc_1jFmB.so (unknown line)
+unknown function (ip: 0x7699ce09caa3)
+unknown function (ip: 0x7699ce129c3b)
+unknown function (ip: (nil))
+unknown function (ip: 0x7699ce098d6f)
+pthread_cond_wait at /lib/x86_64-linux-gnu/libc.so.6 (unknown line)
+uv_cond_wait at /workspace/srcdir/libuv/src/unix/thread.c:822
+ijl_task_get_next at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/scheduler.c:584
+poptask at ./task.jl:1012
+wait at ./task.jl:1021
+#wait#731 at ./condition.jl:130
+wait at ./condition.jl:125 [inlined]
+take! at /home/ftome_local/.julia/packages/CUDACore/gtlJx/lib/cudadrv/synchronization.jl:53
+synchronization_worker at /home/ftome_local/.julia/packages/CUDACore/gtlJx/lib/cudadrv/synchronization.jl:119
+jfptr_synchronization_worker_11104 at /home/ftome_local/.julia/compiled/v1.11/CUDACore/mcKyc_1jFmB.so (unknown line)
+jlcapi_synchronization_worker_11130 at /home/ftome_local/.julia/compiled/v1.11/CUDACore/mcKyc_1jFmB.so (unknown line)
+unknown function (ip: 0x7699ce09caa3)
+unknown function (ip: 0x7699ce129c3b)
+unknown function (ip: (nil))
+unknown function (ip: 0x7699ce098d6f)
+pthread_cond_wait at /lib/x86_64-linux-gnu/libc.so.6 (unknown line)
+uv_cond_wait at /workspace/srcdir/libuv/src/unix/thread.c:822
+ijl_task_get_next at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/scheduler.c:584
+poptask at ./task.jl:1012
+wait at ./task.jl:1021
+#wait#731 at ./condition.jl:130
+wait at ./condition.jl:125 [inlined]
+take! at /home/ftome_local/.julia/packages/CUDACore/gtlJx/lib/cudadrv/synchronization.jl:53
+synchronization_worker at /home/ftome_local/.julia/packages/CUDACore/gtlJx/lib/cudadrv/synchronization.jl:119
+jfptr_synchronization_worker_11104 at /home/ftome_local/.julia/compiled/v1.11/CUDACore/mcKyc_1jFmB.so (unknown line)
+jlcapi_synchronization_worker_11130 at /home/ftome_local/.julia/compiled/v1.11/CUDACore/mcKyc_1jFmB.so (unknown line)
+unknown function (ip: 0x7699ce09caa3)
+unknown function (ip: 0x7699ce129c3b)
+unknown function (ip: (nil))
+exec_blas_async_wait at /tmp/julia-1.11.5/bin/../lib/julia/libopenblas64_.so (unknown line)
+exec_blas at /tmp/julia-1.11.5/bin/../lib/julia/libopenblas64_.so (unknown line)
+gemm_thread_m at /tmp/julia-1.11.5/bin/../lib/julia/libopenblas64_.so (unknown line)
+dtrmm_64_ at /tmp/julia-1.11.5/bin/../lib/julia/libopenblas64_.so (unknown line)
+dlarfb_64_ at /tmp/julia-1.11.5/bin/../lib/julia/libopenblas64_.so (unknown line)
+dgeqrt_64_ at /tmp/julia-1.11.5/bin/../lib/julia/libopenblas64_.so (unknown line)
+geqrt! at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/usr/share/julia/stdlib/v1.11/LinearAlgebra/src/lapack.jl:479
+geqrt! at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/usr/share/julia/stdlib/v1.11/LinearAlgebra/src/lapack.jl:746 [inlined]
+#qr!#318 at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/usr/share/julia/stdlib/v1.11/LinearAlgebra/src/qr.jl:291 [inlined]
+qr! at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/usr/share/julia/stdlib/v1.11/LinearAlgebra/src/qr.jl:291 [inlined]
+qr! at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/usr/share/julia/stdlib/v1.11/LinearAlgebra/src/qr.jl:336 [inlined]
+#_qr#322 at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/usr/share/julia/stdlib/v1.11/LinearAlgebra/src/qr.jl:432 [inlined]
+_qr at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/usr/share/julia/stdlib/v1.11/LinearAlgebra/src/qr.jl:432 [inlined]
+#qr#319 at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/usr/share/julia/stdlib/v1.11/LinearAlgebra/src/qr.jl:425
+qr at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/usr/share/julia/stdlib/v1.11/LinearAlgebra/src/qr.jl:422 [inlined]
+#make_cu_matrix#1 at /home/ftome_local/comparative-bench/NextLA.jl/scripts/bench_gpu_vs_cusolver.jl:16
+make_cu_matrix at /home/ftome_local/comparative-bench/NextLA.jl/scripts/bench_gpu_vs_cusolver.jl:12 [inlined]
+#bench_nextla#2 at /home/ftome_local/comparative-bench/NextLA.jl/scripts/bench_gpu_vs_cusolver.jl:39
+bench_nextla at /home/ftome_local/comparative-bench/NextLA.jl/scripts/bench_gpu_vs_cusolver.jl:38
+unknown function (ip: 0x7699ccd4463c)
+run_for_size at /home/ftome_local/comparative-bench/NextLA.jl/scripts/bench_gpu_vs_cusolver.jl:135
+main at /home/ftome_local/comparative-bench/NextLA.jl/scripts/bench_gpu_vs_cusolver.jl:166
+unknown function (ip: 0x7699ccca499f)
+jl_apply at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/julia.h:2157 [inlined]
+do_call at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/interpreter.c:126
+eval_value at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/interpreter.c:223
+eval_stmt_value at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/interpreter.c:174 [inlined]
+eval_body at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/interpreter.c:666
+jl_interpret_toplevel_thunk at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/interpreter.c:824
+jl_toplevel_eval_flex at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/toplevel.c:943
+jl_toplevel_eval_flex at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/toplevel.c:886
+ijl_toplevel_eval_in at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/toplevel.c:994
+eval at ./boot.jl:430 [inlined]
+include_string at ./loading.jl:2734
+_include at ./loading.jl:2794
+include at ./Base.jl:557
+jfptr_include_46879.1 at /tmp/julia-1.11.5/lib/julia/sys.so (unknown line)
+exec_options at ./client.jl:323
+_start at ./client.jl:531
+jfptr__start_73430.1 at /tmp/julia-1.11.5/lib/julia/sys.so (unknown line)
+jl_apply at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/julia.h:2157 [inlined]
+true_main at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/jlapi.c:900
+jl_repl_entrypoint at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/jlapi.c:1059
+main at julia (unknown line)
+unknown function (ip: 0x7699ce02a1c9)
+__libc_start_main at /lib/x86_64-linux-gnu/libc.so.6 (unknown line)
+unknown function (ip: 0x4010b8)
+unknown function (ip: (nil))
+Allocations: 73505941 (Pool: 73503197; Big: 2744); GC: 62

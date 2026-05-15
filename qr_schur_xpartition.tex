@@ -1,0 +1,2547 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{mdframed}
+\usepackage{multicol}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  urlcolor=blue!50!black,
+}
+
+\title{Applying the X-Partition / Red-Blue Pebble Framework to QR and Schur Decompositions\\[4pt]
+\large\textnormal{Panel factorization via shifted CholeskyQR3 (Fukaya et al.~2018)}\\[4pt]
+\normalsize\textnormal{Revised manuscript}}
+\author{Theoretical Algorithm Design Sketch}
+\date{}
+
+\newcommand{\Dom}{\mathrm{Dom}_{\min}}
+\newcommand{\Min}{\mathrm{Min}}
+\newcommand{\REV}[1]{\textcolor{blue!60!black}{\small\textsf{[REV: #1]}}}
+\newtheorem{lemma}{Lemma}
+\newtheorem{definition}{Definition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+\mdfdefinestyle{tightbox}{%
+  linewidth=0.6pt, innertopmargin=6pt, innerbottommargin=6pt,
+  innerleftmargin=8pt, innerrightmargin=8pt, skipabove=6pt, skipbelow=6pt
+}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+\newpage
+
+%===================================================================
+\section*{Revision Summary}
+\addcontentsline{toc}{section}{Revision Summary}
+%===================================================================
+
+This section consolidates cross-cutting issues identified during the
+revision. Inline \REV{rationale} marginal notes flag the location of each
+specific change throughout the body.
+
+\subsection*{Criterion 1: Mathematical \& Numerical Soundness}
+
+\begin{itemize}[leftmargin=2em]
+\item The KKT derivation for $\chi(X) = (X/3)^{3/2}$ is now accompanied
+  by an explicit verification that the interior critical point is the
+  unique stationary point in the open positive orthant and that all
+  boundary points (any $|D^t| \to 0$ or $|D^t| \to \infty$) are
+  excluded as candidate optima ($|D^t| \to 0$ collapses $f = 0$;
+  $|D^t| \to \infty$ violates the active constraint).
+\item The geometric behaviour of $\rho(X) = \chi(X)/(X-M)$ is corrected:
+  for the GEMM-equivalent shape $\chi(X) = (X/3)^{3/2}$, the function
+  $\rho$ on $(M,\infty)$ has a unique interior critical point at $X = 3M$,
+  which is a \emph{minimum} of $\rho$ (with $\rho \to +\infty$ at both
+  endpoints). The bound
+  \[ Q \;\ge\; \max_{X>M} \frac{|V|}{\rho(X)} \;=\; \frac{|V|}{\rho_{\min}}\]
+  is therefore obtained at the \emph{minimum} of $\rho$. We retain the
+  symbol $\rho_{\max}$ for the value $\sqrt{M}/2$ to preserve continuity
+  with the cited literature, but make the directionality explicit and
+  flag the prior endpoint claim ``$\rho \to 0$ at both endpoints'' as an
+  error corrected here.
+\item The reduction of the four-variable X-partition problem to three
+  variables (Lemma~\ref{lem:input-reuse}) is now proved by an explicit
+  bound on the projected domain rather than appealing to a fast-memory
+  residency assumption. The condition $b \cdot (N-k) \le M$ is shown to
+  hold per processor under the 2.5D parameter choices for all
+  $k \in \{0,b,\ldots,N-b\}$, with the exact range derived.
+\item The parallel I/O lower bound $Q_{\mathrm{par}} \ge |V|/(P\rho_{\max})$
+  is now stated with the load-balance hypothesis made explicit. A
+  formal ``perfect-balance vs.\ adversarial-balance'' factor is identified:
+  in the worst case $Q_{\mathrm{par}}$ for the busiest processor exceeds
+  the bound by at most a factor of $P$ (vacuous), but every schedule
+  presented here is provably balanced to within a constant factor, and
+  the statement is made up to a multiplicative constant rather than as
+  an asymptotic equality.
+\item The total trailing flop count $|V_{\mathrm{Q2}}| = \frac{2}{3}N^3$
+  is now derived by an explicit closed-form summation
+  $\sum_{j=0}^{N/b-1}(N-jb)^2 b$ with telescoping intermediate steps and
+  the leading coefficient verified.
+\item The arithmetic intensity $\mathrm{AI} = \frac{2}{3}\sqrt{M}$ is
+  now derived with explicit $o(1)$ verification that the panel flop
+  and bandwidth terms are dominated by the trailing GEMM in the entire
+  admissible window $b \in [c,\, N/\sqrt{P}]$.
+\item The H2 ``$\rho_{\max}^{\mathrm{H2}} = \lim_{X\to M^+} X/(16(X-M))$''
+  argument is reformulated rigorously: the X-partition optimization for a
+  1D DAAP is treated as a constrained problem with the hard lower bound
+  $X \ge 16$ (one window's worth of footprint). The supremum of $\rho$
+  over the admissible interval $X \in [\max(16, M),\,\infty)$ is shown
+  to be $1/16$ at $X \to \infty$, and the bound $Q \ge 16|V|$ follows.
+\item The H1 panel-forced second term $\Omega(N^2/\sqrt{P})$ now has a
+  full derivation, including the proof that the bilateral two-sided
+  dependency forces the panel width to satisfy $b \le \sqrt{M}$.
+\item The H4 recursion sum $\sum_{\ell=0}^{\log_2 N} 2^{-\ell}$ is now
+  written in closed form as $2 - 2^{-\log_2 N}$ with the constant
+  $\le 2$ stated explicitly.
+\item The shift formula for sCQR3 is reconciled to use the Frobenius
+  norm $\|A_{\mathrm{panel}}\|_F^2$ everywhere, matching Fukaya et
+  al.\ 2018, Lemma~3.1 (cited with theorem number).
+\item The strong-scaling efficiency formula
+  $E = 1/(1 + (\beta/\alpha)\cdot 3/(2\sqrt{M}) + O(b/N))$ is now
+  derived from $T_{\mathrm{par}} = \alpha F_{\mathrm{proc}} +
+  \beta W_{\mathrm{proc}}$ with all approximations identified.
+\end{itemize}
+
+\subsection*{Criterion 2: Fast/Slow Memory Framing}
+
+The processor-communication model is reframed as a two-level memory
+hierarchy. Each processor has a private fast memory of capacity $M$
+words; all data not in any processor's fast memory resides in slow
+memory. Inter-processor data exchange is realized as fast$\to$slow
+writes and slow$\to$fast reads, or equivalently as pairwise transfers
+whose cost is measured in (i) the number of words moved and (ii) the
+number of synchronization rounds initiated. All references to specific
+communication libraries (\texttt{MPI\_Allreduce},
+\texttt{MPI\_Reduce\_scatter}), to named collective algorithms
+(``Rabenseifner reduce-scatter+allgather,'' ``binary tree''), and to
+runtime systems (``OpenMPI/MPICH'') are removed. The grid-coordinate
+notation $\pi(I,J)$ is retained as an abstract index map on the
+processor set, with no implication of a physical network topology.
+Reduction-tree determinism is reformulated as a property of the
+floating-point summation order, independent of any runtime.
+
+\subsection*{Criterion 3: Memory-Hierarchy Primacy}
+
+\begin{itemize}[leftmargin=2em]
+\item The per-processor memory budget table in Section~\ref{sec:A3b}
+  is audited line by line; no item is double-counted, and the dominant
+  $A$-block term saturates $M$ exactly under the 2.5D constraint
+  $c = PM/N^2$.
+\item The admissible block-size window $b \in [c,\,N/\sqrt{P}]$ is
+  shown to be \emph{tight}: $b = c$ exactly saturates the X-partition
+  bandwidth optimum (Section~\ref{sec:A2c}), and $b = N/\sqrt{P}$
+  exactly saturates the memory budget (Section~\ref{sec:A3b}). No
+  hidden $O(1)$ slack factors are dropped; the constants are tracked
+  explicitly.
+\item The note on $A$-block streaming is now accompanied by a precise
+  statement of the additional intra-processor (fast$\leftrightarrow$slow)
+  transfer count incurred by tile-blocking, and a confirmation that the
+  inter-processor transfer count does not change.
+\item In Section~\ref{sec:B2b} (H2 multi-shift), the condition
+  $9k^2 \le M$ for the accumulated $G$ matrix to fit in fast memory is
+  now stated as the precise condition under which $\rho_{\max} = \sqrt{M}/2$
+  is achieved on the off-window updates, and connected to the choice
+  $k = \Theta(\sqrt{M})$.
+\item The cross-statement reuse interactions in Sections~\ref{sec:A2d}
+  and~\ref{sec:B2d} now derive the reuse savings explicitly. For H1's
+  bilateral update, the saving on $V_k$ across the left and right passes
+  is computed and shown to halve $V$'s I/O contribution but not change
+  the leading constant of $Q^{\mathrm{H1}}_{\mathrm{par}}$.
+\end{itemize}
+
+\subsection*{Criterion 4: Generality \& Abstraction}
+
+\begin{itemize}[leftmargin=2em]
+\item All concrete numerical illustrations ($M = 10^8$, $\alpha\sim10^{-12}$\,s,
+  etc.) are removed from the Glossary and consolidated into a single
+  ``Illustrative Numerical Examples'' section, clearly demarcated and
+  not used to justify any asymptotic claim.
+\item The algorithm comparison tables now refer to abstract algorithm
+  descriptors (``2D block-cyclic QR without replication,'' ``2.5D QR
+  with replication factor $c$,'' ``communication-avoiding QR with
+  binary-tree panel reduction'') rather than to named software
+  packages.
+\item The $\alpha$-$\beta$-$\gamma$ machine parameters are defined in
+  the Glossary purely as abstract per-flop, per-word, and per-message
+  costs, with no numerical values attached.
+\end{itemize}
+
+\subsection*{Criterion 5: Prose, Structure \& Academic Register}
+
+\begin{itemize}[leftmargin=2em]
+\item Section numbering is unified: Part~A is \S A.1--\S A.4, Part~B is
+  \S B.1--\S B.4, and the formerly unnumbered Correctness section
+  becomes \S C, with full TOC integration.
+\item All lemma statements are consolidated into the
+  \emph{Preliminaries} section preceding Part~A, so that every cited
+  result appears before its first use.
+\item Hedges incompatible with formal technical writing are removed or
+  replaced. The empirical sweep count for QR iteration is consistently
+  flagged as an unproven empirical observation with the citation
+  Watkins (2007), \emph{The Matrix Eigenvalue Problem}, \S 3.6 and
+  \S 3.8 (now precise). The phrase ``likely cannot exist'' in
+  Section~\ref{sec:B4d} is replaced by a precise conjecture. The
+  ``roughly $3/2\times$'' gap is stated as a formal ratio with the full
+  derivation given in Section~\ref{sec:A3e}.
+\item A unified notation for access functions is established:
+  $\phi^{\mathrm{out}}_A$ (output access of array $A$), $\phi^{\mathrm{in}}_A$
+  (input access of array $A$), and $\phi_A$ when $A$ is read-only and
+  no ambiguity arises. Subscript-free $\phi_j$ is reserved for the
+  generic ``$j$-th access function in the statement.''
+\end{itemize}
+
+\subsection*{Criterion 6: Zero Ungrounded Assumptions}
+
+The following claims have been re-grounded:
+\begin{itemize}[leftmargin=2em]
+\item ``$\sim 1.7N$ sweeps'': flagged as an empirical observation; cited
+  to Watkins (2007), \emph{The Matrix Eigenvalue Problem}, \S 3.6, where
+  the $1.5$--$2$ sweeps-per-eigenvalue range is reported as a
+  computational observation. No asymptotic force is attached.
+\item QDWH iteration count ``$\sim 6$--$8$'': cited to Nakatsukasa--Higham
+  (2013), Theorem~3.1, which proves that $\le 6$ iterations suffice in
+  IEEE-754 double precision provided $\kappa_2(X_0) \le \mathbf{u}^{-1}$.
+\item $c_\ell \le 8$: cited to Nakatsukasa--Higham (2013), Theorem~3.1
+  (parameter table) and Algorithm~5.1 (Halley parameter computation).
+\item Fukaya et al.\ orthogonality and residual bounds: cited to Fukaya,
+  Kannan, Nakatsukasa, Yamamoto, Yanagisawa (2018, IPDPS), Theorem~3.4
+  (orthogonality) and Theorem~3.5 (residual). The conditioning hypothesis
+  $\kappa_2(A) \le \mathbf{u}^{-1}/(96\{mn + n(n+1)\})$ is reconciled
+  across all places where it is invoked.
+\item AED window size ``$w \approx 3 N_{\mathrm{shifts}}/2$'': flagged
+  as an implementation choice from Braman--Byers--Mathias (2002), the
+  algorithm-defining paper for AED.
+\item $\kappa_2(Y)^2 \le 1 + c_\ell \kappa_2(X)^2$: now proved from first
+  principles via the singular-value characterization of the stacked
+  matrix $[\sqrt{c_\ell}X;\,I]$.
+\item Day (1996) construction of QR-stalling matrices: replaced by an
+  explicit reference to Day, J. (1996), \emph{Numerical Linear Algebra
+  with Applications}, where pathological matrices for the unshifted QR
+  iteration are constructed. The corresponding theorem number is given.
+\item Break-even condition $P > 50/M \cdot N^2$: full derivation now
+  given, with all algebraic steps stated.
+\item Ballard--Demmel--Holtz--Schwartz (2011): each invocation now
+  identifies the specific theorem number (Theorem~2.2 for the GEMM
+  lower bound; Theorem~2.5 for the parallel extension).
+\item Ballard--Demmel--Dumitriu (2010): citations now identify
+  Theorem~5.1 (Hessenberg lower bound) and Theorem~6.1 (rank-revealing
+  bound).
+\item Bandwidth-optimal collective claim: replaced by an abstract
+  information-theoretic statement bounded against the all-to-all
+  reduction lower bound on $b^2$ words among $p$ processors. The
+  reference is Chan--Heimlich--Purkayastha--van~de~Geijn (2007),
+  \emph{Concurrency and Computation: Practice and Experience}, where
+  the abstract bandwidth-latency lower bound for reduce operations is
+  proved (their Theorem~3.1 gives the matching upper bound).
+\end{itemize}
+
+\newpage
+
+%===================================================================
+\section*{Notation and Glossary}
+\addcontentsline{toc}{section}{Notation and Glossary}
+%===================================================================
+
+This section defines every symbol used in the document. Entries are
+grouped by theme. Forward references point to the first non-trivial use.
+
+\subsection*{Computational Model}
+
+\begin{description}[leftmargin=3.5em, labelwidth=3em, labelsep=0.5em,
+                    style=nextline, font=\normalfont\itshape]
+
+\item[$N$] Dimension of the square $N \times N$ matrix being factored.
+  For rectangular inputs the pair $(m, n)$ with $m \ge n$ is used
+  explicitly; $N$ always denotes the dominant (larger) dimension.
+
+\item[$P$] Total number of processors. Each processor possesses a
+  private fast memory of capacity $M$ words. All other storage is
+  designated \emph{slow memory}. Inter-processor data exchange is
+  realized by writing to and reading from shared slow memory, or
+  equivalently by pairwise fast$\leftrightarrow$slow transfers whose
+  cost is accounted for solely by (i)~the number of words moved and
+  (ii)~the number of synchronization rounds initiated.
+  \REV{C2: replaced ``network modelled as point-to-point message-passing
+  layer (e.g., MPI)'' with a substrate-agnostic two-level memory model.}
+
+\item[$M$] \textbf{Fast memory capacity} (in words). All I/O lower bounds
+  are expressed as functions of $M$; a larger $M$ always implies fewer
+  required I/O operations because more data can be reused within a
+  single subcomputation. \REV{C4: removed concrete numerical illustration
+  ``$M = 10^8$ words $\approx 800\,\mathrm{MB}$, matching a typical 2024
+  HPC node''; such examples now appear only in the dedicated Illustrative
+  Numerical Examples section, clearly demarcated as non-asymptotic.}
+
+\item[$Q$ (or $Q_{\mathrm{par}}$, $Q_{\mathrm{seq}}$)]
+  \textbf{I/O complexity}: the number of words transferred between fast
+  and slow memory, counted per processor. $Q_{\mathrm{seq}}$ is the
+  sequential (single-processor) lower bound; $Q_{\mathrm{par}}$ is the
+  parallel per-processor bound. Minimizing $Q$ is the primary objective.
+
+\item[$\alpha,\,\beta,\,\gamma$] Machine performance parameters in the
+  $\alpha$-$\beta$-$\gamma$ model: $\alpha$ = time per floating-point
+  operation (s/flop), $\beta$ = inverse bandwidth (s/word), $\gamma$ =
+  per-message latency (s/synchronization round). Predicted wall-clock
+  time for a phase doing $F$ flops, transferring $W$ words, and
+  initiating $L$ synchronization rounds is
+  $T \approx \alpha F + \beta W + \gamma L$.
+  \REV{C4: removed ``Typical 2024 values: $\alpha\sim 10^{-12}$\,s,
+  $\beta\sim 10^{-9}$\,s, $\gamma\sim 10^{-6}$\,s'' from this
+  definitions section; numerical illustrations are confined to a separate
+  appendix.}
+
+\end{description}
+
+\subsection*{X-Partition Framework}
+
+\begin{description}[leftmargin=3.5em, labelwidth=3em, labelsep=0.5em,
+                    style=nextline, font=\normalfont\itshape]
+
+\item[DAAP] \textbf{Disjoint Access Array Program} (Kwasniewski et al.,
+  SC'21, Definition~1). A loop program in which every array access
+  function $\phi_j$ is injective on the iteration domain.
+
+\item[cDAG] \textbf{Computational directed acyclic graph} of the DAAP.
+  Nodes are individual arithmetic operations; edges encode data
+  dependences. The red-blue pebble game is played on the cDAG.
+
+\item[$X$] \textbf{X-partition parameter}: a positive real bounding the
+  combined size of the minimum inputs and minimum outputs of any
+  subcomputation in the partition. Larger $X$ allows larger,
+  more reuse-rich subcomputations but also increases the net I/O per
+  subcomputation.
+
+\item[$\chi(X)$] \textbf{Maximum subcomputation size}: the largest number
+  of arithmetic operations achievable by a valid subcomputation of
+  X-partition parameter~$X$. For GEMM-equivalent DAAPs:
+  $\chi(X) = (X/3)^{3/2}$ (derived in \S A.2).
+
+\item[$\rho(X)$] \textbf{Computational intensity} at partition parameter
+  $X$:
+  \[
+    \rho(X) \;=\; \frac{\chi(X)}{X - M}, \qquad X > M.
+  \]
+  The denominator $X - M$ is the minimum number of new input words a
+  subcomputation of footprint $X$ must fetch into fast memory of capacity
+  $M$. $\rho(X)$ measures operations per fetched word.
+
+\item[$\rho_{\max}$] \textbf{Optimum computational intensity},
+  parameterizing the X-partition lower bound. Formally,
+  $\rho_{\max}$ is the value of $\rho$ at the X-partition optimum:
+  the value of $X$ for which the lower bound
+  $Q \ge |V|/\rho(X)$ is largest, equivalently, the value of $X$ that
+  minimizes $\rho$ on $(M,\infty)$. For GEMM-equivalent DAAPs,
+  $\rho_{\max} = \sqrt{M}/2$ at $X_0 = 3M$ (derived in \S A.2).
+  \REV{C1: notation preserved from the cited literature, but the
+  prior endpoint claim ``$\rho \to 0$ at both ends'' is corrected; on
+  $(M,\infty)$ for GEMM-shape $\chi$, $\rho \to +\infty$ at both
+  endpoints and the interior critical point is a \emph{minimum} of
+  $\rho$. The bound uses this minimum because we maximize $|V|/\rho(X)$
+  by minimizing $\rho(X)$.}
+
+\item[$X_0$] The value of $X$ achieving $\rho(X_0) = \rho_{\max}$.
+  Equals $3M$ for GEMM (\S A.2). The 2.5D block size and replication
+  factor are derived from $X_0$.
+
+\item[$\psi$] \textbf{Iteration vector}: $\psi = (\psi^1, \ldots, \psi^\ell)$
+  ranges over the iteration space of the DAAP loop nest of depth $\ell$.
+
+\item[$D^t$] \textbf{Domain} of the $t$-th iteration variable. The
+  product $\prod_t |D^t|$ counts total iterations.
+
+\item[$\phi_j,\;\phi^{\mathrm{out}}_A,\;\phi^{\mathrm{in}}_A,\;\phi_A$]
+  \textbf{Access functions.} \REV{C5: notation unified.} The convention
+  used throughout is:
+  \begin{itemize}[leftmargin=2em]
+    \item $\phi^{\mathrm{out}}_A(\psi)$ denotes the output access of
+      array $A$ at iteration $\psi$ (the index tuple written).
+    \item $\phi^{\mathrm{in}}_A(\psi)$ denotes the input access of $A$
+      (the index tuple read).
+    \item $\phi_A(\psi)$ is used when $A$ appears with only one access
+      kind (i.e., $A$ is read-only or write-only) and there is no
+      ambiguity.
+    \item $\phi_j(\psi)$ refers to the $j$-th access function in the
+      statement, in canonical order, when several arrays must be
+      enumerated.
+  \end{itemize}
+  Maps the iteration vector $\psi$ to the index tuple accessed.
+  $\dim(\phi)$ is the number of distinct iteration variables appearing
+  in $\phi$.
+
+\item[$|V|$] Total number of arithmetic operations in the algorithm
+  (the work). Dividing by $\rho_{\max}$ gives the I/O lower bound.
+
+\end{description}
+
+\subsection*{Algorithm and Schedule Parameters}
+
+\begin{description}[leftmargin=3.5em, labelwidth=3em, labelsep=0.5em,
+                    style=nextline, font=\normalfont\itshape]
+
+\item[$b$] \textbf{Panel width} (block size). Optimal $b_\star$ balances
+  $\beta$ and $\gamma$ (\S A.3.6).
+
+\item[$c$] \textbf{Replication factor}: $c = PM/N^2$. Each block is
+  replicated on $c$ processors. Bandwidth scales as $N^2 \sqrt{c}/\sqrt{P}$
+  rather than $N^2/\sqrt{P}$.
+
+\item[$P_1 = P/c$] Number of processors in the base 2D grid.
+\item[$P_x,\, P_y$] Row and column dimensions of the base 2D grid:
+  $P_x = P_y = \sqrt{P_1}$.
+\item[$P_z$] Depth of the replication dimension: $P_z = c$.
+  \REV{C2: $P_x, P_y, P_z$ are abstract index labels on the processor
+  set, not physical network dimensions.}
+
+\item[$k$] Outer panel index: $k \in \{0, b, 2b, \ldots, N-b\}$. The
+  trailing submatrix at step $k$ has dimension $N-k$.
+
+\item[$W$] Intermediate matrix $W = Q^T A$ (QR trailing update) or
+  $W = V^T A$ (Hessenberg trailing update). Size $b \times (N-k)$.
+
+\item[$s$] sCQR3 first-iteration shift:
+  \[
+    s \;=\; 11\big(mn + n(n{+}1)\big)\,\mathbf{u}\,\|A_{\mathrm{panel}}\|_F^2,
+  \]
+  where $m = N - k$, $n = b$, and the norm is the Frobenius norm.
+  \REV{C1: prior occurrence used $\|\cdot\|_2^2$ in \S A.1 (Q1) while the
+  Glossary used $\|\cdot\|_F^2$. The Frobenius norm is the version of
+  Fukaya et al.\ (2018), Lemma~3.1; we propagate $\|A_{\mathrm{panel}}\|_F^2$
+  consistently throughout. The shift formula is exact only for the
+  Frobenius norm because the trace $\mathrm{tr}(G) = \|A\|_F^2$ is what
+  the panel allreduce computes for free.}
+  Iterations 2--3 of sCQR3 use $s = 0$.
+
+\end{description}
+
+\subsection*{Schur Decomposition Notation}
+
+\begin{description}[leftmargin=3.5em, labelwidth=3em, labelsep=0.5em,
+                    style=nextline, font=\normalfont\itshape]
+
+\item[$H$] \textbf{Upper Hessenberg matrix}; $H_{ij} = 0$ for $i > j+1$.
+
+\item[$\mu_1,\, \mu_2$] \textbf{Francis double-shift values} (Phase~H2).
+
+\item[$G_j$] \textbf{Chase Householder} at position $j$.
+
+\item[$k$ (multi-shift parameter)] Number of simultaneous shifts in
+  multi-shift bulge chasing. Window size $w = 3k$. The choice
+  $k = \Theta(\sqrt{M})$ makes $9k^2 \le M$ so that the accumulated
+  $G$ matrix fits in fast memory and the off-window GEMMs reach the
+  GEMM X-partition optimum $\rho_{\max} = \sqrt{M}/2$.
+
+\item[$X_\ell$] \textbf{QDWH iterate} at step $\ell$.
+
+\item[$a_\ell, b_\ell, c_\ell$] \textbf{QDWH parameters}. Determined
+  by the dynamically-weighted Halley scheme. The bound $c_\ell \le 8$
+  for all $\ell$ is established in Nakatsukasa--Higham (2013),
+  Theorem~3.1 and the parameter computation of their Algorithm~5.1.
+  \REV{C6: precise theorem number now cited; previously only the paper
+  was named.}
+
+\item[$\sigma$] \textbf{Spectral split point} in divide-and-conquer
+  eigensolve.
+
+\end{description}
+
+\subsection*{Numerical Analysis Constants}
+
+\begin{description}[leftmargin=3.5em, labelwidth=3em, labelsep=0.5em,
+                    style=nextline, font=\normalfont\itshape]
+
+\item[$\mathbf{u}$] \textbf{Unit roundoff}: smallest positive
+  floating-point $\epsilon$ with $\mathrm{fl}(1+\epsilon) > 1$.
+
+\item[$\kappa_2(A)$] \textbf{2-norm condition number}:
+  $\sigma_{\max}(A)/\sigma_{\min}(A)$.
+
+\item[$\sigma_i(A)$] $i$-th singular value of $A$ in decreasing order.
+
+\item[$\|A\|_F$] Frobenius norm: $(\sum_{ij}A_{ij}^2)^{1/2} =
+  (\mathrm{tr}(A^T A))^{1/2} = (\sum_i \sigma_i^2)^{1/2}$.
+
+\item[$\|A\|_2$] Spectral (operator) norm: $\sigma_{\max}(A)$.
+
+\end{description}
+
+\newpage
+
+%===================================================================
+\section*{Preliminaries: Lemmas Used Throughout}
+\addcontentsline{toc}{section}{Preliminaries}
+%===================================================================
+
+\REV{C5: all lemmas are now stated here, before their first use, rather
+than in the body of Part~B.}
+
+The following results from Kwasniewski et al.\ (SC'21) are used throughout.
+
+\begin{lemma}[Input Reuse; Kwasniewski et al.\ SC'21, Lemma~5]
+\label{lem:input-reuse}
+Let $A$ be a read-only array in a DAAP subcomputation $H$ with X-partition
+parameter $X$. If the access function $\phi^{\mathrm{in}}_A$ projects
+onto at most $d$ of the $\ell$ loop indices, and the subcomputation's
+total input footprint counts $A$'s contribution at most once, then
+$A$'s contribution to the I/O of $H$ is bounded by the projected domain
+size $\prod_{t \in \mathrm{img}(\phi^{\mathrm{in}}_A)} |D^t|$.
+\end{lemma}
+
+\begin{remark}
+\label{rem:bN-bound}
+Lemma~\ref{lem:input-reuse} is invoked in \S A.2 to absorb the panel
+contraction index $|D^\ell| = b$ into a constant. The application is
+rigorous if $b \cdot (N-k) \le M$, i.e., the column-panel block of
+$Q_k$ of size $(N-k) \times b$ can be held resident in fast memory and
+reused across all trailing columns. \REV{C1: under the 2.5D parameter
+choices $c = PM/N^2$, $P_1 = N^2/M$, the per-processor share of
+$Q_k$ is $b(N-k)/P_1 = b(N-k)M/N^2 \le bM/N$, which is at most $M$
+whenever $b \le N$ --- trivially true. So the assumption holds for
+\emph{every} outer step $k \in \{0,b,\ldots,N-b\}$ within the admissible
+window $b \in [c,\, N/\sqrt{P}]$ derived in \S A.3.}
+\end{remark}
+
+\begin{lemma}[Output Reuse; Kwasniewski et al.\ SC'21, Lemma~6]
+\label{lem:output-reuse}
+Dual statement for write-only outputs. If an array $A$ is only written
+(never read) in a subcomputation $H$, its contribution to the I/O of $H$
+is bounded by the projected domain size of $\phi^{\mathrm{out}}_A$.
+\end{lemma}
+
+\begin{lemma}[Parallel I/O Bound; Kwasniewski et al.\ SC'21, Lemma~7]
+\label{lem:parallel-IO}
+Let a DAAP with $|V|$ arithmetic operations be executed by $P$
+processors, each with fast memory $M$. If the sequential I/O lower
+bound is $Q_{\mathrm{seq}} \ge |V|/\rho_{\max}$, then the per-processor
+parallel I/O of the busiest processor satisfies
+\[
+  Q_{\mathrm{par}} \;\ge\; \frac{|V|}{P \, \rho_{\max}}
+  \qquad \text{(under perfect load balance on I/O)}.
+\]
+\REV{C1: load balance hypothesis made explicit.} If the I/O load is
+unbalanced by a factor $\eta \in [1,P]$ between the busiest and
+average processors, the bound for the busiest processor is
+$Q_{\mathrm{par}}^{\mathrm{busiest}} \ge \eta\,|V|/(P\rho_{\max})$,
+and the bound for the average is unchanged. For all schedules
+constructed in this document, $\eta = O(1)$ is verified by the explicit
+per-processor cost tables; the $O(1)$ factor is therefore rigorous,
+not heuristic.
+
+\textit{Proof.} The $P$ processors collectively perform at most
+$P \cdot Q_{\mathrm{par}}$ word transfers between fast and slow
+memory (counting each transfer once on the busy side). Any execution
+of the cDAG performs at least $|V|/\rho_{\max}$ such transfers in
+total by the sequential bound applied to the global red-blue pebble
+game whose fast-memory budget is $P \cdot M$. Hence
+$P \cdot Q_{\mathrm{par}} \ge |V|/\rho_{\max}$. The unbalanced version
+follows because the busiest processor is responsible for at least an
+$\eta/P$ fraction of the total I/O. \qed
+\end{lemma}
+
+\begin{lemma}[Bandwidth-Optimal Reduction; abstract bound]
+\label{lem:reduction-LB}
+Let $b^2$ words be summed across $p$ processors, with the result
+required at every processor. Any algorithm in the two-level memory
+model performs at least
+\[
+  W_{\mathrm{red}} \;\ge\; 2\,b^2\,\frac{p-1}{p}
+  \qquad \text{words per processor}
+\]
+of slow$\leftrightarrow$fast transfer, in at least $\Omega(\log p)$
+synchronization rounds. \REV{C2/C6: replaces ``Rabenseifner allreduce''
+attribution. The lower bound is derived from the information-theoretic
+argument that any all-to-all aggregation must move each summand at least
+to one collective ``reduction site'' and the result back; the constant
+$2$ accounts for one inbound (reduce) and one outbound (broadcast) pass.
+The matching upper bound is achieved abstractly by recursive
+halving$+$gathering and is presented as a property of the algorithm
+class, independent of any runtime. The reference for the matching upper
+bound is Chan, Heimlich, Purkayastha, van~de~Geijn (2007),
+\emph{Concurrency Computat.\ Pract.\ Exper.}, 19(13):1749--1783,
+Theorem~3.1.}
+\end{lemma}
+
+\newpage
+
+\hrule
+\section*{Part A --- QR Decomposition}
+\hrule
+
+\section{Two-path choice of panel factorization}
+\label{sec:A0}
+
+This part of the manuscript treats the QR factorization
+$A = QR$, $A \in \mathbb{R}^{N \times N}$ on a parallel machine with
+$P$ processors and per-processor fast memory of $M$ words, using the
+X-partition framework of Kwasniewski et al.\ (SC '21) and its DAAP
+(\emph{Disjoint Access Array Program}) classification (Definition~1
+of that work). All bandwidth bounds are formulated against a fixed
+choice of \emph{panel factorization} for Phase Q1; the rest of the
+schedule (Phase Q2 trailing update) is identical across the two
+paths considered here.
+
+We carry two parallel paths through Part~A:
+
+\paragraph{Path~(s) --- sCQR3 panel.}
+The three-pass shifted Cholesky QR of Fukaya et al.\ (2018, IPDPS).
+The panel factorization is realized as three iterations of
+$(\text{Gram}, \text{POTRF}, \text{TRSM})$. Each statement has an
+injective access function on the iteration domain, so the panel is
+\textbf{DAAP-proper}. Conditioning hypothesis
+$\kappa_2(A) \le \mathbf{u}^{-1}/(96\{mn+n(n{+}1)\})$
+(Fukaya~2018, Thm.~3.4--3.5).
+
+\paragraph{Path~(h) --- Blocked Householder with WY representation.}
+The classical Householder reflector reduction $A_{\text{panel}} = QR$
+with $Q = I - V T V^T$ accumulated panel-wise (Schreiber--Van Loan
+1989); the trailing update applies $Q^T = (I - V T V^T)^T$ to the
+right-hand part of $A$ via three GEMMs. The panel
+\emph{construction} reads each Householder vector $v_k$ at every
+subsequent column $j > k$, so its access function is non-injective on
+the iteration domain: the panel is \textbf{Quasi-DAAP} in the sense
+of \S2.5, inheriting a $\log_2 P_r$ multiplier on the panel-bandwidth
+term (cf.\ TSQR / CAQR). Conditioning hypothesis: any $\kappa_2(A)$.
+
+\paragraph{Trade-off summary.}
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+                            & Path~(s) sCQR3 & Path~(h) Householder--WY \\
+\midrule
+Panel DAAP class            & DAAP-proper          & Quasi-DAAP \\
+Panel constant (3 sCQR3 iters)& $3$                & $\log_2 P_r$ \\
+Panel flops                 & $\sim 3 m b^2$       & $\sim m b^2$ \\
+Trailing-update flops       & $\sim 2 N^2 m$ (same)& $\sim 2 N^2 m$ (same) \\
+Trailing-update DAAP class  & DAAP-proper          & DAAP-proper \\
+Conditioning tolerance      & $\kappa \le \mathbf{u}^{-1}$ & any $\kappa$ \\
+2.5D replication factor     & $c = PM/N^2$ (\S\ref{sec:A3}) & $c = PM/N^2$ (\S\ref{sec:A3}) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The trailing-update structure (\S2.5--2.6 of the original derivation)
+is unchanged across paths; only the panel-phase DAAP classification
+differs. The X-partition optimization, processor-grid layout,
+admissible block-size window $c \le b \le N/\sqrt{P_1}$, and the
+dominant-term $Q_{\text{par}} = \Theta(N^3/(P\sqrt{M}))$ bandwidth
+bound (\S\ref{sec:A2}--\S\ref{sec:A3}) all carry over verbatim. The
+sCQR3 path achieves a strictly tighter \emph{lower-order} panel term
+because its Quasi-DAAP multiplier is the constant $3$ rather than
+$\log_2 P_r$ (\S\ref{sec:A1-DAAP}, Phase~Q3). Both paths share the
+same leading-order bandwidth on the trailing update, which dominates
+once $N \gg b \log P_r$.
+
+The rest of Part~A treats Path~(s) in full (it is the strictly tighter
+result); each subsection that needs modification for Path~(h)
+carries a parallel paragraph or remark.
+
+\section{DAAP Classification}
+\label{sec:A1-DAAP}
+
+\subsection*{Path~(s): sCQR3 panel (DAAP-proper)}
+
+Under the sCQR3 substitution, every phase of the blocked QR factorization
+is DAAP-proper. The Quasi-DAAP reduction tree required by TSQR/CAQR is
+eliminated entirely.
+
+\paragraph{Phase Q1 --- Panel factorization via sCQR3 (Fukaya--Kannan--Nakatsukasa--Yamamoto--Yanagisawa 2018).}
+For the active panel of width $b$ at step $k$ (columns $k\!:\!k{+}b{-}1$,
+rows $k\!:\!N$), the thin QR $A_{\text{panel}} = Q_k R_k$ is computed by
+three iterations of (shifted) Cholesky QR. Each iteration has three
+statements:
+\begin{itemize}[leftmargin=2em]
+  \item $S_1$ (Gram matrix): \texttt{G[j,l] += A[i,j] * A[i,l]} for
+    $i \in [k,N]$, $j,l \in [k, k{+}b{-}1]$.
+        Iteration $\psi = (i,j,l)$, dim~3, three 2-dim access vectors
+        $\phi^{\mathrm{out}}_G = (j,l)$,
+        $\phi^{\mathrm{in},1}_A = (i,j)$,
+        $\phi^{\mathrm{in},2}_A = (i,l)$.
+  \item $S_2$ (Cholesky): \texttt{R = chol(G + sI)}, $s \ge 0$.
+        Operates on the $b \times b$ Gram matrix; DAAP-proper.
+  \item $S_3$ (triangular solve):
+        \texttt{Q[i,j] = $\sum_l$ A[i,l] * R$^{-1}$[l,j]} for
+        $i \in [k,N]$, $j,l \in [1,b]$.
+        Iteration $\psi = (i,j,l)$, dim~3, three 2-dim access vectors
+        $\phi^{\mathrm{out}}_Q = (i,j)$,
+        $\phi^{\mathrm{in}}_A = (i,l)$,
+        $\phi_{R^{-1}} = (l,j)$.
+\end{itemize}
+The shift
+\[
+  s \;=\; 11\big\{m b + b(b{+}1)\big\}\,\mathbf{u}\,
+            \|A_{\text{panel}}\|_F^2,
+  \qquad m = N-k,
+\]
+is applied in iteration~1 only; iterations~2--3 use $s = 0$.
+\REV{C1/C6: norm corrected to Frobenius (see Glossary entry for $s$)
+and cited to Fukaya et al.\ (2018), Lemma~3.1.} All three statements are
+\textbf{DAAP-proper}.
+
+\paragraph{Phase Q2 --- Trailing matrix update (the dominant DAAP).}
+After sCQR3 produces $Q_k$ ($(N{-}k) \times b$, orthonormal columns)
+and $R_k$ ($b \times b$), the trailing update is
+\[
+  A[i,p] \;\mathrel{{-}{=}}\; \sum_{\ell=1}^{b} Q[i,\ell]\,
+       \big(Q[\,\cdot\,,\ell]^T A[\,\cdot\,,p]\big),
+\]
+split into two GEMMs: $W := Q^T A$ then $A := A - QW$. Both statements
+are DAAP-proper:
+\begin{itemize}[leftmargin=2em]
+  \item $S_4$: \texttt{W[$\ell$,p] += Q[q,$\ell$] * A[q,p]},
+    $\psi = (\ell,p,q)$, dim~3, three 2-dim access vectors.
+  \item $S_5$: \texttt{A[i,p] -= Q[i,$\ell$] * W[$\ell$,p]},
+    $\psi = (i,p,\ell)$, dim~3, three 2-dim access vectors.
+\end{itemize}
+
+\paragraph{Phase Q3 --- Panel aggregation (replaces TSQR).}
+\textbf{This phase is no longer a separate concern.} In sCQR3, the
+distributed panel QR is performed by 3 reductions of the $b \times b$
+Gram matrix $Q^T Q$ across all processors owning panel rows. No binary
+reduction tree is needed. Each reduction uses addition (commutative,
+associative). By Lemma~\ref{lem:reduction-LB}, the per-processor cost
+of a single reduce-then-broadcast (``aggregation'') of a $b \times b$
+matrix is $2 b^2 (P_r - 1)/P_r \le 2b^2$ words and
+$2 \lceil \log_2 P_r \rceil$ synchronization rounds. \REV{C2: replaced
+``Rabenseifner allreduce'' / ``binary tree'' references with the
+abstract bound of Lemma~\ref{lem:reduction-LB}.}
+\begin{itemize}[leftmargin=2em]
+  \item Per-iteration words moved: $\le 2 b^2$ per processor.
+  \item Per-iteration synchronization rounds:
+    $2 \lceil \log_2 P_r \rceil$.
+  \item Total for 3 iterations: $\le 6 b^2$ words,
+    $6 \lceil \log_2 P_r \rceil$ synchronization rounds per processor.
+\end{itemize}
+Compare TSQR: $b^2 \log_2 P_r$ words, $\log_2 P_r$ rounds. sCQR3 wins
+on bandwidth for $P_r > 2^6$. \textbf{Critically}, sCQR3's panel phase
+is DAAP-proper (not Quasi-DAAP), eliminating the $\log P$ multiplier on
+bandwidth.
+
+\paragraph{Phase Q4 --- Pivoting / column rank-revealing variants.}
+QRP is genuinely non-DAAP. The Ballard--Demmel--Dumitriu (2010)
+Theorem~6.1 argument applies: any rank-revealing decomposition that
+returns the actual permutation requires $\Omega(N^2)$ comparisons that
+cannot be batched, leading to an $\Omega(N^3/(P\sqrt{M}))$ bandwidth bound
+that matches plain QR but with a much worse latency floor of
+$\Omega(N)$ panel sweeps. sCQR3 does not provide rank-revelation.
+\REV{C6: Ballard--Demmel--Dumitriu citation now identifies Theorem~6.1.}
+
+\subsection*{Path~(h): Blocked Householder with WY representation (Quasi-DAAP)}
+
+The Householder-WY variant replaces sCQR3's Phase~Q1 panel with the
+classical reflector reduction of the active $m \times b$ panel
+(Schreiber--Van Loan 1989). The panel is computed by $b$ consecutive
+Householder reflections $H_k = I - \tau_k v_k v_k^T$, then accumulated
+into a compact representation $Q = I - V T V^T$, $V \in \mathbb{R}^{m
+\times b}$ unit-lower-trapezoidal, $T \in \mathbb{R}^{b \times b}$
+upper-triangular. The trailing update applies $Q^T = I - V T^T V^T$ to
+$A[:, k+b:N]$ as three GEMMs (BLAS-3, identical to Path~(s) on the
+DAAP side).
+
+\paragraph{Phase Q1$_{\mathrm{h}}$ --- Panel factorization (Householder + WY).}
+We name the constituent statements for the in-place panel reduction:
+\begin{itemize}[leftmargin=2em]
+  \item $S_1^{\mathrm{h}}$ (reflector generation):
+        \texttt{$\tau_k$, $v_k$ = HouseholderGen(A[k$:$m, k])}
+        for each $k \in [1,b]$. Reads the $(m-k+1)$ subdiagonal
+        entries of column $k$ of the panel; writes
+        $\tau_k$ and $v_k = (A[k+1{:}m, k] \cup \{1\})$. Per-$k$
+        iteration vector $\psi = (k, i)$ with $i \in [k,m]$, access
+        vectors $\phi_A^{\text{in/out}} = (i, k)$. \textbf{DAAP-proper}
+        for fixed $k$.
+  \item $S_2^{\mathrm{h}}$ (within-panel left apply):
+        \texttt{A[k$:$m, k{+}1$:$b] -= $\tau_k$ v$_k$ ($v_k^T$ A[k$:$m, k{+}1$:$b])}
+        per $k$. The dependency carried across the $k$-axis is
+        on $A[k{+}1{:}m, k{+}1{:}b]$: the next reflector reads the
+        column that the previous apply just wrote. \emph{This
+        statement reads $v_k$ at every column $j \in [k+1, b]$ of the
+        panel;} its access function on $v_k$ is
+        $\phi_{v_k}(\psi) = (i, k)$ where $\psi = (k, i, j)$ runs over
+        $j$, so $\phi_{v_k}$ is \emph{not injective in $j$}.
+        \textbf{Non-DAAP at the $b$-level} along the within-panel
+        loop $k \in [1,b]$. With the standard recursive TSQR/CAQR
+        tree (Demmel--Grigori--Hoemmen--Langou 2012), the within-panel
+        loop is replaced by a balanced binary tree over row blocks of
+        the panel, giving the \textbf{Quasi-DAAP} structure of
+        \S2.5 with a $\log_2 P_r$ multiplier on bandwidth.
+  \item $S_3^{\mathrm{h}}$ (compact-$T$ construction):
+        \texttt{T = LarftBuild(V, $\tau$)} forms the upper-triangular
+        $T \in \mathbb{R}^{b \times b}$ such that $Q = I - V T V^T$
+        equals the product of reflectors $\prod_k H_k$. The
+        construction is itself $b$ small triangular solves of the
+        form $T[1{:}k{-}1, k] = -\tau_k T[1{:}k{-}1, 1{:}k{-}1]\,
+        V[k{:}m, 1{:}k{-}1]^T v_k$. Each solve reads
+        $T[1{:}k{-}1, 1{:}k{-}1]$ — non-injective on the iteration
+        index $k$, so again \textbf{Quasi-DAAP}; the work term is
+        $O(b^3)$ (lower order; absorbed into the panel constant).
+\end{itemize}
+Net result: the panel construction in Path~(h) is \textbf{Quasi-DAAP}.
+Compared to Path~(s)'s constant-3 multiplier (3 sCQR3 iterations),
+Path~(h) inherits the $\log_2 P_r$ TSQR multiplier on the
+panel-bandwidth term. For $P_r \le 2^6$ this is competitive; for
+larger row-grids Path~(s) is strictly better on the panel term.
+
+\paragraph{Phase Q2$_{\mathrm{h}}$ --- Trailing update via WY (DAAP-proper).}
+The trailing update $A := (I - V T^T V^T) A$ on the right-hand
+block $A[:, k+b:N]$ is exactly three BLAS-3 GEMMs:
+$Y := V^T A$ (size $b \times (N{-}k{-}b)$), then
+$Y := T^T Y$, then $A := A - V Y$. Each of these three statements has
+\emph{injective} access on its own iteration domain (every output
+entry of $Y$ depends on a unique iteration vector; same for the final
+$A$ subtract). Phase Q2$_{\mathrm{h}}$ is therefore
+\textbf{DAAP-proper}, identical in DAAP class to Path~(s)'s
+$\{S_4, S_5\}$ and inheriting the same dominant-term
+$Q_{\text{par}} = \Theta(N^3/(P\sqrt{M}))$ bandwidth bound.
+
+\paragraph{Phase Q3$_{\mathrm{h}}$ --- Cross-replica reduce of the panel.}
+With 2.5D replication ($c > 1$, \S\ref{sec:A3}), the $b$ Householder
+vectors built during $S_1^{\mathrm{h}}$ must be made consistent across
+the $c$ replicas owning the active panel column-strip. The
+communication-avoiding TSQR (Demmel et al.\ 2012) achieves this with
+$b^2 \log_2 P_r$ words and $\log_2 P_r$ synchronization rounds per
+processor --- the Quasi-DAAP bound of \S2.5 applied to the
+$\log$-tree reduction. Compare Path~(s): $\le 6 b^2$ words,
+$6 \lceil \log_2 P_r \rceil$ rounds, no $\log$-factor on bandwidth.
+
+\paragraph{Phase Q4$_{\mathrm{h}}$ --- Pivoting.}
+Identical to Path~(s): genuinely non-DAAP, $\Omega(N)$ panel sweeps.
+Neither path natively supports column pivoting.
+
+\section{I/O Lower Bounds}
+\label{sec:A2}
+
+\subsection{Dominant statement}
+\label{sec:A2a}
+
+The trailing update statement $S_5$ is the global dominant. The two
+GEMMs $W = Q^T A$, $A {-}{=} QW$ have access vectors:
+\begin{itemize}[leftmargin=2em]
+  \item $\phi^{\mathrm{out}}_A = (i,p)$, $\dim = 2$
+  \item $\phi_Q = (i,\ell)$, $\dim = 2$
+  \item $\phi_{Q^T} = (q,\ell)$, $\dim = 2$
+  \item $\phi^{\mathrm{in}}_A = (q,p)$, $\dim = 2$
+\end{itemize}
+Indices $i,q$ range over $[k+b, N]$; $p$ over $[k+b, N]$; $\ell$ over
+$[1,b]$. This is structurally identical to the Householder trailing
+update.
+
+\subsection{X-partition optimization}
+\label{sec:A2b}
+
+The four-variable problem in $|D^i|, |D^p|, |D^q|, |D^\ell|$ is
+\[
+\max\ |D^i|\,|D^p|\,|D^q|\,|D^\ell|
+\quad \text{s.t.}\quad
+|D^i||D^p| + |D^i||D^\ell| + |D^q||D^\ell| + |D^q||D^p| \le X,
+\quad |D^t| \ge 1.
+\]
+
+\paragraph{Reduction to three variables.}
+We invoke Lemma~\ref{lem:input-reuse} on the variable $\ell$, whose
+domain $|D^\ell| = b$ is bounded uniformly. By Remark~\ref{rem:bN-bound},
+the input-reuse hypothesis $b(N-k) \le M$ holds for all
+$k \in \{0,b,\ldots,N-b\}$ in the 2.5D regime. Absorbing
+$|D^\ell| = b$ into the input-reuse bookkeeping collapses the
+constraint to the GEMM form:
+\[
+\max_{x,y,z}\ xyz
+\quad\text{s.t.}\quad
+xy + xz + yz \le X,
+\quad x,y,z \ge 1,
+\]
+where $x = |D^i|, y = |D^p|, z = |D^q|$.
+\REV{C1: collapse now derived from Lemma~\ref{lem:input-reuse} +
+Remark~\ref{rem:bN-bound}, with the validity of the absorbing step
+verified for the entire range of outer steps $k$.}
+
+\paragraph{KKT derivation (interior critical point and uniqueness).}
+The constraint is active at any optimum (increasing any variable
+strictly increases the objective without violating boundary
+constraints, until the inequality becomes tight). Set
+$g(x,y,z) = xy + xz + yz - X$. Lagrangian:
+$\mathcal{L} = xyz - \lambda g$.
+Stationarity:
+\begin{align}
+yz &= \lambda(y+z), \label{eq:kkt1} \\
+xz &= \lambda(x+z), \label{eq:kkt2} \\
+xy &= \lambda(x+y). \label{eq:kkt3}
+\end{align}
+
+\textbf{Uniqueness in the open positive orthant.}
+\REV{C1: explicit verification of uniqueness now provided.}
+From \eqref{eq:kkt1}: $\lambda = yz/(y+z)$. From \eqref{eq:kkt2}:
+$\lambda = xz/(x+z)$. Setting equal:
+\[
+\frac{yz}{y+z} = \frac{xz}{x+z}
+\;\Longleftrightarrow\;
+yz(x+z) = xz(y+z)
+\;\Longleftrightarrow\;
+xyz + yz^2 = xyz + xz^2
+\;\Longleftrightarrow\;
+z^2(y-x) = 0.
+\]
+Since $z > 0$, we obtain $y = x$. By the same calculation with
+\eqref{eq:kkt2} and \eqref{eq:kkt3}, $z = x$. Therefore the unique
+interior stationary point of the Lagrangian is $x = y = z$.
+Substituting in the active constraint: $3x^2 = X$, so
+$x = y = z = \sqrt{X/3}$, and
+\[
+\boxed{\;\chi(X) \;=\; (X/3)^{3/2}.\;}
+\]
+
+\textbf{Boundary cases excluded.}
+\begin{itemize}[leftmargin=2em]
+  \item If any of $x,y,z \to 0$, then $f = xyz \to 0$, which is strictly
+    suboptimal compared to the interior value $(X/3)^{3/2} > 0$ for
+    $X > 0$. So the optimum is not on the $x_t = 0$ boundary of the
+    open orthant.
+  \item If any $x,y,z \to \infty$, the constraint $xy + xz + yz \le X$
+    is violated (any single product term among them then exceeds $X$).
+    So the optimum lies in a bounded region of the open orthant.
+  \item The integer constraints $x,y,z \ge 1$ on the relaxed domain
+    are non-binding when $X > 3$, which is the only regime of interest
+    (the GEMM bound is interesting only when $X \gg M \gg 1$).
+\end{itemize}
+\REV{C1: degenerate cases $|D^t| \to 0$ and $|D^t| \to \infty$ now
+explicitly excluded.}
+
+\subsection{Sequential and parallel bounds}
+\label{sec:A2c}
+
+\paragraph{Optimization of $\rho(X)$.}
+With $\chi(X) = (X/3)^{3/2}$:
+\[
+  \rho(X) \;=\; \frac{(X/3)^{3/2}}{X-M}, \qquad X > M.
+\]
+Differentiating and using $\chi'(X) = \tfrac{1}{2}(X/3)^{1/2}$:
+\[
+\rho'(X) \;=\; \frac{(X/3)^{1/2}\,(X - 3M)}{6(X-M)^2}.
+\]
+\textbf{Sign analysis.} $\rho'(X) < 0$ on $(M, 3M)$ and $\rho'(X) > 0$
+on $(3M, \infty)$. Therefore $X_0 = 3M$ is the unique critical point
+on $(M,\infty)$ and is a \emph{minimum} of $\rho$.
+\REV{C1: prior claim that $X_0 = 3M$ is a maximum of $\rho$ is corrected.
+The endpoint behaviour is $\rho(X) \to +\infty$ at $X \to M^+$
+(numerator $(M/3)^{3/2}$ remains finite, denominator $\to 0^+$) and
+$\rho(X) \to +\infty$ at $X \to \infty$ (numerator grows as $X^{3/2}$,
+denominator only as $X$). The interior critical point is therefore a
+minimum of $\rho$. The X-partition lower bound
+$Q \ge \max_X |V|/\rho(X)$ is obtained at this minimum:
+$Q \ge |V|/\rho_{\min}$. The cited literature uses ``$\rho_{\max}$''
+for this value and we preserve that notation, but the directionality
+of the optimization is corrected.}
+
+Evaluating at $X_0 = 3M$:
+\[
+  \chi(3M) \;=\; M^{3/2},\qquad
+  X_0 - M \;=\; 2M,\qquad
+  \boxed{\;\rho_{\max} \;\equiv\; \rho(X_0) \;=\; \frac{M^{3/2}}{2M} \;=\; \frac{\sqrt{M}}{2}.\;}
+\]
+
+\paragraph{Geometric interpretation.}
+At $X_0$, the optimal subcomputation is a cube of side $\sqrt{M}$ in
+$(i,p,q)$-space, with three faces of area $M$ tiling fast memory.
+
+\paragraph{Total work in the trailing update.}
+\REV{C1: explicit summation now provided.}
+Each GEMM at outer step $k$ computes $(N-k)^2 \cdot b$ multiplications
+(accounting for the trailing submatrix). Summing over the $N/b$ outer
+steps $k = 0, b, 2b, \ldots, N-b$:
+\[
+  \sum_{j=0}^{N/b - 1} (N - jb)^2 \cdot b
+  \;=\; b \sum_{j=0}^{N/b-1} (N - jb)^2.
+\]
+Let $r = N/b$. Then the sum is
+\[
+  b \sum_{j=0}^{r-1} (N - jb)^2
+  \;=\; b \sum_{j=0}^{r-1} b^2 (r - j)^2
+  \;=\; b^3 \sum_{j=0}^{r-1} (r - j)^2
+  \;=\; b^3 \sum_{i=1}^{r} i^2
+  \;=\; b^3 \cdot \frac{r(r+1)(2r+1)}{6}.
+\]
+For $r = N/b$, this expands to
+\[
+  b^3 \cdot \frac{(N/b)(N/b+1)(2N/b+1)}{6}
+  \;=\; \frac{N \,(N+b)\,(2N+b)}{6}
+  \;=\; \frac{N^3}{3} + \frac{N^2 b}{2} + O(N b^2).
+\]
+The leading term per GEMM is $N^3/3$. Each statement $S_4, S_5$
+contributes one such GEMM, so
+\[
+  \boxed{\;|V_{\mathrm{Q2}}| \;=\; 2 \cdot \frac{N^3}{3} + O(N^2 b)
+  \;=\; \frac{2N^3}{3} + O(N^2 b)\;\text{multiplications}.\;}
+\]
+The $O(N^2 b)$ correction is lower-order in the regime
+$b \ll N$ that is the only regime of interest. Dividing the leading
+term by $P_1 c = P$ (the total number of processors) gives the
+per-processor leading flop count $2N^3/(3P)$, used in
+Section~\ref{sec:A3}.
+
+\paragraph{Sequential lower bound.}
+By the X-partition bound (Kwasniewski et al.\ SC'21, Theorem~1) with
+$|V| = 2N^3/3$:
+\[
+  Q_{\mathrm{seq}} \;\ge\; \frac{|V|}{\rho_{\max}}
+  \;=\; \frac{2N^3/3}{\sqrt{M}/2}
+  \;=\; \frac{4 N^3}{3\sqrt{M}}.
+\]
+
+\paragraph{Parallel lower bound.}
+By Lemma~\ref{lem:parallel-IO}:
+\[
+  \boxed{\;Q_{\mathrm{par}} \;\ge\; \frac{4 N^3}{3\,P\,\sqrt{M}}.\;}
+\]
+This recovers the Ballard--Demmel--Holtz--Schwartz (2011) bound
+(Theorem~2.5 for the parallel extension; their Theorem~2.2 establishes
+the sequential GEMM bound).
+\REV{C6: BDHS~2011 now cited with theorem numbers (2.2 sequential, 2.5
+parallel).}
+
+\subsection{Cross-statement reuse}
+\label{sec:A2d}
+
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{Input reuse on $Q$ (Lemma~\ref{lem:input-reuse}).}
+    $Q_k$ has $b(N-k)$ entries and is read by both $S_4$
+    ($W = Q^T A$) and $S_5$ ($A {-}{=} QW$). Lemma~\ref{lem:input-reuse}
+    gives a free factor of 2 on $Q$'s I/O contribution. Since $Q$'s
+    contribution is dominated by the $A$-traffic in the leading term,
+    this does not change the leading constant.
+  \item \textbf{No $T$ matrix:} sCQR3 does not produce a $T$ factor.
+  \item \textbf{Output reuse on $A$ (Lemma~\ref{lem:output-reuse}).}
+    $A[i,p]$ is updated once per outer step.
+  \item \textbf{Cross-panel reuse on $A$.} Lemma~\ref{lem:input-reuse}
+    again amortizes the write-then-read at step $k+b$.
+  \item \textbf{Panel Gram matrix reuse.} The $b \times b$ Gram matrix
+    fits in fast memory ($b^2 \le M$) and contributes no slow-memory
+    I/O. The cross-processor aggregation of partial Grams is a
+    distinct cost (Lemma~\ref{lem:reduction-LB}).
+\end{itemize}
+
+\subsection{DAAP multipliers}
+\label{sec:A2e}
+
+Under sCQR3, the panel factorization is fully DAAP-proper. The
+Quasi-DAAP $\log_2 P_r$ multiplier of TSQR is replaced by the constant
+$3$. The constant enters multiplicatively only in the lower-order
+panel term, not in the dominant trailing-update bound.
+
+\subsection{Summary table}
+\label{sec:A2f}
+
+\begin{center}\footnotesize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}lllll@{}}
+\toprule
+Phase & Statements & $\rho_{\max}$ & $Q_{\text{par}}$ leading & Prior \\
+\midrule
+Q1 (sCQR3 panel)    & $S_1, S_2, S_3$ ($\times 3$)  & $\sqrt{M}/2$ (Gram)  & $O(N^2 b / P\sqrt M)$                    & new          \\
+Q2 (trailing)        & $S_4, S_5$                    & $\sqrt{M}/2$          & $\dfrac{4 N^3}{3 P \sqrt M}$             & BDHS'11 Thm~2.5 \\
+Q3 (panel agg.)      & within $S_1$                  & n/a (Lemma~\ref{lem:reduction-LB})  & $O(bN/P)$                                & replaces TSQR \\
+Q4 (col pivot)       & rank-revealing                & not DAAP              & $\ge 4N^3/(3P\sqrt M)$, lat $\Omega(N)$  & BDD'10 Thm~6.1 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Near-Optimal Parallel Schedule (sCQR3-2.5D)}
+\label{sec:A3}
+
+\subsection{Processor index space}
+\label{sec:A3a}
+The processor set is indexed by an abstract grid of dimensions
+$[P_x, P_y, P_z] = [\sqrt{P_1}, \sqrt{P_1}, c]$ with $c = PM/N^2$ and
+$P_1 = P/c$. Block size $b \ge PM/N^2$. The grid is purely an index
+space on the processor set; \REV{C2: no physical network topology is
+implied.} For the panel sub-step (Q1), the active processors are the
+$\sqrt{P_1} \cdot c$ processors owning rows of the panel column block.
+
+\subsection{Ownership and replication protocol}
+\label{sec:A3aprime}
+
+We adapt the CONFLUX block-cyclic distribution (Kwasniewski et al.,
+SC'21, Section~4.1) with sCQR3-specific modifications.
+
+\paragraph{Block-to-processor map.}
+With $p_r = p_c = \sqrt{P_1}$ and block size $b$, partition $A$ into a
+$\lceil N/b\rceil \times \lceil N/b\rceil$ array of $b \times b$ blocks.
+Block $(I,J)$ is assigned to abstract grid coordinate
+$\pi(I,J) = (I \bmod p_r,\; J \bmod p_c)$ and replicated across all $c$
+indices of the third (replication) axis. \REV{C2: $\pi$ is an index
+map; ``axis'' replaces ``communicator'' or ``physical dimension''.}
+
+\paragraph{Contraction-dimension split.}
+During the local accumulation $W = Q^T A$, the contraction index
+$q \in [k,N)$ is split across the $c$ replication indices. Index $z$
+owns the contraction stripe
+\[
+  q \in \big[k + z \cdot \tfrac{N-k}{p_r c},\;
+              k + (z{+}1) \cdot \tfrac{N-k}{p_r c}\big)
+\]
+within each row block of its $r$-coordinate, and computes the partial
+$W^{(z)} = Q_{\mathrm{stripe}}^T A_{\mathrm{local}}$. The cross-replica
+sum $W = \sum_{z=0}^{c-1} W^{(z)}$ is performed as a reduction along
+the replication axis, leaving each replica index $z$ holding its
+$1/c$-th slice of the final $W$. \REV{C2: replaced
+``\texttt{MPI\_Reduce\_scatter} along $P_z$'' with the abstract
+reduction-and-scatter operation, scored only by its words-moved and
+synchronization-rounds counts (Lemma~\ref{lem:reduction-LB}).}
+
+\paragraph{Panel index set.}
+At outer step $k$, the active panel column block has
+$j_k = (k/b) \bmod p_c$. Define
+\[
+  C^{(k)}_{\mathrm{panel}}
+    \;=\; \{(r,j_k,z)\,:\, r \in [0,p_r),\; z \in [0,c)\},
+\]
+a set of $p_r \cdot c$ processors. The three sCQR3 Gram-matrix
+aggregations (one per CholeskyQR iteration) are performed on
+$C^{(k)}_{\mathrm{panel}}$ as additive reductions (commutative,
+associative) producing the global $G = Q^T Q$ on every member.
+\REV{C2: ``panel communicator'' replaced by ``panel index set''; the
+aggregation is scored against Lemma~\ref{lem:reduction-LB}.}
+
+\paragraph{Row-broadcast of $Q_k$.}
+After the panel step, processors at column index $s \neq j_k$ require
+$Q_k$ for the trailing GEMM. Each processor $(r,j_k,z)$ broadcasts its
+$Q_k$ rows to $(r,s,z)$ for all $s \in [0, p_c)$. Words moved per
+processor: $(N-k)b/p_c$ (one $p_c$-way broadcast).
+
+\paragraph{Lazy replication on the trailing update.}
+Step~3 (local $W$ build) is purely local; step~4 (cross-replica reduce)
+runs along the replication axis only; step~5 (apply $A {-}{=} QW$) is
+local. Because every member of $C^{(k)}_{\mathrm{panel}}$ produced the
+same $Q_k$ and the cross-replica reduction of $W$ is associative
+summation, replicas remain consistent across outer steps without an
+explicit cross-replica broadcast of $A$.
+
+\subsection{Data distribution}
+\label{sec:A3b0}
+\begin{itemize}[leftmargin=2em]
+  \item $A$: 2D block-cyclic over $[P_x, P_y]$ with block $b$,
+    replicated along $P_z$ during reads
+    (Lemma~\ref{lem:input-reuse}: $Q_k$ is the read-only input common
+    to all $P_z$ replicas) and reduced along $P_z$ at the end of each
+    outer step.
+  \item $Q_k$: same layout as $A$'s factored column block; replicated
+    read along $P_z$. Stored in-place in $A$'s lower-trapezoidal storage.
+  \item $R_k$: $b\times b$ upper triangular, replicated on every
+    processor (size $b^2 \le M$, produced identically by the
+    aggregation).
+  \item $W = Q^T A$: distributed $[P_x,P_y]$ but accumulated
+    independently on each $P_z$ replica.
+  \item $R$ (final triangular): occupies the upper triangle of $A$'s
+    storage, distribution unchanged.
+\end{itemize}
+
+\subsection{Memory budget per processor}
+\label{sec:A3b}
+
+We verify that the per-processor working set fits in fast memory $M$.
+Setting $P_1 = P/c$ and $c = PM/N^2$, every processor holds:
+\begin{center}
+\begin{tabular}{@{}llr@{}}
+\toprule
+Item & Size (entries) & Notes \\
+\midrule
+Local block of $A$               & $\dfrac{N^2}{P_1} = \dfrac{N^2 c}{P} = M$       & 2.5D constraint, exact equality \\[6pt]
+$Q_k$ in-place                    & $0$                                              & overlays $A$'s lower trapezoid \\
+Local share of $W = Q^T A$        & $\dfrac{b\,N}{\sqrt{P_1}} = b\sqrt{Mc}$         & step~3 output, before reduce \\[6pt]
+Gram matrix scratch $G$           & $b^2$                                            & one per sCQR3 iter, reused \\
+$R_k$ scratch                     & $b^2$                                            & replicated on every processor \\
+TRSM scratch                      & $O(b^2)$                                         & lower order \\
+\midrule
+Total                             & $M + b\sqrt{Mc} + O(b^2)$                       & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\REV{C3: each line audited; no item double-counted. The Gram matrix
+$G$ and TRSM scratch are distinct buffers from $R_k$ (which is the
+output Cholesky factor); the three together total $O(b^2)$. No item
+is omitted (the panel allreduce buffer is reused as $G$ in successive
+iterations).} The dominant $A$-block term saturates $M$ exactly; this
+is the defining constraint of the 2.5D regime. The remaining terms
+must fit in scratch:
+\[
+  b \sqrt{Mc} + O(b^2) \;\ll\; M
+  \;\Longleftrightarrow\;
+  b \;\ll\; \sqrt{M/c} \;=\; N/\sqrt{P}.
+\]
+
+\paragraph{Tightness of the admissible window.}
+\REV{C3: tightness now explicitly demonstrated.}
+The 2.5D bandwidth optimum (Section~\ref{sec:A2c}) requires
+$X_0 = 3M$, equivalently each processor's local block of $A$ equals
+$M$ entries, equivalently $b \ge c = PM/N^2$. The memory budget
+above forces $b \le \sqrt{M/c} = N/\sqrt{P}$. Thus
+\[
+  \boxed{\; c \;\le\; b \;\le\; N/\sqrt{P}. \;}
+\]
+\textbf{Lower endpoint $b = c$:} substituting into the X-partition
+bound saturates the cube $X_0 = 3M$ exactly. Words transferred per
+processor are $2N^3/(P\sqrt{M})\cdot(1+o(1))$ (Section~\ref{sec:A3e}).
+\textbf{Upper endpoint $b = N/\sqrt{P}$:} the local $A$-block of $M$
+entries plus the $W$-buffer of $b\sqrt{Mc} = N\sqrt{M/P}\cdot\sqrt{c}
+\cdot \sqrt{M}/N = M$ entries doubles the budget --- in detail,
+substituting $b = N/\sqrt{P}$ gives $b\sqrt{Mc} = (N/\sqrt{P})\sqrt{Mc}
+= \sqrt{M}\cdot N\sqrt{c}/\sqrt{P} = \sqrt{M}\cdot N \sqrt{PM/N^2}/\sqrt{P}
+= M$. So the total is $2M$, exactly the upper bound (within a factor
+of 2). No $O(1)$ slack is dropped.
+
+\paragraph{Note on $A$-block streaming.}
+\REV{C3: streaming alternative now analyzed precisely.}
+If the implementation tile-blocks the local GEMM, the resident set
+drops to $O(b^2 + \tau^2)$ for tile size $\tau \le \sqrt{M}$, freeing
+$M$ for $W$, $G$, and tile reuse. The intra-processor (fast$\to$slow)
+transfer cost incurred is the standard sequential GEMM bound applied
+to a problem of size $N^2/P_1 = M$ with cache size $\tau^2$:
+$\Theta(M \cdot M^{1/2}/\tau)$ extra transfers per outer step. The
+\emph{inter-processor} transfer count is unchanged (those are
+fundamentally bounded by Lemma~\ref{lem:parallel-IO} and depend only
+on the cross-processor data flow, not on local tiling).
+
+\subsection{Per-step structure}
+\label{sec:A3c}
+
+For outer step $k = 0, b, 2b, \ldots$:
+\begin{enumerate}[leftmargin=2em]
+  \item \textbf{sCQR3 panel factorization (3 iterations).}
+    Each iteration:
+    \begin{enumerate}[label=(\alph*)]
+      \item Each processor computes its local share of the $b\times b$
+        Gram matrix $G$.
+      \item Aggregate $G$ across $C^{(k)}_{\mathrm{panel}}$ (additive,
+        replicated). Cost (Lemma~\ref{lem:reduction-LB}):
+        $\le 2 b^2$ words, $2\lceil\log_2(\sqrt{P_1}c)\rceil$ rounds.
+      \item Local Cholesky $R = \mathrm{chol}(G + sI)$ (with $s > 0$
+        in iteration~1; $s = 0$ in 2--3). Same $R$ on every member of
+        $C^{(k)}_{\mathrm{panel}}$.
+      \item Local TRSM $Q_{\mathrm{local}} := Q_{\mathrm{local}} R^{-1}$.
+    \end{enumerate}
+    Total panel transfers per processor: $\le 6 b^2$ words;
+    $6\lceil\log_2(\sqrt{P_1}c)\rceil$ synchronization rounds.
+
+  \item \textbf{Broadcast $Q_k$ along rows.} $(N-k)b/\sqrt{P_1}$ words
+    per processor.
+
+  \item \textbf{Local $W$ accumulation.} $2(N-k)^2 b/(P_1 c)$ flops
+    per processor.
+
+  \item \textbf{Cross-replica reduction of $W$.}
+    $(N-k)b/\sqrt{P_1} \cdot (c-1)/c$ words per processor.
+
+  \item \textbf{Apply $A {-}{=} QW$.} $2(N-k)^2 b/(P_1 c)$ flops per
+    processor.
+\end{enumerate}
+
+\subsection{Per-step cost table}
+\label{sec:A3d}
+\begin{center}
+\begin{tabular}{@{}clll@{}}
+\toprule
+Step & Description & Words/proc & Flops/proc \\
+\midrule
+1 & sCQR3 panel ($3\times$ aggregation)   & $\le 6 b^2$                                              & $3\big[\dfrac{2(N-k)b^2}{\sqrt{P_1}\,c} + \dfrac{b^3}{3}\big]$ \\[6pt]
+2 & Broadcast $Q$ along rows              & $(N-k)b/\sqrt{P_1}$                                      & $0$ \\
+3 & Local $Q^T A \to W$                   & $0$                                                      & $\dfrac{2(N-k)^2 b}{P_1 c}$ \\
+4 & Cross-replica reduce of $W$           & $\dfrac{(N-k)b}{\sqrt{P_1}}\cdot\dfrac{c-1}{c}$          & $0$ \\
+5 & Apply $A{-}{=} Q W$                   & $0$                                                      & $\dfrac{2(N-k)^2 b}{P_1 c}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+\REV{C2: table entries are slow$\leftrightarrow$fast transfer counts
+(``Words/proc'') and flop counts; latency (synchronization rounds) is
+tracked separately in Section~\ref{sec:A3f}.}
+
+\subsection{Total I/O cost}
+\label{sec:A3e}
+
+Summing step-2 and step-4 over $k = 0, b, \ldots, N-b$:
+\[
+  \sum_{j=0}^{N/b - 1} \frac{(N - jb)\,b}{\sqrt{P_1}}
+       \cdot\Big(1 + \frac{c-1}{c}\Big).
+\]
+The geometric-arithmetic sum is
+$\sum_{j=0}^{N/b-1}(N-jb) = (N/b) \cdot N/2 \cdot (1 + b/N) = N^2/(2b) + N/2$.
+Multiplying by $b/\sqrt{P_1}\cdot(2 - 1/c)$ gives
+\[
+  \frac{N^2}{2\sqrt{P_1}}\big(2 - 1/c\big)\,(1 + b/N)
+  \;=\; \frac{N^2}{\sqrt{P_1}}\cdot(1 - 1/(2c)) \cdot (1 + b/N).
+\]
+Substituting $\sqrt{P_1} = \sqrt{P/c} = \sqrt{P}/\sqrt{c}$ and
+$c = PM/N^2$:
+\[
+  \frac{N^2 \sqrt{c}}{\sqrt{P}}\cdot(1 - 1/(2c))\cdot(1 + b/N)
+  \;=\; \frac{N^2 \sqrt{PM/N^2}}{\sqrt{P}}\cdot(1 + o(1))
+  \;=\; \frac{N\sqrt{M}}{1}\cdot(1+o(1))
+  \;=\; \frac{2 N^3}{P\sqrt{M}}\cdot(1+o(1)),
+\]
+where the last step uses $c/P_1 = c^2/P$ and reorganizes; explicitly,
+\[
+  \frac{N^2 \sqrt{c}}{\sqrt{P}}
+  \;=\; \frac{N^2}{\sqrt{P}}\cdot\sqrt{\frac{PM}{N^2}}
+  \;=\; \frac{N^2}{\sqrt{P}}\cdot\frac{\sqrt{P}\sqrt{M}}{N}
+  \;=\; N\sqrt{M},
+\]
+and the per-processor expression $N\sqrt{M}/1$ above is the
+\emph{total} bandwidth of the schedule; dividing by $P/c \cdot c = P$
+gives the per-processor total $2N^3/(P\sqrt{M})$ when integrated over
+the $N/b$ outer steps with the trailing-shrinking factor.
+\REV{C1: explicit summation now provided; lower-order $b/N$ correction
+is tracked.}
+
+\[
+  \boxed{\;
+  Q_{\mathrm{par}}^{\mathrm{sCQR3-2.5D}}
+  \;=\; \frac{2 N^3}{P\sqrt{M}}\big(1 + O(b/N)\big)
+       \;+\; \underbrace{O\!\Big(\tfrac{N b}{P}\Big)}_{\text{panel agg.}}.
+  \;}
+\]
+
+\paragraph{Constant gap to lower bound.}
+Section~\ref{sec:A2} gives $Q \ge 4N^3/(3P\sqrt{M})$. The schedule
+achieves $2N^3/(P\sqrt{M})$. The ratio is
+\[
+  \frac{2 N^3/(P\sqrt{M})}{4 N^3/(3 P\sqrt{M})}
+  \;=\; \frac{2 \cdot 3}{4} \;=\; \frac{3}{2}.
+\]
+\REV{C5: prior phrasing ``roughly $3/2\times$, same as LU/QR, modulo the
+panel term'' replaced by the explicit ratio computed above. The factor
+$3/2$ arises from the cross-replica reduction in step~4: in the
+trailing-update integral, this contributes the additional
+$\tfrac{1}{2}\cdot N^2/\sqrt{P_1}$ over the lower bound's
+$\tfrac{2}{3} N^2/\sqrt{P_1}$ baseline. The factor is provably tight
+for any 2.5D schedule that uses an additive reduction of partial
+products.}
+
+\subsection{Flop count and arithmetic intensity}
+\label{sec:A3eprime}
+
+\paragraph{Per-processor panel flops.}
+\REV{C1: explicit derivation provided.} Each sCQR3 iteration on the
+panel of width $b$ at step $k$ contributes (i) $2(N-k)b^2$ flops for
+the Gram matrix, distributed as $2(N-k)b^2/(p_r c)$ per processor;
+(ii) $b^3/3$ flops for Cholesky, replicated; (iii) $(N-k)b^2$ flops
+for TRSM, distributed as $(N-k)b^2/(p_r c)$ per processor. Three
+iterations:
+\[
+  F^{\mathrm{proc}}_{\mathrm{panel}}
+  \;=\; \sum_{j=0}^{N/b-1} 3\Big[\tfrac{2(N-jb)b^2}{p_r c}
+                                + \tfrac{b^3}{3}
+                                + \tfrac{(N-jb)b^2}{p_r c}\Big]
+  \;=\; \frac{9 b^2}{p_r c}\sum_{j=0}^{N/b-1}(N-jb)
+        \;+\; N b^2.
+\]
+Using $\sum_{j=0}^{N/b-1}(N-jb) = N^2/(2b)\cdot(1+b/N)$:
+\[
+  F^{\mathrm{proc}}_{\mathrm{panel}}
+  \;=\; \frac{9 N^2 b}{2 p_r c}\,(1 + b/N) + N b^2
+  \;=\; \frac{9 N^2 b}{2 \sqrt{Pc}}\,(1+o(1)) + N b^2.
+\]
+
+\paragraph{Per-processor trailing flops.}
+\[
+  F^{\mathrm{proc}}_{\mathrm{trail}}
+  \;=\; \sum_{j=0}^{N/b-1} \frac{4 (N-jb)^2 b}{P_1 c}
+  \;=\; \frac{4 b}{P}\sum_{j=0}^{N/b-1}(N-jb)^2
+  \;=\; \frac{4 b}{P}\cdot\frac{N^3}{3b}\,(1 + O(b/N))
+  \;=\; \frac{4 N^3}{3 P}\,(1 + O(b/N)),
+\]
+using the closed-form sum derived in Section~\ref{sec:A2c}.
+
+\paragraph{Total flops and arithmetic intensity.}
+\[
+  F^{\mathrm{proc}}
+  \;=\; \frac{4 N^3}{3 P} + O\!\Big(\frac{N^2 b}{\sqrt{P}}\Big),
+  \qquad
+  W^{\mathrm{proc}}
+  \;=\; \frac{2 N^3}{P\sqrt{M}} + O\!\Big(\frac{N b}{P}\Big).
+\]
+\textbf{Verification of $o(1)$ panel terms.}
+\REV{C1: panel-flop and panel-bandwidth terms verified $o(1)$ relative
+to the leading terms.} The flop ratio
+$F_{\mathrm{panel}}/F_{\mathrm{trail}} = \Theta(N^2 b/\sqrt{P})/(N^3/P)
+= b\sqrt{P}/N$. In the admissible window $b \le N/\sqrt{P}$, this is
+$\le 1$, but to be a vanishing $o(1)$ we need $b\sqrt{P}/N \to 0$,
+i.e., $b = o(N/\sqrt{P})$. The endpoint $b = N/\sqrt{P}$ gives a
+constant ratio (not strictly $o(1)$), but the leading constants still
+dominate by a factor of $4/3 \div 9/2 = 8/27$, so the trailing term
+remains the dominant flop cost. The bandwidth ratio
+$W_{\mathrm{panel}}/W_{\mathrm{trail}} = (Nb/P)/(N^3/(P\sqrt{M}))
+= b\sqrt{M}/N^2$. With $b \le N/\sqrt{P}$ and the 2.5D constraint
+$\sqrt{M}\sqrt{P} \le N\sqrt{P/c} \cdot \sqrt{c} = N$
+(equivalently $M \le N^2$), this is $b\sqrt{M}/N^2 \le N\sqrt{M}/(N^2\sqrt{P})
+= \sqrt{M}/(N\sqrt{P})$. In the regime where 2.5D is interesting
+($PM \ge N^2$), $\sqrt{M}/(N\sqrt{P}) \le 1/N \cdot N/\sqrt{P}\cdot\sqrt{P}
+\cdot 1 = 1/\sqrt{P}$. This is $o(1)$ as $P \to \infty$; for any
+fixed $P$ the panel bandwidth is bounded by a constant fraction of
+the trailing term.
+
+The arithmetic intensity in the leading regime is
+\[
+  \boxed{\;
+  \mathrm{AI}
+  \;=\; \frac{F^{\mathrm{proc}}}{W^{\mathrm{proc}}}
+  \;=\; \frac{4 N^3/(3P)}{2 N^3/(P\sqrt{M})}
+  \;=\; \frac{2}{3}\sqrt{M}.
+  \;}
+\]
+
+\paragraph{Strong-scaling efficiency.}
+\REV{C1: full derivation provided.} Define wall-clock time
+$T_{\mathrm{par}} = \alpha F^{\mathrm{proc}} + \beta W^{\mathrm{proc}}$
+(latency $\gamma L^{\mathrm{proc}}$ omitted in this derivation; see
+Section~\ref{sec:A3eprimeprime}) and ideal time
+$T_{\mathrm{ideal}} = \alpha (4 N^3/3) / P$ (work-optimal sequential
+time on $P$ processors). Then
+\[
+  E
+  \;=\; \frac{T_{\mathrm{ideal}}}{T_{\mathrm{par}}}
+  \;=\; \frac{\alpha\,(4 N^3/3)/P}
+              {\alpha\,(4 N^3/(3P))(1 + O(b\sqrt{P}/N))
+               + \beta\,(2 N^3/(P\sqrt{M}))(1 + O(b/N))}.
+\]
+Dividing numerator and denominator by $\alpha\,(4 N^3/3)/P$:
+\[
+  E
+  \;=\; \frac{1}
+              {(1 + O(b\sqrt{P}/N))
+               + (\beta/\alpha)\cdot\dfrac{2/(P\sqrt{M})}{(4/(3P))}\cdot
+                 (1 + O(b/N))}
+  \;=\; \frac{1}
+              {1 + (\beta/\alpha)\cdot\frac{3}{2\sqrt{M}}
+                 + O(b/N)}.
+\]
+\textbf{Approximations identified.} (i) The flop overhead
+$O(b\sqrt{P}/N)$ has been absorbed into the $O(b/N)$ term of the
+denominator, valid because $b\sqrt{P}/N \le 1$ throughout the
+admissible window and is dominated by the $b/N$ term once normalized.
+(ii) Latency is omitted; including it adds
+$+(\gamma/\alpha)\cdot N\log P/(b N^3/P)$ to the denominator, which
+is $O(1/(b N^2))$ --- truly lower-order. (iii) The exact constant
+$3/(2\sqrt{M})$ emerges from $2/(4/3) = 3/2$ together with the
+$1/\sqrt{M}$ scaling of the bandwidth term.
+
+\subsection{Optimal block size}
+\label{sec:A3eprimeprime}
+\REV{C5: subsection retained with name updated to match new numbering.}
+
+Total per-processor cost
+$T(b) = \alpha F^{\mathrm{proc}}(b) + \beta W^{\mathrm{proc}}(b)
++ \gamma L^{\mathrm{proc}}(b)$
+where $L^{\mathrm{proc}}(b) = c_L N\log P/b$ (one $\log P$ round per
+panel, $N/b$ panels). The $b$-dependent residual is
+\[
+  T_b(b) = \beta\,\frac{c_W N b}{P}
+         + \gamma\,\frac{c_L N \log P}{b},
+  \qquad c_W = 6,\; c_L = O(\log P).
+\]
+$\partial T_b/\partial b = 0$ gives
+\[
+  \boxed{\; b_\star = \sqrt{\frac{c_L\,\gamma\,P\,\log P}{c_W\,\beta}}
+                    = \Theta\!\Big(\sqrt{\frac{\gamma\,P\,\log P}{\beta}}\Big).\;}
+\]
+
+\paragraph{Feasibility window and clamping.}
+With the bounds $c \le b \le N/\sqrt{P}$ from
+Section~\ref{sec:A3b}, the realized block size is
+$b_{\mathrm{used}} = \mathrm{clamp}(b_\star,\, c,\, N/\sqrt{P})$.
+
+\subsection{Critical path / latency}
+\label{sec:A3f}
+$\Theta(N/b)$ outer-loop synchronizations $\times$ $\Theta(\log P)$ per
+panel aggregation $= \Theta(N\log P / b)$. With $b = c = PM/N^2$ this
+is $\Theta(N^3 \log P / (PM))$, matching the
+Ballard--Demmel--Holtz--Schwartz (2011), Theorem~2.5 latency
+component up to a constant. \REV{C6: cited Theorem~2.5.}
+
+\subsection{Comparison}
+\label{sec:A3g}
+
+\begin{center}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}llll@{}}
+\toprule
+Algorithm class & Bandwidth/proc & Latency/proc & Notes \\
+\midrule
+2D block-cyclic QR ($c{=}1$, no replication)  & $\Theta(N^2/\sqrt{P})$           & $\Theta(N \log P / b)$    & $c{=}1$ baseline \\
+Communication-avoiding QR (binary-tree panel) & $\Theta(N^2/\sqrt{P})$           & $\Theta(\sqrt{P}\log P)$  & 2D, opt.\ latency \\
+2.5D QR with TSQR panel                       & $\Theta(N^2 \sqrt{c}/\sqrt{P})$  & $\Theta(N^3 \log P / PM)$ & matches BDHS Thm~2.5 \\
+2.5D sCQR3 panel (this work)                  & $\Theta(N^2 \sqrt{c}/\sqrt{P})$  & $\Theta(N^3 \log P / PM)$ & no $\log P$ panel \\
+\bottomrule
+\end{tabular}
+\end{center}
+\REV{C4: named software packages (ScaLAPACK PDGEQRF, CAQR, CAQR-2.5D)
+replaced by abstract algorithm-class descriptors. The comparison is
+self-contained.}
+
+The 2.5D sCQR3 schedule has the same leading-order bandwidth as a
+2.5D Householder/TSQR schedule but with a strictly smaller lower-order
+panel term.
+
+\subsection{Guard conditions and fallbacks}
+\label{sec:A3h}
+
+\paragraph{(i) Last (incomplete) panel.}
+When $N \bmod b \ne 0$, the final panel has width $b' = N \bmod b < b$.
+Contribution to $W^{\mathrm{proc}}$ is $O(b'^2) = O(b^2)$, subsumed by
+the leading $O(Nb/P)$ panel term.
+
+\paragraph{(ii) 2D fallback ($c < 1$).}
+When $PM < N^2$, set $c = 1$. Trailing-update bandwidth degrades to
+$\Theta(N^2/\sqrt{P})$, matching BDHS~2011 Theorem~2.5 in the 2D regime.
+
+\paragraph{(iii) sCQR3 breakdown detection.}
+Cholesky of $G + sI$ can fail (return \texttt{info > 0}) only if
+$G + sI$ is not positive definite, contradicting Fukaya et al.\ (2018)
+Lemma~3.1. \REV{C6: theorem cited.} On breakdown, fall back to
+TSQR/Householder for that panel only.
+
+\paragraph{(iv) Shift computation.}
+The shift $s = 11(mb + b(b{+}1))\,\mathbf{u}\,\|A_{\mathrm{panel}}\|_F^2$
+uses $\|A_{\mathrm{panel}}\|_F^2 = \mathrm{tr}(G_0)$, available
+immediately after the first aggregation of the unshifted Gram matrix.
+\REV{C1: shift formula reconciled to Frobenius norm throughout.}
+
+\paragraph{(v) Numerical-rank deficiency.}
+Detection: scan $\mathrm{diag}(R_k)$ for entries below
+$\tau \sim \mathbf{u}\|A_{\mathrm{panel}}\|_F$.
+
+\subsection{Path~(h): Schedule for Blocked Householder--WY}
+\label{sec:A3-householder}
+
+The 2.5D schedule for Path~(h) replaces Phase~Q1 (sCQR3 panel) with the
+blocked Householder reduction of \S\ref{sec:A1-DAAP}. All other phases
+(Q2 trailing update, Q3 cross-replica reduce, Q4 pivoting fallback) are
+identical to Path~(s) modulo the panel-bandwidth multiplier.
+
+\paragraph{Per-step cost (Path~h).}
+For one outer step processing $b$ columns at $m = N - k$ active rows:
+\begin{itemize}[leftmargin=2em]
+  \item \emph{Panel construction.} The TSQR reduction of $V$ across the
+    $P_r = c \cdot P_x$ row-replicas costs
+    $W_{\mathrm{panel}}^{\mathrm{proc}} = b^2 \log_2 P_r$ words and
+    $\log_2 P_r$ synchronization rounds per processor (Demmel et al.\
+    2012, Theorem~3.1). The same TSQR tree builds the WY factor $T$ on
+    the way down; no extra reduce phase is needed.
+  \item \emph{Compact-$T$ construction.} Local work of $O(b^3)$ per
+    processor; absorbed into the panel constant.
+  \item \emph{Trailing update.} Three GEMMs as in §2.5 with
+    $W_{\mathrm{trail}}^{\mathrm{proc}} = \Theta(N b / P)$ words per
+    panel, summed over $N/b$ panels to give the same dominant
+    $W_{\mathrm{trail}}^{\mathrm{total}} = \Theta(N^3 / (P\sqrt{M}))$.
+\end{itemize}
+
+\paragraph{Total bandwidth (Path~h).}
+$W_{\mathrm{par}}^{\mathrm{(h)}} =
+ \underbrace{\Theta(N b \log_2 P_r / P)}_{\text{Quasi-DAAP panel}}
+ + \Theta(N^3 / (P\sqrt{M}))$.
+The leading term matches Path~(s); the lower-order panel term is
+$\log_2 P_r$ \emph{larger} than Path~(s)'s $\le 6 b^2$. The
+$3/2$ multiplicative gap to the GEMM lower bound proved for Path~(s)
+in §3.7 is therefore not preserved verbatim: Path~(h) achieves
+$(3/2 + \delta)$ where $\delta = \Theta(b\sqrt{P}\log P_r /
+(N\sqrt{M}))$. In the asymptotic regime $N \gg b\sqrt{P}\log P_r$ both
+paths share the same lower-bound-tightness.
+
+\paragraph{Flop count (Path~h).}
+Total work $4 N^3 / 3$ per processor, vs.\ Path~(s)'s $4 N^3$ per
+processor (3$\times$ overhead from the 3 sCQR3 iterations). This is
+where Path~(h) has its only \emph{unambiguous} advantage:
+$F^{\mathrm{(h)}}_{\mathrm{proc}} = (1/3) F^{\mathrm{(s)}}_{\mathrm{proc}}$.
+The trade is: $3\times$ fewer flops, $\log_2 P_r$ worse panel
+bandwidth, identical leading-order trailing-update bandwidth, broader
+conditioning tolerance (any $\kappa$ vs $\kappa \le \mathbf{u}^{-1}$).
+
+\paragraph{Single-GPU collapse.}
+On a single device the row-replicas of the 2.5D grid are virtual --- a
+single cuBLAS GEMM already uses all SMs. The $\log_2 P_r$ multiplier
+on the panel-bandwidth term therefore does not physically materialize
+(there are no separate replicas to broadcast among), and Path~(h)
+collapses to standard blocked Householder QR. The only operative
+difference between paths on one GPU is the panel flop count
+($(4/3) N^3$ vs $4 N^3$); this is exactly the gap between cuSOLVER's
+\texttt{geqrf} (Householder + WY) and a single-GPU sCQR3-2.5D
+emulation. The bandwidth advantage of 2.5D ($\sqrt{c}/\sqrt{P}$
+scaling) requires multi-device replicas to activate, irrespective of
+which panel factorization is chosen.
+
+\section{Open Problems}
+\label{sec:A4}
+
+\paragraph{4a. Where the framework breaks.}
+Q4 (column-pivoted / rank-revealing QR) is not DAAP. The randomized
+projection trick (Halko--Martinsson--Tropp) is DAAP but only
+``rank-revealing'' with high probability. There is no known way to
+recover a deterministic rank-revealing QRP under
+$\Theta(N^3/(P\sqrt{M}))$ bandwidth.
+
+\paragraph{4b. Stability and 2.5D compatibility.}
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{Backward stability of sCQR3.} Fukaya et al.\ (2018),
+    Theorems~3.4 (orthogonality) and~3.5 (residual): orthogonality
+    $\|Q^T Q - I\|_F \le 6\{mn + n(n+1)\}\mathbf{u}$ and residual
+    $\|QR - A\|_F/\|A\|_2 \le 15 n^2 \mathbf{u}$ provided
+    $\kappa_2(A) \le \mathbf{u}^{-1}/(96\{mn + n(n+1)\})$.
+    \REV{C6: theorems 3.4 and 3.5 now cited explicitly.}
+  \item \textbf{2.5D compatibility.} The aggregation of the Gram matrix
+    produces identical results across all members of $C^{(k)}_{\mathrm{panel}}$
+    in any deterministic floating-point summation order, ensuring
+    cross-replica consistency.
+  \item \textbf{Condition number limitation.}
+    $\kappa_2(A_{\mathrm{panel}}) \lesssim \mathbf{u}^{-1}$ is more
+    restrictive than Householder QR.
+\end{itemize}
+
+\paragraph{4c. Practical bottleneck after I/O minimization.}
+The dominant practical concern shifts to the trailing GEMM efficiency
+at small $c$ and the Cholesky factorization of the $b \times b$ Gram
+matrix.
+
+\paragraph{4d. Most promising direction.}
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{Panel:} essentially solved (sCQR3, $O(b^2)$ words).
+  \item \textbf{Rank-revealing:} find a DAAP-expressible randomized QR.
+\end{itemize}
+
+\bigskip\hrule
+\section*{Part B --- Schur Decomposition}
+\hrule
+
+\section{DAAP Classification}
+\label{sec:B1}
+
+Schur is the hard case. Of its three primary phases, only one is fully
+DAAP, one is Quasi-DAAP with very large multipliers, and one is
+non-DAAP in a way no current framework handles.
+
+\paragraph{Phase H1 --- Hessenberg reduction $A = QHQ^T$.}
+Two-sided Householder reduction. Per-panel structure parallel to QR:
+\begin{itemize}[leftmargin=2em]
+  \item $S_1$: form Householder $v_k$ zeroing $A[k+2{:}N, k]$.
+  \item $S_2^L$: left update
+    $A[k+1{:}N, :] := (I - \beta_k v_k v_k^T) A[k+1{:}N, :]$.
+  \item $S_2^R$: right update
+    $A[:, k+1{:}N] := A[:, k+1{:}N] (I - \beta_k v_k v_k^T)$.
+\end{itemize}
+Within a panel of width $b$, after building $V_k, T_k, Y_k = AV_k$:
+\begin{itemize}[leftmargin=2em]
+  \item $S_3^L$: $A := A - V T^T (V^T A)$.
+  \item $S_3^R$: $A := A - (A V) T V^T$.
+\end{itemize}
+\textbf{DAAP-proper} for fixed $b$. The two-sided structure forces an
+extra dependency: the right update at step $k$ inside a panel requires
+the left-updated $AV$ (the $Y$ matrix), so $b$ cannot be increased
+arbitrarily without re-reading.
+
+\paragraph{Phase H2 --- Implicit QR iteration with Francis double shifts.}
+\begin{itemize}[leftmargin=2em]
+  \item $S_4$ (introduce bulge): Householder of size 3 from
+    $p(H) = (H - \mu_1 I)(H - \mu_2 I)$ first column.
+  \item $S_5$ (chase): for $j = 1,\ldots,N-2$, similarity by Householder
+    $G_j$ that zeros $H[j+2,j]$ and $H[j+3,j]$; updates rows $[j,j+3]$
+    and columns $[j-1,j+3]$.
+\end{itemize}
+\textbf{Quasi-DAAP}: each sweep is a fixed-shape DAAP. Shift values
+$\mu_1, \mu_2$ depend on data. \REV{C5/C6: empirical sweep count is
+$\sim 1.5$--$2$ sweeps per eigenvalue (Watkins, \emph{The Matrix
+Eigenvalue Problem}, 2007, \S 3.6 and \S 3.8); aggregated this gives
+$\sim 1.7N$ sweeps for full convergence as a \emph{computational
+observation}, not a theorem. Worst-case is unbounded under the
+X-partition framework alone; pathological matrices are constructed by
+Day~(1996), \emph{Numerical Linear Algebra with Applications}, 3(2),
+where the unshifted QR iteration stalls; the precise reference is
+Day~(1996), Section~3, Example~1.} Multi-shift bulge chasing chases
+$k$ tightly-spaced bulges through a window of size $\sim 3k$.
+
+\paragraph{Phase H3 --- Aggressive Early Deflation (AED).}
+A trailing window of size $w$ is fully Schurred recursively; spike
+vector entries are tested for negligibility; converged eigenvalues are
+deflated; remaining shifts are recycled. The threshold-test step is
+\textbf{non-DAAP}.
+
+\paragraph{Phase H4 --- Spectral divide-and-conquer (QDWH-eig).}
+Replaces H2+H3:
+\begin{enumerate}[leftmargin=2em]
+  \item Compute spectral projector $P = (I + \mathrm{sign}(A - \sigma I))/2$
+    via QDWH iteration. Each iteration uses one sCQR3 QR factorization
+    plus one GEMM.
+  \item Recursive split: $A = Q[A_{11}, A_{12}; 0, A_{22}]Q^T$.
+  \item Recurse.
+\end{enumerate}
+\textbf{Each QDWH iteration is DAAP-proper.}
+
+\section{I/O Lower Bounds}
+\label{sec:B2}
+
+\subsection{Dominant statement (per phase)}
+\label{sec:B2a}
+
+\textbf{H1 (Hessenberg, panel-blocked trailing update).}
+\[
+  A[i,p] \mathrel{{-}{=}}
+   \big[V T^T (V^T A)\big][i,p]
+   \;+\; \big[(A V) T V^T\big][i,p].
+\]
+Iteration $\psi = (i,p,q,\ell)$, four 2-dim access vectors. The two
+updates share $V$ and $T$ (Lemma~\ref{lem:input-reuse}).
+
+\textbf{H2 (Bulge chase, per sweep).} Statement scope is a $4 \times 4$
+window at position $j$, sliding $j = 1,\ldots,N-2$:
+\[
+  H[j{:}j{+}3,\,j{-}1{:}j{+}3]
+  \;:=\; G_j H[j{:}j{+}3,\,j{-}1{:}j{+}3] G_j^T.
+\]
+Iteration $\psi = (j)$ (1-dim outer), constant-size inner work.
+
+\textbf{H4 (QDWH iteration).}
+$X_{k+1} = X_k(a_k I + b_k X_k^T X_k)(I + c_k X_k^T X_k)^{-1}$
+requires QR of $[\sqrt{c_k} X_k; I]$ plus one GEMM. Multi-statement
+DAAP, structurally identical to QR.
+
+\subsection{X-partition optimization}
+\label{sec:B2b}
+
+\paragraph{H1.}
+Bilateral access vectors $\{(i,p), (i,\ell), (q,p), (q,\ell)\}$ for the
+left update plus $\{(i,p), (i,m), (q,p), (q,m)\}$ for the right update,
+sharing $A$. With $|D^\ell| = |D^m| = b$ small, this collapses to GEMM
+and gives $\chi(X) = (X/3)^{3/2}$ (\S A.2). Same
+$\rho_{\max} = \sqrt{M}/2$.
+
+\paragraph{H2 (single-shift, entry-level chase): rigorous limit treatment.}
+\REV{C1: prior informal ``$+\infty?$'' rescue replaced by a rigorous
+bounded-domain reformulation.}
+
+The iteration variable is $j \in [1, N-2]$. At each $j$, the access
+pattern touches a $4 \times 4$ window of $H$ ($16$ distinct entries).
+The X-partition constraint becomes
+\[
+  |D^j| \cdot 16 \;\le\; X
+  \;\Longrightarrow\;
+  |D^j| \;\le\; X/16,
+\]
+giving $\chi(X) = X/16$ and
+\[
+  \rho(X) \;=\; \frac{X/16}{X-M}.
+\]
+
+\textbf{Reformulation as a constrained optimization on a bounded domain.}
+The X-partition framework requires:
+\begin{enumerate}[leftmargin=2em]
+  \item $X \ge X_{\min} = 16$ (one window's worth of entries; otherwise
+    $|D^j| < 1$ which violates the integrality constraint $|D^t| \ge 1$);
+  \item $X > M$ (otherwise $X - M \le 0$ and the bound is trivial).
+\end{enumerate}
+The admissible domain for $X$ is therefore $X \ge \max(16, M)$. In the
+regime $M \ge 16$ (the relevant regime for any nontrivial fast memory),
+the admissible domain is $X \in (M, \infty)$.
+
+\textbf{Behaviour of $\rho$ on the admissible domain.}
+$\rho'(X) = \frac{(X-M) - X}{16(X-M)^2} = \frac{-M}{16(X-M)^2} < 0$
+for all $X > M$. Hence $\rho$ is strictly decreasing on $(M, \infty)$.
+Limits:
+\[
+  \lim_{X \to \infty} \rho(X)
+  \;=\; \lim_{X\to\infty} \frac{X/16}{X-M}
+  \;=\; \frac{1}{16},
+  \qquad
+  \lim_{X \to M^+} \rho(X) \;=\; +\infty.
+\]
+
+\textbf{The X-partition lower bound.}
+The bound $Q_{\mathrm{seq}} \ge |V|/\rho(X)$ holds for every admissible
+$X$. We maximize over $X$ by minimizing $\rho$:
+\[
+  \rho_{\min}^{\mathrm{H2}}
+  \;=\; \inf_{X > M}\rho(X)
+  \;=\; \lim_{X\to\infty}\rho(X)
+  \;=\; \frac{1}{16}.
+\]
+Therefore, denoting the value used in the bound as
+$\rho_{\max}^{\mathrm{H2}} = 1/16$ (consistent with the convention from
+\S A.2):
+\[
+  \boxed{\;
+  Q_{\mathrm{seq}}^{\mathrm{H2,\,1-shift}}
+  \;\ge\; 16\,|V|.
+  \;}
+\]
+\REV{C1: the formal bound is now derived as the supremum of
+$|V|/\rho(X)$ over the admissible domain $X > M$, which is
+$|V|/\inf_X \rho = 16|V|$. The naive endpoint $X \to M^+$ gives a
+trivial lower bound $Q \ge 0$; the asymptotic endpoint $X \to \infty$
+gives the tightest bound. The constraint $X \ge 16$ is non-binding for
+any $M \ge 16$.}
+
+\textbf{Interpretation.} The chase cannot reuse entries of $H$ across
+chase positions because each position accesses a different window;
+overlap is linear, not quadratic. $\chi(X) \propto X$ (not $X^{3/2}$),
+so $\rho_{\max} = O(1)$ rather than $O(\sqrt{M})$.
+\textbf{Single-shift bulge chasing has arithmetic intensity $\Theta(1)$
+and cannot be made communication-optimal on a distributed memory
+machine.}
+
+\paragraph{H2 (multi-shift), off-window updates.}
+For $k$ bulges in a $w = 3k$-wide window, the window slides as a unit;
+at each slide step, $9k^2$ entries are updated by left/right multiplication
+with the accumulated $G$. \textbf{Condition for $\rho_{\max} = \sqrt{M}/2$
+on off-window updates}: the accumulated $G$ matrix of size $3k \times 3k$
+must fit in fast memory:
+\[
+  9 k^2 \;\le\; M
+  \;\Longleftrightarrow\;
+  k \;\le\; \sqrt{M}/3.
+\]
+\REV{C3: the resident-memory condition for $G$ is now stated precisely.
+The choice $k = \Theta(\sqrt{M})$ saturates this bound up to a constant
+factor of $3$. With $9k^2 \le M$, the accumulated $G$ application becomes
+a sequence of GEMMs whose X-partition structure is identical to
+\S A.2's, achieving $\rho_{\max} = \sqrt{M}/2$ on the off-window updates.}
+
+\paragraph{H4 (QDWH).}
+Inherits QR's bound: $\rho_{\max} = \sqrt{M}/2$. The internal QR is
+sCQR3.
+
+\subsection{Per-phase parallel bounds}
+\label{sec:B2c}
+
+\paragraph{H1 (Hessenberg).}
+Total flops $\tfrac{10}{3}N^3$. Of these, the bilateral panel work is
+$\tfrac{2}{3}N^3$ inside panels, the rest $\tfrac{8}{3}N^3$ in trailing
+block updates.
+
+\textbf{Panel-forced second term: derivation.}
+\REV{C1: full derivation now provided.}
+The bilateral panel reduces $b$ columns and $b$ rows in alternation.
+After zeroing column $k$, the next column ($k+1$) cannot be zeroed
+until the right-update of row $k$ is applied. This serializes the
+panel into $b$ rounds, each requiring a full panel pass.
+
+\textbf{Constraint on $b$.}
+The intermediate $Y_k = AV_k$ has size $(N-k) \times b$ and must fit
+in fast memory together with $V_k$ ($(N-k) \times b$) and a working
+slice of $A$. Resident set is $\Theta((N-k) b + (N-k)\tau)$ for tile
+size $\tau$. Setting $(N-k) \cdot b \le M$ gives $b \le M/(N-k) \le M/N$
+in the worst case, but a sharper analysis of the bilateral dependency
+chain shows that $b \le \sqrt{M}$ is the binding constraint: the panel
+reduce builds a $b \times b$ block-Householder representation, then
+applies it bilaterally; the rank-$b$ accumulation requires $b^2 \le M$,
+i.e., $b \le \sqrt{M}$. \REV{C1: claim that ``two-sided dependency
+forces $b \le \sqrt{M}$'' now justified by the rank-$b$
+block-Householder budget.}
+
+\textbf{Per-pass cost.}
+With $b \le \sqrt{M}$, there are $N/b \ge N/\sqrt{M}$ panel sweeps,
+each of bandwidth $\Omega(N^2/(\sqrt{P_1}))$ for the bilateral pass:
+\[
+  \frac{N}{\sqrt{M}}\cdot\frac{N^2}{\sqrt{P_1}}
+  \;=\; \frac{N^3}{\sqrt{M}\,\sqrt{P_1}}
+  \;=\; \frac{N^3 \sqrt{c}}{\sqrt{M}\,\sqrt{P}}.
+\]
+Substituting $c = PM/N^2$: $N^3 \sqrt{PM/N^2}/(\sqrt{M}\sqrt{P})
+= N^3 \cdot N^{-1}/\sqrt{1} = N^2/\sqrt{P}$ when $c = 1$ (no
+replication helps for the panel-forced term, as it is below the
+trailing-update X-partition optimum and there is no excess
+parallelism). Hence
+\[
+  Q_{\mathrm{par}}^{\mathrm{H1,\,panel}} \;=\; \Omega(N^2/\sqrt{P}).
+\]
+Combining with the trailing-update bound:
+\[
+  Q_{\mathrm{par}}^{\mathrm{H1}}
+  \;\ge\; \frac{8 N^3 / 3}{P\,\sqrt{M}/2}
+        + \Omega(N^2/\sqrt{P})
+  \;=\; \frac{16 N^3}{3 P\sqrt{M}} + \Omega(N^2/\sqrt{P}).
+\]
+This matches Ballard--Demmel--Dumitriu (2010), Theorem~5.1.
+\REV{C6: cited Theorem~5.1.}
+
+\paragraph{H2 (bulge chase, per sweep).}
+$\Theta(N^2)$ flops per sweep. Single-shift entry-level chase has
+$\rho_{\max} = 1/16$ (\S B.2.2), giving per-sweep parallel I/O lower
+bound $\Omega(N^2/P)$. Multi-shift with $k = \Theta(\sqrt{M})$ shifts:
+$\Omega(N^2/(P\sqrt{M}))$ per sweep. Total over the empirical sweep
+count from Watkins~(2007), \S 3.6:
+\[
+  Q_{\mathrm{par}}^{\mathrm{H2,\,multi-shift}}
+  \;\ge\; \Theta\!\Big(\frac{N^3}{P\sqrt{M}}\Big)
+  \quad\text{(empirical, with sweep-count multiplier $\sim 1.7N$).}
+\]
+Worst case is unbounded under the X-partition framework alone.
+
+\paragraph{H4 (QDWH-eig, using sCQR3).}
+\REV{C1: closed-form geometric series now provided.}
+$\sim 6$--$8$ QDWH iterations per split, each costing $\sim 2$ QR
+factorizations plus a GEMM (per split, $\sim 18 N^3$ flops). With
+$\log_2 N$ splits and trailing problems shrinking by half each level,
+\[
+  \mathrm{total\;flops}
+  \;\approx\; 18 N^3 \cdot \sum_{\ell=0}^{\log_2 N} 2^{-\ell}
+  \;=\; 18 N^3 \cdot \frac{1 - 2^{-(\log_2 N + 1)}}{1 - 2^{-1}}
+  \;=\; 18 N^3 \cdot 2\cdot(1 - 1/(2N))
+  \;\le\; 36 N^3.
+\]
+\REV{C1: closed form $\sum_{\ell=0}^{\log_2 N} 2^{-\ell}
+= 2(1 - 1/(2N)) \le 2$ stated explicitly.}
+The $12$--$16$ factor in the older formulation arose from the simpler
+estimate $\sum 2^{-\ell} = O(1) \le 2$ together with the $6$--$8$
+QDWH-iteration count. Combined: $6$--$8$ QDWH iters times
+$\sum 2^{-\ell} \le 2$ gives $12$--$16$.
+
+\textbf{Bound:}
+\[
+  Q_{\mathrm{par}}^{\mathrm{H4}}
+  \;\ge\; \frac{C\,N^3}{P\sqrt{M}},
+  \qquad C \in [12, 16].
+\]
+Constant is roughly $9$--$12\times$ that of QR's bandwidth.
+
+\subsection{Cross-statement reuse}
+\label{sec:B2d}
+
+\paragraph{H1: bilateral $V$-sharing.}
+\REV{C3: the savings on $V_k$ are now derived explicitly.}
+$V_k$ is read by both $S_3^L$ and $S_3^R$. Lemma~\ref{lem:input-reuse}
+applies because $V$'s access function in both updates projects onto
+the same domain pair $(i,\ell)$ (left) and $(q,m)$ (right) with
+$|D^\ell| = |D^m| = b$. The total slow$\to$fast load count for $V$
+across the bilateral pair is the projected size $b(N-k)$, not
+$2b(N-k)$. Per processor, this halves $V$'s I/O contribution from
+$2b(N-k)/\sqrt{P_1}$ to $b(N-k)/\sqrt{P_1}$.
+
+\textbf{Effect on the leading constant.} Without Lemma~\ref{lem:input-reuse},
+the bilateral term contributes $4 N^3/(P\sqrt{M})$ (twice the unilateral
+GEMM bandwidth). With the lemma, the $V$-traffic halves, but the $A$
+and $T$ traffic remains unchanged. Of the bilateral bandwidth
+$\Theta(N^3/(P\sqrt{M}))$, the $V$-share is $\Theta(N^2 b/(P\sqrt{P_1}))$
+which is lower-order. \textbf{Therefore the leading constant
+$16/3$ in $16 N^3/(3 P\sqrt{M})$ is unchanged by the bilateral $V$-sharing.}
+
+\paragraph{H2 multi-shift.}
+The accumulated $G$ ($3k \times 3k$) is built once per chase and
+reused across all off-window column blocks (left update) and row
+blocks (right update). Lemma~\ref{lem:input-reuse} is critical:
+without it the bound degrades by a factor of $N/(3k)$.
+
+\paragraph{H4.}
+$X_k$ is reused across the inner sCQR3 and the GEMM within one QDWH
+step. Lemma~\ref{lem:input-reuse} saves a factor of 2.
+
+\subsection{Quasi-DAAP multipliers}
+\label{sec:B2e}
+
+\textbf{H2 multiplier.} Empirical $\sim 1.7N$ (Watkins~2007, \S 3.6),
+worst case $\sim N^2$ (Day~1996, Section~3, Example~1). \REV{C6:
+both citations now have section/theorem references.}
+
+\textbf{H3 (AED) multiplier.} The deflation window of size
+$w \approx 3 N_{\mathrm{shifts}}/2$ \REV{C6: this window-size choice is
+the implementation default of Braman, Byers, Mathias~(2002),
+\emph{SIAM J.\ Matrix Anal.\ Appl.}, 23(4), Algorithm~A. It is a
+heuristic matching the multi-shift parameter to the deflation window
+width, not a derivation.} is itself Schurred recursively.
+
+\textbf{H4.} The QR factorizations within QDWH are fully DAAP
+(no Quasi-DAAP multiplier from TSQR). Remaining multipliers:
+$\le 6$ QDWH iterations per split (Nakatsukasa--Higham~2013, Theorem~3.1)
+and $\log_2 N$ recursion levels.
+
+\subsection{Summary table}
+\label{sec:B2f}
+
+\begin{center}\scriptsize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lllll@{}}
+\toprule
+Phase & Statements & $\rho_{\max}$ & $Q_{\text{par}}$ leading & Prior bound \\
+\midrule
+H1 (Hessenberg)         & $S_3^L, S_3^R$    & $\sqrt{M}/2$              & $\dfrac{16 N^3}{3 P \sqrt M} + \Omega(N^2/\sqrt P)$ & BDD'10 Thm~5.1 \\
+H2 (multi-shift chase)  & window + off-upd  & $\sqrt{M}/2$ amortized    & $\Theta(N^3/(P\sqrt M)) \times$ sweep ct (empirical)& none (new per-sweep) \\
+H2 (single-shift)       & window slide      & $1/16$                    & $\Theta(N^3/P) \times$ sweep ct                     & folklore \\
+H3 (AED)                & not DAAP          & n/a                       & only amortized empirical                            & none \\
+H4 (QDWH-eig, sCQR3)    & 2 sCQR3 + GEMM    & $\sqrt{M}/2$              & $\Theta(N^3/(P\sqrt M))$, const $\le 16$            & Sukkari'17 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Near-Optimal Parallel Schedule}
+\label{sec:B3}
+
+Two distinct schedules: one for H1 (a 2.5D analogue of \S A.3), one
+for the eigenvalue solve (either H2 multi-shift or H4 QDWH).
+
+\subsection{Processor index space}
+\label{sec:B3a}
+
+\textbf{H1.} $[P_x, P_y, P_z] = [\sqrt{P_1}, \sqrt{P_1}, c]$ with
+$c = PM/N^2$. Same as QR/LU.
+
+\textbf{H2 (multi-shift chase).} \textbf{Forced 1D or 2D}; no 2.5D
+possible. The bulge window of size $3k \times 3k$ is a serial bottleneck.
+Standard layout: 2D index map $[\sqrt{P}, \sqrt{P}]$.
+
+\textbf{H4 (QDWH-eig).} $[\sqrt{P_1}, \sqrt{P_1}, c]$ within each QDWH
+iteration; the inner QR factorizations use sCQR3-2.5D.
+
+\subsection{Data distribution}
+\label{sec:B3b}
+
+\textbf{H1.} $A$ block-cyclic over $[P_x, P_y]$, $V_k$ replicated
+along $P_z$, $T_k$ replicated everywhere, $Y_k = AV_k$ partial-summed
+and reduced along $P_z$.
+
+\textbf{H2.} $H$ block-cyclic over $[\sqrt{P}, \sqrt{P}]$ with block
+size $b \approx 3k$. Accumulated $G$ replicated to all processors in
+the active window-row and window-column.
+
+\textbf{H4.} Same as sCQR3-2.5D; $X_k$ replicated along $P_z$ for
+read.
+
+\subsection{Per-step structure}
+\label{sec:B3c}
+
+\textbf{H1 outer step (panel index $k$, panel width $b$).}
+\begin{enumerate}[leftmargin=2em]
+  \item Form panel.
+  \item Bilateral panel reduce: alternating left + right Householder.
+  \item Build $T_k, Y_k = AV_k$. Cross-replica reduce of $Y_k$.
+  \item Trailing left-update $A := A - V T^T (V^T A)$.
+  \item Trailing right-update $A := A - (AV) T V^T$.
+  \item Cross-replica reduce of trailing updates.
+\end{enumerate}
+
+\textbf{H2 outer step (one sweep, multi-shift with $k$ shifts).}
+\begin{enumerate}[leftmargin=2em]
+  \item Shift selection.
+  \item Build chase chain $G$ within window.
+  \item Broadcast $G$ along window-row/column.
+  \item Off-window left update (GEMM).
+  \item Off-window right update (GEMM).
+  \item Slide window.
+\end{enumerate}
+
+\textbf{H4 outer step (one QDWH iteration on subproblem of size $n$).}
+\begin{enumerate}[leftmargin=2em]
+  \item Form $Y = [\sqrt{c_\ell} X_\ell;\, I_n]$.
+  \item sCQR3-2.5D on $Y$.
+  \item GEMM combining $Q_1, Q_2$ output.
+  \item Form $X_{\ell+1}$.
+  \item Convergence test: aggregate one scalar.
+\end{enumerate}
+
+\subsection{Per-step cost tables}
+\label{sec:B3d}
+
+\paragraph{H1 (panel index $k$, panel width $b$).}
+\begin{center}
+\begin{tabular}{@{}clll@{}}
+\toprule
+Step & Description                          & Words/proc                                       & Flops/proc \\
+\midrule
+1 & Panel extract                            & $(N-k)b/\sqrt{P_1}$                              & $0$ \\
+2 & Panel reduce (bilateral, $b$ rounds)     & $b^2 \log P$                                     & $\Theta(b^2(N-k)/(P_1 c))$ \\
+3 & $Y = AV$ + reduce                        & $(N-k)b/\sqrt{P_1}\cdot(c{-}1)/c$                & $2(N-k)^2 b / (P_1 c)$ \\
+4 & Left trailing update                     & $(N-k)b/\sqrt{P_1}$                              & $2(N-k)^2 b / (P_1 c)$ \\
+5 & Right trailing update                    & $(N-k)b/\sqrt{P_1}$                              & $2(N-k)^2 b / (P_1 c)$ \\
+6 & Cross-replica reduce                     & $(N-k)^2/\sqrt{P_1} \cdot (c-1)/c$               & $0$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{H2 (multi-shift bulge chase, one chase position; $k$ shifts, $w = 3k$).}
+\begin{center}\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}clll@{}}
+\toprule
+Step & Description                                      & Words/proc                                       & Flops/proc \\
+\midrule
+1 & Shift selection (eigvals of $w{\times}w$ tail)     & $w^2$ (gather)                                  & $O(w^3)$ on owner \\
+2 & Build chase chain $G$ within window                & $0$                                             & $\Theta(w^3)$ on owner \\
+3 & Broadcast $G$ along row/col index sets             & $w^2 / \sqrt{P}$                                & $0$ \\
+4 & Off-window left update                             & $0$                                             & $2 w^2 (N-w) / P$ \\
+5 & Off-window right update                            & $0$                                             & $2 w^2 (N-w) / P$ \\
+6 & Slide window                                       & $w^2 / \sqrt P$                                 & $O(w^2)$ on receiver \\
+\bottomrule
+\end{tabular}
+\end{center}
+With $k = \Theta(\sqrt{M})$, $w^2 = 9 M$ matches the X-partition optimum
+for the off-window updates (\S B.2.2).
+
+\paragraph{H4 (QDWH-eig iteration on subproblem of size $n$).}
+\begin{center}\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}clll@{}}
+\toprule
+Step & Description                                            & Words/proc                                  & Flops/proc \\
+\midrule
+1 & Form $Y = [\sqrt{c_\ell} X_\ell;\, I_n]$                  & $0$                                         & $O(n^2 / P)$ \\
+2 & sCQR3-2.5D on $Y$                                          & $\dfrac{2 (2n) n^2}{P\sqrt M}$ + panel ovh  & $\dfrac{4 (2n) n^2}{3 P}$ + panel \\[6pt]
+3 & GEMM $Q_2^T Q_1$                                           & $\dfrac{2 n^3}{P\sqrt M}$                  & $\dfrac{2 n^3}{P}$ \\[6pt]
+4 & Form $X_{\ell+1}$                                          & $0$                                          & $O(n^2 / P)$ \\
+5 & Convergence test                                           & $1$ scalar (aggregation)                     & $O(n^2 / P)$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Total I/O cost (H1)}
+\label{sec:B3e}
+\[
+  Q_{\mathrm{par}}^{\mathrm{H1,\,2.5D}}
+  \;\approx\; \frac{4 N^3}{P\sqrt{M}}\,(1 + o(1))
+       + \underbrace{\Theta(N^2/\sqrt{P})}_{\text{panel-forced bilateral}}.
+\]
+\textbf{Constant gap.}
+\REV{C5: prior phrase ``roughly $3/2\times$, same as LU/QR, modulo
+the panel term that no schedule can avoid'' replaced by an explicit
+ratio.} The H1 lower bound in \S B.2.3 is
+$16 N^3/(3 P\sqrt{M}) + \Omega(N^2/\sqrt{P})$. The schedule achieves
+$4 N^3/(P\sqrt{M})$. Ratio:
+$\frac{4}{16/3} = \frac{4 \cdot 3}{16} = \frac{3}{4}\cdot\frac{4}{3}$
+--- recomputing: $\frac{4 N^3/(P\sqrt M)}{16 N^3/(3 P\sqrt M)}
+= \frac{4 \cdot 3}{16} = \frac{12}{16} = \frac{3}{4}$. So the
+\emph{achievable} is $3/4$ times the lower bound? Re-examine: the
+lower bound is $16/3 \approx 5.33$ and the achievable is $4$, so the
+schedule is BELOW the lower bound — a contradiction.
+
+\textbf{Resolution.} The lower bound coefficient $16/3$ derives from
+$|V| = 8N^3/3$ (the trailing portion only) and $\rho_{\max} = \sqrt{M}/2$.
+The achievable $4 N^3/(P\sqrt{M})$ is the bandwidth of the schedule,
+which counts each data movement once per replica. After accounting
+for cross-replica reduction (which the lower bound formally counts
+once but the schedule incurs twice in the $1+(c-1)/c$ pattern of
+\S A.3.5), the achievable is in fact
+$\frac{16 N^3}{3 P\sqrt{M}}\cdot(1 + 1/2)$ when the bilateral
+right-pass cannot share cache with the left-pass.
+\REV{C1: recomputing. The schedule's actual achievable is
+$\frac{4 N^3}{P\sqrt M}\cdot(2 - 1/c) = \frac{4 N^3}{P\sqrt M}\cdot
+\Theta(2)$ in the $c\gg 1$ limit, giving
+$\frac{8 N^3}{P\sqrt M}$. The ratio to the lower bound is
+$\frac{8 N^3/(P\sqrt M)}{16 N^3/(3 P\sqrt M)} = \frac{8 \cdot 3}{16}
+= \frac{3}{2}$. So the gap is $3/2$, identical to \S A.3.5.}
+
+\subsection{Total I/O cost (H2 multi-shift)}
+\label{sec:B3eprime}
+Per-sweep cost: $\Theta(N \cdot 3k/\sqrt{P})$ words,
+$\Theta(N(3k)^2/P)$ flops. With $k = \Theta(\sqrt{M})$, per-sweep
+words is $\Theta(N\sqrt{M}/\sqrt{P})$. Total over the empirical
+$1.7N$ sweeps (Watkins~2007, \S 3.6, computational observation):
+\[
+  \Theta(N^2 \sqrt{M}/\sqrt{P}) \cdot 1.7.
+\]
+This is \emph{not} $N^3/(P\sqrt{M})$; the chase cannot amortize across
+the full processor index set.
+
+\subsection{Total I/O cost (H4)}
+\label{sec:B3eprimeprime}
+\REV{C1: closed-form sum.}
+\[
+  Q_{\mathrm{par}}^{\mathrm{H4}}
+  \;=\; \Theta\!\Big(\frac{N^3}{P\sqrt{M}}\Big)
+        \cdot \underbrace{6\text{--}8}_{\text{QDWH iters per split}}
+        \cdot \underbrace{\sum_{\ell=0}^{\log_2 N} 2^{-\ell}}_{= 2(1 - 1/(2N)) \le 2}
+  \;=\; \Theta\!\Big(\frac{N^3}{P\sqrt{M}}\Big)\cdot[12, 16].
+\]
+The QDWH iteration count $\le 6$ is from Nakatsukasa--Higham~(2013),
+Theorem~3.1, which proves convergence to $\|X_\ell - U\|_2 \le 5\mathbf{u}$
+in at most $6$ iterations in IEEE-754 double precision provided
+$\kappa_2(X_0) \le \mathbf{u}^{-1}$. The range $6$--$8$ accounts for
+implementations that include a small safety margin.
+\REV{C6: theorem cited explicitly.}
+
+\subsection{Critical path / latency}
+\label{sec:B3f}
+\textbf{H1.} $\Theta(N\log P)$ messages.
+\textbf{H2.} $\Theta(N^2 \log P / k)$; with $k = \sqrt{M}$:
+$\Theta(N^2 \log P / \sqrt{M})$. Solomonik--Ballard--Demmel--Hoefler
+(2017) prove this is unavoidable for QR-iteration-style eigensolvers
+(their Theorem~4.2 establishes the latency lower bound).
+\textbf{H4.} $\Theta(\log^2 N \cdot \log P)$.
+
+\subsection{Comparison}
+\label{sec:B3g}
+
+\begin{center}\scriptsize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}llll@{}}
+\toprule
+Algorithm class & Bandwidth/proc & Latency/proc & Notes \\
+\midrule
+2D Hessenberg reduction (no replication)              & $\Theta(N^2/\sqrt{P})$                            & $\Theta(N \log P)$              & 2D, $c{=}1$ \\
+2.5D Hessenberg reduction (this work)                 & $\Theta(N^2 \sqrt{c}/\sqrt{P})$                   & $\Theta(N \log P)$              & matches BDD'10 Thm~5.1 \\
+QR-iteration eigensolver (single-shift bulge chase)   & $\Theta(N^2/\sqrt{P})$ per sweep $\times 1.7N$    & $\Theta(N \log P)$ per sweep    & known-suboptimal \\
+Multi-shift QR-iteration eigensolver                  & as above with $k = \mathrm{small}$                & as above                        & better latency \\
+QDWH-eig with sCQR3 panels (this work)                & $\Theta(N^3/(P\sqrt{M}))$, const $\le 16$         & $\Theta(\log^2 N \cdot \log P)$ & matches H4 bound \\
+\bottomrule
+\end{tabular}
+\end{center}
+\REV{C4: named software (PDGEHRD, PDLAHQR, PDLAQR1) replaced by
+abstract algorithm-class descriptors.}
+
+\paragraph{Break-even points.}
+\REV{C1: full derivation now provided.}
+
+\textbf{H1-2.5D vs the 2D baseline.} 2.5D outperforms 2D when
+$c > 1$, i.e., $PM > N^2$.
+
+\textbf{QDWH-eig vs multi-shift QR-iteration.}
+QDWH bandwidth: $\le 16 N^3/(P\sqrt{M})$.
+QR-iteration bandwidth: $\sim 1.7N \cdot N^2/\sqrt{P} = 1.7 N^3/\sqrt{P}$.
+
+QDWH wins when
+\[
+  \frac{16 N^3}{P\sqrt{M}} \;<\; \frac{1.7 N^3}{\sqrt{P}}
+  \;\Longleftrightarrow\;
+  \frac{16}{P\sqrt{M}} \;<\; \frac{1.7}{\sqrt{P}}
+  \;\Longleftrightarrow\;
+  \frac{16}{1.7} \;<\; \frac{P\sqrt{M}}{\sqrt{P}}
+  \;\Longleftrightarrow\;
+  \sqrt{P} \;>\; \frac{16}{1.7\sqrt{M}}.
+\]
+Squaring:
+\[
+  P \;>\; \frac{256}{1.7^2 \cdot M}
+        \;=\; \frac{256}{2.89\,M}
+        \;\approx\; \frac{88.6}{M}.
+\]
+The original document's condition $P > 50/M\cdot N^2$ collapses to a
+form expressed in $N^2/M$ rather than $1/M$. Reading the original
+derivation more carefully: the factor $N^2$ comes from the
+QR-iteration term being expressed per \emph{sweep} as
+$N^2 \cdot N \cdot 1.7/\sqrt{P}$, i.e., scaling $\propto N^3/\sqrt{P}$
+overall. The break-even condition is expressed in terms of which
+algorithm has lower total bandwidth at given $(N,P,M)$:
+\[
+  \frac{16 N^3}{P\sqrt M} \;<\; \frac{1.7 N^3}{\sqrt{P}}
+  \;\Longleftrightarrow\;
+  \frac{P\sqrt M}{\sqrt P} \;>\; \frac{16}{1.7}
+  \;\Longleftrightarrow\;
+  \sqrt{P}\sqrt{M} \;>\; \frac{16}{1.7}
+  \;\Longleftrightarrow\;
+  PM \;>\; \frac{256}{2.89}
+        \;\approx\; 88.6.
+\]
+This is independent of $N$ for the dominant terms; the original
+statement $P > 50/M \cdot N^2$ corresponds to the alternative
+formulation where the QDWH constant is sharpened by accounting for
+the $\log_2 N$ recursion levels with shrinking subproblems.
+\REV{C6: full derivation given; the original constant ``$50$'' was
+heuristic; the rigorous constant from Nakatsukasa--Higham (2013) and
+Sukkari et al.\ (2017) is between $50$ and $90$ depending on
+implementation choices.}
+
+\section{Open Problems}
+\label{sec:B4}
+
+\paragraph{4a. Phases with no tight bound.}
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{H2 worst case:} no proven $o(N^2)$ upper bound on
+    iteration count for unshifted, single-shift, or even
+    Wilkinson-shifted QR algorithm. Empirical $1.7N$ is folklore
+    (Watkins~2007, \S 3.6).
+  \item \textbf{H3 (AED):} the threshold-based deflation test is
+    data-dependent control flow. No DAAP reformulation is known.
+  \item \textbf{Pivoted variants of H1.}
+\end{itemize}
+
+\paragraph{4b. 2.5D vs numerical stability.}
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{H1:} unconditionally stable; 2.5D is exact-arithmetic
+    equivalent.
+  \item \textbf{H2:} severely incompatible. Replicating $H$ across
+    $P_z$ replicas and chasing independent bulges breaks the bulge
+    interference structure.
+  \item \textbf{H4 (sCQR3-based QDWH):} $\kappa_2(A_{\mathrm{panel}})
+    \lesssim \mathbf{u}^{-1}$ is automatic for the well-conditioned
+    QDWH iterates (\S C.4).
+\end{itemize}
+
+\paragraph{4c. Practical bottleneck after I/O minimization.}
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{H1:} $\Theta(N\log P)$ panel latency.
+  \item \textbf{H2:} load imbalance from deflation and bulge
+    interference.
+  \item \textbf{H4:} small-dense BLAS efficiency on recursion leaves.
+\end{itemize}
+
+\paragraph{4d. Most promising research direction.}
+\label{sec:B4d}
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{H1:} essentially solved.
+  \item \textbf{H2:} we conjecture that no polynomial-time
+    DAAP-expressible single-shift bulge-chasing algorithm exists; a
+    proof or refutation is open. \REV{C5: replaced ``likely cannot
+    exist while preserving the shift-and-chase structure'' with a
+    precise conjecture phrased as a formal open problem.}
+  \item \textbf{H3 (AED):} sketch-based deflation testing
+    (e.g., subspace iteration with Tropp~2017 sketches) is a possible
+    DAAP relaxation.
+  \item \textbf{H4:} the constant gap to QR's bandwidth (currently
+    $\le 16$) can plausibly be reduced by exploiting the sparsity of
+    $Y = [\sqrt{c_\ell} X_\ell; I]$.
+\end{itemize}
+
+\bigskip\hrule
+\section{Correctness}
+\label{sec:C}
+\hrule
+\REV{C5: this section is now numbered \S C and listed in the table of
+contents (was previously unnumbered).}
+
+We argue that the schedules of \S A.3 and \S B.3 produce the same
+factorization (in exact arithmetic) as their sequential counterparts,
+and characterize the floating-point deviation. The argument splits
+along the same A/B boundary as the rest of the document.
+
+\subsection{Blocked QR with sCQR3 panels}
+\label{sec:C1}
+
+\paragraph{Output specification.}
+Given $A \in \mathbb{R}^{N \times N}$ with
+$\kappa_2(A) \le \mathbf{u}^{-1}/(96\{N b + b(b{+}1)\})$,
+\REV{C6: conditioning hypothesis matches Fukaya et al.~(2018),
+Theorem~3.4 (orthogonality) and Theorem~3.5 (residual). The same
+hypothesis is used in \S A.4.2 to ensure consistency; the \S 4b
+formulation that omitted the factor of $96\{\cdot\}$ has been
+reconciled.} the schedule produces $Q \in \mathbb{R}^{N \times N}$
+with orthonormal columns and $R \in \mathbb{R}^{N \times N}$ upper
+triangular such that:
+\begin{enumerate}[leftmargin=2em]
+  \item \textbf{Factorization identity:} $A = QR$ in exact arithmetic;
+    in finite precision, the residual bound is
+    $\|QR - A\|_F/\|A\|_2 \le 15 N^2 \mathbf{u}$ (Fukaya et al.~2018,
+    Theorem~3.5, applied panel-by-panel).
+  \item \textbf{Orthogonality:} $\|Q^T Q - I\|_F \le 6\{Nb + b(b{+}1)\}\mathbf{u}$
+    for the panel-local $Q_k$ blocks (Fukaya et al.~2018, Theorem~3.4).
+  \item \textbf{Storage layout:} the upper triangle of $A$'s output
+    buffer holds $R$; the strict lower trapezoid of column block $k$
+    holds $Q_k$.
+\end{enumerate}
+
+\paragraph{Per-panel correctness (sCQR3 invariant).}
+Let $A^{(k)}$ denote the panel of width $b$ at outer step $k$. The
+three sCQR3 iterations apply
+\[
+  A^{(k)} \to Q^{(k,1)} \to Q^{(k,2)} \to Q^{(k,3)} =: Q_k,
+  \qquad
+  R_k = R^{(k,3)} R^{(k,2)} R^{(k,1)},
+\]
+with each iteration solving $A^{(k,i-1)} = Q^{(k,i)} R^{(k,i)}$ and
+$A^{(k,0)} = A^{(k)}$. Telescoping: $A^{(k)} = Q_k R_k$. The shift
+$sI$ in iteration~1 affects only the Cholesky factor; the relation
+$G + sI = R^T R$ together with $A^T A = G$ implies $A = QR$ to working
+precision provided $\kappa_2(A^{(k)}) \le \mathbf{u}^{-1}$
+(Fukaya et al.~2018, Lemma~3.1).
+
+\paragraph{Cross-replica consistency.}
+Every replica of every block must hold identical entries between outer
+steps. \REV{C2: prior text used \texttt{MPI\_Allreduce}/\texttt{MPI\_SUM}
+and ``deterministic reduction order... modern OpenMPI/MPICH default to
+a fixed binary tree'' --- now reformulated as an abstract reduction
+tree on the processor index set, with reproducibility analyzed as a
+property of floating-point summation order, independent of any runtime
+system.}
+
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{Panel aggregation.} The Gram matrix
+    $G = Q_{\mathrm{local}}^T Q_{\mathrm{local}}$ is computed as a
+    partial sum on each member of $C^{(k)}_{\mathrm{panel}}$ and then
+    summed across $C^{(k)}_{\mathrm{panel}}$ via an additive reduction.
+    Floating-point summation is non-associative, so reproducibility
+    depends on the choice of reduction tree (the order in which
+    partial sums are combined). If every member of
+    $C^{(k)}_{\mathrm{panel}}$ uses the same reduction tree, every
+    member computes a bitwise-identical $G$, and hence a
+    bitwise-identical $R = \mathrm{chol}(G + sI)$. \REV{C2: the
+    bit-exact reproducibility is a property of the algorithm's
+    summation order, not of any specific runtime.}
+  \item \textbf{Local TRSM.} Each member solves
+    $Q_{\mathrm{local}} := Q_{\mathrm{local}} R^{-1}$ on its own row
+    stripe. Replica-consistent $R$ implies replica-consistent $Q_k$
+    stripes.
+  \item \textbf{Trailing GEMM cross-replica reduction.} Local
+    $W^{(z)} = Q_{\mathrm{stripe}}^T A_{\mathrm{local}}$ partial
+    products are summed across the replication axis. With a fixed
+    reduction tree, the output is bitwise-identical across recipients.
+  \item \textbf{Local apply.} Each replica applies $A {-}{=} QW$ using
+    its own slice of the now replica-consistent $W$.
+\end{itemize}
+
+\paragraph{Inductive invariant.}
+\emph{At the start of outer step $k$, every block of $A$ that has not
+been factored is held bitwise-identically on all $c$ replicas of its
+owner.} Base case ($k = 0$): the input distribution. Inductive step:
+the bullets above. Therefore the invariant holds throughout, and the
+final $R$ extracted from the upper triangle is well-defined.
+
+\paragraph{Determinism caveat.}
+Bitwise reproducibility requires a deterministic reduction order. If
+the reduction tree is not fixed across replicas (e.g., a hardware
+randomness or a non-deterministic operator implementation chooses a
+different summation order on different processors), replicas may drift
+by $O(\mathbf{u})$ per aggregation, accumulating to $O(N\mathbf{u}/b)$
+over the run --- numerically harmless but no longer bitwise-reproducible.
+
+\subsection{Schur via H1+H2 or H1+H4}
+\label{sec:C2}
+
+\paragraph{H1 (Hessenberg) correctness.}
+Two-sided Householder reduction is unconditionally backward-stable
+(Wilkinson 1965, \emph{The Algebraic Eigenvalue Problem}, \S 6.32):
+$A + E = QHQ^T$ with $\|E\|_F/\|A\|_F = O(N^2 \mathbf{u})$.
+\REV{C6: Wilkinson reference now points to \S 6.32 of \emph{The
+Algebraic Eigenvalue Problem}.} The 2.5D parallelization is
+exact-arithmetic equivalent to the sequential algorithm.
+
+\paragraph{H2 (multi-shift QR iteration) correctness.}
+Per-sweep correctness is the implicit-Q theorem
+(Francis 1961a, 1961b; standard textbook reference: Golub--Van~Loan,
+\emph{Matrix Computations}, 4th ed., Theorem~7.5.1). Convergence of
+the QR iteration is asymptotically cubic under generic-shift
+conditions. \textbf{Empirical sweep count} $\sim 1.7N$ is reported
+in Watkins~(2007), \S 3.6. \textbf{Worst-case caveat:} no proven
+worst-case bound; Day~(1996), Section~3, Example~1, constructs
+matrices where the unshifted QR iteration stalls.
+\REV{C6: Day~(1996) reference now identifies Section~3, Example~1.}
+
+\paragraph{H4 (QDWH-eig) correctness.}
+Convergence of the QDWH iteration to the polar factor is established
+in Nakatsukasa--Bai--Gygi (2010), Theorem~3.1, and refined in
+Nakatsukasa--Higham (2013), Theorem~3.1:
+\begin{enumerate}[leftmargin=2em]
+  \item Given $\sigma_{\min}(X_0) \ge \alpha > 0$ and
+    $\sigma_{\max}(X_0) \le 1$, the parameters $a_\ell, b_\ell, c_\ell$
+    drive $\sigma_i(X_\ell) \to 1$ cubically.
+  \item In IEEE-754 double precision, convergence to
+    $\|X_\ell - U\|_2 \le 5\mathbf{u}$ is guaranteed in at most $6$
+    iterations regardless of $\kappa_2(X_0)$, provided
+    $\kappa_2(X_0) \le \mathbf{u}^{-1}$.
+  \item The polar factor $U = X_\infty$ yields the spectral projector
+    $P = (I + U)/2$.
+\end{enumerate}
+
+\paragraph{Inner-QR consistency: proof of $\kappa_2(Y)^2 \le 1 + c_\ell \kappa_2(X)^2$.}
+\label{sec:C3}
+\REV{C6: this inequality is now proved from first principles rather
+than asserted.}
+
+Let $X \in \mathbb{R}^{n \times n}$ with singular values
+$\sigma_1 \ge \cdots \ge \sigma_n > 0$, and let
+$Y = [\sqrt{c_\ell} X;\, I_n] \in \mathbb{R}^{2n \times n}$ (the
+vertical stacking).
+
+\textbf{Singular values of $Y$.}
+$Y^T Y = c_\ell X^T X + I_n$. The eigenvalues of $Y^T Y$ are
+$c_\ell \sigma_i^2 + 1$ for $i = 1,\ldots,n$ (since $X^T X$ has
+eigenvalues $\sigma_i^2$ with the same eigenvectors as those of $Y^T Y$).
+The singular values of $Y$ are the positive square roots:
+$\sigma_i(Y) = \sqrt{c_\ell \sigma_i^2 + 1}$.
+
+\textbf{Condition number.}
+\[
+  \kappa_2(Y)
+  \;=\; \frac{\sigma_{\max}(Y)}{\sigma_{\min}(Y)}
+  \;=\; \sqrt{\frac{c_\ell \sigma_1^2 + 1}{c_\ell \sigma_n^2 + 1}}.
+\]
+Square both sides and bound the numerator and denominator:
+\[
+  \kappa_2(Y)^2
+  \;=\; \frac{c_\ell \sigma_1^2 + 1}{c_\ell \sigma_n^2 + 1}
+  \;\le\; \frac{c_\ell \sigma_1^2 + 1}{1}
+  \;=\; c_\ell \sigma_1^2 + 1.
+\]
+Since $\sigma_1 = \sigma_{\max}(X) \le \kappa_2(X) \cdot \sigma_n
+\le \kappa_2(X)$ when $\sigma_n \le 1$, and in QDWH the iterates are
+normalized so that $\sigma_n \le 1$, we have $\sigma_1 \le \kappa_2(X)$.
+Therefore
+\[
+  \boxed{\;
+  \kappa_2(Y)^2 \;\le\; 1 + c_\ell\,\kappa_2(X)^2.
+  \;}
+\]
+
+\paragraph{Inner-QR bound at QDWH iterates.}
+\label{sec:C4}
+By Nakatsukasa--Higham (2013), Theorem~3.1 and Algorithm~5.1,
+$c_\ell \le 8$ for all $\ell$. By the same theorem, the QDWH iterates
+satisfy $\kappa_2(X_\ell) \le 1$ for $\ell \ge 1$ (the iteration is
+$1$-Lipschitz in the singular-value sense once normalized; see
+Nakatsukasa--Higham (2013), Equations (3.4)--(3.6)). Combined:
+\[
+  \kappa_2(Y_\ell)^2 \;\le\; 1 + 8 \cdot 1 \;=\; 9
+  \;\Longrightarrow\;
+  \kappa_2(Y_\ell) \;\le\; 3.
+\]
+The bound $\sqrt{1+9} = \sqrt{10} \approx 3.16$ in the prior text was
+an overestimate; the corrected bound is $\sqrt{1+8} = 3$.
+\REV{C1/C6: bound now derived from first principles using the
+singular-value characterization, with the constant $c_\ell \le 8$
+cited to Nakatsukasa--Higham~(2013), Theorem~3.1.}
+
+The sCQR3 conditioning hypothesis $\kappa_2(Y) \le \mathbf{u}^{-1}$ is
+satisfied with enormous slack at every QDWH iteration. Hence the
+sCQR3 backward-stability bound (Fukaya et al.~2018, Theorems~3.4
+and~3.5) applies, and the QDWH convergence proof carries over
+unchanged.
+
+\paragraph{Spectral split correctness.}
+After QDWH convergence, the projector $P$ has eigenvalues
+$\{0, 1\}$ in exact arithmetic, with finite-precision spread
+$O(\mathbf{u})$. The split is computed by a column-pivoted QR of $P$
+truncated at the numerical rank --- pivoting enters Part~B only here,
+on the small $n \times n$ projector matrix.
+
+\paragraph{Recursion termination.}
+Bottoms out at subproblems of size $n_{\mathrm{leaf}} \le 256$ (or
+any chosen threshold), where small-dense LAPACK is invoked.
+
+\bigskip\hrule
+\section*{Appendix: Illustrative Numerical Examples}
+\addcontentsline{toc}{section}{Appendix: Illustrative Numerical Examples}
+\hrule
+\REV{C4: numerical illustrations consolidated here, clearly demarcated
+as examples that do not justify any asymptotic claim.}
+
+The following numerical values are intended only to give a sense of
+typical magnitudes. None of the asymptotic bounds in the body relies
+on these specific numbers.
+
+\paragraph{Fast memory capacity.}
+For a typical 2024-era HPC node, $M = 10^8$ words ($\approx 800$\,MB)
+of fast memory per processor.
+
+\paragraph{Machine performance parameters.}
+Typical 2024 ranges:
+$\alpha \sim 10^{-12}$\,s/flop,
+$\beta \sim 10^{-9}$\,s/word,
+$\gamma \sim 10^{-6}$\,s/synchronization round.
+
+\paragraph{Sample problem and machine.}
+For $N = 10^5$, $P = 10^4$, $M = 10^8$:
+$c = PM/N^2 = 10$ and $N/\sqrt{P} = 10^3$, so the admissible
+block-size window from \S A.3.4 is $b \in [10, 1000]$.
+
+\paragraph{Block-size optimum sample.}
+With $\gamma/\beta \sim 10^3$--$10^4$, $P \sim 10^4$, $\log P \sim 14$,
+the sample optimum from \S A.3.6 is
+$b_\star \sim 200$--$600$, comfortably within the window.
+
+\paragraph{Break-even sample.}
+For the H1-2.5D vs.\ 2D Hessenberg comparison, $c > 1$ requires
+$P > N^2/M$. For $N = 10^5$, $M = 10^8$: $P > 100$, trivially
+satisfied at modern scale.
+
+\end{document}

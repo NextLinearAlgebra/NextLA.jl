@@ -1,0 +1,19 @@
+==========================================================
+ H200 unified NextLA bench   1.778848665193972e9
+  host=dgx01  gpu=NVIDIA H200  CUDA functional=true
+==========================================================
+
+### Phase A — regime probe ###
+  T=Float64 N=1000  c=8 b=248 M=61952 words  P=132  Px=4
+  T=Float32 N=1000  c=16 b=352 M=123904 words  P=132  Px=2
+  T=Float64 N=2000  c=2 b=248 M=61952 words  P=132  Px=8
+  T=Float32 N=2000  c=4 b=352 M=123904 words  P=132  Px=5
+  T=Float64 N=4000  c=1 b=248 M=61952 words  P=132  Px=11
+  T=Float32 N=4000  c=1 b=352 M=123904 words  P=132  Px=11
+  T=Float64 N=8000  c=1 b=248 M=61952 words  P=132  Px=11
+  T=Float32 N=8000  c=1 b=352 M=123904 words  P=132  Px=11
+
+──────────────────────────────────────────────────────────────────
+ Config: Default (M=smem+regs, SYRK, FORCE_C1=0, TF32=off)
+ knobs: ortho=:fast c=1 tf32=default use_syrk=true m_bytes=nothing force_c1=false
+──────────────────────────────────────────────────────────────────

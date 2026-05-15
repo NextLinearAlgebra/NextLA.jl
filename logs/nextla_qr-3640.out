@@ -1,0 +1,48 @@
+==========================================================
+ H200 NextLA QR benchmark
+  host:     dgx01
+  date:     2026-05-15T12:12:23Z
+  gpu:      NVIDIA H200
+  driver:   570.124.06
+  julia:    julia version 1.11.5
+  cuda:     Build cuda_12.8.r12.8/compiler.35404655_0
+==========================================================
+  BENCH_SIZES            = 1000,2000,4000,8000
+  BENCH_BS               = 
+  BENCH_T                = 
+  BENCH_ORTHO            = fast
+  BENCH_C                = 
+  BENCH_PHASES           = A,C
+  NEXTLA_TF32            = 
+  NEXTLA_M_BYTES         = 
+  NEXTLA_P_OVERRIDE      = 
+  NEXTLA_FORCE_C1        = 
+  NEXTLA_USE_SYRK        = 
+  NEXTLA_PEAK_FP64       = 
+  NEXTLA_PEAK_FP32       = 
+----------------------------------------------------------
+
+### Phase A — regime probe ###
+T=Float64  N=1000  c=3  b=166  b_min=3  b_max=166  Px=6  M=29184  P=132  TILE=170
+T=Float32  N=1000  c=7  b=241  b_min=7  b_max=250  Px=4  M=58368  P=132  TILE=241
+T=Float64  N=2000  c=1  b=170  b_min=1  b_max=181  Px=11  M=29184  P=132  TILE=170
+T=Float32  N=2000  c=1  b=181  b_min=1  b_max=181  Px=11  M=58368  P=132  TILE=241
+T=Float64  N=4000  c=1  b=170  b_min=1  b_max=363  Px=11  M=29184  P=132  TILE=170
+T=Float32  N=4000  c=1  b=241  b_min=1  b_max=363  Px=11  M=58368  P=132  TILE=241
+T=Float64  N=8000  c=1  b=170  b_min=1  b_max=727  Px=11  M=29184  P=132  TILE=170
+T=Float32  N=8000  c=1  b=241  b_min=1  b_max=727  Px=11  M=58368  P=132  TILE=241
+T=Float64  N=16000  c=1  b=170  b_min=1  b_max=1454  Px=11  M=29184  P=132  TILE=170
+T=Float32  N=16000  c=1  b=241  b_min=1  b_max=1454  Px=11  M=58368  P=132  TILE=241
+
+### Phase C — GPU bench sweep (sizes=1000,2000,4000,8000) ###
+ GPU: NVIDIA H200
+ P=132 SMs, M=29184 FP64 words/SM
+
+═══════════════════════════════════════════════════════
+ geqrf_2p5d! vs CUSOLVER.geqrf!   m=1000, n=1000
+═══════════════════════════════════════════════════════
+── Type: Float64 ─────────────────────────────────────────
+  cuSOLVER.geqrf!       min=   5.66 ms  med=   7.98 ms   (236 GF/s, 0.7% peak)
+  -- ortho=fast --
+  geqrf_2p5d! b=32       min=  16.55 ms  med=  16.72 ms   (81 GF/s, 0.2% peak, 0.34x)  c=1  res=6.8e-16 orth=4.2e-14
+  geqrf_2p5d! b=64       min=   7.97 ms  med=   8.01 ms   (167 GF/s, 0.5% peak, 0.71x)  c=1  res=6.8e-16 orth=5.3e-14

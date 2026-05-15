@@ -94,44 +94,73 @@ end
 NextLA._graph_capture_supported(::CUDA.CUDABackend) = true
 
 function NextLA.capture_panel!(::CUDA.CUDABackend, exec_ref::Ref{Any}, body::Function)
-	# Capture: re-record body each call. Operations are recorded into a
-	# CuGraph rather than executed when the stream is in capture mode.
-	GC.enable(false)
-	graph = try
-		CUDA.capture(throw_error=false) do
-			body()
-		end
-	finally
-		GC.enable(true)
-	end
-	if graph === nothing
-		# Capture failed — typically a JIT compile happened during recording.
-		# Execute the body once outside capture (so JIT lands in the regular
-		# code cache), then re-record for next time.
-		body()
+	# CUDA graph capture of the panel is experimental: it succeeds on the
+	# first instantiation but subsequent calls can replay against pointers
+	# whose backing CuArrays were GC'd between panels (Julia view objects
+	# rebuilt per iteration, cached graph holds the old pointer). We try
+	# capture with RELAXED mode (tolerates the inner workgroup_reduce sync
+	# and the cuSOLVER POTRF info-fetch), and fall back to direct execution
+	# on any failure. Measured single-GPU benefit is small (~3-5 % of total
+	# QR time at N=8000); the lifetime issues outweigh the gain.
+	flags = CUDA.STREAM_CAPTURE_MODE_RELAXED
+	try
 		GC.enable(false)
 		graph = try
-			CUDA.capture(throw_error=true) do
+			CUDA.capture(; flags=flags, throw_error=false) do
 				body()
 			end
 		finally
 			GC.enable(true)
 		end
+		if graph === nothing
+			body()  # capture aborted (typically JIT); run body normally
+			return nothing
+		end
 		if !isassigned(exec_ref) || !_update_exec_or_false(exec_ref[], graph)
 			exec_ref[] = CUDA.instantiate(graph)
 		end
-		return nothing
+		CUDA.launch(exec_ref[]::CUDA.CuGraphExec)
+	catch e
+		# Fall back to direct execution if capture / launch fails for any
+		# reason (dangling pointers from GC'd views, topology mismatch the
+		# update path can't patch, etc.).
+		@debug "capture_panel! fallback" exception=e
+		body()
 	end
-	# Patch the cached executable; fall back to instantiate on topology change.
-	if !isassigned(exec_ref) || !_update_exec_or_false(exec_ref[], graph)
-		exec_ref[] = CUDA.instantiate(graph)
-	end
-	CUDA.launch(exec_ref[]::CUDA.CuGraphExec)
 	return nothing
 end
 
 _update_exec_or_false(exec::CUDA.CuGraphExec, graph::CUDA.CuGraph) =
 	CUDA.update(exec, graph; throw_error=false)
 _update_exec_or_false(::Any, ::CUDA.CuGraph) = false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Householder QR variant overrides (geqrf_2p5d_householder!).
+#
+# Use cuSOLVER's tuned unblocked geqrf + larft + orgqr for the panel-level
+# Householder operations; the trailing-update WY-form apply runs through
+# cuBLAS GEMM (in `_household_apply_QT!`, the default implementation already
+# uses `LinearAlgebra.mul!`).
+function NextLA._household_panel_geqrf!(::CUDA.CUDABackend,
+		A_panel::AbstractMatrix{T}, tau_panel::AbstractVector{T}) where {T<:LinearAlgebra.BlasFloat}
+	# cuSOLVER geqrf! returns (A, tau); we want it in our preallocated tau_panel.
+	# Call the in-place form that accepts a tau buffer.
+	CUDA.CUSOLVER.geqrf!(A_panel, tau_panel)
+	return nothing
+end
+
+function NextLA._household_build_T!(::CUDA.CUDABackend,
+		V::AbstractMatrix{T}, tau::AbstractVector{T},
+		T_out::AbstractMatrix{T}, m::Int, b::Int) where {T<:LinearAlgebra.BlasFloat}
+	CUDA.CUSOLVER.larft!('F', 'C', view(V, 1:m, 1:b), view(tau, 1:b), view(T_out, 1:b, 1:b))
+	return nothing
+end
+
+function NextLA._household_expand_Q!(::CUDA.CUDABackend,
+		A_panel::AbstractMatrix{T}, tau_panel::AbstractVector{T},
+		m::Int, b::Int) where {T<:LinearAlgebra.BlasFloat}
+	CUDA.CUSOLVER.orgqr!(A_panel, tau_panel)
+	return nothing
+end
 
 end

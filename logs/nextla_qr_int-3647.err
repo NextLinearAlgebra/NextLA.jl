@@ -1,0 +1,53 @@
+slurmstepd-dgx01: error: *** JOB 3647 ON dgx01 CANCELLED AT 2026-05-15T09:35:57 ***
+
+[1493696] signal 15: Terminated
+in expression starting at /home/ftome_local/comparative-bench/NextLA.jl/scripts/bench_gpu_vs_cusolver.jl:170
+exec_blas_async_wait at /tmp/julia-1.11.5/bin/../lib/julia/libopenblas64_.so (unknown line)
+exec_blas at /tmp/julia-1.11.5/bin/../lib/julia/libopenblas64_.so (unknown line)
+gemm_thread_m at /tmp/julia-1.11.5/bin/../lib/julia/libopenblas64_.so (unknown line)
+dtrmm_64_ at /tmp/julia-1.11.5/bin/../lib/julia/libopenblas64_.so (unknown line)
+dlarfb_64_ at /tmp/julia-1.11.5/bin/../lib/julia/libopenblas64_.so (unknown line)
+dgeqrt_64_ at /tmp/julia-1.11.5/bin/../lib/julia/libopenblas64_.so (unknown line)
+geqrt! at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/usr/share/julia/stdlib/v1.11/LinearAlgebra/src/lapack.jl:479
+geqrt! at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/usr/share/julia/stdlib/v1.11/LinearAlgebra/src/lapack.jl:746 [inlined]
+#qr!#318 at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/usr/share/julia/stdlib/v1.11/LinearAlgebra/src/qr.jl:291 [inlined]
+qr! at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/usr/share/julia/stdlib/v1.11/LinearAlgebra/src/qr.jl:291 [inlined]
+qr! at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/usr/share/julia/stdlib/v1.11/LinearAlgebra/src/qr.jl:336 [inlined]
+#_qr#322 at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/usr/share/julia/stdlib/v1.11/LinearAlgebra/src/qr.jl:432 [inlined]
+_qr at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/usr/share/julia/stdlib/v1.11/LinearAlgebra/src/qr.jl:432 [inlined]
+#qr#319 at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/usr/share/julia/stdlib/v1.11/LinearAlgebra/src/qr.jl:425
+qr at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/usr/share/julia/stdlib/v1.11/LinearAlgebra/src/qr.jl:422 [inlined]
+#make_cu_matrix#1 at /home/ftome_local/comparative-bench/NextLA.jl/scripts/bench_gpu_vs_cusolver.jl:17
+make_cu_matrix at /home/ftome_local/comparative-bench/NextLA.jl/scripts/bench_gpu_vs_cusolver.jl:12 [inlined]
+#bench_cusolver#3 at /home/ftome_local/comparative-bench/NextLA.jl/scripts/bench_gpu_vs_cusolver.jl:72
+bench_cusolver at /home/ftome_local/comparative-bench/NextLA.jl/scripts/bench_gpu_vs_cusolver.jl:71
+unknown function (ip: 0x7a845dd2ed2e)
+run_for_size at /home/ftome_local/comparative-bench/NextLA.jl/scripts/bench_gpu_vs_cusolver.jl:111
+main at /home/ftome_local/comparative-bench/NextLA.jl/scripts/bench_gpu_vs_cusolver.jl:166
+unknown function (ip: 0x7a845dd10a2f)
+jl_apply at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/julia.h:2157 [inlined]
+do_call at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/interpreter.c:126
+eval_value at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/interpreter.c:223
+eval_stmt_value at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/interpreter.c:174 [inlined]
+eval_body at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/interpreter.c:666
+jl_interpret_toplevel_thunk at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/interpreter.c:824
+jl_toplevel_eval_flex at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/toplevel.c:943
+jl_toplevel_eval_flex at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/toplevel.c:886
+ijl_toplevel_eval_in at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/toplevel.c:994
+eval at ./boot.jl:430 [inlined]
+include_string at ./loading.jl:2734
+_include at ./loading.jl:2794
+include at ./Base.jl:557
+jfptr_include_46879.1 at /tmp/julia-1.11.5/lib/julia/sys.so (unknown line)
+exec_options at ./client.jl:323
+_start at ./client.jl:531
+jfptr__start_73430.1 at /tmp/julia-1.11.5/lib/julia/sys.so (unknown line)
+jl_apply at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/julia.h:2157 [inlined]
+true_main at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/jlapi.c:900
+jl_repl_entrypoint at /cache/build/tester-amdci5-12/julialang/julia-release-1-dot-11/src/jlapi.c:1059
+main at julia (unknown line)
+unknown function (ip: 0x7a845f02a1c9)
+__libc_start_main at /lib/x86_64-linux-gnu/libc.so.6 (unknown line)
+unknown function (ip: 0x4010b8)
+unknown function (ip: (nil))
+Allocations: 34335722 (Pool: 34335012; Big: 710); GC: 25
