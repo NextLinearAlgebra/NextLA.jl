@@ -111,7 +111,24 @@ function compute_params(backend, ::Type{T}, N; b=nothing, c=nothing) where {T}
 	b_max = max(1, N_int ÷ Px)
 
 	if b === nothing
-		b_val = max(b_min, min(b_max, TILE_DIM))
+		# Default heuristic. The X-partition cube side `√M` (§3.4) is the
+		# bandwidth-optimum *per processor*, but on a single GPU we want the
+		# trailing-update GEMMs to be as large as possible (the dominant cost
+		# is the trailing update once `c = 1`, and bigger GEMMs hit cuBLAS's
+		# tensor-core path more effectively). For `c = 1` we therefore push
+		# `b` toward `b_max = N / Px` (the panel-grid upper bound), which
+		# measurably improves the speedup vs cuSOLVER on H200 (e.g. N=8000
+		# FP64: b=512 gives 517 ms / 0.16× cuSOLVER, b=b_max=727 gives 363
+		# ms / 0.22×). For `c > 1` keep the cube side `⌊√M⌋` so each replica
+		# stays within its per-processor memory budget.
+		default_b = parse(Int, get(ENV, "NEXTLA_DEFAULT_B", "0"))
+		if default_b > 0
+			b_val = clamp(default_b, b_min, b_max)
+		elseif c_val == 1
+			b_val = max(b_min, b_max)
+		else
+			b_val = max(b_min, min(b_max, TILE_DIM))
+		end
 	else
 		b_val = Int(b)
 		if b_val < b_min
