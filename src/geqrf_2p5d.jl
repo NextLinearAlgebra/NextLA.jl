@@ -300,9 +300,12 @@ function geqrf_2p5d!(m::Integer, n::Integer,
                      tau::AbstractVector{T};
                      params::Union{DeviceParams{T}, Nothing} = nothing,
                      b::Union{Integer, Nothing} = nothing,
-                     ortho::Symbol = :fast) where {T}
+                     ortho::Symbol = :fast,
+                     passes::Int = 3,
+                     mixed_precision::Bool = false) where {T}
     ortho in (:fast, :safe) ||
         throw(ArgumentError("ortho must be :fast or :safe, got :$ortho"))
+    1 <= passes <= 3 || throw(ArgumentError("passes must be 1..3, got $passes"))
     m = Int(m); n = Int(n)
     m >= 0 || throw(ArgumentError("m must be ≥ 0, got m=$m"))
     n >= 0 || throw(ArgumentError("n must be ≥ 0, got n=$n"))
@@ -446,6 +449,7 @@ function geqrf_2p5d!(m::Integer, n::Integer,
             # direct execution if capture fails (lifetime issues, etc.).
             capture_panel!(be, panel_exec_ref, () -> begin
                 scqr3!(m_panel, sb, A_panel, Rp, Gp, infop; params = p_panel, partials = partials_use,
+                       passes = passes,
                        racc = racc_buf, rwrk = rwrk_buf,
                        trace_src = use_trace_scratch ? trace_src_buf : nothing,
                        trace_out = use_trace_scratch ? trace_out_buf : nothing)
@@ -467,19 +471,35 @@ function geqrf_2p5d!(m::Integer, n::Integer,
             # Racc)` falls off the StridedCuMatrix fast path when all three args
             # are SubArrays. The capture path above explicitly passes the buffers
             # because graph capture forbids allocations inside the recorded body.
-            scqr3!(m_panel, sb, A_panel, Rp, Gp, infop; params = p_panel, partials = partials_use)
+            scqr3!(m_panel, sb, A_panel, Rp, Gp, infop; params = p_panel, partials = partials_use, passes = passes)
             _geqrf_write_R_panel!(be, R_acc, Rp, k, sb)
             # :fast first-pass trailing update (the only one needed in :fast mode).
             if ortho === :fast && n_tr > 0
                 A_trailing = @view A[1:m, (k + sb):n]
-                fits(buf) = size(buf, 1) >= sb && size(buf, 2) >= n_tr
-                W = fits(W_buf) ? @view(W_buf[1:sb, 1:n_tr]) : similar(A, sb, n_tr)
-                if c_eff > 1
+                fits_fast(buf) = size(buf, 1) >= sb && size(buf, 2) >= n_tr
+                W = fits_fast(W_buf) ? @view(W_buf[1:sb, 1:n_tr]) : similar(A, sb, n_tr)
+                if mixed_precision && T == Float64
+                    # Mixed-precision trailing: cast panel + trailing to FP32, do
+                    # both GEMMs in FP32 (TF32 Tensor Cores on Hopper if
+                    # NEXTLA_TF32=1), accumulate back to FP64. The R-block (W) is
+                    # cast back into the FP64 W view. Numerically this changes
+                    # only the trailing-update precision; the FP64 sCQR3 panel
+                    # still produces FP64 Q with the full Fukaya orthogonality
+                    # guarantee on each panel.
+                    A_panel32   = Float32.(A_panel)
+                    A_tr32      = Float32.(A_trailing)
+                    W32         = similar(A_panel32, sb, n_tr)
+                    mul!(W32, A_panel32', A_tr32)
+                    mul!(A_tr32, A_panel32, W32, -1.0f0, 1.0f0)
+                    A_trailing .= Float64.(A_tr32)
+                    W .= Float64.(W32)
+                elseif c_eff > 1
                     _geqrf_qta_partitioned!(be, W, A_panel, A_trailing, m_panel, sb, n_tr, tile, p)
+                    _geqrf_apply!(be, A_trailing, A_panel, W, m_panel, sb, n_tr, tile)
                 else
                     _geqrf_qta!(be, W, A_panel, A_trailing, m_panel, sb, n_tr, tile)
+                    _geqrf_apply!(be, A_trailing, A_panel, W, m_panel, sb, n_tr, tile)
                 end
-                _geqrf_apply!(be, A_trailing, A_panel, W, m_panel, sb, n_tr, tile)
                 _geqrf_write_W_block!(be, R_acc, W, k, k + sb, sb, n_tr)
             end
         end

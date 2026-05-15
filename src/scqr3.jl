@@ -289,7 +289,10 @@ function scqr3!(m::Integer, b::Integer, A_panel::AbstractMatrix{T},
                rwrk::Union{Nothing, AbstractMatrix{T}} = nothing,
                trace_src::Union{Nothing, AbstractVector} = nothing,
                trace_out::Union{Nothing, AbstractVector} = nothing,
+               passes::Integer = 3,
                ) where {T}
+    passes = Int(passes)
+    1 <= passes <= 3 || throw(ArgumentError("passes must be 1..3 (got $passes)"))
 	m = Int(m)
 	b = Int(b)
 	m >= 1 || throw(ArgumentError("m must be ≥ 1, got m=$m"))
@@ -340,7 +343,7 @@ function scqr3!(m::Integer, b::Integer, A_panel::AbstractMatrix{T},
 		nothing
 	end
 
-	for it in 1:3
+	for it in 1:passes
 		scqr3_gram!(G, A_panel, m, b; params = params)
 		if c_eff > 1
 			invK = one(T) / (params.Px * params.Pz)

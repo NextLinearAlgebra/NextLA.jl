@@ -103,13 +103,18 @@ function geqrf_2p5d_householder!(m::Integer, n::Integer,
             _zero_top_rows!(be, A_trailing, sb, n_tr)
         end
 
-        # Phase Q1(h) post: expand the Householder vectors of this panel into an
-        # explicit orthonormal Q block so downstream code (`Q = A`) works as in
-        # the sCQR3 path. Done after the trailing update so we don't re-read V.
-        _household_expand_Q!(be, A_panel, tau_panel, m_panel, sb)
-
         k += sb
     end
+
+    # ── Phase Q1(h) post: expand the accumulated Householder vectors into the
+    # explicit first-`n` columns of Q. Blocked Householder represents Q as a
+    # product of reflectors V_1 ... V_b that must all be applied together; per-
+    # panel expansion would give per-panel orthonormal blocks but the overall
+    # matrix would not be orthonormal across panels. cuSOLVER `orgqr` does the
+    # single-shot construction in-place on A, reading V from A's strict lower
+    # trapezoid and the reflector scalars from `tau`. After this call,
+    # `A[1:m, 1:n]` holds the first `n` columns of Q.
+    _household_expand_Q!(be, view(A, 1:m, 1:n), view(tau, 1:k_eff), m, n)
     return nothing
 end
 
