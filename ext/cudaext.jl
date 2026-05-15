@@ -8,6 +8,21 @@ else
     import ..CUDA
 end
 
+function __init__()
+    # Enable TF32 Tensor Cores in cuBLAS when NEXTLA_TF32=1. Off by default —
+    # TF32 degrades FP32 GEMM to ~10 mantissa bits and breaks the κ≥1e6 cases
+    # in validate_ortho_modes.jl. cuSOLVER on Hopper uses TF32 internally for
+    # FP32 geqrf, so this flag is what makes the FP32 comparison fair.
+    if get(ENV, "NEXTLA_TF32", "0") == "1"
+        try
+            CUDA.math_mode!(CUDA.FAST_MATH)
+            @info "NextLA cudaext: TF32 enabled (CUDA.FAST_MATH)"
+        catch e
+            @warn "NEXTLA_TF32 requested but CUDA.math_mode!(FAST_MATH) failed" exception=e
+        end
+    end
+end
+
 """
     probe_device(::CUDA.CUDABackend, ::Type{T}) -> (P, M)
 
