@@ -289,9 +289,10 @@ function scqr3!(m::Integer, b::Integer, A_panel::AbstractMatrix{T},
 		KernelAbstractions.get_backend(G) === be &&
 		KernelAbstractions.get_backend(info) === be ||
 		throw(ArgumentError("A_panel, R, G, and info must share the same KernelAbstractions backend"))
-	if params.c > 1
+	c_eff = effective_c(params)
+	if c_eff > 1
 		partials === nothing &&
-			throw(ArgumentError("params.c=$(params.c) > 1 requires keyword `partials` with size (b,b,Px·Pz) for panel_allreduce!"))
+			throw(ArgumentError("effective c=$(c_eff) > 1 requires keyword `partials` with size (b,b,Px·Pz) for panel_allreduce!"))
 		K = params.Px * params.Pz
 		size(partials, 1) == b && size(partials, 2) == b && size(partials, 3) >= K ||
 			throw(ArgumentError("partials must be $(b)×$(b)×(≥$K), got $(size(partials))"))
@@ -315,7 +316,7 @@ function scqr3!(m::Integer, b::Integer, A_panel::AbstractMatrix{T},
 
 	for it in 1:3
 		scqr3_gram!(G, A_panel, m, b; params = params)
-		if params.c > 1
+		if c_eff > 1
 			invK = one(T) / (params.Px * params.Pz)
 			@inbounds for k in 1:(params.Px * params.Pz)
 				@views partials[:, :, k] .= G .* invK
@@ -378,7 +379,7 @@ function scqr3!(A_panel::AbstractMatrix{T}, R::AbstractMatrix{T};
 		throw(ArgumentError("A_panel must have at least params.b ($(b)) columns, got $(size(A_panel, 2))"))
 	G = similar(A_panel, (b, b))
 	info = fill!(similar(A_panel, Int, (1,)), 0)
-	partials = p.c > 1 ? similar(A_panel, (b, b, p.Px * p.Pz)) : nothing
+	partials = effective_c(p) > 1 ? similar(A_panel, (b, b, p.Px * p.Pz)) : nothing
 	scqr3!(m, b, A_panel, R, G, info; params = p, partials = partials)
 	return nothing
 end

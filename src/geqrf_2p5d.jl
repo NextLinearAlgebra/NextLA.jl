@@ -333,8 +333,13 @@ function geqrf_2p5d!(m::Integer, n::Integer,
 
     tile = _geqrf_tile(be, b_full)
 
-    # Gram partials for sCQR3 when params.c > 1 (same layout as `scqr3!`).
-    partials_buf = p.c > 1 ? similar(A, b_full, b_full, p.Px * p.Pz) : nothing
+    # `c_eff` honours `NEXTLA_FORCE_C1`: short-circuits the single-device fanout /
+    # partitioned QTA to a no-op when set, while keeping `p.c` in `params` so the
+    # X-partition cube sizing (b_min, TILE_DIM) stays paper-aligned.
+    c_eff = effective_c(p)
+
+    # Gram partials for sCQR3 when c_eff > 1 (same layout as `scqr3!`).
+    partials_buf = c_eff > 1 ? similar(A, b_full, b_full, p.Px * p.Pz) : nothing
 
     # ── Persistent scratch (full panel width) ──────────────────────────────────
     G_buf    = similar(A, b_full, b_full)
@@ -392,7 +397,7 @@ function geqrf_2p5d!(m::Integer, n::Integer,
             p_panel = compute_params(be, T, max(m_panel, sb); b = sb, c = p.c)
         end
 
-        partials_use = if p_panel.c > 1
+        partials_use = if effective_c(p_panel) > 1
             sb == b_full ? partials_buf : similar(A, sb, sb, p_panel.Px * p_panel.Pz)
         else
             nothing
@@ -414,7 +419,7 @@ function geqrf_2p5d!(m::Integer, n::Integer,
             W  = fits(W_buf)  ? @view(W_buf[1:sb,  1:n_tr]) : similar(A, sb, n_tr)
 
             # S4 (first pass): W1 = Q_k^H * A_trailing.
-            if p.c > 1
+            if c_eff > 1
                 _geqrf_qta_partitioned!(be, W, A_panel, A_trailing, m_panel, sb, n_tr, tile, p)
             else
                 _geqrf_qta!(be, W, A_panel, A_trailing, m_panel, sb, n_tr, tile)
@@ -428,7 +433,7 @@ function geqrf_2p5d!(m::Integer, n::Integer,
                 W2 = fits(W2_buf) ? @view(W2_buf[1:sb, 1:n_tr]) : similar(A, sb, n_tr)
                 nw1 = fits(W_buf) ? norm(copy(W)) : real(T)(norm(W))
                 # S4 (second pass): W2 = Q_k^H * A_trailing (residual after first correction).
-                if p.c > 1
+                if c_eff > 1
                     _geqrf_qta_partitioned!(be, W2, A_panel, A_trailing, m_panel, sb, n_tr, tile, p)
                 else
                     _geqrf_qta!(be, W2, A_panel, A_trailing, m_panel, sb, n_tr, tile)

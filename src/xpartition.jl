@@ -1,4 +1,4 @@
-export DeviceParams, probe_device, compute_params, panel_cu_set, block_owner, workgroup_reduce!, panel_allreduce!, verify_budget
+export DeviceParams, probe_device, compute_params, panel_cu_set, block_owner, workgroup_reduce!, panel_allreduce!, verify_budget, effective_c
 
 struct DeviceParams{T}
 	P::Int
@@ -22,6 +22,21 @@ function DeviceParams(P::Integer, M::Integer, b::Integer, c::Integer,
 	return DeviceParams{T}(Int(P), Int(M), Int(b), Int(c), Int(P1), Int(Px),
 						   Int(Py), Int(Pz), Int(TILE_DIM), Int(b_min),
 						   Int(b_max), AI_target)
+end
+
+"""
+    effective_c(params) -> Int
+
+Replication factor actually exercised at runtime. Returns `1` when the env var
+`NEXTLA_FORCE_C1=1` is set, otherwise `params.c`. Lets the user bypass the
+single-device fanout/reduce in `scqr3!` and `geqrf_2p5d!` (which is a wasted
+no-op on a single GPU, where all replicas share the same global Gram matrix)
+while still keeping `params.c` available to size the X-partition cube in
+`compute_params`. A/B against the default (`params.c`-driven) behaviour via
+`NEXTLA_FORCE_C1` ∈ {`0`, `1`}.
+"""
+@inline function effective_c(params::DeviceParams)
+    get(ENV, "NEXTLA_FORCE_C1", "0") == "1" ? 1 : params.c
 end
 
 function probe_device(backend, ::Type{T}) where {T}
