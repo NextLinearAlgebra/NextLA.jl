@@ -81,4 +81,57 @@ function NextLA._scqr3_syrk_herk!(::CUDA.CUDABackend,
 	return Gv
 end
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CUDA graph capture for the geqrf_2p5d! panel iteration.
+#
+# Folds the ~26 per-panel kernel launches (3 sCQR3 iterations: SYRK + trace +
+# POTRF + TRSM, then trailing GEMM × 2 + R/W scatter writes) into a single
+# captured CUDA graph. After the first capture an executable graph is
+# instantiated and cached in `exec_ref`; subsequent panels try `cuGraphExecUpdate`
+# to patch buffer pointers (cheap) and only re-instantiate if topology changes
+# (e.g. the last partial panel with sb < b_full — currently we just bypass
+# capture for that case in geqrf_2p5d!).
+NextLA._graph_capture_supported(::CUDA.CUDABackend) = true
+
+function NextLA.capture_panel!(::CUDA.CUDABackend, exec_ref::Ref{Any}, body::Function)
+	# Capture: re-record body each call. Operations are recorded into a
+	# CuGraph rather than executed when the stream is in capture mode.
+	GC.enable(false)
+	graph = try
+		CUDA.capture(throw_error=false) do
+			body()
+		end
+	finally
+		GC.enable(true)
+	end
+	if graph === nothing
+		# Capture failed — typically a JIT compile happened during recording.
+		# Execute the body once outside capture (so JIT lands in the regular
+		# code cache), then re-record for next time.
+		body()
+		GC.enable(false)
+		graph = try
+			CUDA.capture(throw_error=true) do
+				body()
+			end
+		finally
+			GC.enable(true)
+		end
+		if !isassigned(exec_ref) || !_update_exec_or_false(exec_ref[], graph)
+			exec_ref[] = CUDA.instantiate(graph)
+		end
+		return nothing
+	end
+	# Patch the cached executable; fall back to instantiate on topology change.
+	if !isassigned(exec_ref) || !_update_exec_or_false(exec_ref[], graph)
+		exec_ref[] = CUDA.instantiate(graph)
+	end
+	CUDA.launch(exec_ref[]::CUDA.CuGraphExec)
+	return nothing
+end
+
+_update_exec_or_false(exec::CUDA.CuGraphExec, graph::CUDA.CuGraph) =
+	CUDA.update(exec, graph; throw_error=false)
+_update_exec_or_false(::Any, ::CUDA.CuGraph) = false
+
 end

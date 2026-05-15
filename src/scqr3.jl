@@ -259,7 +259,8 @@ function _scqr3_fill_diag!(be, A::AbstractMatrix, val, b::Int)
 end
 
 """
-    scqr3!(m, b, A_panel, R, G, info; params, partials=nothing)
+    scqr3!(m, b, A_panel, R, G, info; params, partials=nothing,
+           racc=nothing, rwrk=nothing, trace_src=nothing, trace_out=nothing)
 
 Three-pass shifted Cholesky QR on one panel: each pass forms the Gram matrix ``A^\\mathrm{H} A``
 (`scqr3_gram!` into `G`), optional `panel_allreduce!` when `params.c > 1` (requires `partials`),
@@ -274,11 +275,20 @@ Throws `PosDefException` if Cholesky fails (`info[1]` from `scqr3_cholesky!`).
 # Arguments
 - `partials`: when `params.c > 1`, an `b×b×(Px·Pz)` array (same backend as `A_panel`) used by `panel_allreduce!`.
   For a single replica, this implementation fans out `G/K` into each slab so the sum matches `G`.
+- `racc`, `rwrk`: optional `b×b` scratch (same backend / eltype as `G`). When `nothing`, allocated
+  here. Pass preallocated buffers from `geqrf_2p5d!` to avoid per-panel allocations (required for
+  CUDA graph capture, which forbids allocations inside the captured region).
+- `trace_src`, `trace_out`: optional device-side trace scratch (length `nextpow(2, b)` and `1`,
+  `real(T)` eltype). Same preallocation pattern.
 """
 function scqr3!(m::Integer, b::Integer, A_panel::AbstractMatrix{T},
                R::AbstractMatrix{T}, G::AbstractMatrix{T}, info::AbstractVector{Int};
                params::DeviceParams{T},
                partials::Union{Nothing, AbstractArray{T, 3}} = nothing,
+               racc::Union{Nothing, AbstractMatrix{T}} = nothing,
+               rwrk::Union{Nothing, AbstractMatrix{T}} = nothing,
+               trace_src::Union{Nothing, AbstractVector} = nothing,
+               trace_out::Union{Nothing, AbstractVector} = nothing,
                ) where {T}
 	m = Int(m)
 	b = Int(b)
@@ -312,15 +322,23 @@ function scqr3!(m::Integer, b::Integer, A_panel::AbstractMatrix{T},
 	# Identity init is required so the iter-1 TRMM sees zero strict-lower (potrf leaves
 	# the lower triangle holding the original Gram entries) and keeps Racc upper-triangular
 	# across iterations. The swap below avoids the per-iter copyto!(Racc, Rwrk).
-	Racc = similar(G, b, b)
+	Racc = racc === nothing ? similar(G, b, b) : view(racc, 1:b, 1:b)
 	fill!(Racc, zero(T))
 	_scqr3_fill_diag!(be, Racc, one(T), b)
-	Rwrk = similar(G, b, b)
+	Rwrk = rwrk === nothing ? similar(G, b, b) : view(rwrk, 1:b, 1:b)
 	RT = real(T)
 	Ntr = nextpow(2, b)
 	use_device_trace = Ntr <= _WORKGROUP_REDUCE_MAX
-	trace_src = use_device_trace ? similar(G, RT, (Ntr,)) : nothing
-	trace_out = use_device_trace ? similar(G, RT, (1,)) : nothing
+	tsrc = if use_device_trace
+		trace_src === nothing ? similar(G, RT, (Ntr,)) : view(trace_src, 1:Ntr)
+	else
+		nothing
+	end
+	tout = if use_device_trace
+		trace_out === nothing ? similar(G, RT, (1,)) : view(trace_out, 1:1)
+	else
+		nothing
+	end
 
 	for it in 1:3
 		scqr3_gram!(G, A_panel, m, b; params = params)
@@ -333,14 +351,14 @@ function scqr3!(m::Integer, b::Integer, A_panel::AbstractMatrix{T},
 		end
 		if it == 1
 			if use_device_trace
-				scqr3_trace_pack_kernel!(be)(trace_src, G, b; ndrange = Ntr)
-				workgroup_reduce!(trace_out, trace_src; op = +, N = Ntr)
+				scqr3_trace_pack_kernel!(be)(tsrc, G, b; ndrange = Ntr)
+				workgroup_reduce!(tout, tsrc; op = +, N = Ntr)
 				# On-device shift: avoid D2H roundtrip. The shift kernel reads trace_out[1]
 				# directly and applies s = coef * tr. coef matches `scqr3_fukaya_shift`:
 				# coef = 11*(m*b + b*(b+1))*u (max with 0 enforced inside the kernel via
 				# `coef ≥ 0` since u, m, b are all positive).
 				coef = RT(11) * (RT(m * b) + RT(b * (b + 1))) * eps(RT)
-				scqr3_shift_diag_from_trace_kernel!(be)(G, b, trace_out, coef; ndrange = b)
+				scqr3_shift_diag_from_trace_kernel!(be)(G, b, tout, coef; ndrange = b)
 			else
 				# Fallback when nextpow(2, b) exceeds workgroup_reduce! scratch cap.
 				Gb = Matrix{T}(undef, b, b)

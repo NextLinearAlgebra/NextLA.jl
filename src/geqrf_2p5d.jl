@@ -345,6 +345,16 @@ function geqrf_2p5d!(m::Integer, n::Integer,
     G_buf    = similar(A, b_full, b_full)
     R_buf    = similar(A, b_full, b_full)
     info_buf = fill!(similar(A, Int, 1), 0)
+    # Preallocated scqr3 scratch (avoids per-panel `similar(...)` calls and is a
+    # prerequisite for CUDA graph capture, which forbids allocations inside the
+    # captured region).
+    racc_buf = similar(A, b_full, b_full)
+    rwrk_buf = similar(A, b_full, b_full)
+    RT       = real(T)
+    Ntr_max  = nextpow(2, b_full)
+    use_trace_scratch = Ntr_max <= 1024   # _WORKGROUP_REDUCE_MAX in xpartition.jl
+    trace_src_buf = use_trace_scratch ? similar(A, RT, (Ntr_max,)) : similar(A, RT, (0,))
+    trace_out_buf = use_trace_scratch ? similar(A, RT, (1,))       : similar(A, RT, (0,))
     # W1 for the trailing update (always needed); W2/W_pre only for :safe mode.
     # At b=256, n=16384 each :safe slab is ~30 MB FP64 — non-trivial HBM and L2
     # footprint we'd waste on the :fast path where they are never read.
@@ -360,6 +370,14 @@ function geqrf_2p5d!(m::Integer, n::Integer,
                 similar(A, 0, 0)
 
     fill!(R_acc, zero(T))
+
+    # CUDA graph capture (NEXTLA_USE_GRAPH=1) folds the ~26 per-panel kernel
+    # launches into one replayable graph. When `update()` cannot patch the cached
+    # executable (e.g. last panel has different sb), a fresh instantiation
+    # happens; `capture_panel!` handles this transparently.
+    use_graph = get(ENV, "NEXTLA_USE_GRAPH", "0") == "1" &&
+                _graph_capture_supported(be)
+    panel_exec_ref = Ref{Any}()   # cuGraphExec on CUDA; unused otherwise
 
     # ── Outer loop: step k (1-based) advances by b_full ───────────────────────
     k = 1
@@ -410,20 +428,60 @@ function geqrf_2p5d!(m::Integer, n::Integer,
             nothing
         end
 
-        scqr3!(m_panel, sb, A_panel, Rp, Gp, infop; params = p_panel, partials = partials_use)
-        # A_panel now holds Q_k (explicit orthonormal columns).
+        # Choose capture-eligibility: only :fast / c_eff=1 / full-panel iterations are
+        # captured. :safe has a device→host check (`nw2 > sqrt(u)·‖W1‖`) that breaks
+        # capture, and the last partial panel has a different topology than the full
+        # panels (graph `update` would fail and re-instantiate every time).
+        capture_eligible = use_graph && ortho === :fast && c_eff == 1 && sb == b_full
 
-        # Write diagonal block of R (device kernel: avoids scalar CPU indexing into CuArray).
-        _geqrf_write_R_panel!(be, R_acc, Rp, k, sb)
+        panel_body = function()
+            scqr3!(m_panel, sb, A_panel, Rp, Gp, infop; params = p_panel, partials = partials_use,
+                   racc = sb == b_full ? racc_buf : nothing,
+                   rwrk = sb == b_full ? rwrk_buf : nothing,
+                   trace_src = (sb == b_full && use_trace_scratch) ? trace_src_buf : nothing,
+                   trace_out = (sb == b_full && use_trace_scratch) ? trace_out_buf : nothing)
+            # A_panel now holds Q_k (explicit orthonormal columns).
+            _geqrf_write_R_panel!(be, R_acc, Rp, k, sb)
 
-        # --- Phase Q2/Q3: trailing update ---------------------------------------
+            n_tr_local = n - (k + sb - 1)
+            if n_tr_local > 0
+                A_trailing_local = @view A[1:m, (k + sb):n]
+                fits_local(buf) = size(buf, 1) >= sb && size(buf, 2) >= n_tr_local
+                W_local  = fits_local(W_buf)  ? @view(W_buf[1:sb,  1:n_tr_local]) : similar(A, sb, n_tr_local)
+                if c_eff > 1
+                    _geqrf_qta_partitioned!(be, W_local, A_panel, A_trailing_local, m_panel, sb, n_tr_local, tile, p)
+                else
+                    _geqrf_qta!(be, W_local, A_panel, A_trailing_local, m_panel, sb, n_tr_local, tile)
+                end
+                _geqrf_apply!(be, A_trailing_local, A_panel, W_local, m_panel, sb, n_tr_local, tile)
+                _geqrf_write_W_block!(be, R_acc, W_local, k, k + sb, sb, n_tr_local)
+            end
+            return nothing
+        end
+
         n_tr = n - (k + sb - 1)
-        if n_tr > 0
-            A_trailing = @view A[1:m, (k + sb):n]
+        if capture_eligible
+            capture_panel!(be, panel_exec_ref, panel_body)
+        elseif ortho === :fast
+            # Non-capturable but otherwise identical to the captured body — just
+            # invoke the closure to avoid duplicating the inlined sequence.
+            panel_body()
+        else
+            # :safe path: call scqr3!, write R, then run the :safe trailing-update
+            # path below (kept out of the closure because of the device→host check).
+            scqr3!(m_panel, sb, A_panel, Rp, Gp, infop; params = p_panel, partials = partials_use,
+                   racc = sb == b_full ? racc_buf : nothing,
+                   rwrk = sb == b_full ? rwrk_buf : nothing,
+                   trace_src = (sb == b_full && use_trace_scratch) ? trace_src_buf : nothing,
+                   trace_out = (sb == b_full && use_trace_scratch) ? trace_out_buf : nothing)
+            _geqrf_write_R_panel!(be, R_acc, Rp, k, sb)
+        end
 
-            # Reuse W_buf / W2_buf when wide enough; otherwise allocate fresh slabs.
+        # --- :safe extra projection (Fix B) — outside the captured region ----
+        if ortho === :safe && n_tr > 0
+            A_trailing = @view A[1:m, (k + sb):n]
             fits(buf) = size(buf, 1) >= sb && size(buf, 2) >= n_tr
-            W  = fits(W_buf)  ? @view(W_buf[1:sb,  1:n_tr]) : similar(A, sb, n_tr)
+            W = fits(W_buf) ? @view(W_buf[1:sb, 1:n_tr]) : similar(A, sb, n_tr)
 
             # S4 (first pass): W1 = Q_k^H * A_trailing.
             if c_eff > 1
@@ -435,23 +493,22 @@ function geqrf_2p5d!(m::Integer, n::Integer,
             # S5 (first pass): A_trailing -= Q_k * W1.
             _geqrf_apply!(be, A_trailing, A_panel, W, m_panel, sb, n_tr, tile)
 
-            if ortho === :safe
-                # Fix B — second projection (Björck 1967 §2.2).
-                W2 = fits(W2_buf) ? @view(W2_buf[1:sb, 1:n_tr]) : similar(A, sb, n_tr)
-                nw1 = fits(W_buf) ? norm(copy(W)) : real(T)(norm(W))
-                # S4 (second pass): W2 = Q_k^H * A_trailing (residual after first correction).
-                if c_eff > 1
-                    _geqrf_qta_partitioned!(be, W2, A_panel, A_trailing, m_panel, sb, n_tr, tile, p)
-                else
-                    _geqrf_qta!(be, W2, A_panel, A_trailing, m_panel, sb, n_tr, tile)
-                end
-                # Accumulate W2 into W: R entry = W1 + W2 regardless of whether we apply S5.
-                W .+= W2
-                # S5 (second pass): skip when residual is below √u·‖W1‖ — one projection sufficed.
-                nw2 = fits(W2_buf) ? norm(copy(W2)) : real(T)(norm(W2))
-                if nw2 > sqrt(eps(real(T))) * nw1
-                    _geqrf_apply!(be, A_trailing, A_panel, W2, m_panel, sb, n_tr, tile)
-                end
+            # Fix B — second projection (Björck 1967 §2.2). Branch always taken here
+            # because the enclosing block is gated on `ortho === :safe`.
+            W2 = fits(W2_buf) ? @view(W2_buf[1:sb, 1:n_tr]) : similar(A, sb, n_tr)
+            nw1 = fits(W_buf) ? norm(copy(W)) : real(T)(norm(W))
+            # S4 (second pass): W2 = Q_k^H * A_trailing (residual after first correction).
+            if c_eff > 1
+                _geqrf_qta_partitioned!(be, W2, A_panel, A_trailing, m_panel, sb, n_tr, tile, p)
+            else
+                _geqrf_qta!(be, W2, A_panel, A_trailing, m_panel, sb, n_tr, tile)
+            end
+            # Accumulate W2 into W: R entry = W1 + W2 regardless of whether we apply S5.
+            W .+= W2
+            # S5 (second pass): skip when residual is below √u·‖W1‖ — one projection sufficed.
+            nw2 = fits(W2_buf) ? norm(copy(W2)) : real(T)(norm(W2))
+            if nw2 > sqrt(eps(real(T))) * nw1
+                _geqrf_apply!(be, A_trailing, A_panel, W2, m_panel, sb, n_tr, tile)
             end
 
             # Cross-replica reduce of W: on a single device, row-partitioned S4 already summed W.

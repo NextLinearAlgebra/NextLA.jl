@@ -1,4 +1,4 @@
-export DeviceParams, probe_device, compute_params, panel_cu_set, block_owner, workgroup_reduce!, panel_allreduce!, verify_budget, effective_c
+export DeviceParams, probe_device, compute_params, panel_cu_set, block_owner, workgroup_reduce!, panel_allreduce!, verify_budget, effective_c, _graph_capture_supported, capture_panel!
 
 struct DeviceParams{T}
 	P::Int
@@ -23,6 +23,33 @@ function DeviceParams(P::Integer, M::Integer, b::Integer, c::Integer,
 						   Int(Py), Int(Pz), Int(TILE_DIM), Int(b_min),
 						   Int(b_max), AI_target)
 end
+
+"""
+    _graph_capture_supported(backend) -> Bool
+
+Whether the backend supports CUDA-graph-style capture-and-replay of a panel
+iteration. Default `false` for any backend without a specialization (CPU,
+generic KA); overridden to `true` in `ext/cudaext.jl` for `CUDA.CUDABackend`.
+Probed at runtime by `geqrf_2p5d!` to decide whether to honour
+`NEXTLA_USE_GRAPH=1`.
+"""
+_graph_capture_supported(::Any) = false
+
+"""
+    capture_panel!(backend, exec_ref, body::Function) -> Nothing
+
+Backend-aware capture wrapper. On CUDA the override in `ext/cudaext.jl`
+records `body` into a CUDA graph, then on subsequent calls patches the cached
+`CuGraphExec` (held in `exec_ref`) via `update` if possible, else
+re-instantiates; `launch`-replays the cached graph for each call. On every
+other backend (CPU, the no-op default here) it just calls `body()`
+synchronously. Lives here so `cudaext` can override without NextLA having a
+hard CUDA dep.
+
+`exec_ref` is a callsite-owned `Ref{Any}` (typed `Any` so NextLA proper doesn't
+import `CuGraphExec`). The CUDA override casts/assigns into it.
+"""
+capture_panel!(::Any, exec_ref, body::Function) = (body(); nothing)
 
 """
     effective_c(params) -> Int
