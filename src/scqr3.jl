@@ -119,12 +119,20 @@ function scqr3_gram!(G::AbstractMatrix{T}, A_panel::AbstractMatrix{T}, m::Intege
 	be = KernelAbstractions.get_backend(G)
 	KernelAbstractions.get_backend(A_panel) === be ||
 		throw(ArgumentError("`G` and `A_panel` must share the same KernelAbstractions backend"))
-	# Fast path: BLAS/cuBLAS GEMM (CPU: OpenBLAS/MKL; GPU: cuBLAS via mul! dispatch).
-	# Full G = A^H A so the upper Cholesky sees the correct upper-triangle entries.
+	# Fast path: BLAS/cuBLAS SYRK or GEMM (CPU: OpenBLAS/MKL; GPU: cuBLAS).
+	# Default is SYRK/HERK via `_scqr3_syrk_herk!` — writes only the upper triangle
+	# of G = AᴴA at half the flops of GEMM. POTRF later only reads the upper
+	# triangle and the strict-lower is never touched (the trace-pack kernel reads
+	# the diagonal). Toggle via env: `NEXTLA_USE_SYRK=0` falls back to GEMM (A/B
+	# baseline / sanity check on small b where Hopper cuBLAS DGEMM may beat DSYRK).
 	if T <: LinearAlgebra.BlasFloat
 		Gv = view(G, 1:b, 1:b)
 		Av = view(A_panel, 1:m, 1:b)
-		mul!(Gv, Av', Av)
+		if get(ENV, "NEXTLA_USE_SYRK", "1") == "1"
+			_scqr3_syrk_herk!(be, Gv, Av)
+		else
+			mul!(Gv, Av', Av)
+		end
 		return G
 	end
 	raw = if gram_tile !== nothing
@@ -382,6 +390,29 @@ function scqr3!(A_panel::AbstractMatrix{T}, R::AbstractMatrix{T};
 	partials = effective_c(p) > 1 ? similar(A_panel, (b, b, p.Px * p.Pz)) : nothing
 	scqr3!(m, b, A_panel, R, G, info; params = p, partials = partials)
 	return nothing
+end
+
+# ── SYRK/HERK dispatch for Gram (upper triangle only, half the flops of GEMM) ─
+# `_scqr3_syrk_herk!(be, Gv, Av)` computes `Gv = Av' * Av` writing only the
+# upper triangle. For real T this is SYRK with trans='T'; for complex T it is
+# HERK with trans='C'. Strict-lower is left untouched (potrf reads only U).
+#
+# CPU: LinearAlgebra.BLAS.syrk!/herk! (OpenBLAS/MKL).
+# GPU (CUDA): overridden in ext/cudaext.jl via CUDA.CUBLAS.syrk!/herk!.
+# Other backends: fall back to GEMM via `mul!`.
+function _scqr3_syrk_herk!(::KernelAbstractions.CPU, Gv::AbstractMatrix{T}, Av::AbstractMatrix{T}) where {T<:LinearAlgebra.BlasFloat}
+	if T <: LinearAlgebra.BlasReal
+		LinearAlgebra.BLAS.syrk!('U', 'T', one(T), Av, zero(T), Gv)
+	else
+		LinearAlgebra.BLAS.herk!('U', 'C', one(real(T)), Av, zero(real(T)), Gv)
+	end
+	return Gv
+end
+
+# Backend fallback when no specialised SYRK is available: full GEMM via `mul!`.
+function _scqr3_syrk_herk!(::Any, Gv::AbstractMatrix{T}, Av::AbstractMatrix{T}) where {T<:LinearAlgebra.BlasFloat}
+	mul!(Gv, Av', Av)
+	return Gv
 end
 
 # ── Vendor Cholesky dispatch ──────────────────────────────────────────────────

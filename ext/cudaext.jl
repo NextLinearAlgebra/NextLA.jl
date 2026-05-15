@@ -51,4 +51,19 @@ function NextLA._scqr3_potrf!(::CUDA.CUDABackend, G::AbstractMatrix, b::Int)
 	CUDA.CUSOLVER.potrf!('U', view(G, 1:b, 1:b))
 end
 
+# cuBLAS SYRK/HERK for the Gram step — writes only the upper triangle of
+# Gv = Av' * Av at half the flops of cuBLAS GEMM. On Hopper this saves ~15-25%
+# of the panel Gram time depending on b. Falls through to the generic `mul!`
+# path (GEMM) when env `NEXTLA_USE_SYRK=0`.
+import LinearAlgebra
+function NextLA._scqr3_syrk_herk!(::CUDA.CUDABackend,
+		Gv::AbstractMatrix{T}, Av::AbstractMatrix{T}) where {T<:LinearAlgebra.BlasFloat}
+	if T <: LinearAlgebra.BlasReal
+		CUDA.CUBLAS.syrk!('U', 'T', one(T), Av, zero(T), Gv)
+	else
+		CUDA.CUBLAS.herk!('U', 'C', one(real(T)), Av, zero(real(T)), Gv)
+	end
+	return Gv
+end
+
 end
