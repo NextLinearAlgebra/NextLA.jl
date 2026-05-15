@@ -24,4 +24,9 @@ function NextLA._scqr3_gram_backend_caps(backend::CUDA.CUDABackend, ::Type{T}) w
 	return (max_th, smem)
 end
 
+# cuSOLVER POTRF for GPU Cholesky — avoids the single-thread serial KA kernel.
+function NextLA._scqr3_potrf!(::CUDA.CUDABackend, G::AbstractMatrix, b::Int)
+	CUDA.CUSOLVER.potrf!('U', view(G, 1:b, 1:b))
+end
+
 end

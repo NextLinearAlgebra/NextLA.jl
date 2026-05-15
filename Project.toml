@@ -1,26 +1,30 @@
 name = "NextLA"
 uuid = "d37ed344-79c4-486d-9307-6d11355a15a3"
-authors = ["Rabab Alomairy, Evelyne Ringoot, Sophie Xuan, Vicki Carrica, Maxwell Onyango, Julian Samaroo, and Felipe Tome"]
 version = "0.2.3"
+authors = ["Rabab Alomairy, Evelyne Ringoot, Sophie Xuan, Vicki Carrica, Maxwell Onyango, Julian Samaroo, and Felipe Tome"]
 
 [deps]
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Revise = "295af30f-e4ad-537b-8983-00126c2a3abe"
+
+[weakdeps]
+AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+
+[extensions]
+amdext = "AMDGPU"
+cudaext = "CUDA"
 
 [compat]
+BenchmarkTools = "1.8.0"
 KernelAbstractions = "0.9.34"
 LinearAlgebra = "1"
 Random = "1"
+Revise = "3.14.3"
 julia = "1.9"
-
-[weakdeps]
-CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
-AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
-
-[extensions]
-cudaext = "CUDA"
-amdext = "AMDGPU"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"

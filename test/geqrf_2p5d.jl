@@ -120,21 +120,38 @@ for (backend_name, ArrayType, synchronize) in available_backends()
                 kappa = min(params_m.cndnum, _geqrf_max_kappa(T))
                 A_orig = matrix_generation(T, 128, 64;
                     mode = params_m.mode, cndnum = kappa, seed = 42)
+                # `ortho=:safe` (Fix B+C) is required for κ-independent global O(u) orthogonality.
+                # `ortho=:fast` (the default) gives per-panel O(u) only; inter-panel scales with κ·u.
                 A = ArrayType(copy(A_orig))
                 R_acc = ArrayType(zeros(T, 64, 64))
                 tau = ArrayType(zeros(T, 64))
-                NextLA.geqrf_2p5d!(128, 64, A, R_acc, tau; b = 16)
+                NextLA.geqrf_2p5d!(128, 64, A, R_acc, tau; b = 16, ortho = :safe)
                 synchronize(A); synchronize(R_acc)
                 A_cpu = Array(A); R_cpu = Array(R_acc)
                 met = geqrf_fukaya_metrics(A_orig, A_cpu, R_cpu)
                 ot = geqrf_orth_tol(T, 128, 16)   # κ-independent Fukaya bound
-                @testset "imat=$imat κ=$kappa" begin
+                @testset "imat=$imat κ=$kappa [ortho=:safe]" begin
                     @test met.res_fro < geqrf_res_tol(T)
                     @test met.orth_fro < ot
                     @test met.orth2 < ot
                     # Explicit inter-panel orthogonality: tril(Q'Q, -1) should be
                     # small — pre-orthogonalization + Fix B bound it to O(u).
                     @test met.inter_panel_fro < ot
+                end
+
+                # `ortho=:fast` regression: per-panel orthogonality bounded by Fukaya, but
+                # inter-panel is allowed to scale linearly with κ·u (no Fix C correction).
+                A2 = ArrayType(copy(A_orig))
+                R2 = ArrayType(zeros(T, 64, 64)); tau2 = ArrayType(zeros(T, 64))
+                NextLA.geqrf_2p5d!(128, 64, A2, R2, tau2; b = 16, ortho = :fast)
+                synchronize(A2); synchronize(R2)
+                met_fast = geqrf_fukaya_metrics(A_orig, Array(A2), Array(R2))
+                ot_fast = ot * max(1.0, kappa * u * 1e2)   # κ·u-scaled tolerance for inter-panel
+                @testset "imat=$imat κ=$kappa [ortho=:fast]" begin
+                    @test met_fast.res_fro < geqrf_res_tol(T)
+                    # Per-panel orthogonality should still hold to within Fukaya bound times
+                    # a small κ factor (sCQR3 itself remains O(u) for κ ≤ u^{-1/2}).
+                    @test met_fast.orth_fro < ot_fast
                 end
             end
         end

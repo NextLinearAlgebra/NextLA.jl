@@ -1,7 +1,9 @@
 export geqrf_2p5d!
 
-# Default tile for trailing-update GEMMs; recovered inside kernels via @uniform @groupsize()[1].
-const _GEQRF_TILE_DIM = 16
+# Tile for trailing-update GEMMs. GPU uses 32 (1024 threads/block); CPU uses BLAS so this
+# only affects the (unused) kernel fallback path — kept at 16 for safety.
+_geqrf_tile(::KernelAbstractions.CPU, b_full::Int) = clamp(16, 1, b_full)
+_geqrf_tile(::Any,                    b_full::Int) = clamp(256, 1, b_full)
 
 # ── Statement S4: W = Q^H * A_trailing ───────────────────────────────────────
 # W  is sb × n_tr
@@ -152,8 +154,30 @@ end
 end
 
 # ── Launcher helpers ──────────────────────────────────────────────────────────
+
+# CPU path: route through LinearAlgebra.mul! (BLAS DGEMM/ZGEMM) instead of the tile kernel.
+# W = Qᴴ * A_tr  (sb × n_tr); accumulates when clear_W=false.
+function _geqrf_qta!(::KernelAbstractions.CPU, W, Q, A_tr, m_panel::Int, sb::Int, n_tr::Int, ::Int; clear_W::Bool = true)
+    Qv = @view Q[1:m_panel, 1:sb]
+    Av = @view A_tr[1:m_panel, 1:n_tr]
+    if clear_W
+        mul!(W, adjoint(Qv), Av)
+    else
+        mul!(W, adjoint(Qv), Av, one(eltype(W)), one(eltype(W)))
+    end
+end
+
+# GPU path (CUDA/ROCM/etc.): use BLAS/cuBLAS mul! for BlasFloat; KA kernel otherwise.
 function _geqrf_qta!(be, W, Q, A_tr, m_panel::Int, sb::Int, n_tr::Int, tile::Int; clear_W::Bool = true)
-    clear_W && fill!(W, zero(eltype(W)))
+    T = eltype(W)
+    if T <: LinearAlgebra.BlasFloat
+        Wv = view(W,    1:sb,      1:n_tr)
+        Qv = view(Q,    1:m_panel, 1:sb)
+        Av = view(A_tr, 1:m_panel, 1:n_tr)
+        clear_W ? mul!(Wv, Qv', Av) : mul!(Wv, Qv', Av, one(T), one(T))
+        return
+    end
+    clear_W && fill!(W, zero(T))
     nd = (cld(sb, tile) * tile, cld(n_tr, tile) * tile)
     qta_tile_kernel!(be, (tile, tile))(W, Q, A_tr, m_panel, sb, n_tr; ndrange = nd)
     KernelAbstractions.synchronize(be)
@@ -188,7 +212,22 @@ function _geqrf_qta_partitioned!(be, W, Q_full, A_tr_full, m::Int, sb::Int, n_tr
     end
 end
 
+# CPU path: A_tr[1:m_panel, 1:n_tr] -= Q[1:m_panel, 1:sb] * W  via BLAS DGEMM.
+function _geqrf_apply!(::KernelAbstractions.CPU, A_tr, Q, W, m_panel::Int, sb::Int, n_tr::Int, ::Int)
+    mul!(@view(A_tr[1:m_panel, 1:n_tr]), @view(Q[1:m_panel, 1:sb]), W,
+         -one(eltype(A_tr)), one(eltype(A_tr)))
+end
+
+# GPU path: cuBLAS mul! for BlasFloat; KA kernel otherwise.
 function _geqrf_apply!(be, A_tr, Q, W, m_panel::Int, sb::Int, n_tr::Int, tile::Int)
+    T = eltype(A_tr)
+    if T <: LinearAlgebra.BlasFloat
+        mul!(view(A_tr, 1:m_panel, 1:n_tr),
+             view(Q,    1:m_panel, 1:sb),
+             view(W,    1:sb,      1:n_tr),
+             -one(T), one(T))
+        return
+    end
     nd = (cld(m_panel, tile) * tile, cld(n_tr, tile) * tile)
     apply_trailing_kernel!(be, (tile, tile))(A_tr, Q, W, m_panel, sb, n_tr; ndrange = nd)
     KernelAbstractions.synchronize(be)
@@ -196,12 +235,10 @@ end
 
 function _geqrf_write_R_panel!(be, R_acc, Rp, k_start::Int, sb::Int)
     geqrf_write_R_panel_kernel!(be)(R_acc, Rp, k_start, sb; ndrange = sb * sb)
-    KernelAbstractions.synchronize(be)
 end
 
 function _geqrf_write_W_block!(be, R_acc, W, k_row::Int, k_col::Int, sb::Int, n_tr::Int)
     geqrf_write_W_block_kernel!(be)(R_acc, W, k_row, k_col, sb, n_tr; ndrange = sb * n_tr)
-    KernelAbstractions.synchronize(be)
 end
 
 # ── geqrf_2p5d! — outer loop driver ──────────────────────────────────────────
@@ -249,15 +286,23 @@ planned future fix.
 - `A`      : m×n matrix, modified in place.
 - `R_acc`  : n×n output matrix for the R factor.
 - `tau`    : length-n scratch vector (currently unused).
-- `params` : `DeviceParams` from `compute_params`; probed automatically when `nothing` (uses `c=1`).
+- `params` : `DeviceParams` from `compute_params`; probed automatically when `nothing` (uses `c` from the `P·M / N²` budget with `N = max(m, n)`, matching `verify_budget` / `scqr3!`).
 - `b`      : panel width override (clamped to admissible `[b_min, b_max]` from `params`).
+- `ortho`  : orthogonality strategy. `:fast` (default) — single trailing projection per panel,
+  giving per-panel O(u) orthogonality (Fukaya §3.4) and global ortho ≈ O(κ·u); fastest path,
+  matches the paper's §3.5 per-step structure. `:safe` — adds Fix B (Björck 1967 §2.2 double
+  trailing projection) and Fix C (double Gram-Schmidt pre-projection of the panel against
+  accumulated `Q`); enforces global O(u) orthogonality up to κ ≈ O(u⁻¹) at ≈ 5× the flop cost.
 """
 function geqrf_2p5d!(m::Integer, n::Integer,
                      A::AbstractMatrix{T},
                      R_acc::AbstractMatrix{T},
                      tau::AbstractVector{T};
                      params::Union{DeviceParams{T}, Nothing} = nothing,
-                     b::Union{Integer, Nothing} = nothing) where {T}
+                     b::Union{Integer, Nothing} = nothing,
+                     ortho::Symbol = :fast) where {T}
+    ortho in (:fast, :safe) ||
+        throw(ArgumentError("ortho must be :fast or :safe, got :$ortho"))
     m = Int(m); n = Int(n)
     m >= 0 || throw(ArgumentError("m must be ≥ 0, got m=$m"))
     n >= 0 || throw(ArgumentError("n must be ≥ 0, got n=$n"))
@@ -270,11 +315,15 @@ function geqrf_2p5d!(m::Integer, n::Integer,
     be = KernelAbstractions.get_backend(A)
 
     k_eff = min(m, n)
+    # `compute_params` budget uses c ≈ ⌊P·M / N²⌋ (see `verify_budget`); N must scale like the
+    # problem order. Using only `n` inflates c by (max(m,n)/n)² for tall-skinny matrices — same as
+    # `scqr3!`, use `max(m, n)` (not `min(m, n)` / `k_eff`).
+    N_budget = max(m, n)
 
     # ── Device params ──────────────────────────────────────────────────────────
     p = if params === nothing
         bval = b === nothing ? min(32, k_eff) : max(1, Int(b))
-        compute_params(be, T, n; b = bval, c = 1)
+        compute_params(be, T, N_budget; b = bval, c = nothing)
     else
         params
     end
@@ -282,7 +331,7 @@ function geqrf_2p5d!(m::Integer, n::Integer,
     b_full = p.b
     b_full >= 1 || throw(ArgumentError("DeviceParams.b must be ≥ 1"))
 
-    tile = clamp(_GEQRF_TILE_DIM, 1, b_full)
+    tile = _geqrf_tile(be, b_full)
 
     # Gram partials for sCQR3 when params.c > 1 (same layout as `scqr3!`).
     partials_buf = p.c > 1 ? similar(A, b_full, b_full, p.Px * p.Pz) : nothing
@@ -316,11 +365,13 @@ function geqrf_2p5d!(m::Integer, n::Integer,
         # needed: R_acc[1:k-1, k:...] was computed correctly via step-j trailing
         # updates; the pre-projection removes only the accumulated numerical error.
         k_cols = k - 1
-        if k_cols > 0
+        if ortho === :safe && k_cols > 0
             Q_acc  = @view A[1:m, 1:k_cols]
             # W_pre is k_cols × sb; reuse preallocated buffer when it fits.
             W_pre  = (size(W_pre_buf, 1) >= k_cols && size(W_pre_buf, 2) >= sb) ?
                      @view(W_pre_buf[1:k_cols, 1:sb]) : similar(A, k_cols, sb)
+            # Double Gram-Schmidt (Björck 1967 §2.2): two unconditional projections
+            # give global O(u) inter-panel orthogonality for all κ ≤ O(u^{-1}).
             _geqrf_qta!(be, W_pre, Q_acc, A_panel, m, k_cols, sb, tile)
             _geqrf_apply!(be, A_panel, Q_acc, W_pre, m, k_cols, sb, tile)
             _geqrf_qta!(be, W_pre, Q_acc, A_panel, m, k_cols, sb, tile)
@@ -361,7 +412,6 @@ function geqrf_2p5d!(m::Integer, n::Integer,
             # Reuse W_buf / W2_buf when wide enough; otherwise allocate fresh slabs.
             fits(buf) = size(buf, 1) >= sb && size(buf, 2) >= n_tr
             W  = fits(W_buf)  ? @view(W_buf[1:sb,  1:n_tr]) : similar(A, sb, n_tr)
-            W2 = fits(W2_buf) ? @view(W2_buf[1:sb, 1:n_tr]) : similar(A, sb, n_tr)
 
             # S4 (first pass): W1 = Q_k^H * A_trailing.
             if p.c > 1
@@ -373,23 +423,28 @@ function geqrf_2p5d!(m::Integer, n::Integer,
             # S5 (first pass): A_trailing -= Q_k * W1.
             _geqrf_apply!(be, A_trailing, A_panel, W, m_panel, sb, n_tr, tile)
 
-            # Fix B — double projection: reorthogonalize the residual.
-            # After one projection the residual still has an O(κ·u) component in span(Q_k).
-            # A second pass reduces it to O(u), recovering full machine-precision orthogonality
-            # for κ(A_trailing) ≤ u^{-1/2} (Björck 1967, §2.2).
-            if p.c > 1
-                _geqrf_qta_partitioned!(be, W2, A_panel, A_trailing, m_panel, sb, n_tr, tile, p)
-            else
-                _geqrf_qta!(be, W2, A_panel, A_trailing, m_panel, sb, n_tr, tile)
+            if ortho === :safe
+                # Fix B — second projection (Björck 1967 §2.2).
+                W2 = fits(W2_buf) ? @view(W2_buf[1:sb, 1:n_tr]) : similar(A, sb, n_tr)
+                nw1 = fits(W_buf) ? norm(copy(W)) : real(T)(norm(W))
+                # S4 (second pass): W2 = Q_k^H * A_trailing (residual after first correction).
+                if p.c > 1
+                    _geqrf_qta_partitioned!(be, W2, A_panel, A_trailing, m_panel, sb, n_tr, tile, p)
+                else
+                    _geqrf_qta!(be, W2, A_panel, A_trailing, m_panel, sb, n_tr, tile)
+                end
+                # Accumulate W2 into W: R entry = W1 + W2 regardless of whether we apply S5.
+                W .+= W2
+                # S5 (second pass): skip when residual is below √u·‖W1‖ — one projection sufficed.
+                nw2 = fits(W2_buf) ? norm(copy(W2)) : real(T)(norm(W2))
+                if nw2 > sqrt(eps(real(T))) * nw1
+                    _geqrf_apply!(be, A_trailing, A_panel, W2, m_panel, sb, n_tr, tile)
+                end
             end
-            # Accumulate W2 into W: total R entry = W1 + W2.
-            W .+= W2
-            # S5 (second pass): A_trailing -= Q_k * W2.
-            _geqrf_apply!(be, A_trailing, A_panel, W2, m_panel, sb, n_tr, tile)
 
             # Cross-replica reduce of W: on a single device, row-partitioned S4 already summed W.
 
-            # Write W1+W2 (= upper off-diagonal block of R) to R_acc.
+            # Write W1 (or W1+W2 in :safe) to the upper off-diagonal block of R.
             _geqrf_write_W_block!(be, R_acc, W, k, k + sb, sb, n_tr)
         end
 
@@ -400,15 +455,20 @@ function geqrf_2p5d!(m::Integer, n::Integer,
 end
 
 """
-    geqrf_2p5d!(A) -> (A, R)
+    geqrf_2p5d!(A; params=nothing, b=nothing) -> (A, R)
 
 Convenience overload: allocates `R` (n×n) and `tau` (n), calls the full driver,
 returns `(A, R)`.
+
+`params` and `b` are forwarded to [`geqrf_2p5d!(m, n, A, R, tau; ...)`](@ref) — same meaning as there.
 """
-function geqrf_2p5d!(A::AbstractMatrix{T}) where {T}
+function geqrf_2p5d!(A::AbstractMatrix{T};
+                     params::Union{DeviceParams{T}, Nothing} = nothing,
+                     b::Union{Integer, Nothing} = nothing,
+                     ortho::Symbol = :fast) where {T}
     m, n = size(A)
     R   = similar(A, n, n)
     tau = similar(A, n)
-    geqrf_2p5d!(m, n, A, R, tau)
+    geqrf_2p5d!(m, n, A, R, tau; params = params, b = b, ortho = ortho)
     return A, R
 end

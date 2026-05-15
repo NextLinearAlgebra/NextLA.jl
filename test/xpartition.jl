@@ -34,6 +34,18 @@ include(joinpath(@__DIR__, "gpu_backends.jl"))
 	@test p.AI_target ≈ ai_exp rtol = 1e-6 atol = 1e-6
 	@test p.b_min <= p.b <= p.b_max
 
+	# Default `c` follows `c_calc` when feasible; otherwise it is capped so `b_min ≤ b_max` for `Ntest`.
+	Pd, Md = probe_device(CPU(), Float64)
+	c_calc = (Pd * Md) ÷ max(Ntest * Ntest, 1)
+	pauto = compute_params(CPU(), Float64, Ntest)
+	if c_calc < 1
+		@test pauto.c == 1
+	else
+		@test 1 <= pauto.c <= c_calc
+	end
+	@test pauto.b_min <= pauto.b_max
+	verify_budget(pauto; N = Ntest)
+
 	cfix = 3
 	pc = compute_params(CPU(), Float64, Ntest; c = cfix)
 	@test pc.c == cfix

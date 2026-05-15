@@ -32,43 +32,30 @@ function _scqr3_gram_feasible_tiles(backend, ::Type{T}) where {T}
 	return out
 end
 
-"""Nearest abstract tile in `_SCQR3_GRAM_TILE_CANDIDATES` (ignores device); ties → smaller."""
-function _scqr3_snap_gram_tile(tile_dim::Integer)
-	lo = first(_SCQR3_GRAM_TILE_CANDIDATES)
-	hi = last(_SCQR3_GRAM_TILE_CANDIDATES)
-	x = clamp(Int(tile_dim), lo, hi)
-	best = lo
-	bestd = abs(best - x)
-	for j in 2:length(_SCQR3_GRAM_TILE_CANDIDATES)
-		t = _SCQR3_GRAM_TILE_CANDIDATES[j]
-		d = abs(t - x)
-		if d < bestd || (d == bestd && t < best)
-			best = t
-			bestd = d
-		end
-	end
-	return best
-end
+"""
+    _scqr3_pick_gram_tile(backend, T, raw) -> Int
 
-"""Pick Gram tile: clamp request to compiled range, then nearest size that fits thread + `@localmem` caps."""
+Choose the Gram launch tile: **smallest** value in `_scqr3_gram_feasible_tiles` that is `≥ raw`,
+or the **largest** feasible tile if `raw` exceeds all feasible sizes. There is no clamp-to-`[4,256]`
+and no nearest-neighbor snap among candidates.
+
+`raw` is typically `DeviceParams.TILE_DIM` (= `⌊√M⌋` from `compute_params`), which may not itself be a
+compiled tile size; this function only maps it to a **valid** launch size.
+"""
 function _scqr3_pick_gram_tile(backend, ::Type{T}, raw::Integer) where {T}
 	feas = _scqr3_gram_feasible_tiles(backend, T)
 	isempty(feas) &&
 		throw(ArgumentError("no Gram tile in $_SCQR3_GRAM_TILE_CANDIDATES fits backend limits for $(typeof(backend)) and T=$T"))
-	lo = first(_SCQR3_GRAM_TILE_CANDIDATES)
-	hi = last(_SCQR3_GRAM_TILE_CANDIDATES)
-	x = clamp(Int(raw), lo, hi)
-	best = feas[1]
-	bestd = abs(best - x)
-	for j in 2:length(feas)
-		t = feas[j]
-		d = abs(t - x)
-		if d < bestd || (d == bestd && t < best)
-			best = t
-			bestd = d
+	r = Int(raw)
+	if r <= first(feas)
+		return first(feas)
+	end
+	for t in feas
+		if t >= r
+			return t
 		end
 	end
-	return best
+	return last(feas)
 end
 
 """
@@ -111,10 +98,11 @@ Uses `scqr3_gram_kernel!` with tiled `@localmem` loads (SYRK-style over row tile
 # Tile size
 
 Compiled candidates are `_SCQR3_GRAM_TILE_CANDIDATES` (§3.4-style streaming tile ``τ`` plus common
-blocked factors). The chosen tile is the **nearest** (ties → smaller) to `clamp(raw, lo, hi)` among
-sizes that satisfy `_scqr3_gram_backend_caps` (CPU defaults or values from `ext/cudaext.jl` /
-`ext/amdext.jl`). If `gram_tile` is set, it wins; else `params.TILE_DIM` when `params !== nothing`;
-otherwise the default is `16`.
+blocked factors). The launch tile is the **smallest** candidate that is both feasible under
+`_scqr3_gram_backend_caps` (CPU defaults or values from `ext/cudaext.jl` / `ext/amdext.jl`) and
+`≥ raw`, where `raw` comes from `gram_tile` if set, else `params.TILE_DIM` when `params !== nothing`,
+else `16`. If no candidate is `≥ raw`, the **largest** feasible tile is used. There is no clamp of
+`raw` to the candidate list and no nearest-neighbor rounding.
 """
 function scqr3_gram!(G::AbstractMatrix{T}, A_panel::AbstractMatrix{T}, m::Integer, b::Integer;
 					 params::Union{Nothing, DeviceParams} = nothing,
@@ -131,6 +119,14 @@ function scqr3_gram!(G::AbstractMatrix{T}, A_panel::AbstractMatrix{T}, m::Intege
 	be = KernelAbstractions.get_backend(G)
 	KernelAbstractions.get_backend(A_panel) === be ||
 		throw(ArgumentError("`G` and `A_panel` must share the same KernelAbstractions backend"))
+	# Fast path: BLAS/cuBLAS GEMM (CPU: OpenBLAS/MKL; GPU: cuBLAS via mul! dispatch).
+	# Full G = A^H A so the upper Cholesky sees the correct upper-triangle entries.
+	if T <: LinearAlgebra.BlasFloat
+		Gv = view(G, 1:b, 1:b)
+		Av = view(A_panel, 1:m, 1:b)
+		mul!(Gv, Av', Av)
+		return G
+	end
 	raw = if gram_tile !== nothing
 		Int(gram_tile)
 	elseif params !== nothing
@@ -229,6 +225,31 @@ end
 	end
 end
 
+# Fused on-device shift: reads tr = trace_out[1] from device memory (no D2H sync) and
+# applies the Fukaya shift s = coef * tr to each G[j,j] in 1:b. Saves one D2H roundtrip
+# and one CPU-side scalar computation per first sCQR3 iteration.
+@kernel unsafe_indices = true function scqr3_shift_diag_from_trace_kernel!(G, b::Int, trace_out, coef)
+	j = @index(Global, Linear)
+	T = eltype(G)
+	if j <= b
+		@inbounds tr = trace_out[1]
+		s = coef * tr
+		@inbounds G[j, j] = G[j, j] + convert(T, s)
+	end
+end
+
+@kernel unsafe_indices = true function scqr3_fill_diag_kernel!(A, val, b::Int)
+	j = @index(Global, Linear)
+	if j <= b
+		@inbounds A[j, j] = val
+	end
+end
+
+# Set A[j,j] = val for j in 1:b on the same backend as A (no allocation, async).
+function _scqr3_fill_diag!(be, A::AbstractMatrix, val, b::Int)
+	scqr3_fill_diag_kernel!(be)(A, val, b; ndrange = b)
+end
+
 """
     scqr3!(m, b, A_panel, R, G, info; params, partials=nothing)
 
@@ -278,15 +299,19 @@ function scqr3!(m::Integer, b::Integer, A_panel::AbstractMatrix{T},
 			throw(ArgumentError("`partials` must use the same backend as A_panel"))
 	end
 
+	# Racc accumulates R = G_3 G_2 G_1; Rwrk is the swap partner for the TRMM product.
+	# Identity init is required so the iter-1 TRMM sees zero strict-lower (potrf leaves
+	# the lower triangle holding the original Gram entries) and keeps Racc upper-triangular
+	# across iterations. The swap below avoids the per-iter copyto!(Racc, Rwrk).
 	Racc = similar(G, b, b)
-	copyto!(Racc, Matrix{T}(I, b, b))
+	fill!(Racc, zero(T))
+	_scqr3_fill_diag!(be, Racc, one(T), b)
 	Rwrk = similar(G, b, b)
 	RT = real(T)
 	Ntr = nextpow(2, b)
 	use_device_trace = Ntr <= _WORKGROUP_REDUCE_MAX
 	trace_src = use_device_trace ? similar(G, RT, (Ntr,)) : nothing
 	trace_out = use_device_trace ? similar(G, RT, (1,)) : nothing
-	tr_host = Vector{RT}(undef, 1)
 
 	for it in 1:3
 		scqr3_gram!(G, A_panel, m, b; params = params)
@@ -300,13 +325,13 @@ function scqr3!(m::Integer, b::Integer, A_panel::AbstractMatrix{T},
 		if it == 1
 			if use_device_trace
 				scqr3_trace_pack_kernel!(be)(trace_src, G, b; ndrange = Ntr)
-				KernelAbstractions.synchronize(be)
 				workgroup_reduce!(trace_out, trace_src; op = +, N = Ntr)
-				copyto!(tr_host, trace_out)
-				tr = tr_host[1]
-				s = scqr3_fukaya_shift(T, m, b, tr)
-				scqr3_diag_shift_kernel!(be)(G, b, s; ndrange = b)
-				KernelAbstractions.synchronize(be)
+				# On-device shift: avoid D2H roundtrip. The shift kernel reads trace_out[1]
+				# directly and applies s = coef * tr. coef matches `scqr3_fukaya_shift`:
+				# coef = 11*(m*b + b*(b+1))*u (max with 0 enforced inside the kernel via
+				# `coef ≥ 0` since u, m, b are all positive).
+				coef = RT(11) * (RT(m * b) + RT(b * (b + 1))) * eps(RT)
+				scqr3_shift_diag_from_trace_kernel!(be)(G, b, trace_out, coef; ndrange = b)
 			else
 				# Fallback when nextpow(2, b) exceeds workgroup_reduce! scratch cap.
 				Gb = Matrix{T}(undef, b, b)
@@ -319,16 +344,13 @@ function scqr3!(m::Integer, b::Integer, A_panel::AbstractMatrix{T},
 				copyto!(view(G, 1:b, 1:b), Gb)
 			end
 		end
-		scqr3_cholesky!(G, info, b)
-		inum = Array(info)[1]
-		if inum != 0
-			throw(PosDefException(inum))
-		end
-		# R_acc := R_iter * R_acc with R_iter the upper Cholesky factor in G
-		mul!(Rwrk, UpperTriangular(view(G, 1:b, 1:b)), Racc)
-		copyto!(Racc, Rwrk)
-		RightUpperTRSM!(UpperTriangular(view(G, 1:b, 1:b)), view(A_panel, 1:m, 1:b))
-		KernelAbstractions.synchronize(be)
+		_scqr3_potrf!(be, G, b)
+		Gv = view(G, 1:b, 1:b)
+		# R_acc := R_iter * R_acc; swap so Racc holds the latest product without copyto!.
+		mul!(Rwrk, UpperTriangular(Gv), Racc)
+		Racc, Rwrk = Rwrk, Racc
+		# A_panel[:, 1:b] = A_panel[:, 1:b] * R_iter^{-1}  (right upper TRSM).
+		rdiv!(view(A_panel, 1:m, 1:b), UpperTriangular(Gv))
 	end
 	copyto!(view(R, 1:b, 1:b), Racc)
 	return nothing
@@ -359,6 +381,27 @@ function scqr3!(A_panel::AbstractMatrix{T}, R::AbstractMatrix{T};
 	partials = p.c > 1 ? similar(A_panel, (b, b, p.Px * p.Pz)) : nothing
 	scqr3!(m, b, A_panel, R, G, info; params = p, partials = partials)
 	return nothing
+end
+
+# ── Vendor Cholesky dispatch ──────────────────────────────────────────────────
+# `_scqr3_potrf!(be, G, b)` computes the in-place upper Cholesky of G[1:b, 1:b].
+# On success the upper triangle holds R with R^H R = G_input[1:b, 1:b].
+# Throws PosDefException on failure.
+#
+# CPU: LAPACK POTRF (direct in-place, no alloc).
+# GPU (CUDA): overridden in ext/cudaext.jl via CUSOLVER POTRF.
+# Generic fallback: serial KA kernel (for non-BlasFloat or unrecognised backends).
+
+function _scqr3_potrf!(::KernelAbstractions.CPU, G::AbstractMatrix, b::Int)
+	_, info = LAPACK.potrf!('U', view(G, 1:b, 1:b))
+	info != 0 && throw(PosDefException(info))
+end
+
+function _scqr3_potrf!(be, G::AbstractMatrix, b::Int)
+	info_scratch = fill!(similar(G, Int, 1), 0)
+	scqr3_cholesky!(G, info_scratch, b)
+	inum = Array(info_scratch)[1]
+	inum != 0 && throw(PosDefException(inum))
 end
 
 """

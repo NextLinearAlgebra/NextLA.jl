@@ -32,16 +32,53 @@ function probe_device(backend, ::Type{T}) where {T}
 	return P, M
 end
 
+"""
+    compute_params(backend, T, N; b=nothing, c=nothing)
+
+Device model and processor grid for panel algorithms, aligned with the X-partition / Red-Blue
+pebble framework applied to sCQR3-2.5D (see `qr_schur_xpartition.pdf`, Part A §3):
+
+* **Replication factor** `c = ⌊PM/N²⌋` (§3.4 — saturates the 2.5D A-block constraint exactly).
+* **Processor grid** `P₁ = P/c`, `Pₓ = Pᵧ = ⌊√P₁⌋`, `P_z = c` (§3.1).
+* **Admissible block-size window** `c ≤ b ≤ N/√P` (§3.4 — *tightness* established explicitly):
+  the lower endpoint `b = c` saturates the X-partition bandwidth optimum at the cube `X₀ = 3M`;
+  the upper endpoint `b = N/√P₁` saturates the per-processor memory budget exactly (`M + b√Mc`).
+* **Default block size**: `b = clamp(⌊√M⌋, c, N/√P₁)` — the X-partition cube side from §3.4
+  ("the optimal subcomputation is a cube of side √M"). The latency-optimal `b★ ≈ √(γ P log P / β)`
+  from §3.9 requires machine α-β-γ parameters and is not computed here; pass `b` explicitly to
+  override when α/β are known. (For a benchmark sweep the user typically passes `b` directly.)
+
+**`N` is the problem order** used in the memory replication estimate. For an `m×n` QR factorization,
+pass **`N = max(m, n)`** so tall-skinny cases are not distorted by using only `min(m, n)` columns
+in the denominator.
+"""
 function compute_params(backend, ::Type{T}, N; b=nothing, c=nothing) where {T}
 	P, M = probe_device(backend, T)
 	N_int = Int(N)
 	N_int <= 0 && return DeviceParams(P, M, 0, 1, P, max(1, P), 1, 1, 0, 0, 0, zero(T))
 
 	if c === nothing
-		c_calc = (P * M) ÷ (N_int * N_int)
-		c_val = max(1, c_calc)
+		denom = max(N_int * N_int, 1)
+		c_calc = (P * M) ÷ denom
+		# Use the budget formula as-is (no `max(1, c_calc)`); only `c_calc == 0` is invalid for the grid.
 		if c_calc < 1
-			@warn "2D fallback (c < 1): PM=$(P*M) < N^2=$(N_int^2)"
+			@warn "2D fallback (c_calc < 1): PM=$(P*M) < N^2=$(N_int^2); using c=1"
+			c_val = 1
+		else
+			c_val = Int(c_calc)
+		end
+		c_requested = c_val
+		# Need `c ≤ b_max = N ÷ Px` with `Px` from `P1 = max(1, P÷c)`; shrink `c` by fixpoint when the
+		# budget asks for more panel copies than column geometry allows (small `N`, huge `c_calc`).
+		for _ in 1:64
+			P1t = max(1, P ÷ c_val)
+			Pxt = max(1, isqrt(P1t))
+			b_max_t = max(1, N_int ÷ Pxt)
+			c_val <= b_max_t && break
+			c_val = b_max_t
+		end
+		if c_requested > c_val
+			@warn "c capped from budget value to fit panel grid" c_requested = c_requested c_applied = c_val N = N_int
 		end
 	else
 		c_val = max(1, Int(c))
@@ -51,8 +88,9 @@ function compute_params(backend, ::Type{T}, N; b=nothing, c=nothing) where {T}
 	Px = max(1, isqrt(P1))
 	Py = Px
 	Pz = c_val
-	# Abstract fast-memory / streaming tile; `scqr3_gram!` maps `TILE_DIM` to the nearest entry in
-	# `_SCQR3_GRAM_TILE_CANDIDATES` that fits `_scqr3_gram_backend_caps` (CPU defaults or CUDA/AMD ext).
+	# Abstract fast-memory / streaming tile: ⌊√M⌋ from the device model (no clamping here).
+	# `scqr3_gram!` launches the smallest compiled tile in `_SCQR3_GRAM_TILE_CANDIDATES` that is ≥ this
+	# value and fits `_scqr3_gram_backend_caps` (or the largest feasible if none ≥).
 	TILE_DIM = max(1, Int(floor(sqrt(float(M)))))
 	b_min = c_val
 	b_max = max(1, N_int ÷ Px)
@@ -188,7 +226,8 @@ Throw `ArgumentError` if `params` violates invariants implied by `compute_params
 manuscript layout (processor grid, replication axis, block-size window, panel reduction cap).
 
 When `N` is passed, also checks the replication memory identity
-`c = max(1, ⌊PM/N²⌋)` and `b_max = ⌊N / P_x⌋`.
+`c = max(1, ⌊PM/N²⌋)` and `b_max = ⌊N / P_x⌋` (for `m×n` problems use the same `N` as in
+`compute_params`, typically `max(m, n)`).
 """
 function verify_budget(params::DeviceParams; N::Union{Nothing, Integer} = nothing)
 	p = params

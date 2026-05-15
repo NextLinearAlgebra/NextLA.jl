@@ -46,11 +46,9 @@ end
     A = randn(rng, T, m, b)
     Gref = zeros(T, b, b)
     mul!(Gref, A', A)
-    # Abstract snap: 9 → 8 (tie 8/10); 18 → 16 (tie 16/20). Pick on CPU uses full feasible set.
-    @test NextLA._scqr3_snap_gram_tile(9) == 8
-    @test NextLA._scqr3_snap_gram_tile(18) == 16
-    @test NextLA._scqr3_pick_gram_tile(CPU(), T, 9) == 8
-    @test NextLA._scqr3_pick_gram_tile(CPU(), T, 18) == 16
+    # Upward to compiled tile: 9 → 10; 18 ∉ candidates → 20 (next is 16 < 18).
+    @test NextLA._scqr3_pick_gram_tile(CPU(), T, 9) == 10
+    @test NextLA._scqr3_pick_gram_tile(CPU(), T, 18) == 20
     p8 = DeviceParams(4, 10_000, b, 1, 4, 2, 2, 1, 9, 1, 100, T(1.0))
     p16 = DeviceParams(4, 10_000, b, 1, 4, 2, 2, 1, 18, 1, 100, T(1.0))
     G1 = zeros(T, b, b)
