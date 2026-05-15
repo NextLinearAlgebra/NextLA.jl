@@ -32,12 +32,12 @@ end
 
 # --- Bench primitives ------------------------------------------------------
 function make_A(::Type{T}, m, n; cnd=10.0, seed=7) where {T}
-    rng = MersenneTwister(seed)
-    k = min(m, n)
-    sv = T[T(cnd)^(-(i-1)/(k-1)) for i in 1:k]
-    U, _ = qr(randn(rng, T, m, m)); U = Matrix(U)
-    V, _ = qr(randn(rng, T, n, n)); V = Matrix(V)
-    return CuArray(T.(U[:, 1:k] * Diagonal(sv) * V[:, 1:k]'))
+    # Plain device-side random Gaussian matrix. CPU-side controlled-cnd
+    # construction does an m×m QR which is multi-minute at m=8000+; for wall-
+    # clock benchmarks the random matrix is fine (geqrf's runtime depends on
+    # size, not on condition number).
+    CUDA.seed!(seed)
+    return CUDA.randn(T, m, n)
 end
 
 function time_cusolver(::Type{T}, m, n; nwarm=2, nrun=5) where {T}
