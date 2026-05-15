@@ -345,12 +345,19 @@ function geqrf_2p5d!(m::Integer, n::Integer,
     G_buf    = similar(A, b_full, b_full)
     R_buf    = similar(A, b_full, b_full)
     info_buf = fill!(similar(A, Int, 1), 0)
-    # W1 and W2 for double-projection trailing update (Fix B, see §A.1).
-    W_buf    = similar(A, b_full, n > b_full ? n - b_full : 1)
-    W2_buf   = similar(A, b_full, n > b_full ? n - b_full : 1)
-    # W_pre for panel pre-orthogonalization against accumulated Q (global O(u) orthogonality).
-    # Max size: (n - b_full) × b_full — the biggest pre-projection needed at the last panel step.
-    W_pre_buf = n > b_full ? similar(A, n - b_full, b_full) : similar(A, 1, 1)
+    # W1 for the trailing update (always needed); W2/W_pre only for :safe mode.
+    # At b=256, n=16384 each :safe slab is ~30 MB FP64 — non-trivial HBM and L2
+    # footprint we'd waste on the :fast path where they are never read.
+    W_buf     = similar(A, b_full, n > b_full ? n - b_full : 1)
+    W2_buf    = ortho === :safe ?
+                similar(A, b_full, n > b_full ? n - b_full : 1) :
+                similar(A, 0, 0)
+    # W_pre for panel pre-orthogonalization against accumulated Q (global O(u)
+    # orthogonality). Max size: (n - b_full) × b_full — the biggest pre-projection
+    # needed at the last panel step. Only :safe path uses it.
+    W_pre_buf = (ortho === :safe && n > b_full) ?
+                similar(A, n - b_full, b_full) :
+                similar(A, 0, 0)
 
     fill!(R_acc, zero(T))
 
