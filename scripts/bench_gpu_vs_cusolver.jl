@@ -29,19 +29,26 @@ function fukaya_metrics_gpu(A0::CuArray{T}, A_fact::CuArray{T}, R::CuArray{T}) w
     return (; res, orth)
 end
 
+function _bench_c_override()
+    s = get(ENV, "BENCH_C", "1")
+    s == "auto" && return nothing
+    return parse(Int, s)
+end
+
 function bench_nextla(::Type{T}, m, n, b; ortho::Symbol=:fast, nwarm=2, nrun=10) where {T}
     A0 = make_cu_matrix(T, m, n; cnd=10.0, seed=7)
     be = CUDABackend()
+    c_ovr = _bench_c_override()
 
     for _ in 1:nwarm
         A = copy(A0); R = CUDA.zeros(T, n, n); tau = CUDA.zeros(T, n)
-        p = compute_params(be, T, n; b=b, c=1)
+        p = compute_params(be, T, n; b=b, c=c_ovr)
         NextLA.geqrf_2p5d!(m, n, A, R, tau; params=p, ortho=ortho)
         CUDA.synchronize()
     end
 
     A = copy(A0); R = CUDA.zeros(T, n, n); tau = CUDA.zeros(T, n)
-    p = compute_params(be, T, n; b=b, c=1)
+    p = compute_params(be, T, n; b=b, c=c_ovr)
     NextLA.geqrf_2p5d!(m, n, A, R, tau; params=p, ortho=ortho)
     CUDA.synchronize()
     met = fukaya_metrics_gpu(A0, A, R)
@@ -79,17 +86,25 @@ function bench_cusolver(::Type{T}, m, n; nwarm=2, nrun=10) where {T}
 end
 
 function fp_peak_gflops(::Type{Float64})
-    # RTX 4060 Laptop: FP32 ~15 TFLOPs, FP64 = FP32 / 64 ≈ 234 GF/s.
-    return 234.0
+    # NEXTLA_PEAK_FP64 in GF/s; default tuned for NVIDIA H200 (FP64 ALU ≈ 34 TFLOPS).
+    # H200 FP64 Tensor Core peak is ~67 TFLOPS; set to 67000 if comparing against TC.
+    return parse(Float64, get(ENV, "NEXTLA_PEAK_FP64", "34000"))
 end
-fp_peak_gflops(::Type{Float32}) = 15000.0
+function fp_peak_gflops(::Type{Float32})
+    # H200 FP32 ALU ≈ 67 TFLOPS; with TF32 Tensor Cores ≈ 989 TFLOPS.
+    return parse(Float64, get(ENV, "NEXTLA_PEAK_FP32", "67000"))
+end
 
 function run_for_size(m::Int, n::Int)
     println("═══════════════════════════════════════════════════════")
     @printf(" geqrf_2p5d! vs CUSOLVER.geqrf!   m=%d, n=%d\n", m, n)
     println("═══════════════════════════════════════════════════════")
 
-    for T in (Float64, Float32)
+    type_list = if get(ENV, "BENCH_T", "") != ""
+                    Tuple(s == "f64" ? Float64 : s == "f32" ? Float32 :
+                          s == "c64" ? ComplexF64 : ComplexF32 for s in split(ENV["BENCH_T"], ","))
+                else (Float64, Float32) end
+    for T in type_list
         println("── Type: $T ─────────────────────────────────────────")
         peak = fp_peak_gflops(T)
         flops = 4.0 * n^3 / 3.0
@@ -99,11 +114,21 @@ function run_for_size(m::Int, n::Int)
                 cu.tmin, cu.tmed, cu_gflops, 100*cu_gflops/peak)
 
         # Admissible window from the paper: c ≤ b ≤ N/√P. Build the b sweep adaptive to N.
-        sweep = n <= 1024  ? (32, 64, 96, 128, 160, 192, 224, 250) :
-                n <= 4096  ? (64, 128, 192, 256, 384, 512) :
-                             (128, 192, 256, 384, 512, 640, 768)
+        # Extended to b=1024 for large N on H200 where the latency-optimal b★ ≈ √(γ P log P / β)
+        # is much larger than the X-partition cube √M.
+        sweep_default = n <= 1024  ? (32, 64, 96, 128, 160, 192, 224, 250) :
+                        n <= 2048  ? (64, 96, 128, 160, 192, 224, 256, 320, 384) :
+                        n <= 4096  ? (64, 128, 192, 256, 320, 384, 512, 640) :
+                        n <= 8192  ? (128, 192, 256, 384, 512, 640, 768, 896, 1024) :
+                                     (128, 192, 256, 384, 512, 768, 1024)
+        sweep = if get(ENV, "BENCH_BS", "") != ""
+                    Tuple(parse(Int, s) for s in split(ENV["BENCH_BS"], ","))
+                else sweep_default end
 
-        for ortho in (:fast, :safe)
+        ortho_list = if get(ENV, "BENCH_ORTHO", "") != ""
+                         Tuple(Symbol(s) for s in split(ENV["BENCH_ORTHO"], ","))
+                     else (:fast, :safe) end
+        for ortho in ortho_list
             println("  -- ortho=$ortho --")
             for b in sweep
                 try
@@ -124,8 +149,8 @@ end
 
 function main()
     println(" GPU: ", CUDA.name(CUDA.device()))
-    P  = CUDA.attribute(CUDA.device(), CUDA.CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT)
-    sm = CUDA.attribute(CUDA.device(), CUDA.CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_MULTIPROCESSOR)
+    P  = CUDA.attribute(CUDA.device(), CUDA.DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT)
+    sm = CUDA.attribute(CUDA.device(), CUDA.DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_MULTIPROCESSOR)
     println(" P=$P SMs, M=$(sm÷8) FP64 words/SM\n")
 
     # Sweep the regimes:
