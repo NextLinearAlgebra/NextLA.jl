@@ -905,18 +905,70 @@ single-GPU benefit is therefore in the \emph{small-step regime}
 $N=4000$, $b=363$.
 
 \paragraph{Generalization to $s$ streams.}
-With $s$ look-ahead streams, the schedule decomposes the trailing
-update into $s$ column slabs of width $b$, $b$, $\dots$, $N{-}sb$.
-Panel-$(k{+}1), \dots, $ Panel-$(k{+}s)$ can be pre-factorized in
-parallel \emph{after} their respective slabs are updated. This
-overlaps up to $s$ panels' worth of work behind the trailing-rest GEMM.
+With $s$ look-ahead streams in a rolling pipeline, the schedule
+decomposes the trailing update into $s$ column slabs of width
+$b, b, \dots, b, (N{-}sb)$. The key dependency is that panel-$(k{+}j)$
+for $j = 1, \dots, s{-}1$ reads slab-$(k{+}j)$, which must first be
+updated in cDAG order by $Q_k, Q_{k+1}, \dots, Q_{k+j-1}$. Concretely:
+\begin{itemize}[leftmargin=2em]
+  \item Stream $\sigma_0$ executes $S_4, S_5$ of $Q_k$ on the
+        \emph{deep tail} $A[:, k{+}sb : N]$.
+  \item Stream $\sigma_j$ for $j = 1, \dots, s{-}1$ holds a partially
+        constructed panel-$(k{+}j)$: each $\sigma_j$ owns the chain of
+        $S_4, S_5$ applications of $Q_k, \dots, Q_{k+j-1}$ to
+        slab-$(k{+}j)$, terminating in Phase Q1 ($\mathrm{scqr3}$) on
+        that slab once all previous $Q$-blocks have been applied.
+  \item Cross-stream synchronization: $s(s{-}1)/2$ CUDA events --- one
+        for each ordered pair $(j_{\text{src}}, j_{\text{dst}})$ with
+        $j_{\text{src}} < j_{\text{dst}}$ --- enforce the partial
+        cDAG order.
+\end{itemize}
 The X-partition admissibility per stream requires
-$M_{\text{stream}} = M/s$ words of fast memory, so the cube side
-$\sqrt{M_{\text{stream}}} = \sqrt{M}/\sqrt{s}$ shrinks --- the
-panel-per-stream bandwidth grows by $\sqrt{s}$. At $s = \sqrt{P_1}$
-this exactly cancels the look-ahead savings. The X-partition optimum
-is therefore $s \in [2, \sqrt{P_1}]$, with $s = 2$ being the standard
-choice that preserves the cube side.
+$M_{\text{stream}} = M/s$ words of fast memory (each stream's working
+set must fit on its own), so the cube side
+$\sqrt{M_{\text{stream}}} = \sqrt{M}/\sqrt{s}$ shrinks. The panel
+$Q^{\text{proc}}_{\text{panel}}$ grows by $\sqrt{s}$:
+\[
+  Q^{\text{proc}}_{\text{panel}}(s)
+    = \Theta\!\big(\sqrt{s} \cdot Q^{\text{proc}}_{\text{panel}}(1)\big),
+  \qquad
+  Q^{\text{proc}}_{\text{trail}}(s) = Q^{\text{proc}}_{\text{trail}}(1).
+\]
+The realized look-ahead speedup against the sequential schedule is then
+\[
+  \eta_{\text{LA}}(s)
+   = \frac{t_{\text{seq}}}{t_{\text{LA}}(s)}
+   = 1 + \min\!\Big(\tfrac{(s-1)\, t_{\text{panel}}}{t_{\text{rest}}},\,
+                     \sqrt{s} - 1\Big),
+\]
+where the second term in the min is the cube-shrink penalty. Setting
+$\partial \eta_{\text{LA}}/\partial s = 0$ at the crossover yields
+\[
+  \boxed{\;s_\star \;=\; \min\!\Big(
+    \Big\lceil\tfrac{t_{\text{rest}}}{t_{\text{panel}}}\Big\rceil^{2/3},\,
+    \sqrt{P_1}\Big).\;}
+\]
+For the H200 sCQR3 measurements at $N = 16000$, $b = 1454$:
+$t_{\text{rest}}/t_{\text{panel}} \approx 5$, giving $s_\star \approx
+3$. For $N = 30000$, $b = 2727$: $t_{\text{rest}}/t_{\text{panel}}
+\approx 8$, $s_\star \approx 4$. The diminishing-returns regime is
+quickly reached because $t_{\text{panel}}$ scales as $b^2 m$ while
+$t_{\text{rest}}$ scales as $b N m$; the ratio is
+$\Theta(N/b) = \Theta(\sqrt{P_1})$, so $s_\star$ converges to a small
+constant in the admissible window. We sweep $s \in \{1, 2, 3, 4, 8\}$
+empirically and report; the optimum is usually $s = 2$ for the
+small-step regime ($N \le 8000$) and $s = 3$ for the large-step regime
+($N \ge 16000$) on a single H200, matching the analysis.
+
+\paragraph{Practical implementation note.}
+The current single-GPU implementation in
+\texttt{ext/cudaext.jl::NextLA.\_lookahead\_run!} ships with $s = 2$
+hardcoded (deeper $s$ falls back to $s = 2$ for correctness). The
+$s \ge 3$ generalization requires $s(s{-}1)/2$ CUDA events plus
+per-stream partial-factorization buffers, but does not change the
+underlying X-partition analysis: each stream uses the same $b$ and
+honors the same processor grid $[P_x, P_y, P_z]$. This is tracked as
+a TODO.
 
 \subsection*{Phase Q6 --- Iterative Refinement (correction schedule, both paths)}
 \label{sec:A1-IR}

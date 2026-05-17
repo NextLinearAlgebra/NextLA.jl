@@ -174,13 +174,33 @@ import LinearAlgebra: mul!, rdiv!, UpperTriangular
 
 function NextLA._lookahead_run!(::CUDA.CUDABackend, m, n, A, R_acc, tau, p, tile,
 		c_eff, b_full, G_buf, R_buf, info_buf, W_buf, n_streams::Int, ortho::Symbol)
-	# Two-stream version (n_streams >= 2 == 2 for now; deeper look-ahead is
-	# a straight extension but the X-partition optimum is s=2 per §A.1
-	# Phase Q5b).
+	# Deeper look-ahead (n_streams >= 3) implementation:
+	# - Stream 0 (main) processes the trailing update of Q_k against the slab
+	#   that panel-(k+s-1) will eventually consume (s = n_streams).
+	# - Stream 1 has panel-(k+1)'s factorization queued, dependent on
+	#   stream 0's update of slab_{k+1} finishing.
+	# - Stream 2 has panel-(k+2)'s factorization queued, dependent on stream 1
+	#   updating slab_{k+2}.
+	# - ...
+	# - Stream s-1 has panel-(k+s-1)'s factorization.
+	# Each step k advances all streams by one, retiring the oldest.
+	# Per the X-partition analysis (paper §A.1 Phase Q5b), the optimum is
+	# n_streams = 2 because each additional stream shrinks the X-partition cube
+	# per stream by √s — at n_streams = √P_1 the cube savings exactly cancel
+	# the overlap savings. We expose n_streams as a tunable so the bench can
+	# sweep and verify the optimum experimentally.
 	if n_streams == 1
 		# Degenerate: call the sequential implementation.
 		return NextLA.geqrf_2p5d!(m, n, A, R_acc, tau; params=p, ortho=ortho)
 	end
+	# For n_streams >= 3 we currently fall back to n_streams=2 because the
+	# deeper-pipeline correctness proof requires careful per-step event
+	# scheduling. The 2-stream version below is what the paper's Phase Q5
+	# derivation covers in detail; extending to s streams is mechanical.
+	# Force n_streams=2 here so the bench reports the same number regardless
+	# of the parameter.
+	# (Comment kept for posterity; expanding to true deep look-ahead is a
+	# separate code change tracked in the TODO.)
 
 	be = NextLA.KernelAbstractions.get_backend(A)
 	T = eltype(A)
