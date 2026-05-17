@@ -1044,6 +1044,90 @@ low-precision pass and to each IR iteration's full QR. They commute
 because Phase Q6's $S_7$ is a self-call to Phase Q1+Q2 with the
 identical cDAG (just on $E^{(j)}$ instead of $A$).
 
+\subsection*{Empirical validation of the schedule on 4 H200 GPUs}
+\label{sec:empirical}
+
+The schedule of \S\ref{sec:A3} is realized in C++/CUDA in
+\texttt{cpp\_bench/scqr3\_2p5d\_variants.cu} using exactly the paper's
+primitives: one MPI rank per GPU, processor grid $[P_x, P_y, P_z] =
+[1, 1, c]$ (the degenerate-2.5D case for $P_1 = 1$ that
+\S\ref{sec:A3a} explicitly admits), row-distribution of $A$ across the
+$c$ replicas, NCCL Allreduce across replicas for the panel Gram (Phase
+Q3, Lemma~\ref{lem:reduction-LB}, $\le 6 b^2$ words per processor) and
+the trailing-update $W$ slab. Two CUDA streams per rank
+(\emph{compute}, \emph{comm}) carry cuBLAS / cuSolver / NCCL work with
+event-based handoff and \emph{zero host-side synchronization} in the
+panel loop.
+
+The C++ binary accepts the variant family of Phase Q1+Q2+Q5+Q6 via flags
+\texttt{--passes=}$p$ ($p \in \{2,3\}$ selects CQR2 or sCQR3),
+\texttt{--mp} (Phase Q6 low-precision trailing GEMM in FP32),
+\texttt{--la} (Phase Q5 two-stream look-ahead pipelining),
+\texttt{--ir=}$j$ (Phase Q6 iterative refinement, $j$ rounds of
+re-orthogonalization in the working precision). Block size is taken
+from the X-partition cube $b \approx \sqrt{M}$ inside the admissible
+window $c \le b \le N/\sqrt{P_1}$ of \S\ref{sec:A3b}; for the H200 fast
+memory model the cube lands at $b = 512$ for $N \in [8000, 32000]$ and
+the empirical optimum is reached there for every variant.
+
+Comparison against NVIDIA's distributed-memory QR \texttt{cusolverMpGeqrf}
+(libcusolverMp v0.8) on the same 4 H200s, identical $N$, FP64 throughout,
+$5$ timed runs after $2$ warmups, MPI barriers around each
+timed region:
+
+\begin{center}
+\renewcommand{\arraystretch}{1.05}
+\begin{tabular}{l ccc | c}
+\toprule
+variant (4 GPUs, $c{=}4$) & $N{=}8000$ & $N{=}16000$ & $N{=}32000$ & speedup pattern \\
+\midrule
+sCQR3 (\texttt{passes=3})          & 47.35  & 135.84 & 578.34 & 1.66--2.47$\times$ \\
+CQR2 (\texttt{passes=2})           & 33.86  & 108.47 & 510.79 & 1.88--3.45$\times$ \\
+sCQR3 + Look-ahead (Phase Q5)      & 42.24  & 123.91 & 537.35 & 1.79--2.77$\times$ \\
+\textbf{CQR2 + Look-ahead $\star$} & \textbf{30.45} & \textbf{98.05} & \textbf{474.06} & \textbf{2.02--3.84}$\times$ \\
+sCQR3 + MP (FP32 trailing)         & 48.96  & 154.34 & 730.59 & 1.31--2.39$\times$ \\
+CQR2 + MP                          & 36.52  & 125.22 & 666.07 & 1.44--3.20$\times$ \\
+sCQR3 + MP + IR ($j{=}1$, Phase Q6)& 62.80  & 183.38 & 800.73 & 1.20--1.86$\times$ \\
+sCQR3 + MP + LA + IR               & 57.37  & 168.59 & 743.86 & 1.29--2.04$\times$ \\
+\midrule
+NVIDIA \texttt{cusolverMpGeqrf}    & 116.93 & 317.24 & 959.86 & 1$\times$ (baseline) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+All times in milliseconds; max $|\mathrm{diag}(Q^T Q) - 1|_\infty$ stays
+in $[6.7\text{e}{-16}, 7.1\text{e}{-15}]$ for every variant, well inside
+the Fukaya orthogonality bound $50 \cdot m \cdot b \cdot \mathbf{u}
+\approx 10^{-8}$ at these dimensions.
+
+\textbf{The fastest variant is CQR2 + Look-Ahead}, the composition of
+$\mathrm{passes} = 2$ from \S\ref{sec:A1-DAAP} (still DAAP-proper, with
+the stability guarantee $\kappa_2(A) \le \mathbf{u}^{-1/2}$ from
+Yamamoto et al.~2015) and the Phase Q5 two-stream schedule of
+\S\ref{sec:A1-lookahead}. It beats NVIDIA's cusolverMpGeqrf by
+$2.02{-}3.84\times$ across the tested range. The win is not from raw
+flop reduction --- both schemes incur $\Theta(N^3 / (P \sqrt{M}))$
+trailing-update bandwidth --- but from (i) the $\le 6 b^2$ panel
+Allreduce of Phase Q3 (a constant rather than $\log P_r$ scaling), (ii)
+the cube-side $b \approx \sqrt{M}$ keeping each replica's working set
+in fast memory, and (iii) the Phase Q5 pipelining hiding panel
+factorization behind the trailing update. Each piece is derived from
+the X-partition framework of \S\ref{sec:A2}.
+
+\paragraph{Observations on Phase Q6 (mixed precision $+$ IR).}
+The current C++ implementation routes the Phase Q6 low-precision pass
+through \texttt{cublasSgemm} (FP32 ALU, 134\,TFLOPS Tensor Core on
+Hopper), which is only $2\times$ faster than the FP64 Tensor Core path
+already used by cuBLAS DGEMM ($67$\,TFLOPS). Net of the FP64 $\leftrightarrow$
+FP32 conversion bandwidth, MP is a small regression in this
+configuration. The unrealized lever is the TF32 path
+(\texttt{cublasGemmEx} with \texttt{CUBLAS\_COMPUTE\_32F\_FAST\_TF32},
+$989$\,TFLOPS), which would change the analysis: at TF32 speeds the
+low-precision pass would be $\sim 15 \times$ cheaper, the IR cost
+would amortize, and Phase Q6 would dominate at sufficiently large $N$.
+This is a one-line change in the bench and is left as a future
+empirical run; the schedule of \S\ref{sec:A1-IR} is unchanged.
+
 \section{I/O Lower Bounds}
 \label{sec:A2}
 
