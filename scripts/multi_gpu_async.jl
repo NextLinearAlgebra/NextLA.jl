@@ -75,7 +75,7 @@ function multi_gpu_async_scqr3!(N::Int, A0::AbstractMatrix{T}, c::Integer;
 
     # Convenience: helper to run a closure inside a particular device's
     # stream without touching the task-default stream.
-    function on_stream(r::Int, stream::CuStream, body::Function)
+    function on_stream(body::Function, r::Int, stream::CuStream)
         CUDA.device!(devs[r])
         CUDA.stream!(stream) do; body(); end
     end
