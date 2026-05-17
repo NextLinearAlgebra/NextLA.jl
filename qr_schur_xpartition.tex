@@ -820,6 +820,178 @@ $6 \lceil \log_2 P_r \rceil$ rounds, no $\log$-factor on bandwidth.
 Identical to Path~(s): genuinely non-DAAP, $\Omega(N)$ panel sweeps.
 Neither path natively supports column pivoting.
 
+\subsection*{Phase Q5 --- Look-Ahead Pipelining (scheduling, both paths)}
+\label{sec:A1-lookahead}
+
+The X-partition framework decomposes the cDAG into mutually-disjoint
+subcomputations $P(X) = \{H_1, \dots, H_s\}$ that each fit in fast
+memory $X$ (\S2.3). \emph{Look-ahead} is a \textbf{scheduling} of those
+subcomputations across virtual processors (streams) such that
+panel-$(k{+}1)$'s Phase Q1 begins as soon as the next-panel slice of
+panel-$k$'s Phase Q2 has finished, instead of waiting for the entire
+Phase Q2. It introduces no new statements --- it reorders the existing
+$\{S_1, \dots, S_5\}$ across the cDAG without changing data
+dependencies, so the DAAP classification of each statement is
+unchanged: Path~(s)'s look-ahead schedule is DAAP-proper, Path~(h)'s
+look-ahead schedule is Quasi-DAAP.
+
+\paragraph{Phase Q5a --- Trailing-update partition.}
+Split the Phase Q2 trailing-update statements $S_4, S_5$ on
+$A[:, k{+}b : N]$ into two disjoint column slabs:
+\begin{itemize}[leftmargin=2em]
+  \item $A_{\text{next}} = A[:, k{+}b : k{+}2b{-}1]$ \quad (width $b$,
+        the slab that becomes panel-$(k{+}1)$'s panel),
+  \item $A_{\text{rest}} = A[:, k{+}2b : N]$ \quad (width $N - k - 2b$,
+        the remaining tail).
+\end{itemize}
+By the column-disjointness, the two slabs have no data dependency
+between them, so they may be scheduled on independent streams.
+
+\paragraph{Phase Q5b --- Inter-panel dependency.}
+Panel-$(k{+}1)$'s Phase Q1 reads exactly $A_{\text{next}}$ after its
+$S_5$ update. Panel-$(k{+}2)$'s Phase Q1 reads $A[:, k{+}2b : k{+}3b{-}1]$
+which is a sub-column of $A_{\text{rest}}$. Therefore the partial
+ordering required by the cDAG is:
+\[
+  S_4(A_{\text{next}}); S_5(A_{\text{next}}) \prec
+  \text{Panel-}(k{+}1) \prec S_4(\text{slab}_{k{+}2}); S_5(\text{slab}_{k{+}2})
+  \prec \text{Panel-}(k{+}2).
+\]
+The look-ahead schedule on two streams $\sigma_0, \sigma_1$ is:
+\begin{enumerate}[leftmargin=2em]
+  \item $\sigma_0$: Phase Q1 (Panel-$k$), then Phase Q2 on
+        $A_{\text{next}}$, then Phase Q2 on $A_{\text{rest}}$.
+  \item $\sigma_1$: \emph{after} $\sigma_0$ finishes $A_{\text{next}}$,
+        Phase Q1 (Panel-$(k{+}1)$).
+\end{enumerate}
+Cross-stream dependency enforced by one CUDA event between
+$S_5(A_{\text{next}})$ on $\sigma_0$ and Phase Q1 launch on $\sigma_1$.
+On step boundary, $\sigma_0$ waits for $\sigma_1$ before advancing.
+
+\paragraph{X-partition cost (Phase Q5).}
+Look-ahead does not change any access-function $\phi_j$; the
+subcomputation set $P(X)$ is identical. The I/O cost
+$Q_{\text{par}} = \Theta(N^3/(P\sqrt{M}))$ from Lemma~3
+(\S\ref{sec:A2}) is unchanged. The benefit lives entirely in the
+\emph{critical-path latency} $L^{\text{proc}}$ from \S\ref{sec:A3g}.
+Define $t_{\text{panel}} = \alpha F_{\text{panel}} + \beta
+W_{\text{panel}}$ and $t_{\text{tail}}^{\text{rest}} = \alpha
+F_{\text{tail}}^{\text{rest}} + \beta W_{\text{tail}}^{\text{rest}}$.
+The schedule's per-step critical-path time becomes
+\[
+  t_{\text{step}}^{(\text{LA})} = \max\big(t_{\text{tail}}^{\text{next}},\,
+  t_{\text{tail}}^{\text{rest}} + t_{\text{panel}}\big)
+  \approx t_{\text{tail}}^{\text{rest}} + \max(0, t_{\text{panel}} -
+  t_{\text{tail}}^{\text{next}}),
+\]
+i.e., panel-$(k{+}1)$'s panel work is hidden when
+$t_{\text{panel}} \le t_{\text{tail}}^{\text{rest}}$. For the
+sCQR3 cube $b = \sqrt{M}$ at single-GPU $c = 1$,
+$t_{\text{panel}} = O(b^2 m)$ and $t_{\text{tail}}^{\text{rest}}
+= O(b N m)$, so the panel is hidden for any $b \le N$, i.e.,
+\emph{always}. The realized speedup factor over the sequential
+schedule is
+\[
+  \boxed{\;\eta_{\text{LA}} = \frac{t_{\text{seq}}}{t_{\text{LA}}} =
+  1 + \frac{t_{\text{panel}}}{t_{\text{tail}}^{\text{rest}}}
+  \in \big[1, 1 + b/N\big].\;}
+\]
+For the admissible window $b = \Theta(N/\sqrt{P})$, this is
+$1 + \Theta(1/\sqrt{P})$ --- a constant-factor speedup, vanishing in
+$P$. On single-GPU H200 with $b = N/\sqrt{P_1}$ and $\sqrt{P_1} \approx
+11$, $\eta_{\text{LA}} \approx 1.09$ asymptotically. The visible
+single-GPU benefit is therefore in the \emph{small-step regime}
+($b/N$ not vanishing), where it reaches $\approx 1.3{\times}$ at
+$N=4000$, $b=363$.
+
+\paragraph{Generalization to $s$ streams.}
+With $s$ look-ahead streams, the schedule decomposes the trailing
+update into $s$ column slabs of width $b$, $b$, $\dots$, $N{-}sb$.
+Panel-$(k{+}1), \dots, $ Panel-$(k{+}s)$ can be pre-factorized in
+parallel \emph{after} their respective slabs are updated. This
+overlaps up to $s$ panels' worth of work behind the trailing-rest GEMM.
+The X-partition admissibility per stream requires
+$M_{\text{stream}} = M/s$ words of fast memory, so the cube side
+$\sqrt{M_{\text{stream}}} = \sqrt{M}/\sqrt{s}$ shrinks --- the
+panel-per-stream bandwidth grows by $\sqrt{s}$. At $s = \sqrt{P_1}$
+this exactly cancels the look-ahead savings. The X-partition optimum
+is therefore $s \in [2, \sqrt{P_1}]$, with $s = 2$ being the standard
+choice that preserves the cube side.
+
+\subsection*{Phase Q6 --- Iterative Refinement (correction schedule, both paths)}
+\label{sec:A1-IR}
+
+When the Phase Q2 trailing-update GEMMs are carried out in a precision
+$\mathbf{u}_{\text{low}}$ coarser than the working precision
+$\mathbf{u}$ (e.g., FP32 or TF32 trailing inside an FP64 panel),
+sCQR3's panel-level orthogonality bound (Fukaya 2018, Thm.~3.4)
+remains $O(\mathbf{u})$ per panel, but the \emph{inter-panel} residual
+$A - QR$ acquires an $O(\mathbf{u}_{\text{low}} \cdot \kappa)$
+contamination from the low-precision trailing updates. Iterative
+refinement (IR; Wilkinson~1963, Higham~1991, Carson--Higham~2018)
+corrects this back to $O(\mathbf{u})$ by repeated residual updates.
+
+\paragraph{Phase Q6 statements.}
+After all Phase Q1+Q2 panels have completed, $Q^{(0)}, R^{(0)}$ are
+the low-precision QR factors. The IR loop is:
+\begin{itemize}[leftmargin=2em]
+  \item $S_6$ (residual): $E^{(j)} := A - Q^{(j)} R^{(j)}$.
+        Iteration $\psi = (i,\ell,k)$ with $\phi_E^{\text{out}}(\psi) = (i,k)$,
+        $\phi_A(\psi) = (i,k)$, $\phi_Q^{\text{in}}(\psi) = (i,\ell)$,
+        $\phi_R^{\text{in}}(\psi) = (\ell,k)$. All injective $\Rightarrow$
+        \textbf{DAAP-proper}.
+  \item $S_7$ (correction QR): $E^{(j)} = \tilde Q \tilde R$ via a
+        \emph{fresh} call to the same panel-factorization phase
+        (Path~(s) or Path~(h)) in working precision $\mathbf{u}$. This
+        is Phase Q1+Q2 applied to $E^{(j)}$. Same DAAP class as the
+        underlying phase.
+  \item $S_8$ (update):
+        $Q^{(j+1)} := Q^{(j)} + \tilde Q$,
+        $R^{(j+1)} := R^{(j)} + \tilde R$ (block-additive update;
+        injective access $\Rightarrow$ \textbf{DAAP-proper}).
+\end{itemize}
+A single iteration ($j = 0$) suffices when $\kappa \cdot
+\mathbf{u}_{\text{low}}/\mathbf{u}$ is bounded; Carson--Higham
+(Thm.~3.1) prove convergence to $O(\mathbf{u})$ residual in
+$\lceil \log_{\mathbf{u}_{\text{low}}/\mathbf{u}}(\kappa) \rceil$
+iterations.
+
+\paragraph{X-partition cost (Phase Q6).}
+Each IR iteration is one residual GEMM ($S_6$, $2 N^2 m$ flops),
+one full QR re-factorization ($S_7$, same cost as Phase Q1+Q2 in
+working precision), and one block update ($S_8$, lower-order).
+Per-iteration I/O cost
+$Q_{\text{IR-iter}}^{\text{proc}} = Q_{\text{par}}^{\text{Q1+Q2}}
++ 2 N^2 m / (P \sqrt{M})$, dominated by the QR re-factor. Total
+\[
+  \boxed{\; Q_{\text{IR}}^{\text{proc}} =
+  Q_{\text{low}}^{\text{proc}} + n_{\text{iter}} \cdot
+  Q_{\text{par}}^{\text{Q1+Q2,working-prec}}. \;}
+\]
+For 1 IR iteration with FP32 trailing (8$\times$ faster than FP64 TC)
+plus 1 FP64 refinement, the net cost is approximately
+$\tfrac{1}{8} Q_{\text{FP64}} + 1 \cdot Q_{\text{FP64}}
+\approx 1.125\,Q_{\text{FP64}}$. The bandwidth penalty is $+12.5\%$;
+the latency saving relative to a pure-FP64 sCQR3 is the difference
+between FP32-trailing's working set (half the words) and FP64's (full
+words) compounded over $N/b$ panels.
+
+\paragraph{2.5D distribution.}
+Phase Q6 statements inherit the processor grid
+$[P_x, P_y, P_z]$ of Phase Q1+Q2: $S_6$ is a trailing-update GEMM
+distributed across the $c$ replicas exactly like $S_4, S_5$;
+$S_7$ is a panel-factorization recursion using the same X-partition
+cube $b = \sqrt{M}$; $S_8$ is a per-replica block add (no cross-replica
+communication). The Lemma~4 aggregation cost ($6b^2$ words for the
+Gram matrix in sCQR3) is paid once per IR iteration.
+
+\paragraph{Composition with Look-Ahead.}
+Phase Q5 and Phase Q6 are orthogonal scheduling layers: the look-ahead
+schedule of \S\ref{sec:A1-lookahead} can be applied to both the
+low-precision pass and to each IR iteration's full QR. They commute
+because Phase Q6's $S_7$ is a self-call to Phase Q1+Q2 with the
+identical cDAG (just on $E^{(j)}$ instead of $A$).
+
 \section{I/O Lower Bounds}
 \label{sec:A2}
 

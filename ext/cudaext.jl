@@ -163,4 +163,131 @@ function NextLA._household_expand_Q!(::CUDA.CUDABackend,
 	return nothing
 end
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Look-Ahead pipelining (Phase Q5 in qr_schur_xpartition.tex §A.1).
+# Two CUDA streams σ_0 (default), σ_1 (panel). The trailing update is split
+# into A_next (column slab of width b that becomes panel-(k+1)) and A_rest
+# (the remaining tail). σ_0 runs Phase Q1 + S_4/S_5(A_next), then on the
+# *current* step continues with S_4/S_5(A_rest). σ_1 starts Panel-(k+1)
+# (Phase Q1) right after S_5(A_next), in parallel with σ_0's S_4/S_5(A_rest).
+import LinearAlgebra: mul!, rdiv!, UpperTriangular
+
+function NextLA._lookahead_run!(::CUDA.CUDABackend, m, n, A, R_acc, tau, p, tile,
+		c_eff, b_full, G_buf, R_buf, info_buf, W_buf, n_streams::Int, ortho::Symbol)
+	# Two-stream version (n_streams >= 2 == 2 for now; deeper look-ahead is
+	# a straight extension but the X-partition optimum is s=2 per §A.1
+	# Phase Q5b).
+	if n_streams == 1
+		# Degenerate: call the sequential implementation.
+		return NextLA.geqrf_2p5d!(m, n, A, R_acc, tau; params=p, ortho=ortho)
+	end
+
+	be = NextLA.KernelAbstractions.get_backend(A)
+	T = eltype(A)
+	k_eff = min(m, n)
+
+	# σ_0 = default stream of the calling task; σ_1 = a fresh CUDA stream for
+	# the look-ahead panel. cuBLAS uses the task-current stream automatically.
+	stream_main = CUDA.stream()
+	stream_la = CUDA.CuStream()
+
+	# Scratch for the *look-ahead* panel (factored on σ_1). Separate from
+	# G_buf/R_buf because σ_0 may still be reading those when σ_1 starts.
+	G_la = similar(A, b_full, b_full)
+	R_la = similar(A, b_full, b_full)
+	info_la = fill!(similar(A, Int, 1), 0)
+
+	# Events for cross-stream sync.
+	evt_a_next_done   = CUDA.CuEvent()
+	evt_panel_next_done = CUDA.CuEvent()
+
+	fill!(R_acc, zero(T))
+
+	# ── Step 1: factor the very first panel on σ_0 (no look-ahead yet) ───────
+	k = 1
+	if k_eff < 1; return nothing; end
+	sb = min(b_full, k_eff)
+	A_panel = @view A[1:m, k:(k + sb - 1)]
+	p_panel = sb == b_full ? p : NextLA.compute_params(be, T,max(m, sb); b=sb, c=p.c)
+	partials_use = NextLA.effective_c(p_panel) > 1 ?
+		(sb == b_full ? similar(A, b_full, b_full, p.Px * p.Pz) :
+		 similar(A, sb, sb, p_panel.Px * p_panel.Pz)) : nothing
+	NextLA.scqr3!(m, sb, A_panel, R_buf, G_buf, info_buf; params=p_panel, partials=partials_use)
+	NextLA._geqrf_write_R_panel!(be, R_acc, R_buf, k, sb)
+
+	# Track which panel-buffers each stream currently owns.
+	main_G, main_R, main_info = G_buf, R_buf, info_buf
+	la_G, la_R, la_info = G_la, R_la, info_la
+
+	while k <= k_eff
+		sb = min(b_full, k_eff - k + 1)
+		A_panel = @view A[1:m, k:(k + sb - 1)]
+		n_tr = n - (k + sb - 1)
+
+		if n_tr == 0
+			# Last panel — already factored above (k=1) or in the previous
+			# iter (k>1, see σ_1 below). Nothing to do.
+			break
+		end
+
+		next_sb = min(b_full, k_eff - (k + sb) + 1)  # width of A_next slab
+		has_next = n_tr >= next_sb && next_sb > 0
+		has_rest = n_tr > next_sb
+		A_tr_full = @view A[1:m, (k + sb):n]
+
+		if has_next
+			# === σ_0: S_4/S_5 on A_next ─────────────────────────────────────
+			A_next = @view A[1:m, (k + sb):(k + sb + next_sb - 1)]
+			W_next = @view W_buf[1:sb, 1:next_sb]
+			mul!(W_next, A_panel', A_next)
+			mul!(A_next, A_panel, W_next, -one(T), one(T))
+			NextLA._geqrf_write_W_block!(be, R_acc, W_next, k, k + sb, sb, next_sb)
+			CUDA.record(evt_a_next_done, stream_main)
+
+			# === σ_1: wait, then factor Panel-(k+1) ─────────────────────────
+			CUDA.wait(evt_a_next_done, stream_la)
+			# Switch the task's current stream to σ_1 for the cuBLAS/cuSOLVER
+			# calls inside scqr3!.
+			CUDA.stream!(stream_la) do
+				A_panel_next = @view A[1:m, (k + sb):(k + sb + next_sb - 1)]
+				p_next = next_sb == b_full ? p :
+					NextLA.compute_params(be, T,max(m, next_sb); b=next_sb, c=p.c)
+				partials_n = NextLA.effective_c(p_next) > 1 ?
+					(next_sb == b_full ? similar(A, b_full, b_full, p.Px * p.Pz) :
+					 similar(A, next_sb, next_sb, p_next.Px * p_next.Pz)) : nothing
+				NextLA.scqr3!(m, next_sb, A_panel_next, la_R, la_G, la_info;
+				       params=p_next, partials=partials_n)
+				NextLA._geqrf_write_R_panel!(be, R_acc, la_R, k + sb, next_sb)
+			end
+			CUDA.record(evt_panel_next_done, stream_la)
+		end
+
+		if has_rest
+			# === σ_0: S_4/S_5 on A_rest (concurrent with σ_1's panel) ────────
+			A_rest = @view A[1:m, (k + sb + next_sb):n]
+			n_rest = size(A_rest, 2)
+			W_rest = @view W_buf[1:sb, 1:n_rest]
+			mul!(W_rest, A_panel', A_rest)
+			mul!(A_rest, A_panel, W_rest, -one(T), one(T))
+			NextLA._geqrf_write_W_block!(be, R_acc, W_rest, k, k + sb + next_sb, sb, n_rest)
+		end
+
+		# Sync: σ_0 must wait for σ_1's panel to finish before the next step
+		# (the next step's A_panel is what σ_1 just wrote).
+		if has_next
+			CUDA.wait(evt_panel_next_done, stream_main)
+			# Swap roles for the next step: σ_1's output buffers become "main".
+			main_G, la_G = la_G, main_G
+			main_R, la_R = la_R, main_R
+			main_info, la_info = la_info, main_info
+		end
+
+		k += sb
+	end
+
+	# Final synchronize on σ_1 to make sure the last panel-next is committed.
+	CUDA.synchronize(stream_la)
+	return nothing
+end
+
 end
