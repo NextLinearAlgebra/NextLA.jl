@@ -227,7 +227,9 @@ function workgroup_reduce!(out, src; op=+, N::Int=256)
 	nlevels = N == 1 ? 0 : Int(log2(N))
 	backend = KernelAbstractions.get_backend(src)
 	workgroup_reduce_kernel!(backend, (N,))(out, src, len, N, nlevels; ndrange=N)
-	KernelAbstractions.synchronize(backend)
+	# No explicit `synchronize(backend)` here: subsequent operations queue on
+	# the same CUDA stream and observe `out` after the reduction completes.
+	# Host-side blocking was costing ~50-100 us per panel iter on H200.
 	return out
 end
 
@@ -274,7 +276,8 @@ function panel_allreduce!(G, partials, params::DeviceParams)
 	n_idx = b * b
 	wg = min(n_idx, _WORKGROUP_REDUCE_MAX)
 	panel_allreduce_kernel!(backend, (wg,))(G, partials, b, K; ndrange=wg)
-	KernelAbstractions.synchronize(backend)
+	# No host sync — subsequent kernels on the same stream observe `G` after
+	# the reduction completes.
 	return G
 end
 
