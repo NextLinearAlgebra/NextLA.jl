@@ -325,7 +325,12 @@ function geqrf_2p5d!(m::Integer, n::Integer,
 
     # ── Device params ──────────────────────────────────────────────────────────
     p = if params === nothing
-        bval = b === nothing ? min(32, k_eff) : max(1, Int(b))
+        # Let `compute_params` apply its Step-7 default-b heuristic (b = b_max
+        # for c=1) when the caller didn't supply one. Passing b=32 here used
+        # to clamp every default-args call to a 32-wide panel — a 5× regression
+        # at N≥8000 since b_max(N=8000) = 727 and the trailing GEMM scales
+        # nearly linearly with b.
+        bval = b === nothing ? nothing : max(1, Int(b))
         compute_params(be, T, N_budget; b = bval, c = nothing)
     else
         params
