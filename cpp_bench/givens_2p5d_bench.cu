@@ -37,6 +37,7 @@
 
 #include "derived_schedule.hpp"
 #include "matrix_mode.hpp"
+#include "full25d_grid.hpp"
 #include "nextla_mp_trail.hpp"
 #include "nextla_fast_memory.hpp"
 #include "bench_vendor_metrics.hpp"
@@ -650,6 +651,7 @@ static int givens_fp32full_run(
 }
 
 #include "givens_block_cyclic.inl"
+#include "givens_full25d.inl"
 
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
@@ -718,6 +720,42 @@ int main(int argc, char** argv) {
         int rc = run_givens_bc_main(A, P, A.px, A.py, my_px, my_py, my_pz);
         MPI_Finalize();
         return rc;
+    }
+
+    // ── Full-2.5D Pz>1 dispatch (tournament-Givens panel) ──────────────────
+    {
+        bool grid_cli = (A.px > 0 && A.py > 0 && A.pz > 0);
+        Full25DGrid G_pre;
+        if (grid_cli) {
+            G_pre = resolve_full25d_grid(P, _rank, A.N, A.px, A.py, A.pz, A.M_fp64_words);
+        } else if (A.M_fp64_words > 0 && A.matrix == MatrixMode::FP64) {
+            G_pre = resolve_full25d_grid(P, _rank, A.N, 0, 0, 0, A.M_fp64_words);
+        } else {
+            G_pre.Px = 1; G_pre.Py = P; G_pre.Pz = 1;
+        }
+        bool use_full25d = (G_pre.Pz > 1 || (G_pre.Px > 1 && G_pre.Py > 1));
+        if (use_full25d && A.matrix == MatrixMode::FP64) {
+            if (A.b == 0 && A.M_fp64_words > 0) {
+                int bb = default_block_b(A.M_fp64_words, (std::int64_t)A.N, G_pre.Px, G_pre.Py, G_pre.Pz);
+                if (bb > 0) A.b = bb;
+            }
+            if (A.b == 0) {
+                // Givens default b ladder.
+                if      (A.N <=  4000) A.b = 64;
+                else if (A.N <=  8000) A.b = 96;
+                else if (A.N <= 16000) A.b = 128;
+                else if (A.N <= 32000) A.b = 192;
+                else                   A.b = 256;
+            }
+            A.px = G_pre.Px; A.py = G_pre.Py; A.pz = G_pre.Pz;
+            Full25DGrid G = resolve_full25d_grid(P, _rank, A.N, A.px, A.py, A.pz, A.M_fp64_words);
+            Full25DSubcomms S = build_full25d_subcomms(G);
+            if (_rank == 0) print_full25d_grid(G, "givens_full25d", A.M_fp64_words, A.b);
+            int rc = run_givens_full25d_fp64(A, G, S);
+            destroy_full25d_subcomms(S);
+            MPI_Finalize();
+            return rc;
+        }
     }
 
     if (A.N % c != 0) { if (_rank==0) fprintf(stderr,"N=%d not divisible by c=%d\n",A.N,c); MPI_Abort(MPI_COMM_WORLD,5); }

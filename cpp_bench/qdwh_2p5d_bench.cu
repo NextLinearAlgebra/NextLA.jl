@@ -11,20 +11,26 @@
 //   After convergence X_inf = U (orthogonal polar factor of A).
 //   R = U^T A (upper triangular).
 //
-//   Inner QR uses the CQR2 (passes=2) panel from Path s with the same
-//   gather-and-replicate scheme as the other benches: AllGather panel,
-//   replicated SYRK/POTRF/TRSM on each rank.  Q is materialized from the
-//   final A_local (which holds the orthonormal columns); trailing-update
-//   pattern identical to scqr3_2p5d_variants.cu.
+//   Inner QR (stacked 2n×n CQR2 / Path s style): each panel uses local SYRK
+//     into G, NCCL AllReduce(G) over the 1D communicator, replicated POTRF
+//     and TRSM — same Phase Q3 pattern as scqr3_2p5d_variants / Path (s).
+//     Trailing update: W = Q^T A_trail, AllReduce(W), A_trail -= Q W.
+//     Later Halley steps AllGather Q_2 row blocks for the polar recurrence.
 //
 //   The 2n x n stacked input is row-distributed across c ranks with an
 //   interleaved layout: rank r holds X_k's m_local = n/c local rows then
 //   I_n's m_local rows starting at global row r*m_local. The QR is invariant
 //   under row permutation of the input so this interleaving is harmless.
 //
-//   Flags (subset — IR and MP not implemented for Path q):
-//     --la            pipeline panel + trailing update inside the inner QR
+//   Path (q) vs Path (s) slab parity: same --matrix= fp64|fp64mp|fp64mp_tf32|fp32full and --la/--no-la
+//   vocabulary as scqr3_full25d_bench.cu (passes=2|3 remain s-only).
+//   Inner-QR lookahead for fp32full is not implemented: default-on LA is auto-off unless argv sets explicit --la (abort).
+//   Flags:
+//     --matrix=fp64|fp64mp|fp64mp_tf32|fp32full   (fp32full: float A/X/S; inner-QR --la not implemented — see main())
+//     --mp            alias for fp64mp when matrix was fp64
+//     --la / --lookahead and --no-la / --no-lookahead  (default LA on for fp64 family, parity with Path (s))
 //     --iters=K       fixed Halley iteration count (default 6)
+//     --layout=blockcyclic --px= --py= --pz=1  BC layout; see qdwh_block_cyclic.inl (same four matrix modes as slab).
 //
 //   Processor grid: 1D row partition, m_local = N / c, with the stacked
 //   m_stacked_local = 2 * m_local.
@@ -38,6 +44,14 @@
 #include <random>
 #include <algorithm>
 #include <string>
+#include <cstdint>
+
+#include "derived_schedule.hpp"
+#include "matrix_mode.hpp"
+#include "full25d_grid.hpp"
+#include "nextla_mp_trail.hpp"
+#include "nextla_fast_memory.hpp"
+#include "bench_vendor_metrics.hpp"
 
 #include <mpi.h>
 #include <cuda_runtime.h>
@@ -45,12 +59,27 @@
 #include <cusolverDn.h>
 #include <nccl.h>
 
+#if defined(CUBLAS_COMPUTE_32F_FAST_TF32)
+#define NEXTLA_HAVE_CUBLAS_TF32 1
+#else
+#define NEXTLA_HAVE_CUBLAS_TF32 0
+#endif
+
 #define CUDA_CHECK(stmt) do { cudaError_t e=(stmt); if(e!=cudaSuccess){ fprintf(stderr,"[r%d] CUDA %s @ %s:%d\n",_rank,cudaGetErrorString(e),__FILE__,__LINE__); MPI_Abort(MPI_COMM_WORLD,1);} } while(0)
 #define CUBLAS_CHECK(stmt) do { cublasStatus_t s=(stmt); if(s!=CUBLAS_STATUS_SUCCESS){ fprintf(stderr,"[r%d] cuBLAS %d @ %s:%d\n",_rank,(int)s,__FILE__,__LINE__); MPI_Abort(MPI_COMM_WORLD,2);} } while(0)
 #define CUSOLVER_CHECK(stmt) do { cusolverStatus_t s=(stmt); if(s!=CUSOLVER_STATUS_SUCCESS){ fprintf(stderr,"[r%d] cuSOLVER %d @ %s:%d\n",_rank,(int)s,__FILE__,__LINE__); MPI_Abort(MPI_COMM_WORLD,3);} } while(0)
 #define NCCL_CHECK(stmt) do { ncclResult_t r=(stmt); if(r!=ncclSuccess){ fprintf(stderr,"[r%d] NCCL %s @ %s:%d\n",_rank,ncclGetErrorString(r),__FILE__,__LINE__); MPI_Abort(MPI_COMM_WORLD,4);} } while(0)
 
 static int _rank = 0;
+
+__global__ void cast_d2f_q(const double* d, float* f, size_t n) {
+    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) f[i] = (float)d[i];
+}
+__global__ void cast_f2d_q(const float* f, double* d, size_t n) {
+    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) d[i] = (double)f[i];
+}
 
 __global__ void trace_b_kernel(const double* G, int ldg, int b, double* out) {
     __shared__ double sh[1024];
@@ -101,7 +130,13 @@ __global__ void update_X_kernel(double* __restrict__ Xnew,
 
 struct Args {
     int N = 8000, b = 0, iters = 6;
-    bool lookahead = false;
+    bool lookahead = true;
+    bool lookahead_cli_set = false;
+    std::int64_t M_fp64_words = 0;
+    bool strict_b = false;
+    MatrixMode matrix = MatrixMode::FP64;
+    bool block_cyclic_layout = false;
+    int px = 0, py = 0, pz = 0;
 };
 
 static Args parse_args(int argc, char** argv) {
@@ -111,18 +146,31 @@ static Args parse_args(int argc, char** argv) {
         if      (s.rfind("--N=", 0) == 0)     a.N = std::atoi(s.c_str() + 4);
         else if (s.rfind("--b=", 0) == 0)     a.b = std::atoi(s.c_str() + 4);
         else if (s.rfind("--iters=", 0) == 0) a.iters = std::atoi(s.c_str() + 8);
-        else if (s == "--lookahead" || s == "--la") a.lookahead = true;
-    }
-    if (a.b == 0) {
-        // QDWH inner QR is 2N × N; use a moderate b.
-        if      (a.N <=  4000) a.b = 256;
-        else if (a.N <=  8000) a.b = 384;
-        else if (a.N <= 16000) a.b = 512;
-        else if (a.N <= 32000) a.b = 768;
-        else                   a.b = 1024;
+        else if (s.rfind("--M=", 0) == 0)     a.M_fp64_words = std::atoll(s.c_str() + 4);
+        else if (s.rfind("--matrix=", 0) == 0) a.matrix = parse_matrix_mode(s.c_str() + 9);
+        else if (s == "--mp") { if (a.matrix == MatrixMode::FP64) a.matrix = MatrixMode::FP64_MP; }
+        else if (s == "--strict-b")          a.strict_b = true;
+        else if (s == "--lookahead" || s == "--la") {
+            a.lookahead = true;
+            a.lookahead_cli_set = true;
+        } else if (s == "--no-la" || s == "--no-lookahead") {
+            a.lookahead = false;
+            a.lookahead_cli_set = true;
+        } else if (s.rfind("--layout=", 0) == 0) {
+            const char* v = s.c_str() + 9;
+            if (std::strcmp(v, "blockcyclic") == 0) a.block_cyclic_layout = true;
+            else if (std::strcmp(v, "slab") == 0) a.block_cyclic_layout = false;
+        } else if (s.rfind("--px=", 0) == 0) a.px = std::atoi(s.c_str() + 5);
+        else if (s.rfind("--py=", 0) == 0) a.py = std::atoi(s.c_str() + 5);
+        else if (s.rfind("--pz=", 0) == 0) a.pz = std::atoi(s.c_str() + 5);
     }
     return a;
 }
+
+#include "qdwh_fp32full.inl"
+
+#include "qdwh_block_cyclic.inl"
+#include "qdwh_full25d.inl"
 
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
@@ -131,15 +179,148 @@ int main(int argc, char** argv) {
     MPI_Comm_size(MPI_COMM_WORLD, &c);
 
     Args A = parse_args(argc, argv);
+    if (A.matrix == MatrixMode::FP32_FULL && A.lookahead) {
+        if (!A.lookahead_cli_set) {
+            if (_rank == 0) {
+                fprintf(stdout,
+                        "qdwh: fp32full has no inner-QR lookahead; running without LA (use explicit --la to probe; "
+                        "pass --no-la to silence this line).\n");
+                fflush(stdout);
+            }
+            A.lookahead = false;
+        } else {
+            if (_rank == 0)
+                fprintf(stderr, "qdwh fp32full: --la not implemented; omit --la\n");
+            MPI_Abort(MPI_COMM_WORLD, 93);
+        }
+    }
+    const int P = c;
+    int ngpu_q = 0;
+    CUDA_CHECK(cudaGetDeviceCount(&ngpu_q));
+    if (ngpu_q <= 0) {
+        if (_rank == 0) fprintf(stderr, "qdwh: no CUDA devices\n");
+        MPI_Abort(MPI_COMM_WORLD, 99);
+    }
+    const int bench_dev_q = _rank % ngpu_q;
+    CUDA_CHECK(cudaSetDevice(bench_dev_q));
+    if (A.M_fp64_words <= 0) {
+        A.M_fp64_words = nextla_device_fast_memory_budget_elements(bench_dev_q, A.matrix);
+        if (_rank == 0) {
+            fprintf(stdout, "auto M (TeX fast memory): %lld matrix elements (σ=%zu B)\n",
+                    (long long)A.M_fp64_words, nextla_matrix_element_bytes(A.matrix));
+            fflush(stdout);
+        }
+    }
+    if (A.block_cyclic_layout) {
+        if (A.px <= 0 || A.py <= 0 || A.pz <= 0) {
+            if (_rank == 0)
+                fprintf(stderr,
+                        "qdwh: --layout=blockcyclic requires --px= --py= --pz= (use Pz=1; P=Px*Py*Pz)\n");
+            MPI_Abort(MPI_COMM_WORLD, 60);
+        }
+        if (A.pz != 1) {
+            if (_rank == 0) fprintf(stderr, "qdwh: blockcyclic requires Pz=1\n");
+            MPI_Abort(MPI_COMM_WORLD, 61);
+        }
+        if (P != A.px * A.py * A.pz) {
+            if (_rank == 0)
+                fprintf(stderr, "qdwh: MPI size P=%d != Px*Py*Pz=%d*%d*%d\n", P, A.px, A.py, A.pz);
+            MPI_Abort(MPI_COMM_WORLD, 62);
+        }
+        if (A.b == 0 && A.M_fp64_words > 0) {
+            int bb = default_block_b(A.M_fp64_words, (std::int64_t)A.N, A.px, A.py, A.pz);
+            if (bb > 0) A.b = bb;
+        }
+        if (A.b == 0) {
+            if (A.N <= 4000) A.b = 256;
+            else if (A.N <= 8000) A.b = 384;
+            else if (A.N <= 16000) A.b = 512;
+            else if (A.N <= 32000) A.b = 768;
+            else A.b = 1024;
+        }
+        int my_pz = _rank / (A.px * A.py);
+        int my_px = (_rank / A.py) % A.px;
+        int my_py = _rank % A.py;
+        int rc = run_qdwh_bc_main(A, P, A.px, A.py, my_px, my_py, my_pz);
+        MPI_Finalize();
+        return rc;
+    }
+
+    // ── Full-2.5D Pz>1 dispatch (FP64 only) ────────────────────────────────
+    {
+        bool grid_cli = (A.px > 0 && A.py > 0 && A.pz > 0);
+        Full25DGrid G_pre;
+        if (grid_cli) {
+            G_pre = resolve_full25d_grid(P, _rank, A.N, A.px, A.py, A.pz, A.M_fp64_words);
+        } else if (A.M_fp64_words > 0 && A.matrix == MatrixMode::FP64) {
+            G_pre = resolve_full25d_grid(P, _rank, A.N, 0, 0, 0, A.M_fp64_words);
+        } else {
+            G_pre.Px = 1; G_pre.Py = P; G_pre.Pz = 1;
+        }
+        bool use_full25d = (G_pre.Pz > 1 || (G_pre.Px > 1 && G_pre.Py > 1));
+        if (use_full25d && A.matrix == MatrixMode::FP64) {
+            if (A.b == 0 && A.M_fp64_words > 0) {
+                int bb = default_block_b(A.M_fp64_words, (std::int64_t)A.N, G_pre.Px, G_pre.Py, G_pre.Pz);
+                if (bb > 0) A.b = bb;
+            }
+            if (A.b == 0) {
+                if      (A.N <=  4000) A.b = 256;
+                else if (A.N <=  8000) A.b = 384;
+                else if (A.N <= 16000) A.b = 512;
+                else if (A.N <= 32000) A.b = 768;
+                else                   A.b = 1024;
+            }
+            A.px = G_pre.Px; A.py = G_pre.Py; A.pz = G_pre.Pz;
+            Full25DGrid G = resolve_full25d_grid(P, _rank, A.N, A.px, A.py, A.pz, A.M_fp64_words);
+            Full25DSubcomms S = build_full25d_subcomms(G);
+            if (_rank == 0) print_full25d_grid(G, "qdwh_full25d", A.M_fp64_words, A.b);
+            int rc = run_qdwh_full25d_fp64(A, G, S);
+            destroy_full25d_subcomms(S);
+            MPI_Finalize();
+            return rc;
+        }
+    }
+
+    if (A.b == 0 && A.M_fp64_words > 0) {
+        int bb = default_block_b(A.M_fp64_words, (std::int64_t)A.N, 1, 1, P);
+        if (bb > 0) A.b = bb;
+    }
+    if (A.b == 0) {
+        if (A.N <= 4000) A.b = 256;
+        else if (A.N <= 8000) A.b = 384;
+        else if (A.N <= 16000) A.b = 512;
+        else if (A.N <= 32000) A.b = 768;
+        else A.b = 1024;
+    }
+    if (A.matrix == MatrixMode::FP32_FULL) {
+        return run_qdwh_fp32full_main(A, c);
+    }
+    const bool use_mp_inner = nextla_is_mp_trail_matrix(A.matrix);
+    const bool use_tf32_trail = nextla_requests_tf32_matrix(A.matrix) && (NEXTLA_HAVE_CUBLAS_TF32 != 0);
+    if (nextla_requests_tf32_matrix(A.matrix) && !use_tf32_trail) {
+        if (_rank == 0) {
+            fprintf(stderr,
+                    "qdwh: --matrix=fp64mp_tf32 requires CUDA 11+ cuBLAS (CUBLAS_COMPUTE_32F_FAST_TF32).\n");
+        }
+        MPI_Abort(MPI_COMM_WORLD, 91);
+    }
+    nextla_maybe_print_tf32_trailing_banner_rank0(_rank, use_tf32_trail);
     if (A.N % c != 0) { if (_rank==0) fprintf(stderr,"N=%d not divisible by c=%d\n",A.N,c); MPI_Abort(MPI_COMM_WORLD,5); }
     int N = A.N, b = A.b, m_local = N / c;
+    if (A.M_fp64_words > 0 && _rank == 0) {
+        DerivedSchedule D1 = compute_degenerate_1d_schedule(c, N, A.M_fp64_words);
+        fprintf(stdout, "%s\n", format_derived_schedule(D1).c_str());
+        fflush(stdout);
+    }
+    if (A.strict_b && !b_in_window(b, c, N, 1, 1)) {
+        if (_rank == 0) fprintf(stderr, "qdwh: b=%d violates §A3b window for c=%d, N=%d\n", b, c, N);
+        MPI_Abort(MPI_COMM_WORLD, 55);
+    }
     int m_st_local = 2 * m_local;
     int M_st = 2 * N;
-    int ngpu; CUDA_CHECK(cudaGetDeviceCount(&ngpu));
-    CUDA_CHECK(cudaSetDevice(_rank % ngpu));
 
     char tag[160];
-    std::snprintf(tag, sizeof(tag), "qdwh%s_it=%d", A.lookahead?"+LA":"", A.iters);
+    std::snprintf(tag, sizeof(tag), "qdwh_%s%s_it=%d", matrix_mode_tag(A.matrix), A.lookahead ? "+LA" : "", A.iters);
 
     if (_rank == 0) {
         printf("=================================================================\n");
@@ -222,7 +403,17 @@ int main(int argc, char** argv) {
     double* d_Q2_pack = nullptr;
     CUDA_CHECK(cudaMalloc(&d_Q2_pack, (size_t)m_local * N * sizeof(double)));
 
+    float* d_Wf = nullptr;
+    float* d_pf_panel = nullptr;
+    float* d_pf_tr = nullptr;
+    if (use_mp_inner) {
+        CUDA_CHECK(cudaMalloc(&d_Wf, (size_t)b * N * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_pf_panel, (size_t)m_st_local * b * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_pf_tr, (size_t)m_st_local * N * sizeof(float)));
+    }
+
     const double one_d=1.0, zero_d=0.0, neg_one_d=-1.0;
+    const float one_f = 1.f, zero_f = 0.f, neg_one_f = -1.f;
 
     // CQR2 (passes=2) inner-QR Phase Q1 on the stacked S (m_st_local × N).
     auto phase_q1_cqr2 = [&](cudaStream_t s_use, cublasHandle_t cb, cusolverDnHandle_t cs,
@@ -248,19 +439,59 @@ int main(int argc, char** argv) {
                               int k, int sb, int col_start, int ncols) {
         double* d_S_panel = d_S + (size_t)k * m_st_local;
         double* d_S_tr    = d_S + (size_t)col_start * m_st_local;
-        CUBLAS_CHECK(cublasDgemm(cb, CUBLAS_OP_T, CUBLAS_OP_N,
-                                  sb, ncols, m_st_local,
-                                  &one_d, d_S_panel, m_st_local, d_S_tr, m_st_local,
-                                  &zero_d, d_W, b));
-        CUDA_CHECK(cudaEventRecord(e_comp_done, s_use));
-        CUDA_CHECK(cudaStreamWaitEvent(s_comm, e_comp_done, 0));
-        NCCL_CHECK(ncclAllReduce(d_W, d_W, (size_t)sb * ncols, ncclDouble, ncclSum, nccl_comm, s_comm));
-        CUDA_CHECK(cudaEventRecord(e_ar_done, s_comm));
-        CUDA_CHECK(cudaStreamWaitEvent(s_use, e_ar_done, 0));
-        CUBLAS_CHECK(cublasDgemm(cb, CUBLAS_OP_N, CUBLAS_OP_N,
-                                  m_st_local, ncols, sb,
-                                  &neg_one_d, d_S_panel, m_st_local, d_W, b,
-                                  &one_d, d_S_tr, m_st_local));
+        if (!use_mp_inner) {
+            CUBLAS_CHECK(cublasDgemm(cb, CUBLAS_OP_T, CUBLAS_OP_N,
+                                      sb, ncols, m_st_local,
+                                      &one_d, d_S_panel, m_st_local, d_S_tr, m_st_local,
+                                      &zero_d, d_W, b));
+            CUDA_CHECK(cudaEventRecord(e_comp_done, s_use));
+            CUDA_CHECK(cudaStreamWaitEvent(s_comm, e_comp_done, 0));
+            NCCL_CHECK(ncclAllReduce(d_W, d_W, (size_t)sb * ncols, ncclDouble, ncclSum, nccl_comm, s_comm));
+            CUDA_CHECK(cudaEventRecord(e_ar_done, s_comm));
+            CUDA_CHECK(cudaStreamWaitEvent(s_use, e_ar_done, 0));
+            CUBLAS_CHECK(cublasDgemm(cb, CUBLAS_OP_N, CUBLAS_OP_N,
+                                      m_st_local, ncols, sb,
+                                      &neg_one_d, d_S_panel, m_st_local, d_W, b,
+                                      &one_d, d_S_tr, m_st_local));
+        } else {
+            const size_t np = (size_t)m_st_local * sb;
+            const size_t nt = (size_t)m_st_local * ncols;
+            const int ntiles = 256;
+            cast_d2f_q<<<(unsigned)((np + ntiles - 1) / ntiles), ntiles, 0, s_use>>>(d_S_panel, d_pf_panel, np);
+            cast_d2f_q<<<(unsigned)((nt + ntiles - 1) / ntiles), ntiles, 0, s_use>>>(d_S_tr, d_pf_tr, nt);
+            if (use_tf32_trail) {
+#if NEXTLA_HAVE_CUBLAS_TF32
+                CUBLAS_CHECK(cublasGemmEx(cb, CUBLAS_OP_T, CUBLAS_OP_N,
+                                         sb, ncols, m_st_local,
+                                         &one_f, d_pf_panel, CUDA_R_32F, m_st_local,
+                                         d_pf_tr, CUDA_R_32F, m_st_local,
+                                         &zero_f, d_Wf, CUDA_R_32F, b,
+                                         CUDA_R_32F, CUBLAS_COMPUTE_32F_FAST_TF32,
+                                         CUBLAS_GEMM_DEFAULT_TENSOR_OP));
+#else
+                CUBLAS_CHECK(cublasSgemm(cb, CUBLAS_OP_T, CUBLAS_OP_N,
+                                         sb, ncols, m_st_local,
+                                         &one_f, d_pf_panel, m_st_local, d_pf_tr, m_st_local,
+                                         &zero_f, d_Wf, b));
+#endif
+            } else {
+                CUBLAS_CHECK(cublasSgemm(cb, CUBLAS_OP_T, CUBLAS_OP_N,
+                                         sb, ncols, m_st_local,
+                                         &one_f, d_pf_panel, m_st_local, d_pf_tr, m_st_local,
+                                         &zero_f, d_Wf, b));
+            }
+            CUDA_CHECK(cudaEventRecord(e_comp_done, s_use));
+            CUDA_CHECK(cudaStreamWaitEvent(s_comm, e_comp_done, 0));
+            NCCL_CHECK(ncclAllReduce(d_Wf, d_Wf, (size_t)sb * ncols, ncclFloat, ncclSum, nccl_comm, s_comm));
+            CUDA_CHECK(cudaEventRecord(e_ar_done, s_comm));
+            CUDA_CHECK(cudaStreamWaitEvent(s_use, e_ar_done, 0));
+            cast_f2d_q<<<(unsigned)(((size_t)sb * ncols + ntiles - 1) / ntiles), ntiles, 0, s_use>>>(
+                d_Wf, d_W, (size_t)sb * ncols);
+            CUBLAS_CHECK(cublasDgemm(cb, CUBLAS_OP_N, CUBLAS_OP_N,
+                                     m_st_local, ncols, sb,
+                                     &neg_one_d, d_S_panel, m_st_local, d_W, b,
+                                     &one_d, d_S_tr, m_st_local));
+        }
     };
 
     // Inner 2.5D QR (CQR2 + optional Look-Ahead) on the stacked d_S.
@@ -588,11 +819,20 @@ int main(int argc, char** argv) {
     if (_rank == 0) {
         printf("  %-30s  N=%d b=%d c=%d  tmin=%9.2f ms  tmed=%9.2f ms\n",
                tag, N, b, c, times[0], times[nrun/2]);
+        NextlaVendorMs vms = nextla_read_vendor_ms_for_np(N, c);
+        printf("METRICS bench=qdwh_2p5d matrix=%s N=%d b=%d c=%d passes=1 ", matrix_mode_tag(A.matrix), N, b, c);
+        nextla_fprint_metrics_vendor_columns(stdout, vms);
+        printf(" ours_ms=%.4f\n", times[nrun / 2]);
         fflush(stdout);
     }
 
     cudaFree(d_A); cudaFree(d_X); cudaFree(d_Xnew); cudaFree(d_S);
     cudaFree(d_G); cudaFree(d_W); cudaFree(d_trace);
+    if (use_mp_inner) {
+        cudaFree(d_Wf);
+        cudaFree(d_pf_panel);
+        cudaFree(d_pf_tr);
+    }
     cudaFree(d_potrf_work); cudaFree(d_info);
     cudaFree(d_Q2_recv); cudaFree(d_P); cudaFree(d_Q2_pack);
     if (A.lookahead) {
