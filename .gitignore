@@ -4,3 +4,12 @@
 /Manifest.toml
 /docs/Manifest.toml
 /docs/build/
+
+# CUDA bench binaries (build with make in cpp_bench/)
+cpp_bench/cusolverMp_geqrf_bench
+cpp_bench/scqr3_full25d_bench
+cpp_bench/scqr3_2p5d_variants
+cpp_bench/scqr3_2p5d_bench
+cpp_bench/householder_2p5d_bench
+cpp_bench/givens_2p5d_bench
+cpp_bench/qdwh_2p5d_bench

@@ -1564,6 +1564,48 @@ NVIDIA \texttt{cusolverMpGeqrf}    & 116.93 & 317.24 & 959.86 & 1$\times$ (basel
 \end{tabular}
 \end{center}
 
+\paragraph{Full $[P_x,P_y,P_z]$ grid (Path~(s) in \texttt{scqr3\_full25d\_bench.cu}).}
+The same Phase~Q1--Q4 skeleton of \S\ref{sec:per-variant-schedule} was
+timed with $b = 512$ (the cube side $\sqrt{M}$ from \S\ref{sec:A3b}),
+\texttt{mpirun} $P{=}4$ ranks, and NVIDIA \texttt{cusolverMpGeqrf} on a
+$2{\times}2$ rank grid (MB${=}256$ as required by the vendor bench).
+Medians of five timed runs after two warmups:
+
+\begin{center}
+\renewcommand{\arraystretch}{1.05}
+\begin{tabular}{l l ccc | c}
+\toprule
+layout & Path~(s) flag & $N{=}8000$ & $N{=}16000$ & $N{=}32000$ & vs.\ cuSOLVERMp \\
+\midrule
+cuSOLVERMp $2{\times}2$ & --- & 1036 & 1030 & 1776 & $1\times$ \\
+$[2,2,1]$, $c{=}1$ & \texttt{passes=3} & 102 & 506 & 930 & $1.9$--$10\times$ \\
+$[2,2,1]$, $c{=}1$ & \texttt{passes=2} (CQR2) & 175 & 158 & 930 & $1.1$--$6.6\times$ \\
+$[1,1,4]$, $c{=}4$ & \texttt{passes=3} & 62.6 & 601 & 619 & $1.7$--$17\times$ \\
+$[1,1,4]$, $c{=}4$ & \texttt{passes=3+LA} & 68.3 & 150 & 593 & $1.7$--$15\times$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The $[1,1,4]$ row at $N{=}16000$ shows where Phase~Q5 look-ahead
+(\S\ref{sec:A1-lookahead}) pays under the degenerate mesh: median
+\texttt{passes=3} is dominated by variance, while \texttt{passes=3+LA}
+recovers pipelining.  At $N{=}32000$, \texttt{passes=2+LA} ties the best
+median ($535$\,ms); we still tabulate \texttt{passes=3+LA} for a uniform
+sCQR3 stability profile.  The pure 2D layout $[2,2,1]$ matches the
+$c{=}1$ column of the memory bound~\eqref{eq:c-memory}; the degenerate
+layout matches $c{=}4{=}P$ (maximal replication on four ranks).
+
+\paragraph{Eight GPUs, true $2.5$D $[2,2,2]$ ($c{=}2$).}
+The same executable supports $P{=}8$ with $P_x{=}P_y{=}P_z{=}2$.
+Automated medians for the full-size sweep (cuSOLVERMp at $4{\times}2$,
+$[4,2,1]$, $[2,2,2]$, and $[1,1,8]$) are produced by
+\texttt{cpp\_bench/run\_full25d\_sweep.sh} on the \texttt{full-node}
+partition; a queued Slurm driver is \texttt{run\_full25d\_8gpu\_pipeline.sbatch}
+(submit with \texttt{sbatch --dependency=afterany:\textit{PRIOR\_JOB}}
+to wait for other users on the shared DGX).  Smoke timings for
+$N{=}4000$ at $[2,2,2]$ are written to the same log file when that job
+runs.
+
 All times in milliseconds; max $|\mathrm{diag}(Q^T Q) - 1|_\infty$ stays
 in $[6.7\text{e}{-16}, 7.1\text{e}{-15}]$ for every variant, well inside
 the Fukaya orthogonality bound $50 \cdot m \cdot b \cdot \mathbf{u}
@@ -1835,6 +1877,52 @@ Q4 (col pivot)       & rank-revealing                & not DAAP              & $
 
 \section{Near-Optimal Parallel Schedule (sCQR3-2.5D)}
 \label{sec:A3}
+
+\subsection{Deriving $c$, $P_1$, and $[P_x,P_y,P_z]$ (memory saturation $\cap$ Solomonik--Demmel)}
+\label{sec:A3derive}
+
+The implementation maps the abstract schedule onto a three-axis index
+space $[P_x,P_y,P_z]$ with $P = P_x P_y P_z$.  Two independent
+constraints fix the replication factor~$c = P_z$.
+
+\paragraph{Constraint I (fast-memory saturation).}
+Each processor owns an $N^2/P$-sized submatrix of $A$ in the
+unreplicated layout.  Replicating the trailing update's contraction
+across $c$ copies reduces each replica's resident matrix block by a
+factor~$c$ to $N^2/(P_1 c)$ with $P_1 = P/c$ the number of distinct
+``first-layer'' processors in the $[P_x,P_y]$ plane.  The 2.5D
+\emph{memory constraint} requires that block to saturate fast memory:
+$N^2/(P_1 c) = M$, i.e.\ $P_1 c = N^2/M$.  With $P = P_1 c$ processors
+total, eliminating $P_1$ gives the classical replication bound
+\begin{equation}
+  c \;\le\; \frac{P\,M}{N^2}.
+  \label{eq:c-memory}
+\end{equation}
+
+\paragraph{Constraint II (Solomonik--Demmel cubic limit).}
+For matrix multiplication (and hence for the dominant trailing GEMMs
+with the same reduction structure), Solomonik and Demmel show that
+once replication exceeds $c \asymp P^{1/3}$, additional copies no
+longer reduce the dominant communication term; the optimal lies at
+$c = \Theta(P^{1/3})$.  In discrete hardware we cap
+\begin{equation}
+  c \;\le\; \bigl\lfloor P^{1/3} \bigr\rfloor
+  \label{eq:c-cube}
+\end{equation}
+and choose the largest admissible integer satisfying both
+\eqref{eq:c-memory} and~\eqref{eq:c-cube}, i.e.\
+$c = \min\bigl(\lfloor PM/N^2 \rfloor,\, \lfloor P^{1/3} \rfloor\bigr)$,
+matching~\eqref{eq:grid} in \S\ref{sec:per-variant-schedule}.
+
+\paragraph{Square first-layer grid.}
+Given $c$, set $P_1 = P/c$.  The X-partition / CAQR literature fixes the
+first-layer processor mesh as square $P_x = P_y = \sqrt{P_1}$ so that
+local tile dimensions match the $\sqrt{M} \times \sqrt{M}$ cube side
+in~\S\ref{sec:A2}b--\ref{sec:A3b}.  The third axis carries replication
+only: $P_z = c$.  Degenerate cases ($P_x = P_y = 1$, maximal~$c$) are
+admissible and correspond to the 1D row distribution used in the
+variant-only benches; the general $[P_x,P_y,P_z]$ assignment is the
+Conflux-style map in \S\ref{sec:A3aprime}.
 
 \subsection{Processor index space}
 \label{sec:A3a}

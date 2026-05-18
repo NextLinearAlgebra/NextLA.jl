@@ -1,0 +1,15 @@
+
+========================================================================
+  cuSOLVERMp baseline (NVIDIA, libcusolverMp v0.8) — c=4
+========================================================================
+==========================================================
+ cuSOLVERMp Geqrf benchmark   N=8000  MB=NB=512  grid=2x2 (4 ranks)
+==========================================================
+  cusolverMpGeqrf  N=8000 grid=2x2  tmin=   509.19 ms  tmed=   899.48 ms
+==========================================================
+ cuSOLVERMp Geqrf benchmark   N=16000  MB=NB=512  grid=2x2 (4 ranks)
+==========================================================
+  cusolverMpGeqrf  N=16000 grid=2x2  tmin=  1285.44 ms  tmed=  1796.28 ms
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+slurmstepd-dgx01: error: *** STEP 3714.0 ON dgx01 CANCELLED AT 2026-05-18T09:13:48 ***
+srun: error: dgx01: task 0: Terminated

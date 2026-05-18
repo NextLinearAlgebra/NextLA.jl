@@ -1,0 +1,52 @@
+
+========================================================================
+  cuSOLVERMp baseline (NVIDIA, libcusolverMp v0.8) — c=4
+========================================================================
+==========================================================
+ cuSOLVERMp Geqrf benchmark   N=8000  MB=NB=256  grid=2x2 (4 ranks)
+==========================================================
+  cusolverMpGeqrf  N=8000 grid=2x2  tmin=   506.47 ms  tmed=  1058.12 ms
+==========================================================
+ cuSOLVERMp Geqrf benchmark   N=16000  MB=NB=256  grid=2x2 (4 ranks)
+==========================================================
+  cusolverMpGeqrf  N=16000 grid=2x2  tmin=   515.85 ms  tmed=   542.45 ms
+==========================================================
+ cuSOLVERMp Geqrf benchmark   N=32000  MB=NB=256  grid=2x2 (4 ranks)
+==========================================================
+  cusolverMpGeqrf  N=32000 grid=2x2  tmin=  1611.75 ms  tmed=  1852.73 ms
+==========================================================
+ cuSOLVERMp Geqrf benchmark   N=64000  MB=NB=256  grid=2x2 (4 ranks)
+==========================================================
+  cusolverMpGeqrf  N=64000 grid=2x2  tmin=  4004.11 ms  tmed=  4872.89 ms
+
+========================================================================
+  Path-s variants — sCQR3 / CQR2 with the schedule from qr_schur_xpartition.tex §A.3
+========================================================================
+
+----- N=8000 -----
+=================================================================
+ 2.5D variant   N=8000 b=512 c=4   variant=passes=3
+=================================================================
+  Validation     variant=passes=3 N=8000 c=4  max|diag(Q'Q)-1| = 8.88e-16
+  passes=3                        N=8000 b=512 c=4  tmin=    59.71 ms  tmed=    82.79 ms
+=================================================================
+ 2.5D variant   N=8000 b=512 c=4   variant=passes=3+LA
+=================================================================
+  Validation     variant=passes=3+LA N=8000 c=4  max|diag(Q'Q)-1| = 8.88e-16
+  passes=3+LA                     N=8000 b=512 c=4  tmin=    55.22 ms  tmed=    58.72 ms
+=================================================================
+ 2.5D variant   N=8000 b=512 c=4   variant=passes=2
+=================================================================
+  Validation     variant=passes=2 N=8000 c=4  max|diag(Q'Q)-1| = 3.33e-15
+  passes=2                        N=8000 b=512 c=4  tmin=    48.97 ms  tmed=    54.82 ms
+=================================================================
+ 2.5D variant   N=8000 b=512 c=4   variant=passes=2+LA
+=================================================================
+  Validation     variant=passes=2+LA N=8000 c=4  max|diag(Q'Q)-1| = 3.33e-15
+  passes=2+LA                     N=8000 b=512 c=4  tmin=    49.44 ms  tmed=    59.24 ms
+=================================================================
+ 2.5D variant   N=8000 b=512 c=4   variant=passes=3+IR1
+=================================================================
+srun: Job step aborted: Waiting up to 32 seconds for job step to finish.
+slurmstepd-dgx01: error: *** STEP 3715.0 ON dgx01 CANCELLED AT 2026-05-18T09:20:16 ***
+srun: error: dgx01: task 0: Terminated
