@@ -616,19 +616,69 @@ the iteration domain: the panel is \textbf{Quasi-DAAP} in the sense
 of \S2.5, inheriting a $\log_2 P_r$ multiplier on the panel-bandwidth
 term (cf.\ TSQR / CAQR). Conditioning hypothesis: any $\kappa_2(A)$.
 
+\paragraph{Path~(g) --- Givens rotations.}
+The classical sequential Givens reduction zeroes one subdiagonal entry
+at a time using $2\times2$ plane rotations
+$G(i_t, i_b; c, s) \in \mathrm{SO}(2)$ embedded in $\mathbb{R}^{m\times m}$.
+Each rotation reads exactly two rows of $A$ and writes back the same
+two rows: the access function is \emph{strictly injective} on the
+iteration domain $\{(j, i, k) : 0 \le j < b,\; j+1 \le i \le m-1,
+\; j \le k < n\}$ (column $j$, row pair $(i{-}1, i)$, column $k$).
+Per-panel total work $\Theta(m b^2)$ flops --- same as Path~(h)'s
+panel --- but distributed across $b m / 2$ rotations of bounded
+width, each $\Theta(b)$ in trailing-column updates and $\Theta(1)$ in
+column-$j$ updates. The panel is \textbf{DAAP-proper} in the strict
+sense (\S2.4): each output row appears as the unique target of at
+most $b$ rotations, and the per-rotation read/write footprint of $2b$
+words is exactly $|D|$ of the local statement.  The classical column
+elimination is sequential in $(j, i)$, so its serial depth on a single
+processor is $\Theta(m b)$; the parallel tournament-Givens schedule
+of \S\ref{sec:A1-DAAP-givens} drops the depth to $\Theta(b \log m)$
+while preserving DAAP-proper status. Conditioning hypothesis: any
+$\kappa_2(A)$.
+
+\paragraph{Path~(q) --- QDWH polar decomposition.}
+Compute the polar factor $A = U H$ via the QR-based Halley iteration
+(Nakatsukasa--Higham 2013):
+\begin{equation}
+X_{k+1} = \frac{b_k}{c_k} X_k + \frac{a_k - b_k/c_k}{\sqrt{c_k}} \, Q_1 Q_2^T,
+\qquad
+\begin{bmatrix} \sqrt{c_k}\, X_k \\ I_n \end{bmatrix}
+=
+\begin{bmatrix} Q_1 \\ Q_2 \end{bmatrix} R_k,
+\label{eq:qdwh}
+\end{equation}
+with $X_0 = A/\alpha$, $\alpha \ge \sigma_{\max}(A)$, and analytical
+weights $(a_k, b_k, c_k)$ chosen for cubic convergence in 3--6
+iterations.  $X_k \to U$, then $R = U^T A$ (upper triangular) gives
+$A = U R$, i.e.\ a QR factorization of $A$ via its polar
+decomposition. Each outer iterate calls a 2.5D QR on the
+$2n \times n$ stacked matrix; the outer Halley iteration is itself a
+fixed-depth statement with injective access on
+$(X_k, Q_1, Q_2, X_{k+1})$. The inner QR is whatever path is
+selected (we use Path~(s) CQR2 in the implementation). Outer +
+inner is therefore \textbf{DAAP-proper} if the inner QR is. Cost
+relative to a single 2.5D QR: $\approx K \cdot 7$ on flops
+($K \approx 6$ Halley iters $\times$ $\sim 7\times$ the $n\times n$
+QR cost of a $2n\times n$ stacked QR), trading flops for
+unconditional backward stability and a polar / SVD-ready intermediate.
+
 \paragraph{Trade-off summary.}
 \begin{center}
-\begin{tabular}{lll}
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{l l l l l}
 \toprule
-                            & Path~(s) sCQR3 & Path~(h) Householder--WY \\
+                            & Path~(s) sCQR3 & Path~(h) Householder--WY & Path~(g) Givens & Path~(q) QDWH \\
 \midrule
-Panel DAAP class            & DAAP-proper          & Quasi-DAAP \\
-Panel constant (3 sCQR3 iters)& $3$                & $\log_2 P_r$ \\
-Panel flops                 & $\sim 3 m b^2$       & $\sim m b^2$ \\
-Trailing-update flops       & $\sim 2 N^2 m$ (same)& $\sim 2 N^2 m$ (same) \\
-Trailing-update DAAP class  & DAAP-proper          & DAAP-proper \\
-Conditioning tolerance      & $\kappa \le \mathbf{u}^{-1}$ & any $\kappa$ \\
-2.5D replication factor     & $c = PM/N^2$ (\S\ref{sec:A3}) & $c = PM/N^2$ (\S\ref{sec:A3}) \\
+Panel DAAP class            & DAAP-proper          & Quasi-DAAP        & DAAP-proper        & DAAP-proper (inh.) \\
+Panel constant              & $3$ (sCQR3) / $2$ (CQR2) & $\log_2 P_r$  & $b \log m$ depth   & $K \cdot$ inner \\
+Panel flops                 & $\sim 3 m b^2$       & $\sim m b^2$      & $\sim m b^2$       & $K \cdot 7 \cdot m b^2$ \\
+Trailing-update flops       & $\sim 2 N^2 m$       & $\sim 2 N^2 m$    & $\sim 2 N^2 m$     & $K \cdot \sim 2 N^2 m$ \\
+Trailing-update DAAP class  & DAAP-proper          & DAAP-proper       & DAAP-proper        & DAAP-proper \\
+Conditioning tolerance      & $\kappa \le \mathbf{u}^{-1}$ & any $\kappa$ & any $\kappa$    & any $\kappa$ \\
+2.5D replication factor     & $c = PM/N^2$         & $c = PM/N^2$      & $c = PM/N^2$       & $c = PM/N^2$ \\
+Phase Q3 (panel reduce)     & $\le 6 b^2$          & $\le b^2 \log_2 P_r$ (TSQR) & $\le m b$ (gather) & inherits inner \\
+Phase Q4 (trailing reduce)  & $b\,n_{\text{tr}}$   & $b\,n_{\text{tr}}$ & $b\,n_{\text{tr}}$ & $K \cdot b\,n_{\text{tr}}$ \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -820,7 +870,95 @@ $6 \lceil \log_2 P_r \rceil$ rounds, no $\log$-factor on bandwidth.
 Identical to Path~(s): genuinely non-DAAP, $\Omega(N)$ panel sweeps.
 Neither path natively supports column pivoting.
 
-\subsection*{Phase Q5 --- Look-Ahead Pipelining (scheduling, both paths)}
+\subsection*{Path~(g): Givens rotations (DAAP-proper)}
+\label{sec:A1-DAAP-givens}
+
+The Givens variant zeroes the strict subdiagonal of the $m\times b$ panel
+through a sequence of plane rotations $G(i_t, i_b; c, s)$ where
+$(c, s)$ are chosen from $A[i_t, j], A[i_b, j]$ to annihilate the lower
+entry.  For dense $A$ this is no faster on flops than Householder, but
+its access pattern is strictly tighter:
+
+\paragraph{Phase Q1$_{\mathrm{g}}$ --- Panel factorization (classical Givens).}
+For each column $j$, eliminate $A[j{+}1{:}m, j]$ bottom-up by applying
+$m{-}j{-}1$ rotations between adjacent row pairs $(i{-}1, i)$.  Each
+rotation reads two rows of length $(n - j)$ and writes the same two
+rows --- access function
+$\phi^{\text{in}}_A(j, i, k) = \{(i{-}1, k), (i, k)\}$,
+$\phi^{\text{out}}_A(j, i, k) = \{(i{-}1, k), (i, k)\}$, both injective
+on $(j, i, k)$.  The panel is therefore \textbf{DAAP-proper}.
+
+\paragraph{Phase Q3$_{\mathrm{g}}$ --- Panel construction reduction.}
+Across the $c$ replicas of the 2.5D grid (\S\ref{sec:A3}), only the
+final $R$ block and the rotation list $\{(c_l, s_l, i_t^l, i_b^l)\}_{l=1}^{bm/2}$
+need be made consistent.  In the gather-and-replicate variant used by
+the C++ benchmark, each replica receives the full $m \times b$ panel
+via one AllGather of $mb$ words; each replica then runs an identical
+Givens reduction.  Cost: $mb$ words bandwidth per processor,
+$\log_2 P_r$ rounds.  In the tournament-Givens variant
+(parallel-within-column butterfly), the reduction across replicas
+folds into the within-column butterfly and total cost drops to
+$b^2 \log_2 P_r$ --- same as Path~(h)'s TSQR.  Either way the panel
+construction reduction is sub-leading once $N \gg b \log P_r$.
+
+\paragraph{Phase Q2$_{\mathrm{g}}$ --- Trailing update via thin $Q$.}
+The accumulated Givens rotations form an orthogonal $m \times b$
+matrix $Q$ (materialized in the bench by replaying the rotation list
+on $I_m[:, 0{:}b]$ in reverse order).  The trailing update is then
+identical to Path~(s) and Path~(h):
+$W = Q^T A_{\text{tr}}$ (one GEMM), Phase~Q4 AllReduce of $W$
+($b \cdot n_{\mathrm{tr}}$ words, same as Path~(s)), then
+$A_{\text{tr}} \mathrel{{-}{=}} Q W$ (one GEMM).  The DAAP class is
+unchanged from Path~(s)/(h).
+
+\subsection*{Path~(q): QDWH polar decomposition (DAAP-proper modulo inner QR)}
+\label{sec:A1-DAAP-qdwh}
+
+Path~(q) computes $A = U R$ via the polar decomposition $A = U H$ and
+the identity $R = U^T A$, with $U$ obtained by Halley iteration
+\eqref{eq:qdwh}.  Each Halley step is one $2n \times n$ QR plus a
+single $n \times n$ GEMM update.
+
+\paragraph{Phase Q$_{\mathrm{q}}$1 --- Stacked-matrix construction.}
+At iteration $k$, build the $2n \times n$ matrix
+$S_k = \begin{bmatrix}\sqrt{c_k}\, X_k \\ I_n\end{bmatrix}$.
+The access function $\phi^{\mathrm{out}}_{S_k}(i, j)$ writes each
+entry exactly once: $S_k[i, j] = \sqrt{c_k}\, X_k[i, j]$ for $i < n$,
+$S_k[i, j] = \mathbf{1}[i - n = j]$ for $i \ge n$.  Strictly
+injective, hence \textbf{DAAP-proper}.
+
+\paragraph{Phase Q$_{\mathrm{q}}$2 --- Inner $2n \times n$ QR.}
+We use Path~(s) CQR2 inside Path~(q): Phase Q1$_{\mathrm{s}}$,
+Q2$_{\mathrm{s}}$, Q3$_{\mathrm{s}}$, Q4$_{\mathrm{s}}$ are invoked on
+$S_k$ with the same 2.5D processor grid.  DAAP class inherits
+Path~(s)'s DAAP-proper status.  The row distribution is
+$m_{\text{stack}}/c = 2n/c$ rows per replica; in the bench we
+\emph{interleave} the X-half and I-half rows per replica so each rank
+holds its own $n/c$ X-rows followed by $n/c$ identity rows.  The QR is
+invariant under input row permutation, so this interleaving is exact.
+
+\paragraph{Phase Q$_{\mathrm{q}}$3 --- $Q_1 Q_2^T$ update GEMM.}
+Extract from the QR output: top $n$ rows of $Q$ are $Q_1$, bottom $n$
+rows are $Q_2$.  Compute
+$P := Q_1 Q_2^T \in \mathbb{R}^{n \times n}$ via one Phase~Q4-style
+collective: rank $r$ holds $m_{\text{loc}} = n/c$ rows of each of
+$Q_1, Q_2$; AllGather $Q_2$ across replicas
+($n^2$ words total, $b n_{\mathrm{tr}}$ per round scale removed),
+then each rank computes
+$P_r = (Q_1)_r \cdot Q_2^T$ as $c$ rank-block GEMMs.  Each block
+GEMM has injective access function on
+$((i_{\text{loc}}, k), (j_{\text{loc}}, k), (i_{\text{loc}},
+j_{\text{loc}}))$ over the appropriate sub-domains; combined the full
+$P$ assembly is DAAP-proper.
+
+\paragraph{Phase Q$_{\mathrm{q}}$4 --- Halley update.}
+$X_{k+1} = \alpha_x X_k + \alpha_p P$ is a strictly elementwise
+statement; trivially DAAP-proper.  Total path-(q) cost is
+$K \approx 6$ Halley iterations $\times$ ($2n \times n$ QR
+$+$ $Q_1 Q_2^T$ assembly $+$ scalar update), or roughly
+$6 \cdot 7\times$ the cost of a single $n \times n$ Path~(s) QR.
+
+\subsection*{Phase Q5 --- Look-Ahead Pipelining (scheduling, all paths)}
 \label{sec:A1-lookahead}
 
 The X-partition framework decomposes the cDAG into mutually-disjoint
@@ -1043,6 +1181,337 @@ schedule of \S\ref{sec:A1-lookahead} can be applied to both the
 low-precision pass and to each IR iteration's full QR. They commute
 because Phase Q6's $S_7$ is a self-call to Phase Q1+Q2 with the
 identical cDAG (just on $E^{(j)}$ instead of $A$).
+
+\subsection*{Mapping each panel variant onto the 2.5D X-partition schedule}
+\label{sec:per-variant-schedule}
+
+The X-partition framework (\S\ref{sec:A2}) factors any DAAP-proper
+cDAG into mutually disjoint subcomputations $\{H_1, \dots, H_s\}$ each
+fitting in a per-processor fast-memory budget $X = M$. The 2.5D
+scheduling (\S\ref{sec:A3}) assigns those subcomputations to a
+$[P_x, P_y, P_z]$ processor grid with $P = P_x P_y P_z$ and replication
+factor $c = P_z = P M / N^2$. Every variant in this paper plugs into
+the same outer skeleton:
+
+\paragraph{Processor grid (Conflux SC'21 mathematics, Kwasniewski et al.).}
+For arbitrary $P, N, M$, the X-partition optimization (\S\ref{sec:A2}) prescribes:
+\begin{equation}
+P_1 = \frac{N^2}{M},\qquad
+c   = \min\!\left(\frac{P\,M}{N^2},\; P^{1/3}\right),\qquad
+P_x = P_y = \sqrt{P_1},\qquad P_z = c.
+\label{eq:grid}
+\end{equation}
+$P_1 = N^2/M$ is the number of $\sqrt{M}\!\times\!\sqrt{M}$ tiles needed to
+cover the matrix; $c$ is the replication factor that the I/O lower bound
+$Q_{\text{par}} \ge N^3/(P\sqrt{M})$ saturates at when memory permits. The
+cube root bound $c \le P^{1/3}$ is the Solomonik-Demmel 2.5D limit beyond
+which extra replication ceases to reduce communication. In the implementation we
+take $c = \lfloor P^{1/3} \rfloor$ rounded down to the largest integer for
+which $P/c = P_x P_y$ is a perfect square.
+
+\emph{Concrete instantiations} on our 4 and 8 H200 GPU testbeds:
+\begin{itemize}[leftmargin=2em, itemsep=0.2em]
+  \item $P=4$, $c=1$: $[P_x, P_y, P_z] = [2, 2, 1]$ (pure 2D, no replication).
+  \item $P=4$, $c=4$: $[P_x, P_y, P_z] = [1, 1, 4]$ (degenerate-2.5D, max replication).
+  \item $P=8$, $c=2$: $[P_x, P_y, P_z] = [2, 2, 2]$ \textbf{(true 2.5D, the
+        Conflux sweet spot for $P=8$)}.
+  \item $P=8$, $c=8$: $[P_x, P_y, P_z] = [1, 1, 8]$ (degenerate-2.5D).
+\end{itemize}
+
+\paragraph{Data distribution} on the full $[P_x, P_y, P_z]$ grid.  Each rank
+$(p_x, p_y, p_z) \in [0, P_x) \times [0, P_y) \times [0, P_z)$ owns
+\[
+A\!\left[\;
+\frac{N}{P_x P_z}\,(p_z P_x + p_x) \,:\, \frac{N}{P_x P_z}\,(p_z P_x + p_x + 1),\;
+\frac{N}{P_y}\,p_y \,:\, \frac{N}{P_y}\,(p_y + 1)
+\;\right],
+\]
+i.e. an $m_{\mathrm{loc}} \times n_{\mathrm{loc}}$ block with
+$m_{\mathrm{loc}} = N/(P_x P_z)$ and $n_{\mathrm{loc}} = N/P_y$.  Ranks
+sharing $p_y$ form a \emph{column group} (size $P_x P_z = P_1 c$) used for
+Phase Q3 and Q4 AllReduces; ranks sharing $(p_x, p_z)$ form a
+\emph{row group} (size $P_y$) used for the Phase-Q1 broadcast of the
+just-factored panel $Q$ from $p_y^{\text{panel}}$ to all other $p_y'$.
+
+For $P_x = P_y = 1$ (degenerate case) the row group is a singleton and
+the broadcast is a no-op, $m_{\mathrm{loc}} = N/P_z = N/c$ rows per rank,
+and every rank owns the full column range $[0, N)$ --- this collapses to
+the 1D row distribution used in \texttt{scqr3\_2p5d\_variants.cu},
+\texttt{householder\_2p5d\_bench.cu}, \texttt{givens\_2p5d\_bench.cu}.
+The full-grid version is implemented in
+\texttt{scqr3\_full25d\_bench.cu} and accepts \texttt{--px --py --pz}
+flags to instantiate any factorization $P = P_x P_y P_z$.
+
+\paragraph{Block size $b$} obeys the admissible window of \S\ref{sec:A3b}:
+$c \le b \le N/\sqrt{P_1}$.  Conflux selects $b = a \cdot c$ for some
+small constant $a$ (latency-optimal for tournament-pivot LU); for QR's
+sCQR3 we instead pick the bandwidth-optimal cube side
+$b \approx \sqrt{M}$ inside the same window, because the QR panel has
+no pivot tournament and the per-panel constant is $3$ (sCQR3) or
+$2$ (CQR2) rather than $\log_2 P_1$ (TSQR).  On H200,
+$\sqrt{M} = \sqrt{N_M^{\text{H200}}} \approx 512$ for the typical
+sizes we measure.  The implementation lets the user override $b$ via
+\texttt{--b=}; the default is the heuristic ladder in
+\texttt{parse\_args}.
+
+\paragraph{Cross-rank workflow at panel $k$ (the full 2.5D schedule).}
+Set $p_y^{\text{panel}} = k \,\mathrm{div}\, n_{\mathrm{loc}}$,
+$k_{\text{loc}} = k - p_y^{\text{panel}} \cdot n_{\mathrm{loc}}$,
+and clip $s_b = \min(b,\; N-k,\; n_{\mathrm{loc}} - k_{\text{loc}})$ so
+the panel slab stays within one $p_y$-block.
+\begin{enumerate}[leftmargin=2em, itemsep=0.2em]
+\item \textbf{Phase Q1 (panel)} on column group $p_y^{\text{panel}}$
+      ($P_1 c = P_x P_z$ ranks):
+      local SYRK $G_r \!=\! A_{\text{panel}}^{(r)\top} A_{\text{panel}}^{(r)}$
+      ($m_{\mathrm{loc}} b^2 / 2$ flops);
+      AllReduce $G$ across the column group (Phase Q3,
+      $\le 6 b^2 \log_2(P_x P_z)$ words);
+      replicated POTRF $G = R^T R$ (no comm, $b^3/3$ flops);
+      local TRSM $A_{\text{panel}}^{(r)} \leftarrow A_{\text{panel}}^{(r)} R^{-1}$.
+      Repeat for $\mathrm{passes} \in \{2, 3\}$ to obtain $Q$ overwriting
+      the panel.
+\item \textbf{Q-broadcast.} Ranks in column group $p_y^{\text{panel}}$
+      broadcast their $m_{\mathrm{loc}} \times s_b$ slab of $Q$ to all
+      $p_y' \ne p_y^{\text{panel}}$ via the row-group NCCL collective
+      ($m_{\mathrm{loc}} s_b$ words per processor, $P_y$ peers).
+\item \textbf{Phase Q2 (trailing)} on all $P$ ranks: each rank computes
+      its share of $A_{\text{trail}}$ (the local columns to the right of
+      the panel) and runs
+      $W_r = Q_r^\top A_{\text{trail}}^{(r)}$ (local GEMM,
+      $m_{\mathrm{loc}} s_b n_{\mathrm{trail, loc}}$ flops);
+      AllReduce $W$ across the column group of $A_{\text{trail}}^{(r)}$'s
+      $p_y$ (Phase Q4, $s_b n_{\mathrm{trail, loc}}$ words);
+      then $A_{\text{trail}}^{(r)} \mathrel{-}=\!Q_r W$ locally.
+\end{enumerate}
+This is the schedule realized in
+\texttt{cpp\_bench/scqr3\_full25d\_bench.cu}.
+
+\medskip
+\begin{enumerate}[leftmargin=2em, itemsep=0.25em]
+  \item \textbf{Data placement.} $A$ is row-and-column-distributed
+        across the $P_1 c = P$ ranks as described above.  Each rank owns
+        a $(N/(P_x P_z)) \times (N/P_y)$ slab.  When $P_x = P_y = 1$ the
+        rank's local data is the full column range and the bench reduces
+        to the 1D row-distribution used by the four single-path benches.
+  \item \textbf{Cube side $b$.}  Block size is taken inside the
+        admissible window $c \le b \le N / \sqrt{P_1}$ of
+        \S\ref{sec:A3b}, with the X-partition cube prescribing
+        $b \approx \sqrt{M}$ (the largest panel that fits in fast
+        memory).  This is the value all four variants use by default
+        in the bench.
+  \item \textbf{Phase Q1 (panel).}  One panel of width $b$ is factored.
+        \emph{This is the only phase that changes between variants}
+        --- everything else (data placement, Phase Q2 trailing update,
+        Phase Q3 panel-reduce collective, Phase Q4 trailing-reduce
+        collective, Phase Q5 look-ahead, Phase Q6 refinement) is
+        identical across paths.
+  \item \textbf{Phase Q2 (trailing).}  Two GEMMs and one
+        $W$-AllReduce, exactly $\Theta(N^2 m / P)$ flops and
+        $\Theta(N^2/\sqrt{P M})$ words per processor --- the
+        leading-order bandwidth bound from \S\ref{sec:A2}b.  Common to
+        all variants because all variants produce an $m\times b$
+        orthonormal $Q$ from the panel.
+  \item \textbf{Phase Q3 (panel reduce).}  Inter-replica collective
+        used by Phase Q1 to make the panel result consistent across
+        the $c$ replicas.  Different per variant; see table below.
+  \item \textbf{Phase Q4 (trailing reduce).}  AllReduce of the
+        $W$ slab ($b \times n_{\mathrm{tr}}$).  Same for all variants.
+  \item \textbf{Phases Q5, Q6.}  Orthogonal scheduling layers, defined
+        in \S\ref{sec:A1-lookahead}, \S\ref{sec:A1-IR}; both apply
+        unchanged to every variant.
+\end{enumerate}
+
+\paragraph{What each variant changes in Phase Q1.}
+
+The four variants differ only in how they realize the panel
+factorization in Phase Q1, and consequently how they pay for Phase Q3.
+The X-partition cube side $\sqrt{M}$, the trailing-update cost, the
+$c = P M / N^2$ replication factor, and the per-step $M$-budget are
+\emph{identical} across the four paths.
+
+\begin{center}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{l p{0.20\textwidth} p{0.22\textwidth} p{0.20\textwidth}}
+\toprule
+Variant
+  & Phase Q1 statement set
+  & Phase Q3 collective
+  & Where in the X-partition cube each $m{\times}b$ panel sits \\
+\midrule
+Path~(s) sCQR3
+  & 3 iterations of  $S_1{:}G\!=\!A_p^T A_p$,  $S_2{:}\mathrm{POTRF}(G)$,  $S_3{:}A_p\!\leftarrow\!A_p R^{-1}$
+  & 3 AllReduce of $G$ ($\le 6 b^2$ words, constant in $P_r$)
+  & Single $\sqrt{M}\times\sqrt{M}\times b$ slab in the cube; each
+    panel column is read 3 times (the 3 sCQR3 passes), each in fast
+    memory \\
+Path~(s) CQR2
+  & 2 iterations of the same triple
+  & 2 AllReduce of $G$ ($\le 4 b^2$)
+  & Same slab as sCQR3 with one fewer pass; only valid when
+    $\kappa_2(A) \le \mathbf{u}^{-1/2}$ (Yamamoto et al.\ 2015) \\
+Path~(h) Householder
+  & TSQR / gather-and-replicate
+    $S_1^h{:}\mathrm{geqrf}$,
+    $S_2^h{:}\mathrm{orgqr}$, then panel write-back
+  & AllReduce of $V, R$ ($b^2 \log_2 P_r$) for TSQR, or AllGather
+    of the panel ($m b$) for gather-and-replicate
+  & Cube slab is the same; the panel is read once but the panel-reduce
+    inflates Phase Q3 by $\log_2 P_r$ (TSQR) or $m/b$
+    (gather-and-replicate, used in the bench) \\
+Path~(g) Givens
+  & $b (m - b/2)$ rotations
+    $S_1^g{:}(c, s) = (a, b)/\sqrt{a^2{+}b^2}$,
+    $S_2^g{:}\text{apply}$
+  & Same as Path~(h) (gather-form) or
+    butterfly tournament ($b^2 \log_2 P_r$, tournament-Givens)
+  & Cube slab same; sequential depth of the panel kernel is
+    $\Theta(b m)$ classical or $\Theta(b \log m)$ tournament; both
+    fit the same $M$-budget \\
+Path~(q) QDWH
+  & Inner Path~(s)/(g)/(h) QR on the $2n \times n$ stack
+    $\begin{bsmallmatrix}\sqrt{c_k}\,X_k\\ I_n\end{bsmallmatrix}$;
+    outer Halley update $X_{k+1} = \alpha_x X_k + \alpha_p Q_1 Q_2^T$
+  & Inherits the inner QR's Phase Q3, repeated $K{\approx}6$ times,
+    plus one $Q_2$ AllGather ($n^2$) per iter
+  & Each Halley iter sweeps a $2n\times n$ panel through the cube
+    (twice the rows of the outer panel); the cube side is unchanged,
+    but each iter pays the full Phase Q2--Q3--Q4 cost of an $n\times
+    n$ QR \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Per-variant Phase Q1 schedule, walked through.}
+
+For each variant we trace one panel iteration $k$ on the 2.5D grid
+$(c, P_1)$ with $P_1 = 1$ (the C++ bench's degenerate-2.5D case;
+$P_x = P_y = 1$, $P_z = c$).  Block size $b = b^\star$ from
+\S\ref{sec:A3b}.  Recall the per-processor fast-memory footprint
+inside the cube is $b^2$ for the Gram, $b \cdot n_{\mathrm{tr}}/c$ for
+the local trailing slab, and $m_{\mathrm{loc}} \cdot b$ for the local
+panel slab, all simultaneously resident.
+
+\begin{itemize}[leftmargin=2em, itemsep=0.4em]
+\item \textbf{Path~(s) sCQR3 / CQR2.} Each replica $r \in [0, c)$
+  owns its $m_{\mathrm{loc}} \times b$ slice of the panel.
+  \begin{enumerate}[leftmargin=1.5em, label=\textit{(\arabic*)}]
+    \item Local SYRK: $G_r = A_r^T A_r$  ($b \times b$, $m_{\mathrm{loc}} b^2$ flops).
+    \item Phase Q3: AllReduce-sum $G_r$ across the $c$ replicas
+          ($\le 6 b^2$ words, constant in $P_r$ for the
+          degenerate 2.5D case).
+    \item Replicated POTRF of $G$ on every replica
+          ($\Theta(b^3)$ flops, no comm).
+    \item Local TRSM: $A_r \leftarrow A_r R^{-1}$ ($m_{\mathrm{loc}} b^2$).
+    \item Repeat (1)--(4) for 2 (CQR2) or 3 (sCQR3) iterations.
+  \end{enumerate}
+  X-partition footprint: $G$ ($b^2$), $A_r$ panel ($m_{\mathrm{loc}} b$),
+  POTRF work ($b^2$) --- all in fast memory simultaneously, all proper
+  sub-cubes of the $\sqrt{M}^3$ cube.  Phase Q3 is the only
+  inter-replica step.
+
+\item \textbf{Path~(h) Householder (gather-and-replicate).}
+  \begin{enumerate}[leftmargin=1.5em, label=\textit{(\arabic*)}]
+    \item AllGather panel: each replica sends its
+          $m_{\mathrm{loc}} \times b$ slice; the result is the full
+          $m \times b$ panel replicated on every replica.
+          Bandwidth: $m b / c$ words per replica.
+    \item Replicated cuSolver Dgeqrf on the full panel
+          (per-replica work $\Theta(m b^2)$ flops).
+    \item Replicated cuSolver Dorgqr to materialize the thin
+          $Q$ as an $m \times b$ orthonormal matrix.
+    \item Memcpy2D each replica's local Q rows back into
+          $A_r$ (no inter-replica comm).
+  \end{enumerate}
+  X-partition footprint: full panel ($m b$) sits in fast memory
+  (Hopper's 141\,GB / SM 228\,KB combined budget allows $m b
+  \ll M_\text{global}$ at the sizes considered).  Phase Q3 is the
+  AllGather of the panel ($m b$) --- larger than Path~(s)'s $b^2$ by
+  a factor $m/b$.  This is the lower-order $\log_2 P_r$-style
+  multiplier (TSQR would replace AllGather with $b^2 \log_2 P_r$).
+
+\item \textbf{Path~(g) Givens (gather-and-replicate variant).}
+  \begin{enumerate}[leftmargin=1.5em, label=\textit{(\arabic*)}]
+    \item AllGather panel (same as Path~(h)).
+    \item Replicated Givens panel kernel: for $j = 0..b{-}1$, for
+          $i = m{-}1$ down to $j{+}1$, compute
+          $(c_l, s_l) = (A[i{-}1, j], A[i, j])/r$, apply
+          $G(i{-}1, i; c_l, s_l)$ to rows $(i{-}1, i)$, columns
+          $j..b{-}1$.  Save $(c_l, s_l)$ in a list of length
+          $b(m{-}1)$.
+    \item Replay rotations in reverse order onto $I_m[:, 0{:}b]$ to
+          materialize the explicit thin $Q$ (m × b orthonormal).
+    \item Memcpy2D each replica's local $Q$ rows back.
+  \end{enumerate}
+  X-partition footprint: full panel ($m b$) + rotation list
+  ($2 b m$ words for $(c, s)$ pairs) + $Q$ buffer ($m b$).  All proper
+  sub-cubes of $\sqrt{M}^3$ for reasonable $b$ on H200.  The Givens
+  panel kernel runs as one CUDA block per replica with sequential
+  $(j, i)$ progression; this is the classical column-by-column
+  schedule, which preserves DAAP-proper status at the cost of
+  serial depth $\Theta(b m)$. Tournament-Givens
+  (\S\ref{sec:A1-DAAP-givens}) replaces the $i$-loop with a $\log m$
+  butterfly while keeping the same total flop count, dropping the
+  depth without changing the X-partition footprint.
+
+\item \textbf{Path~(q) QDWH.}
+  For $k = 0, 1, \dots$ until $|\ell_k - 1| < \epsilon$:
+  \begin{enumerate}[leftmargin=1.5em, label=\textit{(\arabic*)}]
+    \item Compute Halley weights $(a_k, b_k, c_k)$ from $\ell_k$
+          (analytic, $\Theta(1)$).
+    \item Build the stacked $S_k$ ($2n \times n$, row-distributed
+          with $m_{\mathrm{st,loc}} = 2 n /c$ rows per replica; top
+          $n/c$ rows are $\sqrt{c_k} X_k$, bottom $n/c$ are identity
+          rows starting at global row $r n /c$).
+    \item Inner 2.5D QR on $S_k$ using Path~(s) CQR2 (or any other
+          inner variant).  This re-enters the full Phase Q1--Q4
+          pipeline on a $2n \times n$ matrix.  The X-partition cube
+          is the same $\sqrt{M}^3$; the inner cube is swept twice as
+          many times in the row direction because there are twice as
+          many rows.
+    \item Extract $Q_1$ (top $n/c$ rows of each replica's local $S_k$
+          after the inner QR), $Q_2$ (bottom $n/c$ rows).
+    \item AllGather $Q_2$ across replicas ($n^2$ words total).
+    \item Each replica forms its $n/c$ rows of $P = Q_1 Q_2^T$ as $c$
+          rank-block GEMMs $(Q_1)_r \cdot Q_2^T$ (each
+          $n/c \times n/c$ from a $n/c \times n$ multiply).
+    \item Element-wise update $X_{k+1} = \alpha_x X_k + \alpha_p P$.
+    \item Update $\ell_{k+1} = \ell_k (a_k + b_k \ell_k^2)/(1 + c_k \ell_k^2)$.
+  \end{enumerate}
+  X-partition footprint: stacked $S_k$ ($2 n^2 / c$ per replica),
+  inner-QR scratch ($b^2$ for $G$, $b \cdot n / c$ for $W$),
+  $Q_2$ AllGather buffer ($n^2$ per replica), $P$
+  ($n^2 / c$), $X_k, X_{k+1}$ ($2 n^2 / c$). All proper sub-cubes of
+  the cube when $n^2 / c \le M$.  Each Halley iter costs roughly
+  $7 \times$ the per-iter cost of a single $n \times n$ Path~(s) QR
+  (the $2n \times n$ stacked QR alone is $\sim 6 \cdot 2 n^3 / 3$
+  flops; the $Q_1 Q_2^T$ assembly adds $\sim n^3$; the rest is
+  $o(n^3)$).
+\end{itemize}
+
+\paragraph{Why Path~(s) is the strictly tighter result for dense QR.}
+At the leading-order bandwidth $Q_{\text{par}} = \Theta(N^3 / (P \sqrt{M}))$
+all four paths agree.  At the sub-leading panel-reduce term, Path~(s)
+pays $\le 6 b^2$ per panel (constant in $P_r$), Path~(h) pays
+$m b$ (gather) or $b^2 \log_2 P_r$ (TSQR), Path~(g) pays the same as
+Path~(h) in the gather variant.  Path~(q) is $K$-fold the cost of
+Path~(s) on the inner QR.  Hence for dense, well-conditioned $A$, the
+ranking from the X-partition framework alone is exactly
+Path~(s) $\prec$ Path~(g) $\approx$ Path~(h) $\prec$ Path~(q), which
+the empirical numbers below confirm.
+
+\paragraph{When the ranking flips.}
+Path~(g) is the choice for sparse / structured / banded $A$, where
+each Givens rotation touches $O(1)$ nonzeros and the panel
+factorization cost drops to $O(b \cdot \text{nnz}(A))$, breaking the
+$m b^2$ Path~(s) lower bound on the panel.  Path~(h) is the choice
+under arbitrary conditioning, since Path~(s) requires
+$\kappa_2(A) \le \mathbf{u}^{-1}/(96(mb + b(b{+}1)))$
+(Fukaya~2018 Thm.~3.4) and CQR2 requires the strictly tighter
+$\kappa_2(A) \le \mathbf{u}^{-1/2}$ (Yamamoto et al.\ 2015).  Path~(q)
+is the choice when one needs $U$ explicitly (polar decomposition, SVD
+intermediate, matrix sign function); for those purposes the
+$K$-fold cost is absorbed by what would otherwise be an SVD-by-QR
+plus extra work.
 
 \subsection*{Empirical validation of the schedule on 4 H200 GPUs}
 \label{sec:empirical}

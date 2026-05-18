@@ -1,17 +1,27 @@
-// Multi-variant C++ benchmark for the 2.5D scheduling from
-// qr_schur_xpartition.tex §A.3 (Path s) and §A.1 (Phase Q5, Q6).
+// Householder + WY 2.5D multi-GPU QR benchmark — Path h of qr_schur_xpartition.tex.
 //
-//   Variants exposed via CLI flags:
-//     --passes=N         3 (sCQR3, default) or 2 (CQR2)
-//     --mp               trailing-update GEMMs in FP32  (Phase Q6 low-prec pass)
-//     --ir=K             after the (possibly MP) factorization, run K rounds
-//                        of "fix Q via 1-pass Cholesky-QR + recompute R" in
-//                        FP64 (Phase Q6 of the tex)
-//     --lookahead        2-stream pipelining of Phase Q1 and Phase Q2
-//                        (Phase Q5 of the tex)
+//   Variants exposed via CLI flags (same set as scqr3_2p5d_variants.cu):
+//     --mp               trailing-update GEMMs in FP32  (Phase Q6 low-prec)
+//     --ir=K             K rounds of post-factorization Cholesky-QR refinement
+//                        (Phase Q6 of the tex)
+//     --la / --lookahead 2-stream pipelining of Phase Q1 (panel) and Phase Q2
+//                        (trailing update)  -- Phase Q5 of the tex.
 //
-//   Processor grid: Px=Py=1, Pz=c (the paper's degenerate-2.5D / pure-replica
-//   case for P_1=1); each rank pins to one GPU and owns m/c rows of A.
+//   Schedule per panel k:
+//     Q1  AllGather A[:, k:k+b] across all ranks  → full m×b panel on every rank
+//         cusolverDnDgeqrf on the replicated panel (parallel-but-redundant)
+//         cusolverDnDorgqr to materialize the thin Q (m×b orthonormal columns)
+//         memcpy2D Q's local rows back into A_local[:, k:k+b]
+//     Q2  W_local = Q_local^T · A_trail_local           (local Dgemm)
+//         AllReduce(W)                                  (NCCL)
+//         A_trail_local -= Q_local · W                  (local Dgemm)
+//
+//   This implements the gather-and-redundant-factor flavor of Path h; the
+//   TSQR/CAQR tournament-reduce flavor is more communication-efficient but is
+//   not implemented here. The gather-form is mathematically equivalent and
+//   keeps the implementation parallel to the Path s (sCQR3) variants.
+//
+//   Processor grid: 1D row partition  m_local = N / c  rows per rank.
 
 #include <cstdio>
 #include <cstdlib>
@@ -44,22 +54,25 @@ __global__ void cast_f2d(const float* f, double* d, size_t n) {
     size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) d[i] = (double)f[i];
 }
-__global__ void trace_b_kernel(const double* G, int ldg, int b, double* out) {
-    __shared__ double sh[1024];
-    int tid = threadIdx.x;
-    double acc = 0.0;
-    for (int j = tid; j < b; j += blockDim.x) acc += G[j + (long long)j * ldg];
-    sh[tid] = acc; __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) { if (tid < s) sh[tid] += sh[tid + s]; __syncthreads(); }
-    if (tid == 0) out[0] = sh[0];
-}
-__global__ void shift_diag_from_trace_kernel(double* G, int ldg, int b, const double* tr, double coef) {
-    int j = blockIdx.x * blockDim.x + threadIdx.x;
-    if (j < b) G[j + (long long)j * ldg] += coef * tr[0];
+
+// Rearrange NCCL AllGather output (rank-block layout, c · m_local · sb doubles)
+// into a single column-major m_total × sb panel.
+//   recv[r * m_local * sb + j * m_local + i_local]  →  full[(r * m_local + i_local) + j * m_total]
+__global__ void rearrange_recv_to_panel(const double* __restrict__ recv,
+                                         double* __restrict__ full,
+                                         int m_local, int sb, int P, int m_total) {
+    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    long long total = (long long)m_total * sb;
+    if (idx >= total) return;
+    int i = (int)(idx % m_total);     // global row
+    int j = (int)(idx / m_total);     // column
+    int r = i / m_local;              // rank
+    int i_local = i - r * m_local;
+    full[idx] = recv[(long long)r * m_local * sb + (long long)j * m_local + i_local];
 }
 
 struct Args {
-    int N = 16000, b = 0, passes = 3, n_ir = 0;
+    int N = 16000, b = 0, n_ir = 0;
     bool mp = false, lookahead = false;
 };
 
@@ -69,12 +82,10 @@ static Args parse_args(int argc, char** argv) {
         std::string s = argv[i];
         if (s.rfind("--N=", 0) == 0) a.N = std::atoi(s.c_str() + 4);
         else if (s.rfind("--b=", 0) == 0) a.b = std::atoi(s.c_str() + 4);
-        else if (s.rfind("--passes=", 0) == 0) a.passes = std::atoi(s.c_str() + 9);
         else if (s.rfind("--ir=", 0) == 0) a.n_ir = std::atoi(s.c_str() + 5);
         else if (s == "--mp") a.mp = true;
         else if (s == "--lookahead" || s == "--la") a.lookahead = true;
         else if (s.size() > 0 && std::isdigit((unsigned char)s[0])) {
-            // positional: first N, second b (back-compat with scqr3_2p5d_bench)
             if (a.N == 16000 && i == 1) a.N = std::atoi(s.c_str());
             else if (a.b == 0 && i == 2) a.b = std::atoi(s.c_str());
         }
@@ -83,14 +94,12 @@ static Args parse_args(int argc, char** argv) {
         if      (a.N <=  4000) a.b = 363;
         else if (a.N <=  8000) a.b = 512;
         else if (a.N <= 16000) a.b = 512;
-        else if (a.N <= 24000) a.b = 512;
         else if (a.N <= 32000) a.b = 512;
         else if (a.N <= 48000) a.b = 1024;
         else if (a.N <= 64000) a.b = 1024;
         else if (a.N <= 96000) a.b = 1536;
         else                   a.b = 2048;
     }
-    if (a.passes < 1 || a.passes > 3) a.passes = 3;
     return a;
 }
 
@@ -106,17 +115,14 @@ int main(int argc, char** argv) {
     int ngpu; CUDA_CHECK(cudaGetDeviceCount(&ngpu));
     CUDA_CHECK(cudaSetDevice(_rank % ngpu));
 
-    // Build variant tag for reporting.
     char tag[160];
-    std::snprintf(tag, sizeof(tag), "passes=%d%s%s%s%s",
-                  A.passes, A.mp?"+MP":"",
-                  A.lookahead?"+LA":"",
-                  A.n_ir>0?"+IR":"",
-                  A.n_ir>0?(std::to_string(A.n_ir)).c_str():"");
+    std::snprintf(tag, sizeof(tag), "householder%s%s%s%s",
+                  A.mp?"+MP":"", A.lookahead?"+LA":"",
+                  A.n_ir>0?"+IR":"", A.n_ir>0?(std::to_string(A.n_ir)).c_str():"");
 
     if (_rank == 0) {
         printf("=================================================================\n");
-        printf(" 2.5D variant   N=%d b=%d c=%d   variant=%s\n", N, b, c, tag);
+        printf(" Householder 2.5D  N=%d b=%d c=%d   variant=%s\n", N, b, c, tag);
         printf("=================================================================\n");
         fflush(stdout);
     }
@@ -134,16 +140,15 @@ int main(int argc, char** argv) {
     CUDA_CHECK(cudaStreamCreate(&s_comm));
     CUDA_CHECK(cudaStreamCreate(&s_la));
     cudaEvent_t e_comp_done, e_ar_done, e_panel_done, e_next_ready;
-    CUDA_CHECK(cudaEventCreateWithFlags(&e_comp_done,   cudaEventDisableTiming));
-    CUDA_CHECK(cudaEventCreateWithFlags(&e_ar_done,     cudaEventDisableTiming));
-    CUDA_CHECK(cudaEventCreateWithFlags(&e_panel_done,  cudaEventDisableTiming));
-    CUDA_CHECK(cudaEventCreateWithFlags(&e_next_ready,  cudaEventDisableTiming));
+    CUDA_CHECK(cudaEventCreateWithFlags(&e_comp_done,  cudaEventDisableTiming));
+    CUDA_CHECK(cudaEventCreateWithFlags(&e_ar_done,    cudaEventDisableTiming));
+    CUDA_CHECK(cudaEventCreateWithFlags(&e_panel_done, cudaEventDisableTiming));
+    CUDA_CHECK(cudaEventCreateWithFlags(&e_next_ready, cudaEventDisableTiming));
 
-    // Handles bound to compute stream by default.
     cublasHandle_t cublas;       CUBLAS_CHECK(cublasCreate(&cublas));       CUBLAS_CHECK(cublasSetStream(cublas, s_comp));
     cusolverDnHandle_t cusolver; CUSOLVER_CHECK(cusolverDnCreate(&cusolver)); CUSOLVER_CHECK(cusolverDnSetStream(cusolver, s_comp));
 
-    // Buffers.
+    // Distributed A (m_local rows × N cols, column-major).
     double* d_A_local = nullptr;
     CUDA_CHECK(cudaMalloc(&d_A_local, (size_t)m_local * N * sizeof(double)));
     {
@@ -157,14 +162,37 @@ int main(int argc, char** argv) {
     CUDA_CHECK(cudaMalloc(&d_A_orig, (size_t)m_local * N * sizeof(double)));
     CUDA_CHECK(cudaMemcpy(d_A_orig, d_A_local, (size_t)m_local * N * sizeof(double), cudaMemcpyDeviceToDevice));
 
-    double* d_G = nullptr;
-    double* d_W = nullptr;
-    double* d_trace = nullptr;
-    CUDA_CHECK(cudaMalloc(&d_G,     (size_t)b * b * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_W,     (size_t)b * N * sizeof(double)));
-    CUDA_CHECK(cudaMalloc(&d_trace, sizeof(double)));
+    // Replicated panel buffers (full m × b column-major).
+    double* d_panel_recv = nullptr;   // c · m_local · b doubles (NCCL AllGather output)
+    double* d_panel_full = nullptr;   // m × b column-major (after rearrangement; also holds Q after orgqr)
+    double* d_tau        = nullptr;
+    int*    d_info       = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_panel_recv, (size_t)m_local * b * (size_t)c * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_panel_full, (size_t)N * b * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_tau,        (size_t)b * sizeof(double)));
+    CUDA_CHECK(cudaMalloc(&d_info,       sizeof(int)));
 
-    // FP32 scratch for MP path.
+    // Trailing-update workspace.
+    double* d_W     = nullptr;
+    double* d_G_ref = nullptr;     // for IR pass (Cholesky-QR refinement)
+    double* d_potrf_work_ref = nullptr;
+    int     potrf_lwork_ref = 0;
+    CUDA_CHECK(cudaMalloc(&d_W,     (size_t)b * N * sizeof(double)));
+    if (A.n_ir > 0) {
+        CUDA_CHECK(cudaMalloc(&d_G_ref, (size_t)b * b * sizeof(double)));
+        CUSOLVER_CHECK(cusolverDnDpotrf_bufferSize(cusolver, CUBLAS_FILL_MODE_UPPER, b, d_G_ref, b, &potrf_lwork_ref));
+        CUDA_CHECK(cudaMalloc(&d_potrf_work_ref, potrf_lwork_ref * sizeof(double)));
+    }
+
+    // Workspace sizes (query for the largest panel we'll use).
+    int lwork_geqrf = 0, lwork_orgqr = 0;
+    CUSOLVER_CHECK(cusolverDnDgeqrf_bufferSize(cusolver, N, b, d_panel_full, N, &lwork_geqrf));
+    CUSOLVER_CHECK(cusolverDnDorgqr_bufferSize(cusolver, N, b, b, d_panel_full, N, d_tau, &lwork_orgqr));
+    int lwork_panel = std::max(lwork_geqrf, lwork_orgqr);
+    double* d_panel_work = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_panel_work, lwork_panel * sizeof(double)));
+
+    // MP scratch (FP32 trailing).
     float *d_A_panel_f=nullptr, *d_A_tr_f=nullptr, *d_W_f=nullptr;
     if (A.mp) {
         CUDA_CHECK(cudaMalloc(&d_A_panel_f, (size_t)m_local * b * sizeof(float)));
@@ -172,66 +200,69 @@ int main(int argc, char** argv) {
         CUDA_CHECK(cudaMalloc(&d_W_f,       (size_t)b * N * sizeof(float)));
     }
 
-    // POTRF workspace.
-    int potrf_lwork = 0;
-    CUSOLVER_CHECK(cusolverDnDpotrf_bufferSize(cusolver, CUBLAS_FILL_MODE_UPPER, b, d_G, b, &potrf_lwork));
-    double* d_potrf_work = nullptr;
-    CUDA_CHECK(cudaMalloc(&d_potrf_work, potrf_lwork * sizeof(double)));
-    int* d_info = nullptr;
-    CUDA_CHECK(cudaMalloc(&d_info, sizeof(int)));
-
     // Look-ahead second-panel scratch.
-    double *d_G2=nullptr, *d_potrf_work2=nullptr;
-    int *d_info2=nullptr;
+    double *d_panel_recv2=nullptr, *d_panel_full2=nullptr, *d_tau2=nullptr, *d_panel_work2=nullptr;
+    int    *d_info2 = nullptr;
     cublasHandle_t cublas_la;
     cusolverDnHandle_t cusolver_la;
     if (A.lookahead) {
-        CUDA_CHECK(cudaMalloc(&d_G2, (size_t)b * b * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_potrf_work2, potrf_lwork * sizeof(double)));
-        CUDA_CHECK(cudaMalloc(&d_info2, sizeof(int)));
-        CUBLAS_CHECK(cublasCreate(&cublas_la));   CUBLAS_CHECK(cublasSetStream(cublas_la, s_la));
+        CUDA_CHECK(cudaMalloc(&d_panel_recv2, (size_t)m_local * b * (size_t)c * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_panel_full2, (size_t)N * b * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_tau2,        (size_t)b * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_panel_work2, lwork_panel * sizeof(double)));
+        CUDA_CHECK(cudaMalloc(&d_info2,       sizeof(int)));
+        CUBLAS_CHECK(cublasCreate(&cublas_la));       CUBLAS_CHECK(cublasSetStream(cublas_la, s_la));
         CUSOLVER_CHECK(cusolverDnCreate(&cusolver_la)); CUSOLVER_CHECK(cusolverDnSetStream(cusolver_la, s_la));
     }
 
     const double one_d=1.0, zero_d=0.0, neg_one_d=-1.0;
     const float  one_f=1.0f, zero_f=0.0f, neg_one_f=-1.0f;
 
-    // Generic Phase Q1 (sCQR3 / CQR2 / CQR1) for one panel on stream s_use,
-    // using handles `cb` (cuBLAS) and `cs` (cuSolver), Gram buffer Gb, info_buf.
-    auto phase_q1 = [&](cudaStream_t s_use, cublasHandle_t cb, cusolverDnHandle_t cs,
-                        double* Gb, double* work, int* info,
-                        int k, int sb, int passes) {
-        double coef = 11.0 * ((double)N * sb + (double)sb * (sb + 1)) * 2.220446049250313e-16;
-        for (int it = 0; it < passes; ++it) {
-            double* d_A_panel = d_A_local + (size_t)k * m_local;
-            CUBLAS_CHECK(cublasDsyrk(cb, CUBLAS_FILL_MODE_UPPER, CUBLAS_OP_T,
-                                      sb, m_local, &one_d, d_A_panel, m_local,
-                                      &zero_d, Gb, b));
-            CUDA_CHECK(cudaEventRecord(e_comp_done, s_use));
-            CUDA_CHECK(cudaStreamWaitEvent(s_comm, e_comp_done, 0));
-            NCCL_CHECK(ncclAllReduce(Gb, Gb, (size_t)b * b, ncclDouble, ncclSum, nccl_comm, s_comm));
-            CUDA_CHECK(cudaEventRecord(e_ar_done, s_comm));
-            CUDA_CHECK(cudaStreamWaitEvent(s_use, e_ar_done, 0));
-            if (it == 0) {
-                trace_b_kernel<<<1, std::min(sb, 1024), 0, s_use>>>(Gb, b, sb, d_trace);
-                shift_diag_from_trace_kernel<<<(sb + 255) / 256, 256, 0, s_use>>>(Gb, b, sb, d_trace, coef);
-            }
-            CUSOLVER_CHECK(cusolverDnDpotrf(cs, CUBLAS_FILL_MODE_UPPER, sb, Gb, b, work, potrf_lwork, info));
-            CUBLAS_CHECK(cublasDtrsm(cb, CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_UPPER, CUBLAS_OP_N, CUBLAS_DIAG_NON_UNIT,
-                                      m_local, sb, &one_d, Gb, b, d_A_panel, m_local));
-        }
+    // Phase Q1 (Householder panel): AllGather → rearrange → geqrf → orgqr → memcpy2D Q back.
+    //   - Uses stream s_use (and s_comm for the AllGather, sync via event)
+    //   - Operates on the supplied scratch buffers (so look-ahead can use a 2nd set)
+    auto phase_q1 = [&](cudaStream_t s_use, cublasHandle_t /*cb*/, cusolverDnHandle_t cs,
+                        double* p_recv, double* p_full, double* tau, double* work, int* info,
+                        int k, int sb) {
+        // 1) AllGather A_local[:, k:k+sb] (m_local × sb column-major, contiguous in d_A_local)
+        //    on s_comm. Synchronize back to s_use afterward.
+        CUDA_CHECK(cudaEventRecord(e_comp_done, s_use));
+        CUDA_CHECK(cudaStreamWaitEvent(s_comm, e_comp_done, 0));
+        NCCL_CHECK(ncclAllGather(d_A_local + (size_t)k * m_local,
+                                 p_recv,
+                                 (size_t)m_local * sb, ncclDouble,
+                                 nccl_comm, s_comm));
+        CUDA_CHECK(cudaEventRecord(e_ar_done, s_comm));
+        CUDA_CHECK(cudaStreamWaitEvent(s_use, e_ar_done, 0));
+
+        // 2) Rearrange rank-block → column-major m × sb panel.
+        long long total = (long long)N * sb;
+        int threads = 256;
+        long long blocks = (total + threads - 1) / threads;
+        rearrange_recv_to_panel<<<(unsigned)blocks, threads, 0, s_use>>>(p_recv, p_full, m_local, sb, c, N);
+
+        // 3) cuSolver dgeqrf on m × sb panel (replicated on every rank).
+        CUSOLVER_CHECK(cusolverDnDgeqrf(cs, N, sb, p_full, N, tau, work, lwork_panel, info));
+
+        // 4) cuSolver dorgqr → Q (m × sb orthonormal) in place.
+        CUSOLVER_CHECK(cusolverDnDorgqr(cs, N, sb, sb, p_full, N, tau, work, lwork_panel, info));
+
+        // 5) memcpy2D rank's Q rows back into A_local[:, k:k+sb].
+        //    src: p_full + rank * m_local  (column-major, ld = N)
+        //    dst: d_A_local + k * m_local  (column-major, ld = m_local)
+        CUDA_CHECK(cudaMemcpy2DAsync(d_A_local + (size_t)k * m_local, (size_t)m_local * sizeof(double),
+                                     p_full + (size_t)_rank * m_local, (size_t)N * sizeof(double),
+                                     (size_t)m_local * sizeof(double), (size_t)sb,
+                                     cudaMemcpyDeviceToDevice, s_use));
     };
 
-    // Phase Q2 trailing update on A_tr_local = A_local[:, k+sb : k+sb+ncols],
-    // using stream s_use. FP64 by default; if mp=true, casts to FP32 around
-    // the two cuBLAS GEMMs.
+    // Phase Q2 trailing update — identical to the sCQR3 variants bench.
     auto phase_q2 = [&](cudaStream_t s_use, cublasHandle_t cb,
                         int k, int sb, int col_start, int ncols, bool mp) {
         double* d_A_panel = d_A_local + (size_t)k * m_local;
         double* d_A_tr    = d_A_local + (size_t)col_start * m_local;
 
         if (!mp) {
-            // W = A_panel^T · A_tr  (FP64 GEMM, sb × ncols)
             CUBLAS_CHECK(cublasDgemm(cb, CUBLAS_OP_T, CUBLAS_OP_N,
                                       sb, ncols, m_local,
                                       &one_d, d_A_panel, m_local,
@@ -242,22 +273,16 @@ int main(int argc, char** argv) {
             NCCL_CHECK(ncclAllReduce(d_W, d_W, (size_t)sb * ncols, ncclDouble, ncclSum, nccl_comm, s_comm));
             CUDA_CHECK(cudaEventRecord(e_ar_done, s_comm));
             CUDA_CHECK(cudaStreamWaitEvent(s_use, e_ar_done, 0));
-            // A_tr -= A_panel · W
             CUBLAS_CHECK(cublasDgemm(cb, CUBLAS_OP_N, CUBLAS_OP_N,
                                       m_local, ncols, sb,
                                       &neg_one_d, d_A_panel, m_local,
                                                   d_W, b,
                                       &one_d, d_A_tr, m_local));
         } else {
-            // Cast A_panel and A_tr to FP32 on the active stream.
             size_t np = (size_t)m_local * sb;
             size_t nt = (size_t)m_local * ncols;
             cast_d2f<<<(np + 255)/256, 256, 0, s_use>>>(d_A_panel, d_A_panel_f, np);
             cast_d2f<<<(nt + 255)/256, 256, 0, s_use>>>(d_A_tr,    d_A_tr_f,    nt);
-            // W_f = A_panel_f^T · A_tr_f  (FP32 GEMM; cuBLAS uses TF32 TC if
-            // CUBLAS_TENSOR_OP_MATH or compute type set; here single-precision
-            // ALU path. To use TF32 explicitly: cublasSgemmEx with computeType
-            // CUBLAS_COMPUTE_32F_FAST_TF32.)
             CUBLAS_CHECK(cublasSgemm(cb, CUBLAS_OP_T, CUBLAS_OP_N,
                                       sb, ncols, m_local,
                                       &one_f, d_A_panel_f, m_local,
@@ -268,45 +293,33 @@ int main(int argc, char** argv) {
             NCCL_CHECK(ncclAllReduce(d_W_f, d_W_f, (size_t)sb * ncols, ncclFloat, ncclSum, nccl_comm, s_comm));
             CUDA_CHECK(cudaEventRecord(e_ar_done, s_comm));
             CUDA_CHECK(cudaStreamWaitEvent(s_use, e_ar_done, 0));
-            // A_tr_f -= A_panel_f · W_f  (FP32)
             CUBLAS_CHECK(cublasSgemm(cb, CUBLAS_OP_N, CUBLAS_OP_N,
                                       m_local, ncols, sb,
                                       &neg_one_f, d_A_panel_f, m_local,
                                                   d_W_f, b,
                                       &one_f, d_A_tr_f, m_local));
-            // Cast A_tr_f back to FP64.
             cast_f2d<<<(nt + 255)/256, 256, 0, s_use>>>(d_A_tr_f, d_A_tr, nt);
-            // Also cast W_f back so the upper R block is FP64 (we ignore W here).
         }
     };
 
-    // ────────────────────────────────────────────────────────────────────
-    // Phase Q6 (Iterative Refinement) — Carson–Higham 2018 style.
-    // Re-orthogonalize Q via one Cholesky-QR pass in FP64, then recompute R
-    // from A_orig: G = Q^T Q (multi-GPU via NCCL Allreduce), G = U^T U,
-    // Q := Q U^{-1}. We don't need the explicit R here (the bench measures
-    // factor wall-clock + ortho); a real consumer would also recompute
-    // R = Q^T A_orig with one FP64 GEMM. Cost ≈ one extra Cholesky-QR pass.
+    // Phase Q6 (Iterative Refinement) — same as scqr3 variants: re-orthogonalize
+    // each diagonal-block panel of Q via one Cholesky-QR pass.
     auto refine_one = [&]() {
-        // Q is in d_A_local. G = Q^T Q (full N×N — costly, but the IR pass is
-        // dominated by the GEMM, which is what we pay to recover precision).
-        // For practicality we refine only the b×b leading diagonal stripes
-        // panel-by-panel.
         int k = 0;
         while (k < N) {
             int sb = std::min(b, N - k);
             double* d_A_panel = d_A_local + (size_t)k * m_local;
             CUBLAS_CHECK(cublasDsyrk(cublas, CUBLAS_FILL_MODE_UPPER, CUBLAS_OP_T,
                                       sb, m_local, &one_d, d_A_panel, m_local,
-                                      &zero_d, d_G, b));
+                                      &zero_d, d_G_ref, b));
             CUDA_CHECK(cudaEventRecord(e_comp_done, s_comp));
             CUDA_CHECK(cudaStreamWaitEvent(s_comm, e_comp_done, 0));
-            NCCL_CHECK(ncclAllReduce(d_G, d_G, (size_t)b * b, ncclDouble, ncclSum, nccl_comm, s_comm));
+            NCCL_CHECK(ncclAllReduce(d_G_ref, d_G_ref, (size_t)b * b, ncclDouble, ncclSum, nccl_comm, s_comm));
             CUDA_CHECK(cudaEventRecord(e_ar_done, s_comm));
             CUDA_CHECK(cudaStreamWaitEvent(s_comp, e_ar_done, 0));
-            CUSOLVER_CHECK(cusolverDnDpotrf(cusolver, CUBLAS_FILL_MODE_UPPER, sb, d_G, b, d_potrf_work, potrf_lwork, d_info));
+            CUSOLVER_CHECK(cusolverDnDpotrf(cusolver, CUBLAS_FILL_MODE_UPPER, sb, d_G_ref, b, d_potrf_work_ref, potrf_lwork_ref, d_info));
             CUBLAS_CHECK(cublasDtrsm(cublas, CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_UPPER, CUBLAS_OP_N, CUBLAS_DIAG_NON_UNIT,
-                                      m_local, sb, &one_d, d_G, b, d_A_panel, m_local));
+                                      m_local, sb, &one_d, d_G_ref, b, d_A_panel, m_local));
             k += sb;
         }
     };
@@ -314,25 +327,22 @@ int main(int argc, char** argv) {
     auto run_qr = [&]() {
         int k = 0;
         if (!A.lookahead) {
-            // ── Vanilla schedule: Phase Q1 then Phase Q2 per panel ─────────
+            // Vanilla schedule: Phase Q1 then Phase Q2 per panel.
             while (k < N) {
                 int sb = std::min(b, N - k);
                 int n_tr = N - (k + sb);
-                phase_q1(s_comp, cublas, cusolver, d_G, d_potrf_work, d_info, k, sb, A.passes);
+                phase_q1(s_comp, cublas, cusolver,
+                         d_panel_recv, d_panel_full, d_tau, d_panel_work, d_info,
+                         k, sb);
                 if (n_tr > 0) phase_q2(s_comp, cublas, k, sb, k + sb, n_tr, A.mp);
                 k += sb;
             }
         } else {
-            // ── Look-ahead schedule (paper Phase Q5) ───────────────────────
-            // Step structure:
-            //   1) Phase Q1(k) on s_comp.
-            //   2) Phase Q2 of A_next = cols [k+sb, k+2sb) on s_comp.
-            //   3) Event: s_la waits, then runs Phase Q1(k+1) on s_la.
-            //   4) Phase Q2 of A_rest = cols [k+2sb, N) on s_comp, overlapped
-            //      with Phase Q1(k+1) on s_la.
-            //   5) Sync: s_comp waits for s_la before next iteration.
+            // Look-ahead (Phase Q5): pipeline panel(k+1) with trailing-update(k).
             int sb = std::min(b, N - k);
-            phase_q1(s_comp, cublas, cusolver, d_G, d_potrf_work, d_info, k, sb, A.passes);
+            phase_q1(s_comp, cublas, cusolver,
+                     d_panel_recv, d_panel_full, d_tau, d_panel_work, d_info,
+                     k, sb);
             CUDA_CHECK(cudaEventRecord(e_panel_done, s_comp));
 
             while (k < N) {
@@ -345,31 +355,33 @@ int main(int argc, char** argv) {
                     // Q2 on A_next on s_comp.
                     phase_q2(s_comp, cublas, k, sb, next_k, next_sb, A.mp);
                     CUDA_CHECK(cudaEventRecord(e_next_ready, s_comp));
-                    // Phase Q1(k+1) on s_la, waiting for e_next_ready.
+                    // Q1(k+1) on s_la, waiting for e_next_ready.
                     CUDA_CHECK(cudaStreamWaitEvent(s_la, e_next_ready, 0));
-                    phase_q1(s_la, cublas_la, cusolver_la, d_G2, d_potrf_work2, d_info2, next_k, next_sb, A.passes);
+                    phase_q1(s_la, cublas_la, cusolver_la,
+                             d_panel_recv2, d_panel_full2, d_tau2, d_panel_work2, d_info2,
+                             next_k, next_sb);
                     CUDA_CHECK(cudaEventRecord(e_panel_done, s_la));
                 }
                 if (n_rest > 0) {
                     // Q2 on A_rest on s_comp, concurrent with s_la's Q1.
                     phase_q2(s_comp, cublas, k, sb, rest_start, n_rest, A.mp);
                 }
-                // s_comp must wait for s_la to finish Q1(k+1) before the next step.
+                // s_comp must wait for s_la to finish Q1(k+1) before next step.
                 CUDA_CHECK(cudaStreamWaitEvent(s_comp, e_panel_done, 0));
                 k = next_k;
                 sb = next_sb;
                 if (sb == 0) break;
             }
         }
-        // Iterative refinement
+        // Iterative refinement (Phase Q6)
         for (int j = 0; j < A.n_ir; ++j) refine_one();
     };
 
-    // Save A_orig already done above. Warmup + validate + bench.
     auto reset_A = [&]() {
         CUDA_CHECK(cudaMemcpy(d_A_local, d_A_orig, (size_t)m_local * N * sizeof(double), cudaMemcpyDeviceToDevice));
     };
 
+    // Warmup
     for (int i = 0; i < 2; ++i) { reset_A(); run_qr(); }
     CUDA_CHECK(cudaStreamSynchronize(s_comp));
     CUDA_CHECK(cudaStreamSynchronize(s_comm));
@@ -422,11 +434,14 @@ int main(int argc, char** argv) {
         fflush(stdout);
     }
 
-    cudaFree(d_A_orig); cudaFree(d_A_local); cudaFree(d_G); cudaFree(d_W); cudaFree(d_trace);
-    cudaFree(d_potrf_work); cudaFree(d_info);
+    cudaFree(d_A_orig); cudaFree(d_A_local);
+    cudaFree(d_panel_recv); cudaFree(d_panel_full); cudaFree(d_tau); cudaFree(d_info);
+    cudaFree(d_panel_work); cudaFree(d_W);
+    if (A.n_ir > 0) { cudaFree(d_G_ref); cudaFree(d_potrf_work_ref); }
     if (A.mp) { cudaFree(d_A_panel_f); cudaFree(d_A_tr_f); cudaFree(d_W_f); }
     if (A.lookahead) {
-        cudaFree(d_G2); cudaFree(d_potrf_work2); cudaFree(d_info2);
+        cudaFree(d_panel_recv2); cudaFree(d_panel_full2); cudaFree(d_tau2);
+        cudaFree(d_panel_work2); cudaFree(d_info2);
         cublasDestroy(cublas_la); cusolverDnDestroy(cusolver_la);
     }
     cublasDestroy(cublas); cusolverDnDestroy(cusolver);
