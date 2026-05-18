@@ -722,25 +722,24 @@ int main(int argc, char** argv) {
         return rc;
     }
 
-    // ── Full-2.5D Pz>1 dispatch (tournament-Givens panel) ──────────────────
+    // ── Full-2.5D Pz>1 dispatch (tournament-Givens panel; all 4 matrix modes) ──
     {
         bool grid_cli = (A.px > 0 && A.py > 0 && A.pz > 0);
         Full25DGrid G_pre;
         if (grid_cli) {
             G_pre = resolve_full25d_grid(P, _rank, A.N, A.px, A.py, A.pz, A.M_fp64_words);
-        } else if (A.M_fp64_words > 0 && A.matrix == MatrixMode::FP64) {
+        } else if (A.M_fp64_words > 0) {
             G_pre = resolve_full25d_grid(P, _rank, A.N, 0, 0, 0, A.M_fp64_words);
         } else {
             G_pre.Px = 1; G_pre.Py = P; G_pre.Pz = 1;
         }
         bool use_full25d = (G_pre.Pz > 1 || (G_pre.Px > 1 && G_pre.Py > 1));
-        if (use_full25d && A.matrix == MatrixMode::FP64) {
+        if (use_full25d) {
             if (A.b == 0 && A.M_fp64_words > 0) {
                 int bb = default_block_b(A.M_fp64_words, (std::int64_t)A.N, G_pre.Px, G_pre.Py, G_pre.Pz);
                 if (bb > 0) A.b = bb;
             }
             if (A.b == 0) {
-                // Givens default b ladder.
                 if      (A.N <=  4000) A.b = 64;
                 else if (A.N <=  8000) A.b = 96;
                 else if (A.N <= 16000) A.b = 128;
@@ -750,8 +749,28 @@ int main(int argc, char** argv) {
             A.px = G_pre.Px; A.py = G_pre.Py; A.pz = G_pre.Pz;
             Full25DGrid G = resolve_full25d_grid(P, _rank, A.N, A.px, A.py, A.pz, A.M_fp64_words);
             Full25DSubcomms S = build_full25d_subcomms(G);
-            if (_rank == 0) print_full25d_grid(G, "givens_full25d", A.M_fp64_words, A.b);
-            int rc = run_givens_full25d_fp64(A, G, S);
+            const bool use_mp_trail   = nextla_is_mp_trail_matrix(A.matrix);
+            const bool use_tf32_trail = nextla_requests_tf32_matrix(A.matrix);
+#if !defined(CUBLAS_COMPUTE_32F_FAST_TF32)
+            if (use_tf32_trail) {
+                if (_rank == 0) fprintf(stderr,
+                    "givens_full25d: --matrix=fp64mp_tf32 requires CUDA 11+ cuBLAS TF32.\n");
+                MPI_Abort(MPI_COMM_WORLD, 91);
+            }
+#endif
+            if (_rank == 0) {
+                const char* tag = (A.matrix == MatrixMode::FP32_FULL) ? "givens_full25d/fp32full"
+                                 : (A.matrix == MatrixMode::FP64_MP_TF32) ? "givens_full25d/fp64mp_tf32"
+                                 : (A.matrix == MatrixMode::FP64_MP) ? "givens_full25d/fp64mp"
+                                 : "givens_full25d/fp64";
+                print_full25d_grid(G, tag, A.M_fp64_words, A.b);
+            }
+            int rc;
+            if (A.matrix == MatrixMode::FP32_FULL) {
+                rc = run_givens_full25d_fp32(A, G, S);
+            } else {
+                rc = run_givens_full25d_fp64(A, G, S, use_mp_trail, use_tf32_trail);
+            }
             destroy_full25d_subcomms(S);
             MPI_Finalize();
             return rc;

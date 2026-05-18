@@ -25,6 +25,16 @@
 #include "full25d_grid.hpp"
 #include "full25d_kernels.cuh"
 #include "bench_vendor_metrics.hpp"
+#include "nextla_mp_trail.hpp"
+
+__global__ static void qq_f25d_d2f(const double* d, float* f, size_t n) {
+    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) f[i] = (float)d[i];
+}
+__global__ static void qq_f25d_f2d(const float* f, double* d, size_t n) {
+    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) d[i] = (double)f[i];
+}
 
 __global__ static void qdwh_f25d_fill_stacked_kernel(double* __restrict__ S,
                                                        const double* __restrict__ Xk,
@@ -61,7 +71,9 @@ __global__ static void qdwh_f25d_update_X_kernel(double* __restrict__ Xnew,
 
 static int run_qdwh_full25d_fp64(const Args& A_args,
                                    const Full25DGrid& G,
-                                   const Full25DSubcomms& S_subc) {
+                                   const Full25DSubcomms& S_subc,
+                                   bool use_mp_trail = false,
+                                   bool use_tf32_trail = false) {
     int N = A_args.N, b = A_args.b;
     int m_loc = G.m_loc, n_loc = G.n_loc;
     int Px = G.Px, Py = G.Py, Pz = G.Pz;
@@ -120,6 +132,21 @@ static int run_qdwh_full25d_fp64(const Args& A_args,
     CUDA_CHECK(cudaMalloc(&d_Q1_recv, (size_t)m_loc * n_loc * (size_t)row_size * sizeof(double)));
     CUDA_CHECK(cudaMalloc(&d_P,       (size_t)m_loc * n_loc * sizeof(double)));
 
+    // MP trailing scratch: float copies of Q1/Q2 plus float W; the inner QR
+    // SYRK/POTRF/TRSM stays FP64 (panel precision invariant), but the
+    // trailing GEMMs run in FP32 (with TF32 compute if requested).
+    float *d_panel_bcast_f = nullptr, *d_S_trail_f = nullptr, *d_W_f = nullptr;
+    if (use_mp_trail) {
+        CUDA_CHECK(cudaMalloc(&d_panel_bcast_f, (size_t)m_st_loc * b * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_S_trail_f,     (size_t)m_st_loc * n_loc * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&d_W_f,           (size_t)b * n_loc * sizeof(float)));
+        if (use_tf32_trail) {
+#if defined(CUBLAS_COMPUTE_32F_FAST_TF32)
+            CUBLAS_CHECK(cublasSetMathMode(cublas, CUBLAS_TF32_TENSOR_OP_MATH));
+#endif
+        }
+    }
+
     const double one_d = 1.0, zero_d = 0.0, neg_one_d = -1.0;
 
     auto sb_clipped = [&](int k) -> int {
@@ -161,6 +188,7 @@ static int run_qdwh_full25d_fp64(const Args& A_args,
         CUDA_CHECK(cudaStreamWaitEvent(s_comp, e_ar_done, 0));
     };
 
+    const float one_f = 1.f, zero_f = 0.f, neg_one_f = -1.f;
     // Inner Phase Q2 trailing on stacked S.
     auto inner_q2 = [&](int k, int sb) {
         int my_col_start_global = my_py * n_loc;
@@ -170,20 +198,41 @@ static int run_qdwh_full25d_fp64(const Args& A_args,
         int ncols = local_end - local_start;
         if (ncols <= 0) return;
         double* d_S_trail = d_S + (size_t)local_start * m_st_loc;
-        CUBLAS_CHECK(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N,
-                                  sb, ncols, m_st_loc,
-                                  &one_d, d_panel_bcast, m_st_loc, d_S_trail, m_st_loc,
-                                  &zero_d, d_W, b));
-        CUDA_CHECK(cudaEventRecord(e_comp_done, s_comp));
-        CUDA_CHECK(cudaStreamWaitEvent(s_comm, e_comp_done, 0));
-        FULL25D_NCCL_CHECK(ncclAllReduce(d_W, d_W, (size_t)sb * ncols, ncclDouble, ncclSum,
-                                          S_subc.nccl_col, s_comm));
-        CUDA_CHECK(cudaEventRecord(e_ar_done, s_comm));
-        CUDA_CHECK(cudaStreamWaitEvent(s_comp, e_ar_done, 0));
-        CUBLAS_CHECK(cublasDgemm(cublas, CUBLAS_OP_N, CUBLAS_OP_N,
-                                  m_st_loc, ncols, sb,
-                                  &neg_one_d, d_panel_bcast, m_st_loc, d_W, b,
-                                  &one_d, d_S_trail, m_st_loc));
+        if (!use_mp_trail) {
+            CUBLAS_CHECK(cublasDgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+                                      sb, ncols, m_st_loc,
+                                      &one_d, d_panel_bcast, m_st_loc, d_S_trail, m_st_loc,
+                                      &zero_d, d_W, b));
+            CUDA_CHECK(cudaEventRecord(e_comp_done, s_comp));
+            CUDA_CHECK(cudaStreamWaitEvent(s_comm, e_comp_done, 0));
+            FULL25D_NCCL_CHECK(ncclAllReduce(d_W, d_W, (size_t)sb * ncols, ncclDouble, ncclSum,
+                                              S_subc.nccl_col, s_comm));
+            CUDA_CHECK(cudaEventRecord(e_ar_done, s_comm));
+            CUDA_CHECK(cudaStreamWaitEvent(s_comp, e_ar_done, 0));
+            CUBLAS_CHECK(cublasDgemm(cublas, CUBLAS_OP_N, CUBLAS_OP_N,
+                                      m_st_loc, ncols, sb,
+                                      &neg_one_d, d_panel_bcast, m_st_loc, d_W, b,
+                                      &one_d, d_S_trail, m_st_loc));
+        } else {
+            size_t np = (size_t)m_st_loc * sb, nt = (size_t)m_st_loc * ncols;
+            qq_f25d_d2f<<<(np + 255)/256, 256, 0, s_comp>>>(d_panel_bcast, d_panel_bcast_f, np);
+            qq_f25d_d2f<<<(nt + 255)/256, 256, 0, s_comp>>>(d_S_trail, d_S_trail_f, nt);
+            CUBLAS_CHECK(cublasSgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+                                      sb, ncols, m_st_loc,
+                                      &one_f, d_panel_bcast_f, m_st_loc, d_S_trail_f, m_st_loc,
+                                      &zero_f, d_W_f, b));
+            CUDA_CHECK(cudaEventRecord(e_comp_done, s_comp));
+            CUDA_CHECK(cudaStreamWaitEvent(s_comm, e_comp_done, 0));
+            FULL25D_NCCL_CHECK(ncclAllReduce(d_W_f, d_W_f, (size_t)sb * ncols, ncclFloat, ncclSum,
+                                              S_subc.nccl_col, s_comm));
+            CUDA_CHECK(cudaEventRecord(e_ar_done, s_comm));
+            CUDA_CHECK(cudaStreamWaitEvent(s_comp, e_ar_done, 0));
+            CUBLAS_CHECK(cublasSgemm(cublas, CUBLAS_OP_N, CUBLAS_OP_N,
+                                      m_st_loc, ncols, sb,
+                                      &neg_one_f, d_panel_bcast_f, m_st_loc, d_W_f, b,
+                                      &one_f, d_S_trail_f, m_st_loc));
+            qq_f25d_f2d<<<(nt + 255)/256, 256, 0, s_comp>>>(d_S_trail_f, d_S_trail, nt);
+        }
     };
 
     auto inner_qr = [&]() {
@@ -438,6 +487,337 @@ static int run_qdwh_full25d_fp64(const Args& A_args,
         printf("  qdwh_fp64_p25d_it=%d  N=%d b=%d grid=[%d,%d,%d]  tmin=%9.2f ms  tmed=%9.2f ms\n",
                iters, N, b, Px, Py, Pz, times[0], tmed);
         printf("METRICS bench=qdwh_full25d matrix=fp64 layout=full25d N=%d b=%d Px=%d Py=%d Pz=%d passes=%d ours_ms=%.4f\n",
+               N, b, Px, Py, Pz, iters, tmed);
+        fflush(stdout);
+    }
+
+    cudaFree(d_A); cudaFree(d_X); cudaFree(d_Xnew);
+    cudaFree(d_S); cudaFree(d_G); cudaFree(d_W); cudaFree(d_panel_bcast);
+    cudaFree(d_potrf_work); cudaFree(d_info);
+    cudaFree(d_Q2_recv); cudaFree(d_Q1_recv); cudaFree(d_P);
+    if (use_mp_trail) { cudaFree(d_panel_bcast_f); cudaFree(d_S_trail_f); cudaFree(d_W_f); }
+    cublasDestroy(cublas); cusolverDnDestroy(cusolver);
+    cudaStreamDestroy(s_comp); cudaStreamDestroy(s_comm);
+    cudaEventDestroy(e_comp_done); cudaEventDestroy(e_ar_done);
+    return 0;
+}
+
+// Float versions of the QDWH helper kernels.
+__global__ static void qq_f25d_fill_stacked_f(float* __restrict__ S,
+                                                const float* __restrict__ Xk,
+                                                int m_loc, int n_loc,
+                                                int my_row_in_col_group,
+                                                int my_py, int /*Py*/, float scale_X) {
+    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    long long total = (long long)2 * m_loc * n_loc;
+    if (idx >= total) return;
+    int i = (int)(idx % (2 * m_loc));
+    int j = (int)(idx / (2 * m_loc));
+    if (i < m_loc) {
+        S[idx] = scale_X * Xk[i + (long long)j * m_loc];
+    } else {
+        int row_in_I = my_row_in_col_group * m_loc + (i - m_loc);
+        int col_in_I = my_py * n_loc + j;
+        S[idx] = (row_in_I == col_in_I) ? 1.f : 0.f;
+    }
+}
+__global__ static void qq_f25d_update_X_f(float* __restrict__ Xnew,
+                                           const float* __restrict__ Xk,
+                                           const float* __restrict__ P,
+                                           int m_loc, int n_loc,
+                                           float alpha_x, float alpha_p) {
+    long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    long long total = (long long)m_loc * n_loc;
+    if (idx >= total) return;
+    Xnew[idx] = alpha_x * Xk[idx] + alpha_p * P[idx];
+}
+
+// FP32-full Path-q full-2.5D Halley iteration.  Same algorithmic structure
+// as the FP64 runner but every storage and every BLAS call is single
+// precision.  As with the FP64 variant this requires m_loc == n_loc.
+static int run_qdwh_full25d_fp32(const Args& A_args,
+                                   const Full25DGrid& G,
+                                   const Full25DSubcomms& S_subc) {
+    int N = A_args.N, b = A_args.b;
+    int m_loc = G.m_loc, n_loc = G.n_loc;
+    int Px = G.Px, Py = G.Py, Pz = G.Pz;
+    int my_py = G.my_py;
+    int col_size = S_subc.col_size;
+    int row_size = S_subc.row_size;
+    int m_st_loc = 2 * m_loc;
+
+    cudaStream_t s_comp, s_comm;
+    CUDA_CHECK(cudaStreamCreate(&s_comp));
+    CUDA_CHECK(cudaStreamCreate(&s_comm));
+    cudaEvent_t e_comp_done, e_ar_done;
+    CUDA_CHECK(cudaEventCreateWithFlags(&e_comp_done, cudaEventDisableTiming));
+    CUDA_CHECK(cudaEventCreateWithFlags(&e_ar_done,   cudaEventDisableTiming));
+    cublasHandle_t cublas; CUBLAS_CHECK(cublasCreate(&cublas));
+    CUBLAS_CHECK(cublasSetStream(cublas, s_comp));
+    cusolverDnHandle_t cusolver; CUSOLVER_CHECK(cusolverDnCreate(&cusolver));
+    CUSOLVER_CHECK(cusolverDnSetStream(cusolver, s_comp));
+
+    float *d_A = nullptr, *d_X = nullptr, *d_Xnew = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_A,    (size_t)m_loc * n_loc * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_X,    (size_t)m_loc * n_loc * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_Xnew, (size_t)m_loc * n_loc * sizeof(float)));
+    {
+        std::vector<float> host((size_t)m_loc * n_loc);
+        std::mt19937_64 rng(7 + _rank);
+        std::normal_distribution<float> nrm(0.f, 1.f);
+        for (auto& v : host) v = nrm(rng);
+        CUDA_CHECK(cudaMemcpy(d_A, host.data(), host.size() * sizeof(float), cudaMemcpyHostToDevice));
+    }
+
+    float* d_S = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_S, (size_t)m_st_loc * n_loc * sizeof(float)));
+    float *d_G = nullptr, *d_W = nullptr, *d_panel_bcast = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_G,           (size_t)b * b * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_W,           (size_t)b * n_loc * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_panel_bcast, (size_t)m_st_loc * b * sizeof(float)));
+    int potrf_lwork = 0;
+    CUSOLVER_CHECK(cusolverDnSpotrf_bufferSize(cusolver, CUBLAS_FILL_MODE_UPPER, b, d_G, b, &potrf_lwork));
+    float* d_potrf_work = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_potrf_work, (size_t)potrf_lwork * sizeof(float)));
+    int* d_info = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_info, sizeof(int)));
+    float *d_Q2_recv = nullptr, *d_Q1_recv = nullptr, *d_P = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_Q2_recv, (size_t)m_loc * n_loc * (size_t)col_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_Q1_recv, (size_t)m_loc * n_loc * (size_t)row_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_P,       (size_t)m_loc * n_loc * sizeof(float)));
+
+    const float one_f = 1.f, zero_f = 0.f, neg_one_f = -1.f;
+    auto sb_clipped = [&](int k) -> int { return sb_clipped_full25d(k, b, N, n_loc); };
+
+    auto inner_q1 = [&](int k, int sb) {
+        int py_panel = k / n_loc;
+        int local_k  = k - py_panel * n_loc;
+        if (my_py == py_panel) {
+            float* S_panel = d_S + (size_t)local_k * m_st_loc;
+            for (int it = 0; it < 2; ++it) {
+                CUBLAS_CHECK(cublasSsyrk(cublas, CUBLAS_FILL_MODE_UPPER, CUBLAS_OP_T,
+                                          sb, m_st_loc, &one_f, S_panel, m_st_loc,
+                                          &zero_f, d_G, b));
+                CUDA_CHECK(cudaEventRecord(e_comp_done, s_comp));
+                CUDA_CHECK(cudaStreamWaitEvent(s_comm, e_comp_done, 0));
+                FULL25D_NCCL_CHECK(ncclAllReduce(d_G, d_G, (size_t)b * b, ncclFloat, ncclSum,
+                                                  S_subc.nccl_col, s_comm));
+                CUDA_CHECK(cudaEventRecord(e_ar_done, s_comm));
+                CUDA_CHECK(cudaStreamWaitEvent(s_comp, e_ar_done, 0));
+                CUSOLVER_CHECK(cusolverDnSpotrf(cusolver, CUBLAS_FILL_MODE_UPPER, sb, d_G, b,
+                                                  d_potrf_work, potrf_lwork, d_info));
+                CUBLAS_CHECK(cublasStrsm(cublas, CUBLAS_SIDE_RIGHT, CUBLAS_FILL_MODE_UPPER,
+                                          CUBLAS_OP_N, CUBLAS_DIAG_NON_UNIT,
+                                          m_st_loc, sb, &one_f, d_G, b, S_panel, m_st_loc));
+            }
+            CUDA_CHECK(cudaMemcpyAsync(d_panel_bcast, S_panel,
+                                        (size_t)m_st_loc * sb * sizeof(float),
+                                        cudaMemcpyDeviceToDevice, s_comp));
+        }
+        CUDA_CHECK(cudaEventRecord(e_comp_done, s_comp));
+        CUDA_CHECK(cudaStreamWaitEvent(s_comm, e_comp_done, 0));
+        FULL25D_NCCL_CHECK(ncclBroadcast(d_panel_bcast, d_panel_bcast,
+                                          (size_t)m_st_loc * sb, ncclFloat,
+                                          py_panel, S_subc.nccl_row, s_comm));
+        CUDA_CHECK(cudaEventRecord(e_ar_done, s_comm));
+        CUDA_CHECK(cudaStreamWaitEvent(s_comp, e_ar_done, 0));
+    };
+
+    auto inner_q2 = [&](int k, int sb) {
+        int my_col_start_global = my_py * n_loc;
+        int trail_global_start  = k + sb;
+        int local_start = std::max(0, trail_global_start - my_col_start_global);
+        int local_end   = n_loc;
+        int ncols = local_end - local_start;
+        if (ncols <= 0) return;
+        float* d_S_trail = d_S + (size_t)local_start * m_st_loc;
+        CUBLAS_CHECK(cublasSgemm(cublas, CUBLAS_OP_T, CUBLAS_OP_N,
+                                  sb, ncols, m_st_loc,
+                                  &one_f, d_panel_bcast, m_st_loc, d_S_trail, m_st_loc,
+                                  &zero_f, d_W, b));
+        CUDA_CHECK(cudaEventRecord(e_comp_done, s_comp));
+        CUDA_CHECK(cudaStreamWaitEvent(s_comm, e_comp_done, 0));
+        FULL25D_NCCL_CHECK(ncclAllReduce(d_W, d_W, (size_t)sb * ncols, ncclFloat, ncclSum,
+                                          S_subc.nccl_col, s_comm));
+        CUDA_CHECK(cudaEventRecord(e_ar_done, s_comm));
+        CUDA_CHECK(cudaStreamWaitEvent(s_comp, e_ar_done, 0));
+        CUBLAS_CHECK(cublasSgemm(cublas, CUBLAS_OP_N, CUBLAS_OP_N,
+                                  m_st_loc, ncols, sb,
+                                  &neg_one_f, d_panel_bcast, m_st_loc, d_W, b,
+                                  &one_f, d_S_trail, m_st_loc));
+    };
+
+    auto inner_qr = [&]() {
+        int k = 0;
+        while (k < N) {
+            int sb = sb_clipped(k);
+            inner_q1(k, sb);
+            if (k + sb < N) inner_q2(k, sb);
+            k += sb;
+        }
+    };
+
+    int iters = A_args.iters;
+    if (iters <= 0) iters = 6;
+    int my_row_in_col_group = S_subc.col_rank;
+    auto run_qdwh = [&]() {
+        float frob_local;
+        size_t na = (size_t)m_loc * n_loc;
+        CUBLAS_CHECK(cublasSnrm2(cublas, na, d_A, 1, &frob_local));
+        CUDA_CHECK(cudaStreamSynchronize(s_comp));
+        double frob_sq_local = (double)frob_local * (double)frob_local;
+        double frob_sq_global = 0.0;
+        MPI_Allreduce(&frob_sq_local, &frob_sq_global, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        double alpha = std::sqrt(frob_sq_global);
+        if (alpha <= 0) alpha = 1.0;
+        float inv_alpha = (float)(1.0 / alpha);
+        {
+            int threads = 256;
+            long long total = (long long)m_loc * n_loc;
+            long long blocks = (total + threads - 1) / threads;
+            qq_f25d_update_X_f<<<(unsigned)blocks, threads, 0, s_comp>>>(
+                d_X, d_A, d_A, m_loc, n_loc, inv_alpha, 0.f);
+        }
+
+        double l = 1.0 / std::sqrt((double)N);
+        if (l < 1e-7) l = 1e-7;  // FP32 effective floor
+        for (int kit = 0; kit < iters; ++kit) {
+            double l2 = l * l;
+            double dd = std::pow(4.0 * (1.0 - l2) / (l2 * l2), 1.0 / 3.0);
+            double sd = std::sqrt(1.0 + dd);
+            double inner_term = std::max(0.0, 8.0 - 4.0 * dd + 8.0 * (2.0 - l2) / (l2 * sd));
+            double a_k = sd + 0.5 * std::sqrt(inner_term);
+            double b_k = (a_k - 1.0) * (a_k - 1.0) / 4.0;
+            double c_k = a_k + b_k - 1.0;
+            float scale_X = (float)std::sqrt(c_k);
+
+            {
+                int threads = 256;
+                long long total = (long long)m_st_loc * n_loc;
+                long long blocks = (total + threads - 1) / threads;
+                qq_f25d_fill_stacked_f<<<(unsigned)blocks, threads, 0, s_comp>>>(
+                    d_S, d_X, m_loc, n_loc, my_row_in_col_group, my_py, Py, scale_X);
+            }
+            inner_qr();
+
+            // Pack Q2, AllGather over col_comm.
+            CUDA_CHECK(cudaMemcpy2DAsync(d_P, m_loc * sizeof(float),
+                                          d_S + m_loc, m_st_loc * sizeof(float),
+                                          m_loc * sizeof(float), n_loc,
+                                          cudaMemcpyDeviceToDevice, s_comp));
+            CUDA_CHECK(cudaEventRecord(e_comp_done, s_comp));
+            CUDA_CHECK(cudaStreamWaitEvent(s_comm, e_comp_done, 0));
+            FULL25D_NCCL_CHECK(ncclAllGather(d_P, d_Q2_recv,
+                                              (size_t)m_loc * n_loc, ncclFloat,
+                                              S_subc.nccl_col, s_comm));
+            CUDA_CHECK(cudaEventRecord(e_ar_done, s_comm));
+            CUDA_CHECK(cudaStreamWaitEvent(s_comp, e_ar_done, 0));
+
+            // Pack Q1, AllGather over row_comm.
+            CUDA_CHECK(cudaMemcpy2DAsync(d_P, m_loc * sizeof(float),
+                                          d_S, m_st_loc * sizeof(float),
+                                          m_loc * sizeof(float), n_loc,
+                                          cudaMemcpyDeviceToDevice, s_comp));
+            CUDA_CHECK(cudaEventRecord(e_comp_done, s_comp));
+            CUDA_CHECK(cudaStreamWaitEvent(s_comm, e_comp_done, 0));
+            FULL25D_NCCL_CHECK(ncclAllGather(d_P, d_Q1_recv,
+                                              (size_t)m_loc * n_loc, ncclFloat,
+                                              S_subc.nccl_row, s_comm));
+            CUDA_CHECK(cudaEventRecord(e_ar_done, s_comm));
+            CUDA_CHECK(cudaStreamWaitEvent(s_comp, e_ar_done, 0));
+
+            if (m_loc != n_loc || col_size != row_size) {
+                if (_rank == 0)
+                    fprintf(stderr, "qdwh_full25d (fp32full): require m_loc==n_loc, col_size==row_size.\n");
+                MPI_Abort(MPI_COMM_WORLD, 92);
+            }
+            CUBLAS_CHECK(cublasSscal(cublas, (int)((size_t)m_loc * n_loc), &zero_f, d_P, 1));
+            for (int r = 0; r < col_size; ++r) {
+                const float* Q1_blk = d_Q1_recv + (size_t)r * m_loc * n_loc;
+                const float* Q2_blk = d_Q2_recv + (size_t)r * m_loc * n_loc;
+                CUBLAS_CHECK(cublasSgemm(cublas, CUBLAS_OP_N, CUBLAS_OP_T,
+                                          m_loc, n_loc, n_loc,
+                                          &one_f, Q1_blk, m_loc, Q2_blk, m_loc,
+                                          &one_f, d_P, m_loc));
+            }
+            float alpha_x = (float)(b_k / c_k);
+            float alpha_p = (float)((a_k - b_k / c_k) / std::sqrt(c_k));
+            {
+                int threads = 256;
+                long long total = (long long)m_loc * n_loc;
+                long long blocks = (total + threads - 1) / threads;
+                qq_f25d_update_X_f<<<(unsigned)blocks, threads, 0, s_comp>>>(
+                    d_Xnew, d_X, d_P, m_loc, n_loc, alpha_x, alpha_p);
+            }
+            std::swap(d_X, d_Xnew);
+            double num = l * (a_k + b_k * l * l);
+            double den = 1.0 + c_k * l * l;
+            l = num / den;
+        }
+    };
+
+    auto reset_A = [&]() {
+        std::vector<float> host((size_t)m_loc * n_loc);
+        std::mt19937_64 rng(7 + _rank);
+        std::normal_distribution<float> nrm(0.f, 1.f);
+        for (auto& v : host) v = nrm(rng);
+        CUDA_CHECK(cudaMemcpy(d_A, host.data(), host.size() * sizeof(float), cudaMemcpyHostToDevice));
+    };
+
+    for (int i = 0; i < 2; ++i) { reset_A(); run_qdwh(); }
+    CUDA_CHECK(cudaStreamSynchronize(s_comp));
+    CUDA_CHECK(cudaStreamSynchronize(s_comm));
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    {
+        float* d_GG = nullptr;
+        CUDA_CHECK(cudaMalloc(&d_GG, (size_t)n_loc * n_loc * sizeof(float)));
+        CUBLAS_CHECK(cublasSsyrk(cublas, CUBLAS_FILL_MODE_UPPER, CUBLAS_OP_T,
+                                  n_loc, m_loc, &one_f, d_X, m_loc,
+                                  &zero_f, d_GG, n_loc));
+        CUDA_CHECK(cudaStreamSynchronize(s_comp));
+        FULL25D_NCCL_CHECK(ncclAllReduce(d_GG, d_GG, (size_t)n_loc * n_loc, ncclFloat, ncclSum,
+                                          S_subc.nccl_col, s_comm));
+        CUDA_CHECK(cudaStreamSynchronize(s_comm));
+        double max_local = 0.0;
+        if (S_subc.col_rank == 0) {
+            for (int j = 0; j < n_loc; ++j) {
+                float dj;
+                CUDA_CHECK(cudaMemcpy(&dj, d_GG + j + (size_t)j * n_loc, sizeof(float),
+                                       cudaMemcpyDeviceToHost));
+                double dev = std::fabs((double)dj - 1.0);
+                if (dev > max_local) max_local = dev;
+            }
+        }
+        double max_global = 0.0;
+        MPI_Allreduce(&max_local, &max_global, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+        if (_rank == 0) {
+            printf("  Validation(fp32) variant=qdwh_fp32full_p25d_it=%d N=%d grid=[%d,%d,%d]  max|diag(U'U)-1| = %.2e\n",
+                   iters, N, Px, Py, Pz, max_global);
+            fflush(stdout);
+        }
+        cudaFree(d_GG);
+    }
+
+    const int nrun = 3;
+    std::vector<double> times(nrun);
+    for (int i = 0; i < nrun; ++i) {
+        reset_A();
+        MPI_Barrier(MPI_COMM_WORLD);
+        auto t0 = std::chrono::high_resolution_clock::now();
+        run_qdwh();
+        CUDA_CHECK(cudaStreamSynchronize(s_comp));
+        CUDA_CHECK(cudaStreamSynchronize(s_comm));
+        MPI_Barrier(MPI_COMM_WORLD);
+        auto t1 = std::chrono::high_resolution_clock::now();
+        times[i] = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    }
+    std::sort(times.begin(), times.end());
+    if (_rank == 0) {
+        double tmed = times[nrun / 2];
+        printf("  qdwh_fp32full_p25d_it=%d  N=%d b=%d grid=[%d,%d,%d]  tmin=%9.2f ms  tmed=%9.2f ms\n",
+               iters, N, b, Px, Py, Pz, times[0], tmed);
+        printf("METRICS bench=qdwh_full25d matrix=fp32full layout=full25d N=%d b=%d Px=%d Py=%d Pz=%d passes=%d ours_ms=%.4f\n",
                N, b, Px, Py, Pz, iters, tmed);
         fflush(stdout);
     }
