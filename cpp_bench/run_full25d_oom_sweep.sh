@@ -20,7 +20,7 @@
 # Usage:
 #   NP=8 ./run_full25d_oom_sweep.sh
 
-set -u
+set +e   # Allow failed combos to skip without aborting the sweep.
 cd /home/ftome_local/comparative-bench/NextLA.jl/cpp_bench
 export PATH=/home/ftome_local/miniforge3/bin:$PATH
 export LD_LIBRARY_PATH=/home/ftome_local/miniforge3/lib:${LD_LIBRARY_PATH:-}
