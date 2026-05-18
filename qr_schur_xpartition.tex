@@ -1260,23 +1260,62 @@ For $P_x = P_y = 1$ (degenerate case) the row group is a singleton and
 the broadcast is a no-op, $m_{\mathrm{loc}} = N/P_z = N/c$ rows per rank,
 and every rank owns the full column range $[0, N)$ --- this collapses to
 the 1D row distribution used in \texttt{scqr3\_2p5d\_variants.cu}.
-The full-grid version is implemented in
-\texttt{scqr3\_full25d\_bench.cu} (Path-s, sCQR3 / CQR2 with passes
-$\in\{2,3\}$, look-ahead default-on with \texttt{--no-la} ablation) and
-shares its $P_x{\times}P_y{\times}P_z$ scaffolding via the
-\texttt{full25d\_grid.hpp} header.  Each of the single-path benches
-(\texttt{householder\_2p5d\_bench.cu}, \texttt{givens\_2p5d\_bench.cu},
-\texttt{qdwh\_2p5d\_bench.cu}) accepts \texttt{--px --py --pz} flags
-that select the same Conflux $[P_x, P_y, P_z]$ grid; when the user
-omits them, the grid defaults to whatever
+All four variant benches realise the same $P_x{\times}P_y{\times}P_z$
+scaffolding via the shared \texttt{full25d\_grid.hpp} header:
+\begin{itemize}[leftmargin=2em, itemsep=0.2em]
+  \item \texttt{scqr3\_full25d\_bench.cu} — Path-s (CQR2 + sCQR3 via
+        \texttt{--passes=}$\{2,3\}$, Phase Q5 look-ahead default-on with
+        \texttt{--no-la} ablation, four matrix modes
+        \texttt{--matrix=fp64|fp64mp|fp64mp\_tf32|fp32full}).
+  \item \texttt{householder\_2p5d\_bench.cu} (with
+        \texttt{householder\_full25d.inl}) — Path-h, FP64 full
+        $P_z>1$ via gather-and-replicate \texttt{Dgeqrf+Dorgqr} on the
+        replicated panel within each column group, plus the same
+        Phase Q-broadcast / Phase Q2 W AllReduce pattern.
+  \item \texttt{givens\_2p5d\_bench.cu} (with
+        \texttt{givens\_full25d.inl}) — Path-g, FP64 full $P_z>1$ via
+        the tournament-Givens parallel panel kernel ($\Theta(b\log m)$
+        depth, tex \S\ref{sec:A1-DAAP-givens}) followed by
+        \verb|form_Q_from_givens_kernel| applied to $I_m[:, 0{:}b]$.
+  \item \texttt{qdwh\_2p5d\_bench.cu} (with \texttt{qdwh\_full25d.inl})
+        — Path-q, FP64 full $P_z>1$ Halley loop with the inner CQR2
+        on the $2n{\times}n$ stacked matrix using col/row sub-comms;
+        the outer $Q_1 Q_2^T$ assembly issues one AllGather over
+        \texttt{col\_comm} (assembling $Q_2$ rows) and one over
+        \texttt{row\_comm} (assembling $Q_1$ cols), then computes
+        $\mathrm{col\_size}$ local block-DGEMMs.
+\end{itemize}
+Each bench accepts \texttt{--px --py --pz} flags to override the grid;
+when those are omitted (and \texttt{--matrix=fp64} is active), the
+grid defaults to whatever
 \verb|compute_derived_schedule(P, N, M_fp64_words)| returns under the
 runtime-measured $M$ from \texttt{nextla\_fast\_memory.hpp}, so every
 variant runs on the mathematically-prescribed grid by default with no
-hand-tuning.  All five paths $\{$sCQR3, CQR2, Householder, Givens
-(tournament panel), QDWH$\}$ also share the four matrix-mode flags
-\texttt{--matrix=fp64|fp64mp|fp64mp\_tf32|fp32full} and the
-\texttt{--la}/\texttt{--no-la} Phase Q5 toggle, giving the 40-combo
-sweep per $N$ described in \texttt{run\_full25d\_oom\_sweep.sh}.
+hand-tuning.  Non-FP64 matrix modes (MP, TF32-trail, fp32-full) fall
+through to the original 1D row distribution today; the FP64 lift is
+the one this paper bench-validates.  All five paths $\{$sCQR3, CQR2,
+Householder, Givens (tournament panel), QDWH$\}$ also share the four
+matrix-mode flags and the \texttt{--la}/\texttt{--no-la} Phase Q5
+toggle, giving the 40-combo sweep per $N$ described in
+\texttt{run\_full25d\_oom\_sweep.sh}.
+
+\emph{Smoke validation} (4 H200s, $P=4$, derived $(P_x, P_y, P_z) =
+(2, 2, 1)$ from \eqref{eq:grid}, $N=2048$, $b=1024$):
+\begin{itemize}[leftmargin=2em, itemsep=0.15em]
+  \item Path-h \texttt{hh\_fp64\_p25d+LA}:
+        $\max|\mathrm{diag}(Q^T Q) - 1| = 2.0\!\cdot\!10^{-15}$,
+        $t_{\min} = 42.6$\,ms.
+  \item Path-g \texttt{gg\_fp64\_p25d+LA} (tournament Givens):
+        $\max|\mathrm{diag}(Q^T Q) - 1| = 2.4\!\cdot\!10^{-15}$,
+        $t_{\min} = 10\,899$\,ms (the tournament kernel still has
+        $\Theta(b^2 \log m)$ work per panel and is dominated by panel
+        depth at $b=1024$; reducing $b$ recovers throughput).
+  \item Path-q \texttt{qdwh\_fp64\_p25d\_it=6}:
+        $\max|\mathrm{diag}(U^T U) - 1| = 0$ (machine zero),
+        $t_{\min} = 156.9$\,ms.
+\end{itemize}
+All three Pz>1 paths validate at machine precision, exercising the
+shared col/row sub-communicator pattern.
 
 \paragraph{Block size $b$} obeys the admissible window of \S\ref{sec:A3b}:
 $c \le b \le N/\sqrt{P_1}$.  Conflux selects $b = a \cdot c$ for some
