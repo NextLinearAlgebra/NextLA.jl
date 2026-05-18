@@ -1197,10 +1197,33 @@ the same outer skeleton:
 For arbitrary $P, N, M$, the X-partition optimization (\S\ref{sec:A2}) prescribes:
 \begin{equation}
 P_1 = \frac{N^2}{M},\qquad
-c   = \min\!\left(\frac{P\,M}{N^2},\; P^{1/3}\right),\qquad
-P_x = P_y = \sqrt{P_1},\qquad P_z = c.
+c   = \min\!\left(\left\lfloor\frac{P\,M}{N^2}\right\rfloor,\; \lfloor P^{1/3}\rfloor\right),\qquad
+P_x = P_y = \lfloor\sqrt{P_1}\rfloor,\qquad P_z = c.
 \label{eq:grid}
 \end{equation}
+The implementation in \texttt{cpp\_bench/derived\_schedule.hpp} realises
+\eqref{eq:grid} verbatim:
+\verb|compute_derived_schedule(P, N, M_fp64_words)| computes
+$c_{\mathrm{cap}} = \lfloor P^{1/3}\rfloor$ and
+$c_{\mathrm{mem}} = \lfloor P\,M / N^2\rfloor$, takes
+$c_{\mathrm{top}} = \min(c_{\mathrm{cap}}, c_{\mathrm{mem}})$, and searches
+$c \in [c_{\mathrm{top}}, 1]$ for the largest divisor of $P$ that admits a
+balanced factor pair $(p_r, p_c)$ of $P_1 = P/c$ with a panel size
+$b = \lfloor\min(\sqrt{M},\, N/\sqrt{P_1})\rfloor$ inside the
+\S\ref{sec:A3b} admissible window $c \le b \le N/\sqrt{P_1}$.
+The fast-memory budget $M$ is read at runtime from
+\texttt{cudaGetDeviceProperties.totalGlobalMem} scaled by
+\texttt{NEXTLA\_FASTMEM\_FRAC} (default $0.72$), divided by the matrix
+element size $\sigma$ (8\,B for FP64 paths, 4\,B for the
+\texttt{--matrix=fp32full} path), so $c_{\mathrm{mem}}$ is dimensionally
+$\lfloor P\,M / N^2\rfloor$ in matrix elements (header
+\texttt{nextla\_fast\_memory.hpp}).
+The shared sub-communicator setup --- column group (same $p_y$, size
+$P_x P_z$) for Phase Q3 / Q4 AllReduces, row group (same $(p_x, p_z)$,
+size $P_y$) for the Phase Q1 panel Q broadcast --- lives in
+\texttt{full25d\_grid.hpp} and is used by every variant bench that
+realises the full $P_z>1$ schedule.
+
 $P_1 = N^2/M$ is the number of $\sqrt{M}\!\times\!\sqrt{M}$ tiles needed to
 cover the matrix; $c$ is the replication factor that the I/O lower bound
 $Q_{\text{par}} \ge N^3/(P\sqrt{M})$ saturates at when memory permits. The
@@ -1236,11 +1259,24 @@ just-factored panel $Q$ from $p_y^{\text{panel}}$ to all other $p_y'$.
 For $P_x = P_y = 1$ (degenerate case) the row group is a singleton and
 the broadcast is a no-op, $m_{\mathrm{loc}} = N/P_z = N/c$ rows per rank,
 and every rank owns the full column range $[0, N)$ --- this collapses to
-the 1D row distribution used in \texttt{scqr3\_2p5d\_variants.cu},
-\texttt{householder\_2p5d\_bench.cu}, \texttt{givens\_2p5d\_bench.cu}.
+the 1D row distribution used in \texttt{scqr3\_2p5d\_variants.cu}.
 The full-grid version is implemented in
-\texttt{scqr3\_full25d\_bench.cu} and accepts \texttt{--px --py --pz}
-flags to instantiate any factorization $P = P_x P_y P_z$.
+\texttt{scqr3\_full25d\_bench.cu} (Path-s, sCQR3 / CQR2 with passes
+$\in\{2,3\}$, look-ahead default-on with \texttt{--no-la} ablation) and
+shares its $P_x{\times}P_y{\times}P_z$ scaffolding via the
+\texttt{full25d\_grid.hpp} header.  Each of the single-path benches
+(\texttt{householder\_2p5d\_bench.cu}, \texttt{givens\_2p5d\_bench.cu},
+\texttt{qdwh\_2p5d\_bench.cu}) accepts \texttt{--px --py --pz} flags
+that select the same Conflux $[P_x, P_y, P_z]$ grid; when the user
+omits them, the grid defaults to whatever
+\verb|compute_derived_schedule(P, N, M_fp64_words)| returns under the
+runtime-measured $M$ from \texttt{nextla\_fast\_memory.hpp}, so every
+variant runs on the mathematically-prescribed grid by default with no
+hand-tuning.  All five paths $\{$sCQR3, CQR2, Householder, Givens
+(tournament panel), QDWH$\}$ also share the four matrix-mode flags
+\texttt{--matrix=fp64|fp64mp|fp64mp\_tf32|fp32full} and the
+\texttt{--la}/\texttt{--no-la} Phase Q5 toggle, giving the 40-combo
+sweep per $N$ described in \texttt{run\_full25d\_oom\_sweep.sh}.
 
 \paragraph{Block size $b$} obeys the admissible window of \S\ref{sec:A3b}:
 $c \le b \le N/\sqrt{P_1}$.  Conflux selects $b = a \cdot c$ for some
@@ -3408,5 +3444,14 @@ $b_\star \sim 200$--$600$, comfortably within the window.
 For the H1-2.5D vs.\ 2D Hessenberg comparison, $c > 1$ requires
 $P > N^2/M$. For $N = 10^5$, $M = 10^8$: $P > 100$, trivially
 satisfied at modern scale.
+
+\paragraph{CUDA/MPI benchmark layout (degenerate vs.\ cyclic).}
+The reference implementations in \texttt{cpp\_bench/} use two
+Conflux-consistent process grids on $P=4$ GPUs: the pure $2\times 2$
+layer with $c=1$ (block-cyclic row/column slab specialization), and
+the degenerate $1\times 1\times 4$ grid ($P_1=1$, maximal replication
+depth $c=P$).  The header \texttt{derived\_schedule.hpp} prints the
+TeX-derived $(c,V,p_r,p_c,b)$ tuple when \texttt{--M=} is supplied; the
+full $2.5$D Path~(s) driver is \texttt{scqr3\_full25d\_bench.cu}.
 
 \end{document}
