@@ -508,13 +508,6 @@ int main(int argc, char** argv) {
             Full25DSubcomms S = build_full25d_subcomms(G);
             const bool use_mp_trail   = nextla_is_mp_trail_matrix(A.matrix);
             const bool use_tf32_trail = nextla_requests_tf32_matrix(A.matrix);
-#if !defined(CUBLAS_COMPUTE_32F_FAST_TF32)
-            if (use_tf32_trail) {
-                if (_rank == 0) fprintf(stderr,
-                    "householder_full25d: --matrix=fp64mp_tf32 requires CUDA 11+ cuBLAS TF32.\n");
-                MPI_Abort(MPI_COMM_WORLD, 91);
-            }
-#endif
             if (_rank == 0) {
                 const char* tag = (A.matrix == MatrixMode::FP32_FULL) ? "householder_full25d/fp32full"
                                  : (A.matrix == MatrixMode::FP64_MP_TF32) ? "householder_full25d/fp64mp_tf32"
