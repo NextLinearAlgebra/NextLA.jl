@@ -479,7 +479,7 @@ int main(int argc, char** argv) {
                                          &one_f, d_pf_panel, CUDA_R_32F, m_st_local,
                                          d_pf_tr, CUDA_R_32F, m_st_local,
                                          &zero_f, d_Wf, CUDA_R_32F, b,
-                                         CUDA_R_32F, CUBLAS_COMPUTE_32F_FAST_TF32,
+                                         CUBLAS_COMPUTE_32F_FAST_TF32,
                                          CUBLAS_GEMM_DEFAULT_TENSOR_OP));
 #else
                 CUBLAS_CHECK(cublasSgemm(cb, CUBLAS_OP_T, CUBLAS_OP_N,
