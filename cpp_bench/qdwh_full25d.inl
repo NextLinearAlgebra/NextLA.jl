@@ -486,7 +486,7 @@ static int run_qdwh_full25d_fp64(const Args& A_args,
         double tmed = times[nrun / 2];
         printf("  qdwh_fp64_p25d_it=%d  N=%d b=%d grid=[%d,%d,%d]  tmin=%9.2f ms  tmed=%9.2f ms\n",
                iters, N, b, Px, Py, Pz, times[0], tmed);
-        printf("METRICS bench=qdwh_full25d matrix=fp64 layout=full25d N=%d b=%d Px=%d Py=%d Pz=%d passes=%d ours_ms=%.4f\n",
+        printf("METRICS bench=qdwh_full25d matrix=fp64 layout=bc_2p5d N=%d b=%d Px=%d Py=%d Pz=%d passes=%d ours_ms=%.4f\n",
                N, b, Px, Py, Pz, iters, tmed);
         fflush(stdout);
     }
@@ -817,7 +817,7 @@ static int run_qdwh_full25d_fp32(const Args& A_args,
         double tmed = times[nrun / 2];
         printf("  qdwh_fp32full_p25d_it=%d  N=%d b=%d grid=[%d,%d,%d]  tmin=%9.2f ms  tmed=%9.2f ms\n",
                iters, N, b, Px, Py, Pz, times[0], tmed);
-        printf("METRICS bench=qdwh_full25d matrix=fp32full layout=full25d N=%d b=%d Px=%d Py=%d Pz=%d passes=%d ours_ms=%.4f\n",
+        printf("METRICS bench=qdwh_full25d matrix=fp32full layout=bc_2p5d N=%d b=%d Px=%d Py=%d Pz=%d passes=%d ours_ms=%.4f\n",
                N, b, Px, Py, Pz, iters, tmed);
         fflush(stdout);
     }

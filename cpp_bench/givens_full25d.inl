@@ -323,7 +323,7 @@ static int run_givens_full25d_fp64(const Args& A_args,
         double tmed = times[nrun / 2];
         printf("  gg_fp64_p25d%s  N=%d b=%d grid=[%d,%d,%d]  tmin=%9.2f ms  tmed=%9.2f ms\n",
                eff_la ? "+LA" : "", N, b, Px, Py, Pz, times[0], tmed);
-        printf("METRICS bench=givens_full25d matrix=fp64 layout=full25d N=%d b=%d Px=%d Py=%d Pz=%d passes=1 ours_ms=%.4f\n",
+        printf("METRICS bench=givens_full25d matrix=fp64 layout=bc_2p5d N=%d b=%d Px=%d Py=%d Pz=%d passes=1 ours_ms=%.4f\n",
                N, b, Px, Py, Pz, tmed);
         fflush(stdout);
     }
@@ -566,7 +566,7 @@ static int run_givens_full25d_fp32(const Args& A_args,
         double tmed = times[nrun / 2];
         printf("  gg_fp32full_p25d%s  N=%d b=%d grid=[%d,%d,%d]  tmin=%9.2f ms  tmed=%9.2f ms\n",
                eff_la ? "+LA" : "", N, b, Px, Py, Pz, times[0], tmed);
-        printf("METRICS bench=givens_full25d matrix=fp32full layout=full25d N=%d b=%d Px=%d Py=%d Pz=%d passes=1 ours_ms=%.4f\n",
+        printf("METRICS bench=givens_full25d matrix=fp32full layout=bc_2p5d N=%d b=%d Px=%d Py=%d Pz=%d passes=1 ours_ms=%.4f\n",
                N, b, Px, Py, Pz, tmed);
         fflush(stdout);
     }

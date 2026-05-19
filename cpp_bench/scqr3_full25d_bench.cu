@@ -45,7 +45,7 @@
 //   Flags:
 //     --N, --b, --passes, --px, --py, --pz, --la / --no-la   (lookahead on by default, §A1)
 //     --matrix=fp64|fp64mp|fp64mp_tf32|fp32full   tri-mode + TF32 trailing variant (CUDA 11+)
-//     --layout=slab|blockcyclic   slab = row×column specialization (default); blockcyclic = 2D block-cyclic (Pz=1)
+//     --layout=bc_2p5d_degenerate|blockcyclic   slab = row×column specialization (default); blockcyclic = 2D block-cyclic (Pz=1)
 //     --oom-probe                 exit 77 if primary cudaMalloc fails (MPI_Allreduce across ranks)
 //     --M=          optional override of TeX fast-memory budget (matrix elements, σ-sized; see nextla_fast_memory.hpp)
 //     --smoke                     legacy cbrt grid + legacy b(N); skips auto M from device memory
@@ -489,7 +489,7 @@ static int run_fp32_body(const Args& A, int N, int b, int Px, int Py, int Pz,
         printf("  %-30s  N=%d b=%d grid=[%d,%d,%d]  tmin=%9.2f ms  tmed=%9.2f ms\n",
                "p25d_fp32full", N, b, Px, Py, Pz, times[0], tmed);
         NextlaVendorMs vms = nextla_read_vendor_ms_for_np(N, Px * Py * Pz);
-        printf("METRICS bench=scqr3_full25d matrix=fp32full layout=slab N=%d b=%d Px=%d Py=%d Pz=%d passes=%d ",
+        printf("METRICS bench=scqr3_full25d matrix=fp32full layout=bc_2p5d_degenerate N=%d b=%d Px=%d Py=%d Pz=%d passes=%d ",
                N, b, Px, Py, Pz, A.passes);
         nextla_fprint_metrics_vendor_columns(stdout, vms);
         printf(" ours_ms=%.4f\n", tmed);
@@ -1044,7 +1044,7 @@ int main(int argc, char** argv) {
                            : (A.matrix == MatrixMode::FP64_MP_TF32) ? "fp64mp_tf32"
                                                                      : "fp64";
         NextlaVendorMs vms = nextla_read_vendor_ms_for_np(N, Px * Py * Pz);
-        printf("METRICS bench=scqr3_full25d matrix=%s layout=slab N=%d b=%d Px=%d Py=%d Pz=%d passes=%d ",
+        printf("METRICS bench=scqr3_full25d matrix=%s layout=bc_2p5d_degenerate N=%d b=%d Px=%d Py=%d Pz=%d passes=%d ",
                mcsv, N, b, Px, Py, Pz, A.passes);
         nextla_fprint_metrics_vendor_columns(stdout, vms);
         printf(" ours_ms=%.4f\n", tmed);
