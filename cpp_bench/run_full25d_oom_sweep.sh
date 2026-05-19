@@ -74,20 +74,22 @@ for N in $SIZES; do
     # ---------- 1. cuSOLVERMp baseline (apples-to-apples NVIDIA reference) ----------
     # MB matches our derived b (Plan Step 1b): cusolverMp fails with
     # CUSOLVER_STATUS_INTERNAL_ERROR when MB is too small relative to the
-    # process grid (the 256 default was the source of the N=2048 error 7
-    # at NP=8).  Mirror the §A.3b default-b heuristic:
-    #   b = min(floor(sqrt(M)), floor(N / sqrt(P1))), rounded to multiple of c.
-    # For NP=8 with H200 we expect c≈2, P1=4, so b≈N/2 capped at 1024.
-    if [ $N -le 4096 ]; then  CUMP_MB=512
-    elif [ $N -le 32768 ]; then CUMP_MB=1024
-    else                       CUMP_MB=1024
-    fi
-    if [ $OOM_REACHED -eq 0 ]; then
-        printf "\n--- cuSOLVERMp baseline (grid=%dx%d, NP=%d, MB=NB=%d matched to derived b) ---\n" $CUMP_PX $CUMP_PY $NP $CUMP_MB
-        if run_or_oom "$MPIRUN ./cusolverMp_geqrf_bench $N $CUMP_MB $CUMP_MB $CUMP_PX $CUMP_PY"; then
-            : # success
-        else
-            printf "\n[OOM-FLAG] cuSOLVERMp failed at N=$N — likely OOM. Continuing variants at this N anyway.\n"
+    # process grid.  Empirically the library refuses any (N=2048, NP=8)
+    # combination — too few tiles per rank — so we skip cuSOLVERMp at
+    # N < 4096 entirely.  Larger N use MB matched to the derived b.
+    if [ $N -lt 4096 ]; then
+        printf "\n--- cuSOLVERMp baseline SKIPPED at N=%d (library refuses small-grid configurations) ---\n" $N
+    else
+        if [ $N -le 8192 ]; then CUMP_MB=512
+        else                     CUMP_MB=1024
+        fi
+        if [ $OOM_REACHED -eq 0 ]; then
+            printf "\n--- cuSOLVERMp baseline (grid=%dx%d, NP=%d, MB=NB=%d matched to derived b) ---\n" $CUMP_PX $CUMP_PY $NP $CUMP_MB
+            if run_or_oom "$MPIRUN ./cusolverMp_geqrf_bench $N $CUMP_MB $CUMP_MB $CUMP_PX $CUMP_PY"; then
+                : # success
+            else
+                printf "\n[OOM-FLAG] cuSOLVERMp failed at N=$N — likely OOM. Continuing variants at this N anyway.\n"
+            fi
         fi
     fi
 
