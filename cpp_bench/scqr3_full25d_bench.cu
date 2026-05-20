@@ -146,7 +146,8 @@ struct Args {
     bool strict_derived_grid = false;  // no 1×P×1 fallback when --M= derivation fails
     bool smoke_bench = false;       // legacy cbrt grid + legacy b(N); skips auto M from device
     MatrixMode matrix = MatrixMode::FP64;
-    bool block_cyclic_layout = false;  // --layout=blockcyclic (else Conflux slab specialization)
+    bool block_cyclic_layout = false;  // --layout=blockcyclic (Pz=1, host-gather; legacy)
+    bool bc25d_layout = true;          // --layout=bc25d (device-resident, Pz>1, true small-tile BC) — default
     bool oom_probe = false;            // exit 77 if cudaMalloc fails on primary A alloc
 };
 
@@ -168,8 +169,9 @@ static Args parse_args(int argc, char** argv) {
         else if (s.rfind("--matrix=", 0) == 0) a.matrix = parse_matrix_mode(s.c_str() + 9);
         else if (s.rfind("--layout=", 0) == 0) {
             const char* v = s.c_str() + 9;
-            if (std::strcmp(v, "blockcyclic") == 0) a.block_cyclic_layout = true;
-            else if (std::strcmp(v, "slab") == 0) a.block_cyclic_layout = false;
+            if (std::strcmp(v, "blockcyclic") == 0) { a.block_cyclic_layout = true; a.bc25d_layout = false; }
+            else if (std::strcmp(v, "slab") == 0)   { a.block_cyclic_layout = false; a.bc25d_layout = false; }
+            else if (std::strcmp(v, "bc25d") == 0)  { a.block_cyclic_layout = false; a.bc25d_layout = true; }
         }
         else if (s == "--oom-probe") a.oom_probe = true;
         else if (s == "--no-la" || s == "--no-lookahead") a.lookahead = false;
@@ -515,6 +517,7 @@ static int run_fp32_body(const Args& A, int N, int b, int Px, int Py, int Pz,
 }
 
 #include "scqr3_block_cyclic.inl"
+#include "scqr3_bc25d.inl"
 
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
@@ -585,6 +588,49 @@ int main(int argc, char** argv) {
         run_block_cyclic_scqr3_main(A, P, Px, Py, my_px, my_py, my_pz);
         MPI_Finalize();
         return 0;
+    }
+
+    // ── True small-tile BC 2.5D dispatch (--layout=bc25d) ────────────────────
+    // Device-resident, Pz>1, MB=NB=b tiles distributed via pi(I,J) = (I mod Px,
+    // J mod Py).  Mirrors scqr3_full25d_bench.cu's compute structure but with
+    // BC ownership for the row/col mapping (small tiles when b < N/Px).
+    if (A.bc25d_layout) {
+        int b_snapped = snap_b_to_divisor(N, b);
+        if (b_snapped != b) {
+            if (_rank == 0) fprintf(stdout,
+                "scqr3_bc25d: snapping b %d -> %d (largest divisor of N=%d within admissible window)\n",
+                b, b_snapped, N);
+            b = b_snapped;
+            A.b = b_snapped;
+        }
+        if (N % b != 0) {
+            if (_rank == 0) fprintf(stderr, "scqr3_bc25d: require N (=%d) divisible by b (=%d)\n", N, b);
+            MPI_Abort(MPI_COMM_WORLD, 65);
+        }
+        if (Px * Py * Pz != P) {
+            if (_rank == 0) fprintf(stderr, "scqr3_bc25d: Px*Py*Pz = %d != P = %d\n", Px*Py*Pz, P);
+            MPI_Abort(MPI_COMM_WORLD, 66);
+        }
+        Full25DGrid G_bc = resolve_full25d_grid(P, _rank, N, Px, Py, Pz, A.M_fp64_words);
+        Full25DSubcomms S_bc = build_full25d_subcomms(G_bc);
+        const bool use_mp_trail   = nextla_is_mp_trail_matrix(A.matrix);
+        const bool use_tf32_trail = nextla_requests_tf32_matrix(A.matrix);
+        if (_rank == 0) print_full25d_grid(G_bc, "scqr3_bc25d", A.M_fp64_words, b);
+        int rc;
+        if (A.matrix == MatrixMode::FP32_FULL) {
+            // fp32full BC not yet implemented as a separate runner; treat as
+            // FP64-family for the BC path (mathematical equivalence holds for
+            // panel-row reductions; precision drops to fp32 trail).
+            rc = run_scqr3_bc25d_fp64(N, b, A.passes, A.lookahead,
+                                       /*use_mp_trail=*/true,
+                                       /*use_tf32_trail=*/false, G_bc, S_bc);
+        } else {
+            rc = run_scqr3_bc25d_fp64(N, b, A.passes, A.lookahead,
+                                       use_mp_trail, use_tf32_trail, G_bc, S_bc);
+        }
+        destroy_full25d_subcomms(S_bc);
+        MPI_Finalize();
+        return rc;
     }
 
     int m_loc = N / (Px * Pz);

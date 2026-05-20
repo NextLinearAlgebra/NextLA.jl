@@ -49,9 +49,9 @@ done
 HEAD "Path-h variants — Householder + WY"
 for N in $SIZES; do
   printf "\n----- N=$N -----\n"
-  $MPIRUN ./householder_2p5d_bench --N=$N
+  $MPIRUN ./householder_2p5d_bench --N=$N --no-la
   $MPIRUN ./householder_2p5d_bench --N=$N --la
-  $MPIRUN ./householder_2p5d_bench --N=$N --ir=1
+  $MPIRUN ./householder_2p5d_bench --N=$N --no-la --ir=1
   $MPIRUN ./householder_2p5d_bench --N=$N --mp --la
 done
 
@@ -59,7 +59,7 @@ done
 HEAD "Path-g variants — Givens"
 for N in $SIZES_GIVENS; do
   printf "\n----- N=$N -----\n"
-  $MPIRUN ./givens_2p5d_bench --N=$N
+  $MPIRUN ./givens_2p5d_bench --N=$N --no-la
   $MPIRUN ./givens_2p5d_bench --N=$N --la
 done
 
@@ -67,7 +67,7 @@ done
 HEAD "Path-q variants — QDWH polar"
 for N in $SIZES_QDWH; do
   printf "\n----- N=$N -----\n"
-  $MPIRUN ./qdwh_2p5d_bench --N=$N --iters=6
+  $MPIRUN ./qdwh_2p5d_bench --N=$N --iters=6 --no-la
   $MPIRUN ./qdwh_2p5d_bench --N=$N --iters=6 --la
 done
 

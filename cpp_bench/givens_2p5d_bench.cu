@@ -38,6 +38,7 @@
 #include "derived_schedule.hpp"
 #include "matrix_mode.hpp"
 #include "full25d_grid.hpp"
+#include "bc25d_helpers.cuh"
 #include "nextla_mp_trail.hpp"
 #include "nextla_fast_memory.hpp"
 #include "bench_vendor_metrics.hpp"
@@ -344,6 +345,7 @@ struct Args {
     bool strict_b = false;
     MatrixMode matrix = MatrixMode::FP64;
     bool block_cyclic_layout = false;
+    bool bc25d_layout = true;
     int px = 0, py = 0, pz = 0;
 };
 
@@ -360,8 +362,9 @@ static Args parse_args(int argc, char** argv) {
         else if (s == "--strict-b") a.strict_b = true;
         else if (s.rfind("--layout=", 0) == 0) {
             const char* v = s.c_str() + 9;
-            if (std::strcmp(v, "blockcyclic") == 0) a.block_cyclic_layout = true;
-            else if (std::strcmp(v, "slab") == 0) a.block_cyclic_layout = false;
+            if (std::strcmp(v, "blockcyclic") == 0) { a.block_cyclic_layout = true; a.bc25d_layout = false; }
+            else if (std::strcmp(v, "slab") == 0)   { a.block_cyclic_layout = false; a.bc25d_layout = false; }
+            else if (std::strcmp(v, "bc25d") == 0)  { a.block_cyclic_layout = false; a.bc25d_layout = true; }
         } else if (s.rfind("--px=", 0) == 0) a.px = std::atoi(s.c_str() + 5);
         else if (s.rfind("--py=", 0) == 0) a.py = std::atoi(s.c_str() + 5);
         else if (s.rfind("--pz=", 0) == 0) a.pz = std::atoi(s.c_str() + 5);
@@ -652,6 +655,7 @@ static int givens_fp32full_run(
 
 #include "givens_block_cyclic.inl"
 #include "givens_full25d.inl"
+#include "givens_bc25d.inl"
 
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
@@ -722,7 +726,8 @@ int main(int argc, char** argv) {
         return rc;
     }
 
-    // ── Full-2.5D Pz>1 dispatch (tournament-Givens panel; all 4 matrix modes) ──
+    // ── BC 2.5D + slab Full-2.5D dispatch (tournament-Givens panel) ─────────
+    // BC 2.5D is the default; --layout=slab requests the legacy slab path.
     {
         bool grid_cli = (A.px > 0 && A.py > 0 && A.pz > 0);
         Full25DGrid G_pre;
@@ -733,7 +738,11 @@ int main(int argc, char** argv) {
         } else {
             G_pre.Px = 1; G_pre.Py = P; G_pre.Pz = 1;
         }
-        bool use_full25d = (G_pre.Pz > 1 || (G_pre.Px > 1 && G_pre.Py > 1));
+        // BC 2.5D handles any non-trivial grid; slab full25d only fires for
+        // square (Px>1 && Py>1) or replicated (Pz>1) grids.
+        bool use_full25d = (A.bc25d_layout && G_pre.P > 1)
+                          || G_pre.Pz > 1
+                          || (G_pre.Px > 1 && G_pre.Py > 1);
         if (use_full25d) {
             if (A.b == 0 && A.M_fp64_words > 0) {
                 int bb = default_block_b(A.M_fp64_words, (std::int64_t)A.N, G_pre.Px, G_pre.Py, G_pre.Pz);
@@ -751,18 +760,43 @@ int main(int argc, char** argv) {
             Full25DSubcomms S = build_full25d_subcomms(G);
             const bool use_mp_trail   = nextla_is_mp_trail_matrix(A.matrix);
             const bool use_tf32_trail = nextla_requests_tf32_matrix(A.matrix);
-            if (_rank == 0) {
-                const char* tag = (A.matrix == MatrixMode::FP32_FULL) ? "givens_full25d/fp32full"
-                                 : (A.matrix == MatrixMode::FP64_MP_TF32) ? "givens_full25d/fp64mp_tf32"
-                                 : (A.matrix == MatrixMode::FP64_MP) ? "givens_full25d/fp64mp"
-                                 : "givens_full25d/fp64";
-                print_full25d_grid(G, tag, A.M_fp64_words, A.b);
-            }
             int rc;
-            if (A.matrix == MatrixMode::FP32_FULL) {
-                rc = run_givens_full25d_fp32(A, G, S);
+            if (A.bc25d_layout) {
+                if (_rank == 0) print_full25d_grid(G, "givens_bc25d", A.M_fp64_words, A.b);
+                {
+                    int b_snapped = snap_b_to_divisor(A.N, A.b);
+                    if (b_snapped != A.b) {
+                        if (_rank == 0) fprintf(stdout,
+                            "givens_bc25d: snapping b %d -> %d (divisor of N=%d in §A3b window)\n",
+                            A.b, b_snapped, A.N);
+                        A.b = b_snapped;
+                    }
+                }
+                if (A.N % A.b != 0) {
+                    if (_rank == 0) fprintf(stderr, "givens_bc25d: N=%d must be divisible by b=%d\n", A.N, A.b);
+                    MPI_Abort(MPI_COMM_WORLD, 65);
+                }
+                if (A.matrix == MatrixMode::FP32_FULL) {
+                    rc = run_givens_bc25d_fp64(A.N, A.b, A.lookahead,
+                                                /*use_mp_trail=*/true,
+                                                /*use_tf32_trail=*/false, G, S);
+                } else {
+                    rc = run_givens_bc25d_fp64(A.N, A.b, A.lookahead,
+                                                use_mp_trail, use_tf32_trail, G, S);
+                }
             } else {
-                rc = run_givens_full25d_fp64(A, G, S, use_mp_trail, use_tf32_trail);
+                if (_rank == 0) {
+                    const char* tag = (A.matrix == MatrixMode::FP32_FULL) ? "givens_full25d/fp32full"
+                                     : (A.matrix == MatrixMode::FP64_MP_TF32) ? "givens_full25d/fp64mp_tf32"
+                                     : (A.matrix == MatrixMode::FP64_MP) ? "givens_full25d/fp64mp"
+                                     : "givens_full25d/fp64";
+                    print_full25d_grid(G, tag, A.M_fp64_words, A.b);
+                }
+                if (A.matrix == MatrixMode::FP32_FULL) {
+                    rc = run_givens_full25d_fp32(A, G, S);
+                } else {
+                    rc = run_givens_full25d_fp64(A, G, S, use_mp_trail, use_tf32_trail);
+                }
             }
             destroy_full25d_subcomms(S);
             MPI_Finalize();

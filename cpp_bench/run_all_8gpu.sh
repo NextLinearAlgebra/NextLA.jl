@@ -28,7 +28,7 @@ done
 HEAD "Path-h variants — 8-GPU Householder"
 for N in $SIZES; do
   printf "\n----- N=$N -----\n"
-  $MPIRUN ./householder_2p5d_bench --N=$N
+  $MPIRUN ./householder_2p5d_bench --N=$N --no-la
   $MPIRUN ./householder_2p5d_bench --N=$N --la
 done
 

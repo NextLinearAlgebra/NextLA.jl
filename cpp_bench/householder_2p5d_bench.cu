@@ -43,6 +43,7 @@
 #include "nextla_fast_memory.hpp"
 #include "bench_vendor_metrics.hpp"
 #include "full25d_grid.hpp"
+#include "bc25d_helpers.cuh"
 
 #include <mpi.h>
 #include <cuda_runtime.h>
@@ -110,6 +111,7 @@ struct Args {
     bool strict_b = false;
     MatrixMode matrix = MatrixMode::FP64;
     bool block_cyclic_layout = false;
+    bool bc25d_layout = true;
     int px = 0, py = 0, pz = 0;
 };
 
@@ -126,8 +128,9 @@ static Args parse_args(int argc, char** argv) {
         else if (s == "--strict-b") a.strict_b = true;
         else if (s.rfind("--layout=", 0) == 0) {
             const char* v = s.c_str() + 9;
-            if (std::strcmp(v, "blockcyclic") == 0) a.block_cyclic_layout = true;
-            else if (std::strcmp(v, "slab") == 0) a.block_cyclic_layout = false;
+            if (std::strcmp(v, "blockcyclic") == 0) { a.block_cyclic_layout = true; a.bc25d_layout = false; }
+            else if (std::strcmp(v, "slab") == 0)   { a.block_cyclic_layout = false; a.bc25d_layout = false; }
+            else if (std::strcmp(v, "bc25d") == 0)  { a.block_cyclic_layout = false; a.bc25d_layout = true; }
         } else if (s.rfind("--px=", 0) == 0) a.px = std::atoi(s.c_str() + 5);
         else if (s.rfind("--py=", 0) == 0) a.py = std::atoi(s.c_str() + 5);
         else if (s.rfind("--pz=", 0) == 0) a.pz = std::atoi(s.c_str() + 5);
@@ -409,6 +412,7 @@ static int householder_fp32full_run(
 
 #include "householder_block_cyclic.inl"
 #include "householder_full25d.inl"
+#include "householder_bc25d.inl"
 
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
@@ -481,10 +485,11 @@ int main(int argc, char** argv) {
         return rc;
     }
 
-    // ── Full-2.5D Pz>1 dispatch ─────────────────────────────────────────────
-    // Activates when the user (or auto-derived schedule) selects Pz>1.
-    // Routes to fp64, fp64mp, fp64mp_tf32, or fp32full path based on
-    // A.matrix.  See tex §sec:per-variant-schedule.
+    // ── BC 2.5D + slab Full-2.5D dispatch ───────────────────────────────────
+    // BC 2.5D (Kwasniewski SC'21 Fig.6) is the default (A.bc25d_layout==true);
+    // pass --layout=slab to fall back to the contiguous-rows variant for
+    // ablation comparisons.  Both paths auto-derive the [Px, Py, Pz] grid
+    // from the fast-memory budget if not supplied on the CLI.
     {
         bool grid_cli = (A.px > 0 && A.py > 0 && A.pz > 0);
         Full25DGrid G_pre;
@@ -495,7 +500,13 @@ int main(int argc, char** argv) {
         } else {
             G_pre.Px = 1; G_pre.Py = P; G_pre.Pz = 1;  // signal: skip
         }
-        bool use_full25d = (G_pre.Pz > 1 || (G_pre.Px > 1 && G_pre.Py > 1));
+        // Route to BC 2.5D for any non-trivial grid (NP > 1), regardless of
+        // whether the grid is square (Px>1 && Py>1) or rectangular (Px=1
+        // or Py=1).  At NP=2 the manuscript prescribes (Px=1, Py=2, Pz=1)
+        // or (Px=2, Py=1, Pz=1) — BC25D handles both.
+        bool use_full25d = (A.bc25d_layout && (G_pre.P > 1 || G_pre.Pz > 1))
+                          || G_pre.Pz > 1
+                          || (G_pre.Px > 1 && G_pre.Py > 1);
         if (use_full25d) {
             if (A.b == 0 && A.M_fp64_words > 0) {
                 int bb = default_block_b(A.M_fp64_words, (std::int64_t)A.N,
@@ -508,18 +519,43 @@ int main(int argc, char** argv) {
             Full25DSubcomms S = build_full25d_subcomms(G);
             const bool use_mp_trail   = nextla_is_mp_trail_matrix(A.matrix);
             const bool use_tf32_trail = nextla_requests_tf32_matrix(A.matrix);
-            if (_rank == 0) {
-                const char* tag = (A.matrix == MatrixMode::FP32_FULL) ? "householder_full25d/fp32full"
-                                 : (A.matrix == MatrixMode::FP64_MP_TF32) ? "householder_full25d/fp64mp_tf32"
-                                 : (A.matrix == MatrixMode::FP64_MP) ? "householder_full25d/fp64mp"
-                                 : "householder_full25d/fp64";
-                print_full25d_grid(G, tag, A.M_fp64_words, A.b);
-            }
             int rc;
-            if (A.matrix == MatrixMode::FP32_FULL) {
-                rc = run_householder_full25d_fp32(A, G, S);
+            if (A.bc25d_layout) {
+                if (_rank == 0) print_full25d_grid(G, "householder_bc25d", A.M_fp64_words, A.b);
+                {
+                    int b_snapped = snap_b_to_divisor(A.N, A.b);
+                    if (b_snapped != A.b) {
+                        if (_rank == 0) fprintf(stdout,
+                            "householder_bc25d: snapping b %d -> %d (divisor of N=%d in §A3b window)\n",
+                            A.b, b_snapped, A.N);
+                        A.b = b_snapped;
+                    }
+                }
+                if (A.N % A.b != 0) {
+                    if (_rank == 0) fprintf(stderr, "householder_bc25d: N=%d must be divisible by b=%d\n", A.N, A.b);
+                    MPI_Abort(MPI_COMM_WORLD, 65);
+                }
+                if (A.matrix == MatrixMode::FP32_FULL) {
+                    rc = run_householder_bc25d_fp64(A.N, A.b, A.lookahead,
+                                                     /*use_mp_trail=*/true,
+                                                     /*use_tf32_trail=*/false, G, S);
+                } else {
+                    rc = run_householder_bc25d_fp64(A.N, A.b, A.lookahead,
+                                                     use_mp_trail, use_tf32_trail, G, S);
+                }
             } else {
-                rc = run_householder_full25d_fp64(A, G, S, use_mp_trail, use_tf32_trail);
+                if (_rank == 0) {
+                    const char* tag = (A.matrix == MatrixMode::FP32_FULL) ? "householder_full25d/fp32full"
+                                     : (A.matrix == MatrixMode::FP64_MP_TF32) ? "householder_full25d/fp64mp_tf32"
+                                     : (A.matrix == MatrixMode::FP64_MP) ? "householder_full25d/fp64mp"
+                                     : "householder_full25d/fp64";
+                    print_full25d_grid(G, tag, A.M_fp64_words, A.b);
+                }
+                if (A.matrix == MatrixMode::FP32_FULL) {
+                    rc = run_householder_full25d_fp32(A, G, S);
+                } else {
+                    rc = run_householder_full25d_fp64(A, G, S, use_mp_trail, use_tf32_trail);
+                }
             }
             destroy_full25d_subcomms(S);
             MPI_Finalize();

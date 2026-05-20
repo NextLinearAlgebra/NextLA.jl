@@ -34,21 +34,21 @@ done
 HEAD "Path-h variants — 8-GPU"
 for N in $SIZES; do
   printf "\n----- N=$N -----\n"
-  $MPIRUN ./householder_2p5d_bench --N=$N
+  $MPIRUN ./householder_2p5d_bench --N=$N --no-la
   $MPIRUN ./householder_2p5d_bench --N=$N --la
 done
 
 HEAD "Path-g variants — 8-GPU"
 for N in $SIZES_GIVENS; do
   printf "\n----- N=$N -----\n"
-  $MPIRUN ./givens_2p5d_bench --N=$N
+  $MPIRUN ./givens_2p5d_bench --N=$N --no-la
   $MPIRUN ./givens_2p5d_bench --N=$N --la
 done
 
 HEAD "Path-q variants — 8-GPU"
 for N in $SIZES_QDWH; do
   printf "\n----- N=$N -----\n"
-  $MPIRUN ./qdwh_2p5d_bench --N=$N --iters=6
+  $MPIRUN ./qdwh_2p5d_bench --N=$N --iters=6 --no-la
   $MPIRUN ./qdwh_2p5d_bench --N=$N --iters=6 --la
 done
 

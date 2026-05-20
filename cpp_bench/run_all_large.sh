@@ -52,9 +52,9 @@ done
 HEAD "Path-h variants — Householder + WY (cuSolver geqrf+orgqr per panel)"
 for N in $SIZES; do
   printf "\n----- N=$N -----\n"
-  $MPIRUN ./householder_2p5d_bench --N=$N
+  $MPIRUN ./householder_2p5d_bench --N=$N --no-la
   $MPIRUN ./householder_2p5d_bench --N=$N --la
-  $MPIRUN ./householder_2p5d_bench --N=$N --ir=1
+  $MPIRUN ./householder_2p5d_bench --N=$N --no-la --ir=1
   $MPIRUN ./householder_2p5d_bench --N=$N --mp --la
 done
 

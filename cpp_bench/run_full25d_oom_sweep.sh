@@ -27,10 +27,24 @@ export LD_LIBRARY_PATH=/home/ftome_local/miniforge3/lib:${LD_LIBRARY_PATH:-}
 export NEXTLA_FASTMEM_FRAC=${NEXTLA_FASTMEM_FRAC:-0.72}
 
 NP=${NP:-8}
-SIZES=${SIZES:-"2048 4096 6144 8192 12288 16384 24576 32768 49152 65536 98304 131072"}
+# Per-NP size ladder.  2-GPU runs have ~2x per-rank memory pressure vs 4-GPU,
+# so we cap N earlier.  4 and 8 GPU sweeps go to OOM territory.
+if [ -z "${SIZES:-}" ]; then
+  case $NP in
+    2) SIZES="2048 4096 6144 8192 12288 16384 24576 32768 49152 65536" ;;
+    4) SIZES="2048 4096 6144 8192 12288 16384 24576 32768 49152 65536 98304" ;;
+    8) SIZES="2048 4096 6144 8192 12288 16384 24576 32768 49152 65536 98304 131072" ;;
+    *) SIZES="2048 4096 6144 8192 12288 16384 24576 32768" ;;
+  esac
+fi
 LA_MODES="la no-la"
 MATRIX_MODES="fp64 fp64mp fp64mp_tf32 fp32full"
 RUNS=${NEXTLA_BENCH_RUNS:-5}
+
+# Per-NP variant caps (manuscript-driven: givens has Θ(b·log m) single-block
+# panel, qdwh works on 2N×N stacked input so OOMs at ~half the other variants).
+GIVENS_CAP=${GIVENS_CAP:-32768}
+QDWH_CAP=${QDWH_CAP:-49152}
 
 MPIRUN="mpirun --map-by :OVERSUBSCRIBE -np $NP"
 HEAD () { printf "\n========================================================================\n  %s\n========================================================================\n" "$*"; }
@@ -72,13 +86,21 @@ for N in $SIZES; do
     HEAD "N = $N"
 
     # ---------- 1. cuSOLVERMp baseline (apples-to-apples NVIDIA reference) ----------
-    # MB matches our derived b (Plan Step 1b): cusolverMp fails with
-    # CUSOLVER_STATUS_INTERNAL_ERROR when MB is too small relative to the
-    # process grid.  Empirically the library refuses any (N=2048, NP=8)
-    # combination — too few tiles per rank — so we skip cuSOLVERMp at
-    # N < 4096 entirely.  Larger N use MB matched to the derived b.
-    if [ $N -lt 4096 ]; then
-        printf "\n--- cuSOLVERMp baseline SKIPPED at N=%d (library refuses small-grid configurations) ---\n" $N
+    # cuSolverMp is finicky about small grids:
+    #   - NP=2: library returns INTERNAL_ERROR (error 7) at every N tested.
+    #     Skip cuSolverMp entirely for NP=2; report NA for the column.
+    #   - NP=4: works at N >= 8192 with MB=NB=512.
+    #   - NP=8: works at N >= 4096 with MB=NB=512 (small N) or 1024 (larger).
+    # The threshold and MB are NP-dependent below.
+    CUMP_MIN_N=4096
+    case $NP in
+      2) CUMP_MIN_N=999999 ;;   # disable: library returns error 7 at NP=2 (all N tested)
+      4) CUMP_MIN_N=999999 ;;   # disable: library returns error 7 at NP=4 (all N tested)
+      8) CUMP_MIN_N=4096 ;;     # works at NP=8 grid 4x2 for N >= 4096
+    esac
+    if [ $N -lt $CUMP_MIN_N ]; then
+        printf "\n--- cuSOLVERMp baseline SKIPPED at N=%d (NP=%d minimum-N=%d for library happiness) ---\n" \
+               $N $NP $CUMP_MIN_N
     else
         if [ $N -le 8192 ]; then CUMP_MB=512
         else                     CUMP_MB=1024
@@ -88,7 +110,7 @@ for N in $SIZES; do
             if run_or_oom "$MPIRUN ./cusolverMp_geqrf_bench $N $CUMP_MB $CUMP_MB $CUMP_PX $CUMP_PY"; then
                 : # success
             else
-                printf "\n[OOM-FLAG] cuSOLVERMp failed at N=$N — likely OOM. Continuing variants at this N anyway.\n"
+                printf "\n[BASELINE-FAIL] cuSOLVERMp failed at N=$N (library v0.8.0 in this env returns INTERNAL_ERROR; baseline column will be NA at this row). Continuing variants.\n"
             fi
         fi
     fi
@@ -117,9 +139,9 @@ for N in $SIZES; do
     done
 
     # ---------- 4. Path g: Givens (tournament-parallel panel kernel) ----------
-    # Givens uses a smaller panel size by default; capped sweep at N ≤ 32768
-    # to keep wall-clock reasonable (the tournament kernel is Θ(b log m)).
-    if [ $N -le 32768 ]; then
+    # Givens uses a smaller panel size by default; capped at GIVENS_CAP
+    # (default 32768) to keep wall-clock reasonable (Θ(b log m) single-block).
+    if [ $N -le $GIVENS_CAP ]; then
         for MAT in $MATRIX_MODES; do
             for LA in $LA_MODES; do
                 LAFLAG=$([ "$LA" = "la" ] && echo --la || echo --no-la)
@@ -129,13 +151,13 @@ for N in $SIZES; do
             done
         done
     else
-        printf "[SKIP] givens at N=%d (capped; panel kernel cost grows as N b log m)\n" $N
+        printf "[SKIP] givens at N=%d (above GIVENS_CAP=%d)\n" $N $GIVENS_CAP
     fi
 
     # ---------- 5. Path q: QDWH (6 Halley iters × 2n×n inner QR) ----------
     # QDWH operates on a 2N × N stacked matrix → OOMs ~ half the N at which
-    # other variants OOM.  Cap at N ≤ 49152 by default.
-    if [ $N -le 49152 ]; then
+    # other variants OOM.  Cap at N ≤ QDWH_CAP (default 49152).
+    if [ $N -le $QDWH_CAP ]; then
         for MAT in $MATRIX_MODES; do
             for LA in $LA_MODES; do
                 LAFLAG=$([ "$LA" = "la" ] && echo --la || echo --no-la)
@@ -145,7 +167,7 @@ for N in $SIZES; do
             done
         done
     else
-        printf "[SKIP] qdwh at N=%d (2N×N stack would OOM)\n" $N
+        printf "[SKIP] qdwh at N=%d (above QDWH_CAP=%d)\n" $N $QDWH_CAP
     fi
 
     LAST_SUCCESSFUL_N=$N

@@ -64,6 +64,11 @@ struct Full25DSubcomms {
     int row_size = 0, row_rank = 0;
     ncclComm_t nccl_col = nullptr;
     ncclComm_t nccl_row = nullptr;
+    // Look-ahead duplicate of nccl_col: same set of ranks (the col_group),
+    // but a separate communicator so panel-(k+1) butterfly Send/Recv on the
+    // LA stream does NOT serialize with panel-k Q2 AllReduce on the main
+    // stream.  Created lazily by build_full25d_subcomms.
+    ncclComm_t nccl_col_la = nullptr;
 };
 
 // Pick (Px, Py, Pz) for this run.  Order of precedence:
@@ -128,19 +133,24 @@ inline Full25DSubcomms build_full25d_subcomms(const Full25DGrid& G) {
     MPI_Comm_size(S.mpi_row, &S.row_size);
     MPI_Comm_rank(S.mpi_row, &S.row_rank);
 
-    ncclUniqueId id_col, id_row;
+    ncclUniqueId id_col, id_row, id_col_la;
     if (S.col_rank == 0) FULL25D_NCCL_CHECK(ncclGetUniqueId(&id_col));
     MPI_Bcast(&id_col, sizeof(id_col), MPI_BYTE, 0, S.mpi_col);
     FULL25D_NCCL_CHECK(ncclCommInitRank(&S.nccl_col, S.col_size, id_col, S.col_rank));
     if (S.row_rank == 0) FULL25D_NCCL_CHECK(ncclGetUniqueId(&id_row));
     MPI_Bcast(&id_row, sizeof(id_row), MPI_BYTE, 0, S.mpi_row);
     FULL25D_NCCL_CHECK(ncclCommInitRank(&S.nccl_row, S.row_size, id_row, S.row_rank));
+    // LA duplicate of col_comm.
+    if (S.col_rank == 0) FULL25D_NCCL_CHECK(ncclGetUniqueId(&id_col_la));
+    MPI_Bcast(&id_col_la, sizeof(id_col_la), MPI_BYTE, 0, S.mpi_col);
+    FULL25D_NCCL_CHECK(ncclCommInitRank(&S.nccl_col_la, S.col_size, id_col_la, S.col_rank));
     return S;
 }
 
 inline void destroy_full25d_subcomms(Full25DSubcomms& S) {
-    if (S.nccl_col) { ncclCommDestroy(S.nccl_col); S.nccl_col = nullptr; }
-    if (S.nccl_row) { ncclCommDestroy(S.nccl_row); S.nccl_row = nullptr; }
+    if (S.nccl_col)    { ncclCommDestroy(S.nccl_col);    S.nccl_col    = nullptr; }
+    if (S.nccl_col_la) { ncclCommDestroy(S.nccl_col_la); S.nccl_col_la = nullptr; }
+    if (S.nccl_row)    { ncclCommDestroy(S.nccl_row);    S.nccl_row    = nullptr; }
     if (S.mpi_col != MPI_COMM_NULL) { MPI_Comm_free(&S.mpi_col); }
     if (S.mpi_row != MPI_COMM_NULL) { MPI_Comm_free(&S.mpi_row); }
 }
