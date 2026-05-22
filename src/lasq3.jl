@@ -100,99 +100,82 @@ function lasq3!(i0::S, n0::AbstractArray{S}, z::AbstractVector{T},
                 dn1::AbstractArray{T}, dn2::AbstractArray{T}, g::AbstractArray{T},
                 tau::AbstractArray{T}) where {T <:AbstractFloat, S <:Integer}
     n0in = n0[]
-    prec = nothing
     cbias = T(1.5)
     qurtr = T(0.25)
+    zero_t = zero(T)
+    one_t = one(T)
+    two_t = T(2)
 
-    if T == Float32
-        prec = ccall(
-                    (@blasfunc(slamch_), libblastrampoline),
-                    Float32,
-                    (Ref{UInt8},),
-                    Ref{UInt8}('P')  
-                )
+    eps = if T == Float32
+        ccall((@blasfunc(slamch_), libblastrampoline), Float32, (Ref{UInt8},), Ref{UInt8}('P'))
     elseif T == Float64
-        prec = ccall(
-                    (@blasfunc(dlamch_), libblastrampoline),
-                    Float64,
-                    (Ref{UInt8},),
-                    Ref{UInt8}('P')  
-                )
-
+        ccall((@blasfunc(dlamch_), libblastrampoline), Float64, (Ref{UInt8},), Ref{UInt8}('P'))
     else
-        prec = precision(T)
+        Base.eps(T)
     end
-
-    tol = prec*T(100)
-    tol2 = tol^2
+    tol = eps * T(100)
+    tol2 = tol * tol
 
 @label ten
-
     if n0[] < i0
         return
     end
     if n0[] == i0
         @goto twenty
     end
-    nn = 4*n0[] + pp[]
-
+    nn = 4 * n0[] + pp[]
     if n0[] == (i0 + 1)
         @goto fourty
     end
-    if z[nn - 5] > tol2*(sigma[] + z[nn - 3]) && z[nn - 2*pp[] - 4] > tol2*z[nn - 7]
+    if z[nn - 5] > tol2 * (sigma[] + z[nn - 3]) &&
+       z[nn - 2 * pp[] - 4] > tol2 * z[nn - 7]
         @goto thirty
     end
 
 @label twenty
-
-    z[4*n0 - 3] = z[4*n0 + pp[] - 3] + sigma[]
-    n0 .-= 1
+    z[4 * n0[] - 3] = z[4 * n0[] + pp[] - 3] + sigma[]
+    n0[] -= 1
     @goto ten
 
 @label thirty
-
-    if z[nn - 9] > tol2 * sigma[] && z[nn - 2*pp[] - 8] > tol2 * z[nn - 11]
+    if z[nn - 9] > tol2 * sigma[] &&
+       z[nn - 2 * pp[] - 8] > tol2 * z[nn - 11]
         @goto fifty
     end
 
 @label fourty
-
     if z[nn - 3] > z[nn - 7]
         s = z[nn - 3]
-        zz[nn - 3] = z[nn - 7]
-        zz[nn - 7] = s
+        z[nn - 3] = z[nn - 7]
+        z[nn - 7] = s
     end
-
-    t = T(0.5)*((z[nn - 7] - z[nn - 3]) + z[nn - 5])
-
-    if z[nn - 5] > z[nn - 3]*tool2 && t != 0
-        s = z[nn - 3]*(z[nn - 5] / t)
+    t = T(0.5) * ((z[nn - 7] - z[nn - 3]) + z[nn - 5])
+    if z[nn - 5] > z[nn - 3] * tol2 && t != zero_t
+        s = z[nn - 3] * (z[nn - 5] / t)
         if s <= t
-            s = z[nn - 3]*(z[nn - 5] / (t*(one(T) + sqrt(one(T) + s/t))))
+            s = z[nn - 3] * (z[nn - 5] / (t * (one_t + sqrt(one_t + s / t))))
         else
-            s = z[nn - 3]*(z[nn - 5] / ((t + sqrt(t)*sqrt(t + s))))
+            s = z[nn - 3] * (z[nn - 5] / (t + sqrt(t) * sqrt(t + s)))
         end
         t = z[nn - 7] + (s + z[nn - 5])
-        z[nn - 3] *= (z[nn - 7]/t)
+        z[nn - 3] = z[nn - 3] * (z[nn - 7] / t)
         z[nn - 7] = t
     end
-
-    z[4*n0[] - 7] = z[nn - 7] + sigma[]
-    z[4*n0[] - 3] = z[nn - 3] + sigma[]
-    n0 .-= 2
+    z[4 * n0[] - 7] = z[nn - 7] + sigma[]
+    z[4 * n0[] - 3] = z[nn - 3] + sigma[]
+    n0[] -= 2
     @goto ten
 
 @label fifty
-
     if pp[] == 2
-        pp .= 0
+        pp[] = 0
     end
 
-    if dmin[] <= 0 || n0[] < n0in
-        if cbias*z[4*i0 + pp[] - 3] < z[4*n0[] + pp[] - 3]
-            ipn4 = 4*(i0 + n0[])
-
-            for j4 in 4*i0:4:2*(i0 + n0[] - 1)
+    qmax_local = qmax
+    if dmin[] <= zero_t || n0[] < n0in
+        if cbias * z[4 * i0 + pp[] - 3] < z[4 * n0[] + pp[] - 3]
+            ipn4 = 4 * (i0 + n0[])
+            for j4 in 4 * i0:4:2 * (i0 + n0[] - 1)
                 temp = z[j4 - 3]
                 z[j4 - 3] = z[ipn4 - j4 - 3]
                 z[ipn4 - j4 - 3] = temp
@@ -205,95 +188,75 @@ function lasq3!(i0::S, n0::AbstractArray{S}, z::AbstractVector{T},
                 z[j4 - 1] = z[ipn4 - j4 - 5]
                 z[ipn4 - j4 - 5] = temp
 
-                temp = z[j4 - 1]
-                z[j4 - 1] = z[ipn4 - j4 - 5]
-                z[ipn4 - j4 - 5] = temp
-
                 temp = z[j4]
                 z[j4] = z[ipn4 - j4 - 4]
                 z[ipn4 - j4 - 4] = temp
             end
-
             if n0[] - i0 <= 4
-                z[4*n0[] + pp[] - 1] = z[4*i0 + pp[] - 1]
-                z[4*n0[] - pp[]] = z[4*i0 - pp[]]
+                z[4 * n0[] + pp[] - 1] = z[4 * i0 + pp[] - 1]
+                z[4 * n0[] - pp[]] = z[4 * i0 - pp[]]
             end
-            dmin2 .= min(dmin2[], z[4*n0[] + pp[] - 1])
-            z[4*n0[] + pp[] - 1] = min(z[4*n0[] + pp[] - 1],
-                                       z[4*i0 + pp[] - 1],
-                                       z[4*i0 + pp[] + 3])
-            z[4*n0[] - pp[]] = min(z[4*n0[] - pp[]],
-                                       z[4*i0 - pp[]],
-                                       z[4*i0 - pp[] + 4])
-            qmax = max(qmax, z[4*i0 + pp[] - 3], z[4*i0 + pp[] + 1])
-            dmin .= -zero(T)
+            dmin2[] = min(dmin2[], z[4 * n0[] + pp[] - 1])
+            z[4 * n0[] + pp[] - 1] = min(z[4 * n0[] + pp[] - 1], z[4 * i0 + pp[] - 1], z[4 * i0 + pp[] + 3])
+            z[4 * n0[] - pp[]] = min(z[4 * n0[] - pp[]], z[4 * i0 - pp[]], z[4 * i0 - pp[] + 4])
+            qmax_local = max(qmax_local, z[4 * i0 + pp[] - 3], z[4 * i0 + pp[] + 1])
+            dmin[] = -zero_t
         end
     end
 
-    lasq4!(i0, n0[], z, pp[], n0in, dmin[], dmin1[], dmin2[], dn[], dn1[],
-            dn2[], tau, ttype, g)
-    
+    lasq4!(i0, n0[], z, pp[], n0in, dmin[], dmin1[], dmin2[], dn[], dn1[], dn2[], tau, ttype, g)
+
 @label seventy
+    lasq5!(i0, n0[], z, pp[], tau[], sigma[], dmin, dmin1, dmin2, dn, dn1, dn2, ieee, eps)
+    ndiv[] += (n0[] - i0 + 2)
+    iter[] += 1
 
-    lasq5!(i0, n0[], z, pp[], tau[], sigma[], dmin, dmin1, dmin2, dn, dn1,
-            dn2, ieee, prec)
-
-    ndiv .+= (n0[] - i0 + 2)
-
-    iter .+= 1
-
-    if dmin[] >= 0 && dmin1[] >= 0
+    if dmin[] >= zero_t && dmin1[] >= zero_t
         @goto ninety
-    
-    elseif (dmin[] < 0 && dmin1[] > 0 && z[4*(n0[] - 1) - pp[]] < tol * (sigma[] + dn1[])
-        && abs(dn[]) < tol*sigma[])
-        z[4*(n0[] - 1) - pp[] + 2] = zero(T)
-        dmin .= zero(T)
+    elseif dmin[] < zero_t && dmin1[] > zero_t &&
+           z[4 * (n0[] - 1) - pp[]] < tol * (sigma[] + dn1[]) &&
+           abs(dn[]) < tol * sigma[]
+        z[4 * (n0[] - 1) - pp[] + 2] = zero_t
+        dmin[] = zero_t
         @goto ninety
-    elseif dmin[] < 0
-        nfail .+= 1
-
+    elseif dmin[] < zero_t
+        nfail[] += 1
         if ttype[] < -22
-            #failed twice. Play it safe
-            tau .= zero(T)
-        
-        elseif dmin1[] > 0
-            #late failure. Gives excellent shift
-            tau .= (tau[] + dmin[])*(one(T) - 2*one(T)*prec)
-            ttype .-= 11
+            tau[] = zero_t
+        elseif dmin1[] > zero_t
+            tau[] = (tau[] + dmin[]) * (one_t - two_t * eps)
+            ttype[] -= 11
         else
-            tau *= qurtr
-            ttype .-= 12
+            tau[] = qurtr * tau[]
+            ttype[] -= 12
         end
         @goto seventy
     elseif isnan(dmin[])
-        if tau[] == 0
+        if tau[] == zero_t
             @goto eighty
         else
-            tau .= zero(T)
+            tau[] = zero_t
+            @goto seventy
         end
     else
-        #Possible underflow. Play it safe
         @goto eighty
     end
 
 @label eighty
-
-    lasq6!(i0, n0[], z, pp[], dmin, dmin1, dmin2, dn , dn1, dn2)
-    ndiv .+= (n0[] - i0 + 2)
-    iter .+= 1
-    tau .= zero(T) 
+    lasq6!(i0, n0[], z, pp[], dmin, dmin1, dmin2, dn, dn1, dn2)
+    ndiv[] += (n0[] - i0 + 2)
+    iter[] += 1
+    tau[] = zero_t
 
 @label ninety
-
     if tau[] < sigma[]
-        desig .+=  tau[]
+        desig[] += tau[]
         t = sigma[] + desig[]
-        desig .-= (t - sigma[])
+        desig[] -= (t - sigma[])
     else
         t = sigma[] + tau[]
-        desig .+= sigma[] - (t - tau[]) 
+        desig[] = sigma[] - (t - tau[]) + desig[]
     end
-    sigma .= t
+    sigma[] = t
 
 end

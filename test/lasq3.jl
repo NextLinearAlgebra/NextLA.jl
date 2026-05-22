@@ -52,6 +52,7 @@ const lib = "../OpenBLAS/libopenblas_cooperlakep-r0.3.31.dev.so"
             ndiv_copy = Ref{BlasInt}(0)
 
             ieee = (i % 2 == 0) ? true : false
+            ieee_i = Ref{BlasInt}(ieee ? 1 : 0)
 
             ttype = Int64[0]
             ttype_copy = Ref{BlasInt}(0)
@@ -85,7 +86,7 @@ const lib = "../OpenBLAS/libopenblas_cooperlakep-r0.3.31.dev.so"
                         i0, n0_copy, z_copy,
                         pp_copy, dmin_copy, sigma_copy,
                         desig_copy, qmax, nfail_copy,
-                        iter_copy, ndiv_copy, ieee,
+                        iter_copy, ndiv_copy, ieee_i,
                         ttype_copy, dmin1_copy, dmin2_copy,
                         dn_copy, dn1_copy, dn2_copy,
                         g_copy, tau_copy,
@@ -103,7 +104,7 @@ const lib = "../OpenBLAS/libopenblas_cooperlakep-r0.3.31.dev.so"
                         Ref{Float64}, Ref{Float64}),
                         i0, n0_copy, z_copy, pp_copy, dmin_copy, 
                         sigma_copy, desig_copy, qmax, nfail_copy,
-                        iter_copy, ndiv_copy, ieee, ttype_copy,
+                        iter_copy, ndiv_copy, ieee_i, ttype_copy,
                         dmin1_copy, dmin2_copy, dn_copy, dn1_copy,
                         dn2_copy, g_copy, tau_copy,
                     )

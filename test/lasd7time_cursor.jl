@@ -18,13 +18,12 @@ start = 10
 stop = 100010
 npts = 10
 xs = unique(round.(Int, 10 .^ range(log10(start), log10(stop), length=npts)))
-# Keep only even numbers
-xs = filter(x -> iseven(x), xs)
 jul_f32 = zeros(Float64, 0)
 jul_f64 = zeros(Float64, 0)
 lapk_f32 = zeros(Float64, 0)
 lapk_f64 = zeros(Float64, 0)
-
+# Keep only even numbers
+xs = filter(x -> iseven(x), xs)
 #Test on inputs of size >100,000,000
 #Benchmark with single thread and with 32 threads
 function slasd7_time(icompq::Int64, nl::Int64, nr::Int64, sqre::Int64,
@@ -181,13 +180,13 @@ for T in [Float32, Float64]
             nl = block_size - 1
             nr = block_size
             sqre = 0
-            k = [0]
+            k = Ref{Int64}(0)
             
             n = nl + nr + 1
             m = n + sqre
             
             A = Bidiagonal((starting .+ (ending - starting) .* rand(T, i, i)), :U)
-            B1 = A[1:block_size-1, 1:block_size-1]
+            B1 = A[1:block_size, 1:block_size]
             B2 = A[block_size+1:end, block_size+1:end]
             U1, D1, V1 = svd(B1)
             U2, D2, V2 = svd(B2)
@@ -198,13 +197,11 @@ for T in [Float32, Float64]
             z = zeros(T, n)
             zw = zeros(T, m)
             vf = zeros(T, m)
-            vf[1:nl] .= V1[1,:]
-            vf[nl+1] = 1.5
+            vf[1:nl+1] .= V1[1,:]
             vf[nl+2:m] .= V2[1,:]
             vfw = zeros(T,m)
             vl = zeros(T, m)
-            vl[1:nl] .= V1[end,:]
-            vl[nl+1] = 0.5
+            vl[1:nl+1] .= V1[end,:]
             vl[nl+2:m] .= V2[end,:]
             vlw = zeros(T, m)
             
@@ -221,14 +218,14 @@ for T in [Float32, Float64]
             idxq[1:nl] = reverse(Vector(1:nl))
             idxq[nl+2:end] = reverse(Vector(1:nr))
             perm = zeros(Int64, n)
-            givptr = [0]
+            givptr = Ref{Int64}(0)
             ldgcol = n
             ldgnum = n
             givnum = zeros(T, ldgnum, 2)
             givcol = zeros(Int64, ldgcol, 2)
-            c = [T(0)]
-            s = [T(0)]
-            info = [0]
+            c = Ref{T}(0)
+            s = Ref{T}(0)
+            info = Ref{Int64}(0)
         
             k_native = Ref{BlasInt}(T(0))
             D_native  = deepcopy(D)
@@ -251,7 +248,7 @@ for T in [Float32, Float64]
             info_native = Ref{BlasInt}(T(0))
 
             b = @benchmarkable begin
-                NextLA.lasd7!(
+                NextLA.lasd7_cursor!(
                     $icompq, $nl, $nr, $sqre,
                     k, D, z, zw, vf, vfw, vl, vlw,
                     $alpha, $beta, dsigma,
@@ -324,9 +321,8 @@ for T in [Float32, Float64]
         append!(jul_f64, jul)
         append!(lapk_f64, lapk)
     end
-        
 end
-savefig(plt, "../images/lasd7_timings.png")
+savefig(plt, "../images/lasd7_cursor_timings.png")
 results = DataFrame(
         input_size = xs,
         julia_float32 = jul_f32,
@@ -334,4 +330,4 @@ results = DataFrame(
         julia_float64 = jul_f64,
         lapack_float64 = lapk_f64,
     )
-CSV.write("../timing-data/lasd7_timings.csv", results)
+CSV.write("../timing-data/lasd7_cursor_timings.csv", results)

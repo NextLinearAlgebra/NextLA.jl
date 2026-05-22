@@ -161,7 +161,7 @@ function lasq5!(i0::S, n0::S, z::AbstractVector{T}, pp::S,
             j4p2 = j4 + 2*pp - 1
             z[j4 - 2] = dnm2[] + z[j4p2]
 
-            if dnm2 < 0
+            if dnm2[] < 0
                 return
             else
                 z[j4] = z[j4p2 + 2]*(z[j4p2]/z[j4 - 2])
@@ -193,6 +193,7 @@ function lasq5!(i0::S, n0::S, z::AbstractVector{T}, pp::S,
                 for j4 in 4*i0:4:4*(n0-3)
                     z[j4 - 2] = d + z[j4-1]
                     temp = z[j4 + 1] / z[j4 - 2]
+                    d = d*temp - tau
                     if d < dthresh
                         d = zero(T)
                     end
@@ -204,6 +205,7 @@ function lasq5!(i0::S, n0::S, z::AbstractVector{T}, pp::S,
                 for j4 in 4*i0:4:4*(n0-3)
                     z[j4 - 3] = d + z[j4]
                     temp = z[j4 + 2] / z[j4 - 3]
+                    d = d*temp - tau
                     if d < dthresh
                         d = zero(T)
                     end
