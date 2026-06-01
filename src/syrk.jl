@@ -13,15 +13,16 @@ const TILE_DIM = 32
     gi, gj = @index(Group,   NTuple)
     i,  j  = @index(Local,   NTuple)
 
-    TILE_DIM = @uniform @groupsize()[1]
+    if gj <= gi
+        TILE_DIM = @uniform @groupsize()[1]
 
-    tile1 = @localmem eltype(C) (TILE_DIM + BANK, TILE_DIM)
-    tile2 = @localmem eltype(C) (TILE_DIM + BANK, TILE_DIM)
+        tile1 = @localmem eltype(C) (TILE_DIM + BANK, TILE_DIM)
+        tile2 = @localmem eltype(C) (TILE_DIM + BANK, TILE_DIM)
 
-    outval = @private eltype(C) 1
-    @inbounds outval[1] = zero(eltype(C))
+        outval = @private eltype(C) 1
+        @inbounds outval[1] = zero(eltype(C))
 
-    @uniform NUM_TILES = ceil(Int, M / TILE_DIM)
+        @uniform NUM_TILES = ceil(Int, M / TILE_DIM)
 
         for t in 0:(NUM_TILES - 1)
             I = (gi - 1) * TILE_DIM + i
@@ -62,6 +63,7 @@ const TILE_DIM = 32
         if I <= N && J <= N && I >= J
             @inbounds C[I, J] = alpha * outval[1] + beta * C[I, J]
         end
+    end
 end
 
 # wrapper function for the GEMM_ADD kernel
