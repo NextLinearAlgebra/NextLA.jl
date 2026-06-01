@@ -55,6 +55,9 @@ function lamch(::Type{T}, cmach) where {T <: Number}
 end
 
 include("NextLAMatrix.jl")
+include("TLR/TLRmodule.jl")
+using .TLRmodule: AbstractTileOrder, TileColMajor, TileRowMajor
+using .TLRmodule: TileFactorBuffer, TLRMatrix, GeneralTLRMatrix, similar_tlr, tile_linear_index
 include("lu.jl")
 include("trmm.jl")
 include("trsm.jl")

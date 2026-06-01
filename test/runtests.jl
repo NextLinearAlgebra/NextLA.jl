@@ -51,6 +51,7 @@ function matrix_generation(type, M, N; dist=:uniform, mode=:decay,
 end
 
 include("NextLAMatrix.jl")
+include("TLRMatrix.jl")
 include("lu.jl")
 include("unified_rectrxm.jl")
 include("trsm.jl")
