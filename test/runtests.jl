@@ -6,6 +6,7 @@ using Random
 
 include("lapack_helpers.jl")
 include("gpu_backends.jl")
+include("backend_test_helpers.jl")
 backends = available_backends()
 @info "Test backends" backends=[b[1] for b in backends]
 
@@ -70,3 +71,5 @@ include("ttqrt.jl")
 include("ttmqr.jl")
 include("pamm.jl")
 include("pemv.jl")
+include("gemm_batched.jl")
+include("syrk.jl")
