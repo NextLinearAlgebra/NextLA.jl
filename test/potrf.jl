@@ -1,3 +1,4 @@
+using NextLA
 using Test
 using CUDA
 using LinearAlgebra
