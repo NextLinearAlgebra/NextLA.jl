@@ -39,14 +39,11 @@ const TILE_DIM = 32
             end
             
 
-            # K = t * TILE_DIM + i
-            load_row = (gj - 1) * TILE_DIM + i
-            load_col = t * TILE_DIM + j
-            if load_col <= M && load_row <= N
-                val = trans in ('N', 'n') ? A[load_row, load_col] : A[load_col, load_row]
-                @inbounds tile2[j, i] = val
+            K_load = t * TILE_DIM + i
+            if K_load <= M && J <= N
+                @inbounds tile2[i, j] = trans in ('N', 'n') ? A[J, K_load] : A[K_load, J]
             else
-                @inbounds tile2[j, i] = zero(eltype(C))
+                @inbounds tile2[i, j] = zero(eltype(C))
             end
             
 
