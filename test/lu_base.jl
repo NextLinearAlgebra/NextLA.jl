@@ -62,7 +62,7 @@ function benchmark_op(op, reset_op, backend)
 end
 
 function run_lubase_benchmark()
-    n_sizes = [4, 8, 16, 32, 64]
+    n_sizes = [4, 8, 16, 32]
 
     println("="^90)
     @printf("%-6s | %-18s | %-18s | %-15s\n", 
