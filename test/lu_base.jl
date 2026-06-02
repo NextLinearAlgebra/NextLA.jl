@@ -66,7 +66,7 @@ function run_lubase_benchmark()
 
     println("="^90)
     @printf("%-6s | %-18s | %-18s | %-15s\n", 
-            "N", "Time Custom (ms)", "Time CPU LU (ms)", "Speedup (CPU/KA)")
+            "N", "Time Custom (ms)", "Time CUSOLVER (ms)", "Speedup (Ref/KA)")
     println("="^90)
 
     for n in n_sizes
@@ -83,19 +83,18 @@ function run_lubase_benchmark()
         time_custom_ns = benchmark_op(op_custom, reset_custom, backend)
         time_custom_ms = time_custom_ns / 1_000_000
 
-        # CPU Baseline (since GPU base cases are competing at small sizes)
-        A_cpu = copy(A_host)
-        A_cpu_init = copy(A_host)
-        op_cpu = () -> lu!(A_cpu)
-        reset_cpu = () -> copyto!(A_cpu, A_cpu_init)
+        # CUSOLVER Baseline
+        d_A_cusolver = CuArray(A_host)
+        op_cusolver = () -> CUDA.CUSOLVER.getrf!(d_A_cusolver)
+        reset_cusolver = () -> copyto!(d_A_cusolver, d_A_init)
         
-        time_cpu_ns = benchmark_op(op_cpu, reset_cpu, CPU())
-        time_cpu_ms = time_cpu_ns / 1_000_000
+        time_cusolver_ns = benchmark_op(op_cusolver, reset_cusolver, backend)
+        time_cusolver_ms = time_cusolver_ns / 1_000_000
 
-        ratio = time_cpu_ms / time_custom_ms
+        ratio = time_cusolver_ms / time_custom_ms
 
         @printf("%6d | %18.4f | %18.4f | %15.4fx\n", 
-                n, time_custom_ms, time_cpu_ms, ratio)
+                n, time_custom_ms, time_cusolver_ms, ratio)
         
         CUDA.reclaim()
     end
