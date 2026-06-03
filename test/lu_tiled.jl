@@ -48,7 +48,7 @@ function benchmark_op(op, reset_op, backend)
 end
 
 function run_lutiled_benchmark()
-    n_sizes = [32, 64, 128, 256, 512, 1024]
+    n_sizes = [32, 64, 128, 256, 512, 1024, 2048, 4096]
     tile_size = 16
     println("="^90)
     @printf("%-6s | %-18s | %-18s | %-15s\n", "N", "Time Custom (ms)", "Time CUSOLVER (ms)", "Speedup (Ref/KA)")
