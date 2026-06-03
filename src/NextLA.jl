@@ -86,5 +86,6 @@ include("lauu2.jl")
 include("lauum.jl")
 include("syrk.jl")
 include("lu_base.jl")
+include("lu_tiled.jl")
 
 end
