@@ -2,20 +2,19 @@ export recgemm!
 
 function _gemm_dispatch!(alpha, A::AbstractMatrix, B::AbstractMatrix, beta, C::AbstractMatrix)
     # Base hardware dispatch (Terminal Node)
-    if eltype(A) == eltype(C)
-        CUBLAS.gemm!('N', 'N', alpha, A, B, beta, C)
+    TA, TB, TC = eltype(A), eltype(B), eltype(C)
+    
+    if TA == TB == TC && TC in (Float32, Float64)
+        CUBLAS.gemm!('N', 'N', TC(alpha), A, B, TC(beta), C)
+    elseif TA == Float16 && TB == Float16 && TC in (Float16, Float32)
+        CUBLAS.gemmEx!('N', 'N', alpha, A, B, beta, C)
     else
-        if eltype(A) == Float32 && eltype(C) == Float64
-            # gemmEx doesn't support Float32=Float64*Float64 or Float64=Float32*Float32 without proper type conversions in CUDA.jl
-            # Fallback to standard promotion
-            C .= alpha .* A * B .+ beta .* C
+        A_final = (TA == TC) ? A : TC.(A)
+        B_final = (TB == TC) ? B : TC.(B)
+        if TC in (Float32, Float64)
+            CUBLAS.gemm!('N', 'N', TC(alpha), A_final, B_final, TC(beta), C)
         else
-            try
-                CUBLAS.gemmEx!('N', 'N', alpha, A, B, beta, C)
-            catch e
-                # Provide a generic fallback for unsupported precision mixtures in CUBLAS
-                C .= alpha .* (A * B) .+ beta .* C
-            end
+            CUBLAS.gemmEx!('N', 'N', alpha, A_final, B_final, beta, C)
         end
     end
 end
