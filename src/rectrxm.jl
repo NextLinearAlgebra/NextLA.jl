@@ -445,7 +445,7 @@ function unified_rectrxm!(
 end
 
 function unified_rec_mixed(
-    func::Char, side::Char, uplo::Char,
+    func::Char, side::Char, uplo::Char, diag::Char,
     A::AbstractMixedPrec{T_Base},
     B::StridedMatrix,
     threshold::Int=256
@@ -457,11 +457,11 @@ function unified_rec_mixed(
 
         if eltype(A_block) == Float16 
             if B_type == eltype(A_block)
-                unified_rec(func, side, uplo, A_block, B, threshold; A_scale=A_scale)
+                unified_rec(func, side, uplo, diag, A_block, B, threshold; A_scale=A_scale)
             else 
                 B_quant, B_scale = quantize(B)
 
-                unified_rec(func, side, uplo, A_block, B_quant, threshold; A_scale=A_scale)
+                unified_rec(func, side, uplo, diag, A_block, B_quant, threshold; A_scale=A_scale)
 
                 B_dequant = dequantize(B_quant, B_scale, B_type)
                 copy!(B, B_dequant)
@@ -477,10 +477,10 @@ function unified_rec_mixed(
             end
         else
             if eltype(A.BaseCase) == B_type
-                unified_rec(func, side, uplo, A.BaseCase, B, threshold)
+                unified_rec(func, side, uplo, diag, A.BaseCase, B, threshold)
             else
                 B_converted = eltype(A.BaseCase).(B)
-                unified_rec(func, side, uplo, A.BaseCase, B_converted, threshold)
+                unified_rec(func, side, uplo, diag, A.BaseCase, B_converted, threshold)
                 B .= B_converted
             end
         end
