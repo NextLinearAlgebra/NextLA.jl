@@ -497,17 +497,26 @@ function unified_rec_mixed(
             B2 = view(B, :,         mid+1:n)
         end
 
-        OffDiag_block = A.OffDiag
+        # Handle FullMixedPrec properly
+        if hasproperty(A, :A21)
+            OffDiag_block = (uplo == 'L') ? A.A21 : A.A12
+        else
+            OffDiag_block = A.OffDiag
+        end
 
         if (side == 'L' && uplo == 'L' && func == 'S') || 
         (side == 'R' && uplo == 'U' && func == 'S') || 
         (side == 'L' && uplo == 'U' && func == 'M') || 
         (side == 'R' && uplo == 'L' && func == 'M')
         
-            unified_rec_mixed(func, side, uplo, A.A11, B1, threshold)
+            unified_rec_mixed(func, side, uplo, diag, A.A11, B1, threshold)
 
             A_type = eltype(OffDiag_block)
-            A_scale = A.offDiag_scale !== nothing ? A.offDiag_scale : 1.0f0
+            if hasproperty(A, :A21_scale)
+                A_scale = (uplo == 'L') ? (A.A21_scale !== nothing ? A.A21_scale : 1.0f0) : (A.A12_scale !== nothing ? A.A12_scale : 1.0f0)
+            else
+                A_scale = A.offDiag_scale !== nothing ? A.offDiag_scale : 1.0f0
+            end
             B_type = eltype(B) 
 
             if A_type != B_type
@@ -588,12 +597,16 @@ function unified_rec_mixed(
                 end
             end
 
-            unified_rec_mixed(func, side, uplo, A.A22, B2, threshold)
+            unified_rec_mixed(func, side, uplo, diag, A.A22, B2, threshold)
         else 
-            unified_rec_mixed(func, side, uplo, A.A22, B2, threshold)
+            unified_rec_mixed(func, side, uplo, diag, A.A22, B2, threshold)
 
             A_type = eltype(OffDiag_block)
-            A_scale = A.offDiag_scale !== nothing ? A.offDiag_scale : 1.0f0
+            if hasproperty(A, :A21_scale)
+                A_scale = (uplo == 'L') ? (A.A21_scale !== nothing ? A.A21_scale : 1.0f0) : (A.A12_scale !== nothing ? A.A12_scale : 1.0f0)
+            else
+                A_scale = A.offDiag_scale !== nothing ? A.offDiag_scale : 1.0f0
+            end
             B_type = eltype(B)
             
             if A_type != B_type
@@ -888,8 +901,18 @@ function unified_rec_mixed(
             end
         end
         
-        unified_rec_mixed(func, side, uplo, A11_trans, B1, threshold)
+        unified_rec_mixed(func, side, uplo, diag, A11_trans, B1, threshold)
     end
 
     return B
+end
+
+# overloaded unified_rec_mixed without diag for transpose
+function unified_rec_mixed(
+    func::Char, side::Char, uplo::Char,
+    A::TransposedMixedPrec,
+    B::StridedMatrix,
+    threshold::Int=256
+)
+    return unified_rec_mixed(func, side, uplo, 'N', A, B, threshold)
 end

@@ -17,7 +17,8 @@ function run_recgemm_benchmark()
         "[F16, F16, F32]"      => [Float16, Float16, Float32],
         "[F16, F16, F16, F32]"      => [Float16, Float16, Float16, Float32],
         "[F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float32],
-        "[F16, F32, F32]"      => [Float16, Float32, Float32]
+        "[F16, F32, F32]"      => [Float16, Float32, Float32],
+        "[F16, F32]"      => [Float16, Float32]
     )
 
     # Simplified dictionaries to store results

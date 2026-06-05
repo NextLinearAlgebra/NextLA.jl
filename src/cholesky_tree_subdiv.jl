@@ -67,7 +67,7 @@ function potrf_recursive!(A, block_size)
 
     # TRSM: A21 = A21 * inv(L11ᵀ)
     if (eltype(A11) == Float16)
-        unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A11, A21)
+        unified_rectrxm!('R', 'L', 'T', 'N', 1.0, 'S', A11, A21)
     else
         trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
     end
@@ -114,7 +114,7 @@ function potrf_recursive!(A:: SymmMixedPrec)
     potrf_recursive!(A.A11) 
 
     # TRSM: A21 = A21 * inv(L11ᵀ)
-    unified_rectrxm!('R', 'L', 'T', 1.0, 'S', TriMixedPrec(A.A11), A.OffDiag)
+    unified_rectrxm!('R', 'L', 'T', 'N', 1.0, 'S', TriMixedPrec(A.A11), A.OffDiag)
 
     # SYRK: A22 -= A21 * A21ᵀ
     recsyrk!(-1.0, A.OffDiag, 1.0, A.A22)
@@ -190,7 +190,7 @@ function potrf_recursive_B!(A, block_size)
     # TRSM: A21 = A21 * inv(L11ᵀ)
     # L11 = Matrix(A11)
     # A21_mat = Matrix(A21)
-    # unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A11, A21)
+    # unified_rectrxm!('R', 'L', 'T', 'N', 1.0, 'S', A11, A21)
     trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
     # A21 .= A21_mat
 
@@ -232,7 +232,7 @@ function potrf_recursive_C!(A, block_size)
     # L11 = Matrix(A11)
     # A21_mat = Matrix(A21)
     # CUBLAS.trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
-    unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A11, A21)
+    unified_rectrxm!('R', 'L', 'T', 'N', 1.0, 'S', A11, A21)
     # A21 .= A21_mat
 
     # SYRK: A22 -= A21 * A21ᵀ
@@ -272,7 +272,7 @@ function potrf_recursive_D!(A, block_size)
     # TRSM: A21 = A21 * inv(L11ᵀ)
     # L11 = Matrix(A11)
     # A21_mat = Matrix(A21)
-    unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A11, A21)
+    unified_rectrxm!('R', 'L', 'T', 'N', 1.0, 'S', A11, A21)
     # A21 .= A21_mat
 
     # SYRK: A22 -= A21 * A21ᵀ
