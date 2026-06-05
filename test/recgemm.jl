@@ -54,8 +54,15 @@ function run_recgemm_benchmark()
             T_out = precisions[end]
             alpha, beta = -1.0, 1.0
 
-            d_A = CuArray(randn(T_out, n, n) .* 0.1f0)
-            d_B = CuArray(randn(T_out, n, n) .* 0.1f0)
+            A_cpu = randn(T_out, n, n) .* 0.1f0
+            B_cpu = randn(T_out, n, n) .* 0.1f0
+            
+            # Make slightly diagonally dominant
+            A_cpu .+= Diagonal(fill(T_out(n * 0.1), n))
+            B_cpu .+= Diagonal(fill(T_out(n * 0.1), n))
+
+            d_A = CuArray(A_cpu)
+            d_B = CuArray(B_cpu)
             d_C_orig = CuArray(zeros(T_out, n, n))
 
             # Ground truth calculation
@@ -107,8 +114,16 @@ function run_recgemm_benchmark()
 
         for (name, T_prec) in Dict("CUBLAS F32" => Float32, "CUBLAS F64" => Float64)
             alpha, beta = T_prec(-1.0), T_prec(1.0)
-            d_A_cublas = CuArray(randn(T_prec, n, n))
-            d_B_cublas = CuArray(randn(T_prec, n, n))
+            
+            A_cpu = randn(T_prec, n, n) .* 0.1f0
+            B_cpu = randn(T_prec, n, n) .* 0.1f0
+            
+            # Make slightly diagonally dominant (consistent with above)
+            A_cpu .+= Diagonal(fill(T_prec(n * 0.1), n))
+            B_cpu .+= Diagonal(fill(T_prec(n * 0.1), n))
+
+            d_A_cublas = CuArray(A_cpu)
+            d_B_cublas = CuArray(B_cpu)
             d_C_cublas = CuArray(zeros(T_prec, n, n))
 
             backend = KernelAbstractions.get_backend(d_A_cublas)
