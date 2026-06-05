@@ -88,5 +88,6 @@ include("syrk.jl")
 include("lu_base.jl")
 include("lu_tiled.jl")
 include("recgemm.jl")
+include("reclu_mixed.jl")
 
 end
