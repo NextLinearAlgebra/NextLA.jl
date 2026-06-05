@@ -29,7 +29,7 @@ function get_runtime_recursive(d_A_master, d_B_master, n::Int, T_prec, op_char, 
     
     backend = KernelAbstractions.get_backend(A_perf)
     
-    op = () -> unified_rectrxm!(side, uplo, trans, alpha, op_char, A_perf, B_perf)
+    op = () -> unified_rectrxm!(side, uplo, trans, 'N', alpha, op_char, A_perf, B_perf)
     reset_op = () -> copyto!(B_perf, B_clean)
 
     min_time_ns = benchmark_op(op, reset_op, backend)
@@ -57,7 +57,7 @@ function get_runtime_mixed(d_A_master, d_B_master, n::Int, precisions, op_char, 
 
     op = () -> begin
         A_mixed_perf = TriMixedPrec(A_gpu, uplo; precisions=precisions)
-        unified_rectrxm!(side, uplo, trans, alpha, op_char, A_mixed_perf, B_perf)
+        unified_rectrxm!(side, uplo, trans, 'N', alpha, op_char, A_mixed_perf, B_perf)
     end
     
     reset_op = () -> copyto!(B_perf, B_clean)

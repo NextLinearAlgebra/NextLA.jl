@@ -58,10 +58,10 @@ function check_accuracy()
                 copyto!(B_test_gpu, B_cpu)
 
                 if startswith(name, "Recursive")
-                    unified_rectrxm!(side, uplo, trans, alpha, func, T_Base.(A_test_gpu), B_test_gpu)
+                    unified_rectrxm!(side, uplo, trans, 'N', alpha, func, T_Base.(A_test_gpu), B_test_gpu)
                 else
                     A_mixed = TriMixedPrec(A_test_gpu, uplo; precisions=prec_list)
-                    unified_rectrxm!(side, uplo, trans, alpha, func, A_mixed, B_test_gpu)
+                    unified_rectrxm!(side, uplo, trans, 'N', alpha, func, A_mixed, B_test_gpu)
                 end
 
                 error_norm = norm(Float64.(B_test_gpu) .- B_sol_gpu)

@@ -166,6 +166,7 @@ function unified_rectrxm!(
         side::Char, 
         uplo::Char, 
         transpose::Char, 
+        diag::Char,
         alpha::Number, 
         func::Char, 
         A::AbstractMatrix, 
@@ -184,16 +185,22 @@ function unified_rectrxm!(
         B .= alpha .* B
         
     end
-    unified_rec(func, side, uplo, A, B, threshold)
+    unified_rec(func, side, uplo, diag, A, B, threshold)
     if func == 'M'
         B .= alpha .* B
     end
     return B
 end
 
+# overload for 7 arguments (default diag = 'N')
+function unified_rectrxm!(
+        side::Char, uplo::Char, transpose::Char, alpha::Number, func::Char, A::AbstractMatrix, B::AbstractMatrix
+    )
+    return unified_rectrxm!(side, uplo, transpose, 'N', alpha, func, A, B)
+end
 
 # unified rec for transposed matrices
-function unified_rec(func::Char, side::Char, uplo::Char,
+function unified_rec(func::Char, side::Char, uplo::Char, diag::Char,
     A::Transpose{T, M},
     B::StridedMatrix{T}, threshold::Int=256;
     A_scale::Float32=1.0f0
@@ -249,7 +256,7 @@ function unified_rec(func::Char, side::Char, uplo::Char,
        (side == 'L' && uplo == 'U' && func == 'M') ||
        (side == 'R' && uplo == 'L' && func == 'M')
 
-        unified_rec(func, side, uplo, A11, B1, threshold; A_scale = A_scale)
+        unified_rec(func, side, uplo, diag, A11, B1, threshold; A_scale = A_scale)
 
         if side == 'L'
             func == 'S' ? GEMM_SUB!(B2, A21, B1, A_scale) : GEMM_ADD!(A12, B2, B1, A_scale)
@@ -257,10 +264,10 @@ function unified_rec(func::Char, side::Char, uplo::Char,
             func == 'S' ? GEMM_SUB!(B2, B1, A12, A_scale) : GEMM_ADD!(B2, A21, B1, A_scale)
         end
 
-        unified_rec(func, side, uplo, A22, B2, threshold; A_scale = A_scale)
+        unified_rec(func, side, uplo, diag, A22, B2, threshold; A_scale = A_scale)
 
     else
-        unified_rec(func, side, uplo, A22, B2, threshold; A_scale = A_scale)
+        unified_rec(func, side, uplo, diag, A22, B2, threshold; A_scale = A_scale)
 
         if side == 'L'
             func == 'S' ? GEMM_SUB!(B1, A12, B2, A_scale) : GEMM_ADD!(B1, A21, B2, A_scale)
@@ -268,14 +275,23 @@ function unified_rec(func::Char, side::Char, uplo::Char,
             func == 'S' ? GEMM_SUB!(B1, B2, A21, A_scale) : GEMM_ADD!(B1, A12, B2, A_scale)
         end
 
-        unified_rec(func, side, uplo, A11, B1, threshold; A_scale = A_scale)
+        unified_rec(func, side, uplo, diag, A11, B1, threshold; A_scale = A_scale)
     end
 
     return B
 end
 
-# unified rec with no mixed prec
+# overloaded without diag for standard matrices
 function unified_rec(func::Char, side::Char, uplo::Char,
+    A::Union{Transpose{T, M}, StridedMatrix{T}},
+    B::StridedMatrix{T}, threshold::Int=256;
+    A_scale::Float32=1.0f0
+) where {T <: AbstractFloat, M <: AbstractMatrix{T}}
+    return unified_rec(func, side, uplo, 'N', A, B, threshold; A_scale=A_scale)
+end
+
+# unified rec with no mixed prec
+function unified_rec(func::Char, side::Char, uplo::Char, diag::Char,
     A::StridedMatrix{T},
     B::StridedMatrix{T}, threshold::Int=256;
     A_scale::Float32=1.0f0) where T <: AbstractFloat
@@ -335,7 +351,7 @@ function unified_rec(func::Char, side::Char, uplo::Char,
         (side == 'L' && uplo == 'U' && func == 'M') || 
         (side == 'R' && uplo == 'L' && func == 'M')
 
-        unified_rec(func, side, uplo, A11, B1, threshold; A_scale = A_scale)
+        unified_rec(func, side, uplo, diag, A11, B1, threshold; A_scale = A_scale)
 
         # GEMM update in mixed precision if deep enough
         if side == 'L'
@@ -356,11 +372,11 @@ function unified_rec(func::Char, side::Char, uplo::Char,
             end
         end
 
-        unified_rec(func, side, uplo, A22, B2, threshold; A_scale = A_scale)
+        unified_rec(func, side, uplo, diag, A22, B2, threshold; A_scale = A_scale)
 
     # second half
     else
-        unified_rec(func, side, uplo, A22, B2, threshold; A_scale = A_scale)
+        unified_rec(func, side, uplo, diag, A22, B2, threshold; A_scale = A_scale)
 
         if side == 'L'
             if func == 'S'
@@ -380,7 +396,7 @@ function unified_rec(func::Char, side::Char, uplo::Char,
             end
         end
 
-        unified_rec(func, side, uplo, A11, B1, threshold; A_scale = A_scale)
+        unified_rec(func, side, uplo, diag, A11, B1, threshold; A_scale = A_scale)
     end
 
     return B
@@ -422,6 +438,7 @@ function unified_rectrxm!(
         side::Char, 
         uplo::Char, 
         trans::Char, 
+        diag::Char,
         alpha::Number, 
         func::Char, 
         A::AbstractMixedPrec, 
@@ -437,11 +454,17 @@ function unified_rectrxm!(
         threshold = 256
         B .= alpha .* B
     end
-    unified_rec_mixed(func, side, uplo, A, B, threshold)
+    unified_rec_mixed(func, side, uplo, diag, A, B, threshold)
     if func == 'M'
         B .= alpha .* B
     end
     return B
+end
+
+function unified_rectrxm!(
+        side::Char, uplo::Char, trans::Char, alpha::Number, func::Char, A::AbstractMixedPrec, B::StridedMatrix
+    )
+    return unified_rectrxm!(side, uplo, trans, 'N', alpha, func, A, B)
 end
 
 function unified_rec_mixed(
@@ -699,7 +722,7 @@ end
 
 # mixed precision rectrxm for transpose
 function unified_rec_mixed(
-    func::Char, side::Char, uplo::Char,
+    func::Char, side::Char, uplo::Char, diag::Char,
     A::TransposedMixedPrec,
     B::StridedMatrix,
     threshold::Int=256
@@ -711,16 +734,16 @@ function unified_rec_mixed(
         scale = A_orig.base_scale !== nothing ? A_orig.base_scale : 1.0f0
         if eltype(A_block) == Float16
             B_converted = Float32.(B)
-            unified_rec(func, side, uplo, transpose(Float32.(A)), B_converted, threshold; A_scale=scale)
+            unified_rec(func, side, uplo, diag, transpose(Float32.(A)), B_converted, threshold; A_scale=scale)
             copy!(B, B_converted)
         else
             A_block_transposed = transpose(A_block) 
             if eltype(A_block) != eltype(B)
                 B_converted = eltype(A_block).(B)
-                unified_rec(func, side, uplo, A_block_transposed, B_converted, threshold; A_scale=scale)
+                unified_rec(func, side, uplo, diag, A_block_transposed, B_converted, threshold; A_scale=scale)
                 copy!(B, B_converted)
             else
-                unified_rec(func, side, uplo, A_block_transposed, B, threshold; A_scale=scale)
+                unified_rec(func, side, uplo, diag, A_block_transposed, B, threshold; A_scale=scale)
             end
         end
         return B
@@ -746,7 +769,7 @@ function unified_rec_mixed(
        (side == 'L' && uplo == 'U' && func == 'M') || 
        (side == 'R' && uplo == 'L' && func == 'M')
         
-        unified_rec_mixed(func, side, uplo, A11_trans, B1, threshold)
+        unified_rec_mixed(func, side, uplo, diag, A11_trans, B1, threshold)
         
         
         A_type = eltype(A_orig.OffDiag)
@@ -823,9 +846,9 @@ function unified_rec_mixed(
             end
         end
         
-        unified_rec_mixed(func, side, uplo, A22_trans, B2, threshold)
+        unified_rec_mixed(func, side, uplo, diag, A22_trans, B2, threshold)
     else 
-        unified_rec_mixed(func, side, uplo, A22_trans, B2, threshold)
+        unified_rec_mixed(func, side, uplo, diag, A22_trans, B2, threshold)
 
         A_type = eltype(A_orig.OffDiag)
         A_scale = A_orig.offDiag_scale !== nothing ? A_orig.offDiag_scale : 1.0f0

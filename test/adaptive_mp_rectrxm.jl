@@ -109,7 +109,7 @@ function run_depot_benchmark()
                 T_Base = prec_list[end]
                 A_mixed_gpu = TriMixedPrec(CuArray(A_cpu), uplo; precisions=prec_list)
                 B_gpu = CuArray{T_Base}(B_cpu)
-                unified_rectrxm!(side, uplo, trans, alpha, func, A_mixed_gpu, B_gpu)
+                unified_rectrxm!(side, uplo, trans, 'N', alpha, func, A_mixed_gpu, B_gpu)
 
                 error_norm = norm(CuArray{Float64}(B_gpu) .- B_solution_gpu_alpha)
                 solution_norm = norm(B_solution_gpu_alpha)
@@ -128,7 +128,7 @@ function run_depot_benchmark()
                     # Inside the benchmark loop, always reset B_gpu_perf to its original state
                     copyto!(B_gpu_perf, B_clean_copy)
                     # The actual function call to be timed
-                    unified_rectrxm!(side, uplo, trans, alpha, func, A_mixed_perf, B_gpu_perf)
+                    unified_rectrxm!(side, uplo, trans, 'N', alpha, func, A_mixed_perf, B_gpu_perf)
                 end
 
                 runtime_ms = perf_time_ns / 1_000_000

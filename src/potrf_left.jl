@@ -624,7 +624,7 @@ function cholesky_lower_left!(A)
         # update the panel to the right if we aren't at the end yet
         if k_end < N
             A_off_diag = view(A, (k_end + 1):N, k:k_end)
-            unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A_diag, A_off_diag)
+            unified_rectrxm!('R', 'L', 'T', 'N', 1.0, 'S', A_diag, A_off_diag)
             # CUBLAS.trsm!('R', 'L', 'T', 'N', one(eltype(A)), A_diag, A_off_diag)
         end
     end
@@ -672,7 +672,7 @@ function cholesky_lower_left_profiled!(A)
             A_off_diag = view(A, (k_end + 1):N, k:k_end)
             
             t_trsm += CUDA.@elapsed begin
-                unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A_diag, A_off_diag)
+                unified_rectrxm!('R', 'L', 'T', 'N', 1.0, 'S', A_diag, A_off_diag)
                 KernelAbstractions.synchronize(backend) 
             end
         end

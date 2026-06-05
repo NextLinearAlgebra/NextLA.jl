@@ -26,7 +26,7 @@ function get_runtime_recursive(A_cpu, B_cpu, n::Int, T_prec, op_char, side, uplo
     B_perf = copy(B_clean)
     backend = KernelAbstractions.get_backend(A_perf)
     
-    op = () -> unified_rectrxm!(side, uplo, trans, alpha, op_char, A_perf, B_perf)
+    op = () -> unified_rectrxm!(side, uplo, trans, 'N', alpha, op_char, A_perf, B_perf)
     reset_op = () -> copyto!(B_perf, B_clean)
 
     min_time_ns = benchmark_op(op, reset_op, backend)
@@ -47,7 +47,7 @@ function get_runtime_mixed(A_cpu, B_cpu, n::Int, precisions, op_char, side, uplo
 
     op = () -> begin
         A_mixed_perf = TriMixedPrec(A_gpu, uplo; precisions=precisions)
-        unified_rectrxm!(side, uplo, trans, alpha, op_char, A_mixed_perf, B_perf)
+        unified_rectrxm!(side, uplo, trans, 'N', alpha, op_char, A_mixed_perf, B_perf)
     end
     
     reset_op = () -> copyto!(B_perf, B_clean)

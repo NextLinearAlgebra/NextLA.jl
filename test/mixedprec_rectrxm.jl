@@ -68,10 +68,10 @@ function run_all_tests()
 
                 # Execute once for accuracy check
                 if startswith(name, "Recursive")
-                    unified_rectrxm!(side, uplo, trans, alpha, func, CuArray{T_Base}(A_test_gpu), B_test_gpu)
+                    unified_rectrxm!(side, uplo, trans, 'N', alpha, func, CuArray{T_Base}(A_test_gpu), B_test_gpu)
                 else
                     A_mixed = TriMixedPrec(A_test_gpu, uplo; precisions=prec_list)
-                    unified_rectrxm!(side, uplo, trans, alpha, func, A_mixed, B_test_gpu)
+                    unified_rectrxm!(side, uplo, trans, 'N', alpha, func, A_mixed, B_test_gpu)
                 end
 
                 error_norm = norm(CuArray{Float64}(B_test_gpu) .- B_sol_gpu)
@@ -87,14 +87,14 @@ function run_all_tests()
                     B_perf = CuArray{T_Base}(B_cpu)
                     perf_time_ns = run_manual_benchmark(backend) do
                         copyto!(B_perf, B_clean_copy)
-                        unified_rectrxm!(side, uplo, trans, alpha, func, A_perf, B_perf)
+                        unified_rectrxm!(side, uplo, trans, 'N', alpha, func, A_perf, B_perf)
                     end
                 else
                     A_mixed_perf = TriMixedPrec(A_test_gpu, uplo; precisions=prec_list)
                     B_perf = CuArray{T_Base}(B_cpu)
                     perf_time_ns = run_manual_benchmark(backend) do
                         copyto!(B_perf, B_clean_copy)
-                        unified_rectrxm!(side, uplo, trans, alpha, func, A_mixed_perf, B_perf)
+                        unified_rectrxm!(side, uplo, trans, 'N', alpha, func, A_mixed_perf, B_perf)
                     end
                 end
                 runtime_ms = perf_time_ns / 1_000_000

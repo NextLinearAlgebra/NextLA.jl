@@ -52,7 +52,7 @@
 #                                 A_gpu_before = copy(A_gpu)
 
 #                                 # Perform the GPU operation using `unified_rectrxm!`
-#                                 unified_rectrxm!(side, uplo, trans, alpha, func, A_gpu, B_gpu)
+#                                 unified_rectrxm!(side, uplo, trans, 'N', alpha, func, A_gpu, B_gpu)
 
 #                                 # Perform the baseline operation using BLAS `trsm!` or `trmm!`
 #                                 if func == 'S'
@@ -216,7 +216,7 @@ end
 
                                         # verify_precision_layers!(A_mixed, prec_list) # make sure the layers have the right precision
 
-                                        unified_rectrxm!(side, uplo, trans, alpha, func, A_mixed, B_gpu)
+                                        unified_rectrxm!(side, uplo, trans, 'N', alpha, func, A_mixed, B_gpu)
 
                                         error_norm = norm(B_gpu .- B_solution_gpu)
                                         solution_norm = norm(B_solution_gpu)
