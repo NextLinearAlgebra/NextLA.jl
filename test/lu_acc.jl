@@ -33,14 +33,11 @@ function get_accuracy_pure_lu(A_fp64::CuMatrix, T_prec::DataType)
 end
 
 function get_accuracy_mixed_lu(A_fp64::CuMatrix, precisions::Vector)
-    n = size(A_fp64, 1)
-    
     # Make a copy for factorization
     A_mixed_input = FullMixedPrec(copy(A_fp64); precisions=precisions)
 
-    # Threshold where we stop recursion and hit the base case (e.g. CUSOLVER)
-    threshold = 256
-    lu_recursive_mixed!(A_mixed_input, threshold)
+    # Threshold removed to match the new pure-recursive signature
+    lu_recursive_mixed!(A_mixed_input)
 
     # Reconstruct matrix
     A_result = reconstruct_matrix(A_mixed_input)
@@ -96,7 +93,7 @@ function check_lu_accuracy()
         A_fp64 = CuArray(A_cpu)
 
         for (name, prec_list) in pure_scenarios
-            T_prec = prec_list[1]
+            T_prec = prec_list[end] #i assume this should be end
             rel_err = get_accuracy_pure_lu(A_fp64, T_prec)
             push!(all_results[name], -log10(rel_err))
             println("  $name | Rel. Error: $(round(rel_err, sigdigits=3))")
