@@ -710,7 +710,7 @@ function unified_rec_mixed(
                 end
             end
             
-            unified_rec_mixed(func, side, uplo, A.A11, B1, threshold)
+            unified_rec_mixed(func, side, uplo, diag, A.A11, B1, threshold)
         end
 
         return B
