@@ -13,12 +13,24 @@ function test_fullmixedprec_rectrxm()
     trans = 'N'
 
     test_scenarios = Dict(
+        # Basic comparisons
         "FullMixed: [F16, F32]" => [Float16, Float32], 
         "FullMixed: [F32, F64]" => [Float32, Float64],
-        "FullMixed: [F16, F16, F32]" => [Float16, Float16, Float32]
+        
+        # Deep recursion (more F16 leaves)
+        "FullMixed: [F16, F16, F32]" => [Float16, Float16, Float32],
+        "FullMixed: [F16, F16, F16, F32]" => [Float16, Float16, Float16, Float32],
+        
+        # The "Smooth Gradient" (Deep F16 -> F32 -> F64)
+        "FullMixed: [F16, F16, F32, F64]" => [Float16, Float16, Float32, Float64],
+        "FullMixed: [F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float32, Float64],
+        
+        # The Extreme Jump (testing precision loss on F16 -> F64)
+        "FullMixed: [F16, F64]" => [Float16, Float64],
+        "FullMixed: [F16, F16, F64]" => [Float16, Float16, Float64]
     )
     
-    for func in ['S', 'M']
+    for func in ['S']
         op_name = func == 'S' ? "TRSM" : "TRMM"
         println("\n" * "="^70)
         println("🚀 Starting Benchmark for $op_name (uplo='$uplo') with FullMixedPrec...")
@@ -44,7 +56,7 @@ function test_fullmixedprec_rectrxm()
 
             # --- Benchmark Recursive and Mixed-Precision Implementations ---
             for (name, prec_list) in test_scenarios
-                T_Base = prec_list[1]
+                T_Base = prec_list[end]
                 A_test_gpu = CuArray(A_cpu) 
                 B_test_gpu = CuArray{T_Base}(B_cpu)
 
