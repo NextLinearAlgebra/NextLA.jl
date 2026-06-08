@@ -18,11 +18,13 @@ function lu_recursive_mixed!(A::FullMixedPrec{T_Base}, threshold::Int) where {T_
     # 1 & 5. Base Case
     if n <= threshold
         if A.BaseCase !== nothing
-            # Note: CUSOLVER.getrf! performs partial pivoting by default.
-            # If your matrix is diagonally dominant, the pivots will be the identity.
-            # Otherwise, unpivoted LU requires a custom GPU kernel here to avoid scrambling 
-            # the block structure without applying permutations to the rest of the matrix.
-            CUSOLVER.getrf!(A.BaseCase)
+            if eltype(A.BaseCase) == Float16
+                A_f32 = Float32.(A.BaseCase)
+                CUSOLVER.getrf!(A_f32)
+                A.BaseCase .= Float16.(A_f32)
+            else
+                CUSOLVER.getrf!(A.BaseCase)
+            end
         end
         return
     end

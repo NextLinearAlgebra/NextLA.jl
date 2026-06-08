@@ -10,7 +10,14 @@ function get_accuracy_pure_lu(A_fp64::CuMatrix, T_prec::DataType)
     n = size(A_to_factor, 1)
     
     # We use CUSOLVER.getrf! as the pure LU base case for standard matrices
-    CUSOLVER.getrf!(A_to_factor)
+    # CUSOLVER.getrf!(A_to_factor)
+    if T_prec == Float16
+        A_f32 = Float32.(A_to_factor)
+        CUSOLVER.getrf!(A_f32)
+        A_to_factor .= Float16.(A_f32)
+    else
+        CUSOLVER.getrf!(A_to_factor)
+    end
     
     # Reconstruct A = L * U
     A_cpu = Matrix(A_to_factor)
