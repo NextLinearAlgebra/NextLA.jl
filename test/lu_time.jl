@@ -6,7 +6,10 @@ using KernelAbstractions
 
 include("benchmark.jl")
 
-# --- Timing Helper Function ---
+# ==============================================================================
+# --- Performance Timing Helper Functions ---
+# ==============================================================================
+
 function benchmark_op(op, reset_op, backend)
     reset_op()
     op()
@@ -23,36 +26,13 @@ function benchmark_op(op, reset_op, backend)
 end
 
 function run_time_pure_lu(A_fp64::CuMatrix, T_prec::DataType)
-    backend = KernelAbstractions.get_backend(A_fp64)
-
-    A_to_factor = T_prec.(A_fp64)
-    A_clean = copy(A_to_factor)
-    
-    if T_prec == Float16
-        A_f32 = similar(A_to_factor, Float32)
-        op = () -> begin
-            # Measure the necessary promotion/demotion as part of the F16 solver time
-            copyto!(A_f32, A_to_factor)
-            CUSOLVER.getrf!(A_f32)
-            copyto!(A_to_factor, A_f32)
-        end
-    else
-        op = () -> CUSOLVER.getrf!(A_to_factor)
-    end
-    
-    reset_op = () -> copyto!(A_to_factor, A_clean)
-
-    time_ns = benchmark_op(op, reset_op, backend)
-    return time_ns / 1_000_000
+    return run_time_mixed_lu(A_fp64, [T_prec])
 end
 
 function run_time_mixed_lu(A_fp64::CuMatrix, precisions::Vector)
     backend = KernelAbstractions.get_backend(A_fp64)
-    
     local A_mixed_input
     
-    # We rebuild the structure in the reset operation so it is NOT included in the timed block.
-    # Since LU is an in-place factorization, we must start with fresh data every run.
     reset_op = () -> begin
         A_mixed_input = FullMixedPrec(copy(A_fp64); precisions=precisions)
         KernelAbstractions.synchronize(backend)
@@ -64,13 +44,35 @@ function run_time_mixed_lu(A_fp64::CuMatrix, precisions::Vector)
     return time_ns / 1_000_000
 end
 
+function run_time_cusolver_lu(A_fp64::CuMatrix, T_prec::DataType)
+    backend = KernelAbstractions.get_backend(A_fp64)
+
+    A_to_factor = T_prec.(A_fp64)
+    A_clean = copy(A_to_factor)
+    
+    op = () -> CUSOLVER.getrf!(A_to_factor)
+    reset_op = () -> copyto!(A_to_factor, A_clean)
+
+    time_ns = benchmark_op(op, reset_op, backend)
+    return time_ns / 1_000_000
+end
+
+# ==============================================================================
+# --- Main Timing Driver ---
+# ==============================================================================
+
 function check_lu_time()
     n_values = [512, 1024, 2048, 4096, 8192, 16384, 32768]
 
     pure_scenarios = Dict(
-        "CUSOLVER F32" => [Float32],
-        "CUSOLVER F64" => [Float64],
-        "CUSOLVER F16" => [Float16]
+        "Pure16" => Float16,
+        "Pure32" => Float32,
+        "Pure64" => Float64
+    )
+    
+    cusolver_scenarios = Dict(
+        "CUSOLVER F32" => Float32,
+        "CUSOLVER F64" => Float64
     )
     
     mixed_scenarios = Dict(
@@ -90,12 +92,9 @@ function check_lu_time()
     )
 
     all_results = Dict()
-    for name in keys(pure_scenarios)
-        all_results[name] = Float64[]
-    end
-    for name in keys(mixed_scenarios)
-        all_results[name] = Float64[]
-    end
+    for name in keys(pure_scenarios);     all_results[name] = Float64[]; end
+    for name in keys(cusolver_scenarios); all_results[name] = Float64[]; end
+    for name in keys(mixed_scenarios);    all_results[name] = Float64[]; end
 
     println("="^50)
     println("Starting LU Performance Benchmark")
@@ -104,29 +103,32 @@ function check_lu_time()
     for n in n_values
         println("\n--- Testing Matrix Size: $n x $n ---")
         
-        # Diagonally dominant matrix for stable unpivoted LU
         A_cpu = rand(Float64, n, n)
         A_cpu .+= Diagonal(fill(n * 2.0, n))
         A_fp64 = CuArray(A_cpu)
 
-        for (name, prec_list) in pure_scenarios
-            T_prec = prec_list[1]
-            runtime_ms = run_time_pure_lu(A_fp64, T_prec)
+        println("\n  --- Standard CUSOLVER Scenarios ---")
+        for (name, T_prec) in cusolver_scenarios
+            runtime_ms = run_time_cusolver_lu(A_fp64, T_prec)
             push!(all_results[name], runtime_ms)
-            println("  $name | Runtime: $(round(runtime_ms, sigdigits=4)) ms")
+            println("    $name | Runtime: $(round(runtime_ms, sigdigits=4)) ms")
         end
 
+        println("\n  --- Pure Recursive Scenarios ---")
+        for (name, T_prec) in pure_scenarios
+            runtime_ms = run_time_pure_lu(A_fp64, T_prec)
+            push!(all_results[name], runtime_ms)
+            println("    $name | Runtime: $(round(runtime_ms, sigdigits=4)) ms")
+        end
+
+        println("\n  --- Mixed Precision Scenarios ---")
         for (name, prec_list) in mixed_scenarios
             runtime_ms = run_time_mixed_lu(A_fp64, prec_list)
             push!(all_results[name], runtime_ms)
-            println("  $name | Runtime: $(round(runtime_ms, sigdigits=4)) ms")
+            println("    $name | Runtime: $(round(runtime_ms, sigdigits=4)) ms")
         end
 
-        # Critical Memory Cleanup for large N
-        A_cpu = nothing
-        A_fp64 = nothing
-        GC.gc(true)
-        CUDA.reclaim()
+        A_cpu = nothing; A_fp64 = nothing; GC.gc(true); CUDA.reclaim()
     end
 
     # Plotting
@@ -136,14 +138,22 @@ function check_lu_time()
         ylabel="Runtime (ms) [Lower is Better]",
         xaxis=:log2,
         yaxis=:log10,
-        legend=:outertopleft,
+        legend=:outertopright,
         size=(1000, 700),
         dpi=300
     )
 
     for (name, results) in all_results
-        linestyle = occursin("CUSOLVER", name) ? :dash : :solid
-        marker_style = occursin("CUSOLVER", name) ? :square : :circle
+        if occursin("CUSOLVER", name)
+            linestyle = :dot
+            marker_style = :dtriangle
+        elseif occursin("Pure", name)
+            linestyle = :dash
+            marker_style = :square
+        else
+            linestyle = :solid
+            marker_style = :circle
+        end
         plot!(plt, n_values, results, label=name, lw=2, linestyle=linestyle, marker=marker_style)
     end
 
