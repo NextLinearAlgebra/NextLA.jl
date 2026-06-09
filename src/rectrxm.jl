@@ -211,25 +211,27 @@ function unified_rec(func::Char, side::Char, uplo::Char, diag::Char,
 
     if n <= threshold
         if func == 'S'
-            if side == 'L' && uplo == 'L'
-                LeftLowerTRSM!(A, B)
-            elseif side == 'L' && uplo == 'U'
-                LeftUpperTRSM!(A, B)
-            elseif side == 'R' && uplo == 'L'
-                RightLowerTRSM!(A, B)
-            else
-                RightUpperTRSM!(A, B)   
-            end
+            # if side == 'L' && uplo == 'L'
+            #     LeftLowerTRSM!(A, B)
+            # elseif side == 'L' && uplo == 'U'
+            #     LeftUpperTRSM!(A, B)
+            # elseif side == 'R' && uplo == 'L'
+            #     RightLowerTRSM!(A, B)
+            # else
+            #     RightUpperTRSM!(A, B)   
+            # end
+            dispatch_trsm!(side, uplo, 'T', diag, 1.0f0, A_orig, B)
         else # func == 'M'
-            if side == 'L' && uplo == 'L'
-                LeftLowerTRMM!(A, B)
-            elseif side == 'L' && uplo == 'U'
-                LeftUpperTRMM!(A, B)
-            elseif side == 'R' && uplo == 'L'
-                RightLowerTRMM!(A, B)
-            else
-                RightUpperTRMM!(A, B)
-            end
+            # if side == 'L' && uplo == 'L'
+            #     LeftLowerTRMM!(A, B)
+            # elseif side == 'L' && uplo == 'U'
+            #     LeftUpperTRMM!(A, B)
+            # elseif side == 'R' && uplo == 'L'
+            #     RightLowerTRMM!(A, B)
+            # else
+            #     RightUpperTRMM!(A, B)
+            # end
+            dispatch_trmm!(side, uplo, 'T', diag, 1.0f0, A_orig, B)
         end
         return B
     end
@@ -299,25 +301,27 @@ function unified_rec(func::Char, side::Char, uplo::Char, diag::Char,
     n = size(A, 1)
     if n <= threshold
         if func == 'S'
-            if side == 'L' && uplo == 'L'
-                LeftLowerTRSM!(A, B)
-            elseif side == 'L' && uplo == 'U'
-                LeftUpperTRSM!(A, B)
-            elseif side == 'R' && uplo == 'L'
-                RightLowerTRSM!(A, B)
-            else
-                RightUpperTRSM!(A, B)   
-            end
+            # if side == 'L' && uplo == 'L'
+            #     LeftLowerTRSM!(A, B)
+            # elseif side == 'L' && uplo == 'U'
+            #     LeftUpperTRSM!(A, B)
+            # elseif side == 'R' && uplo == 'L'
+            #     RightLowerTRSM!(A, B)
+            # else
+            #     RightUpperTRSM!(A, B)   
+            # end
+            dispatch_trsm!(side, uplo, 'N', diag, 1.0f0, A, B)
         else # func == 'M'
-            if side == 'L' && uplo == 'L'
-                LeftLowerTRMM!(A, B)
-            elseif side == 'L' && uplo == 'U'
-                LeftUpperTRMM!(A, B)
-            elseif side == 'R' && uplo == 'L'
-                RightLowerTRMM!(A, B)
-            else
-                RightUpperTRMM!(A, B)
-            end
+            # if side == 'L' && uplo == 'L'
+            #     LeftLowerTRMM!(A, B)
+            # elseif side == 'L' && uplo == 'U'
+            #     LeftUpperTRMM!(A, B)
+            # elseif side == 'R' && uplo == 'L'
+            #     RightLowerTRMM!(A, B)
+            # else
+            #     RightUpperTRMM!(A, B)
+            # end
+            dispatch_trmm!(side, uplo, 'N', diag, 1.0f0, A, B)
         end
         return B    
     end
