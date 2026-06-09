@@ -2,51 +2,70 @@ using CUDA
 using LinearAlgebra
 using Plots
 using NextLA
+using KernelAbstractions
 
 include("benchmark.jl")
 
+# --- Timing Helper Function ---
+function benchmark_op(op, reset_op, backend)
+    reset_op()
+    op()
+    KernelAbstractions.synchronize(backend)
+
+    min_time_ns = Inf
+    for _ in 1:5
+        reset_op()
+        time = run_single_benchmark(op, backend)
+        min_time_ns = min(min_time_ns, time)
+    end
+    
+    return min_time_ns
+end
+
 function run_time_pure_lu(A_fp64::CuMatrix, T_prec::DataType)
-    n = size(A_fp64, 1)
-    backend = get_backend(A_fp64)
+    backend = KernelAbstractions.get_backend(A_fp64)
 
     A_to_factor = T_prec.(A_fp64)
     A_clean = copy(A_to_factor)
     
-    # Warmup
-    CUSOLVER.getrf!(A_to_factor)
-
-    time_ns = run_manual_benchmark(backend) do
-        copyto!(A_to_factor, A_clean)
-        CUSOLVER.getrf!(A_to_factor)
+    if T_prec == Float16
+        A_f32 = similar(A_to_factor, Float32)
+        op = () -> begin
+            # Measure the necessary promotion/demotion as part of the F16 solver time
+            copyto!(A_f32, A_to_factor)
+            CUSOLVER.getrf!(A_f32)
+            copyto!(A_to_factor, A_f32)
+        end
+    else
+        op = () -> CUSOLVER.getrf!(A_to_factor)
     end
     
+    reset_op = () -> copyto!(A_to_factor, A_clean)
+
+    time_ns = benchmark_op(op, reset_op, backend)
     return time_ns / 1_000_000
 end
 
 function run_time_mixed_lu(A_fp64::CuMatrix, precisions::Vector)
-    n = size(A_fp64, 1)
-    backend = get_backend(A_fp64)
+    backend = KernelAbstractions.get_backend(A_fp64)
     
-    A_mixed_input = FullMixedPrec(copy(A_fp64); precisions=precisions)
-    # A cleaner copy for reset, though we just re-instantiate or copy the base arrays
-    A_clean_fp64 = copy(A_fp64)
+    local A_mixed_input
     
-    threshold = 256
-    
-    # Warmup
-    lu_recursive_mixed!(A_mixed_input, threshold)
-
-    time_ns = run_manual_benchmark(backend) do
-        # Re-initialize or reset the structure (a bit heavy, but safe)
-        A_mixed_perf = FullMixedPrec(copy(A_clean_fp64); precisions=precisions)
-        lu_recursive_mixed!(A_mixed_perf, threshold)
+    # We rebuild the structure in the reset operation so it is NOT included in the timed block.
+    # Since LU is an in-place factorization, we must start with fresh data every run.
+    reset_op = () -> begin
+        A_mixed_input = FullMixedPrec(copy(A_fp64); precisions=precisions)
+        KernelAbstractions.synchronize(backend)
     end
-
+    
+    op = () -> lu_recursive_mixed!(A_mixed_input)
+    
+    time_ns = benchmark_op(op, reset_op, backend)
     return time_ns / 1_000_000
 end
 
 function check_lu_time()
-    n_values = [512, 1024, 2048, 4096]
+    n_values = [512, 1024, 2048, 4096, 8192, 16384, 32768]
 
     pure_scenarios = Dict(
         "CUSOLVER F32" => [Float32],
@@ -55,9 +74,19 @@ function check_lu_time()
     )
     
     mixed_scenarios = Dict(
+        # Shallow mixed
         "Mixed [F16, F32]"                => [Float16, Float32],
         "Mixed [F32, F64]"                => [Float32, Float64],
-        "Mixed [F16, F16, F32]"           => [Float16, Float16, Float32]
+        "Mixed [F16, F64]"                => [Float16, Float64],
+        
+        # Deep F16 leaves
+        "Mixed [F16, F16, F32]"           => [Float16, Float16, Float32],
+        "Mixed [F16, F16, F16, F32]"      => [Float16, Float16, Float16, Float32],
+        "Mixed [F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float32],
+        
+        # Smooth gradients
+        "Mixed [F16, F16, F32, F64]"      => [Float16, Float16, Float32, Float64],
+        "Mixed [F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float32, Float64]
     )
 
     all_results = Dict()
@@ -75,6 +104,7 @@ function check_lu_time()
     for n in n_values
         println("\n--- Testing Matrix Size: $n x $n ---")
         
+        # Diagonally dominant matrix for stable unpivoted LU
         A_cpu = rand(Float64, n, n)
         A_cpu .+= Diagonal(fill(n * 2.0, n))
         A_fp64 = CuArray(A_cpu)
@@ -91,6 +121,12 @@ function check_lu_time()
             push!(all_results[name], runtime_ms)
             println("  $name | Runtime: $(round(runtime_ms, sigdigits=4)) ms")
         end
+
+        # Critical Memory Cleanup for large N
+        A_cpu = nothing
+        A_fp64 = nothing
+        GC.gc(true)
+        CUDA.reclaim()
     end
 
     # Plotting
@@ -101,7 +137,7 @@ function check_lu_time()
         xaxis=:log2,
         yaxis=:log10,
         legend=:outertopleft,
-        size=(800, 600),
+        size=(1000, 700),
         dpi=300
     )
 

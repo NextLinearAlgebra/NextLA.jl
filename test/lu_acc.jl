@@ -10,7 +10,6 @@ function get_accuracy_pure_lu(A_fp64::CuMatrix, T_prec::DataType)
     n = size(A_to_factor, 1)
     
     # We use CUSOLVER.getrf! as the pure LU base case for standard matrices
-    # CUSOLVER.getrf!(A_to_factor)
     if T_prec == Float16
         A_f32 = Float32.(A_to_factor)
         CUSOLVER.getrf!(A_f32)
@@ -56,7 +55,7 @@ function get_accuracy_mixed_lu(A_fp64::CuMatrix, precisions::Vector)
 end
 
 function check_lu_accuracy()
-    n_values = [512, 1024, 2048, 4096]
+    n_values = [512, 1024, 2048, 4096, 8192, 16384, 32768]
 
     pure_scenarios = Dict(
         "Pure F32" => [Float32],
@@ -65,11 +64,19 @@ function check_lu_accuracy()
     )
     
     mixed_scenarios = Dict(
+        # Shallow mixed
         "[F16, F32]"                => [Float16, Float32],
         "[F32, F64]"                => [Float32, Float64],
         "[F16, F64]"                => [Float16, Float64],
+        
+        # Deep F16 leaves
         "[F16, F16, F32]"           => [Float16, Float16, Float32],
-        "[F16, F16, F32, F64]"      => [Float16, Float16, Float32, Float64]
+        "[F16, F16, F16, F32]"      => [Float16, Float16, Float16, Float32],
+        "[F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float32],
+        
+        # Smooth gradients
+        "[F16, F16, F32, F64]"      => [Float16, Float16, Float32, Float64],
+        "[F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float32, Float64]
     )
 
     all_results = Dict()
@@ -93,7 +100,7 @@ function check_lu_accuracy()
         A_fp64 = CuArray(A_cpu)
 
         for (name, prec_list) in pure_scenarios
-            T_prec = prec_list[end] #i assume this should be end
+            T_prec = prec_list[end]
             rel_err = get_accuracy_pure_lu(A_fp64, T_prec)
             push!(all_results[name], -log10(rel_err))
             println("  $name | Rel. Error: $(round(rel_err, sigdigits=3))")
@@ -104,6 +111,12 @@ function check_lu_accuracy()
             push!(all_results[name], -log10(rel_err))
             println("  $name | Rel. Error: $(round(rel_err, sigdigits=3))")
         end
+
+        # Critical Memory Cleanup for large N
+        A_cpu = nothing
+        A_fp64 = nothing
+        GC.gc(true)
+        CUDA.reclaim()
     end
 
     # Plotting
@@ -113,7 +126,7 @@ function check_lu_accuracy()
         xlabel="Matrix Size (n x n)",
         xaxis=:log2,
         legend=:outertopright,
-        size=(800, 600),
+        size=(1000, 700), # Slightly larger for the extra legend entries
         dpi=300
     )
 
