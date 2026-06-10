@@ -41,6 +41,21 @@ end
     C_batch3 = cat(C_batch..., dims = 3)
     expected_batch3 = cat(expected_batch..., dims = 3)
 
+    A_view_parent = Float32[
+        9  8  7  6;
+        1  2  3  4;
+        5  6  7  8;
+        2  3  4  5;
+    ]
+    C_view_parent = Float32[
+        5  4  3;
+        2  1  0;
+        7  6  5;
+    ]
+    A_view = @view A_view_parent[2:3, 2:4]
+    C_view = @view C_view_parent[2:3, 2:3]
+    expected_view = _syrk_expected('L', trans, alpha, Matrix(A_view), beta, Matrix(C_view))
+
     for (name, AT, sync) in backends
         @testset "$name dispatch" begin
             A_single_dev = _to_backend(AT, copy(A_single))
@@ -49,6 +64,15 @@ end
             NextLA.syrk!(uplo, trans, alpha, A_single_dev, beta, C_single_dev)
             sync(C_single_dev)
             @test _triangle_matches(uplo, Array(C_single_dev), expected_single)
+
+            A_view_dev = _to_backend(AT, copy(A_view_parent))
+            C_view_dev = _to_backend(AT, copy(C_view_parent))
+            A_sub_dev = @view A_view_dev[2:3, 2:4]
+            C_sub_dev = @view C_view_dev[2:3, 2:3]
+
+            NextLA.syrk!('L', trans, alpha, A_sub_dev, beta, C_sub_dev)
+            sync(C_view_dev)
+            @test _triangle_matches('L', Array(C_sub_dev), expected_view)
 
             A_batch_dev = _to_backend(AT, deepcopy(A_batch))
             C_batch_dev = _to_backend(AT, deepcopy(C_batch))

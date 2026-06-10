@@ -39,13 +39,15 @@ function _syrk_batched_fallback!(uplo::Char,
                                  A::AbstractArray{<:Any, 3},
                                  beta,
                                  C::AbstractArray{<:Any, 3})
-    gemm_batched!(trans,
-        trans == 'N' ? 'T' : 'N',
-        alpha,
-        A,
-        A,
-        beta,
-        C)
+    batchA = size(A, 3)
+    batchC = size(C, 3)
+
+    for i in 1:batchC
+        Ai = @view A[:, :, batchA == 1 ? 1 : i]
+        Ci = @view C[:, :, i]
+        syrk!(uplo, trans, alpha, Ai, beta, Ci)
+    end
+
     return C
 end
 
@@ -66,12 +68,9 @@ function _syrk_batched_fallback!(uplo::Char,
                                  A::AbstractVector{<:AbstractMatrix},
                                  beta,
                                  C::AbstractVector{<:AbstractMatrix})
-    gemm_batched!(trans,
-        trans == 'N' ? 'T' : 'N',
-        alpha,
-        A,
-        A,
-        beta,
-        C)
+    for i in eachindex(A, C)
+        syrk!(uplo, trans, alpha, A[i], beta, C[i])
+    end
+
     return C
 end

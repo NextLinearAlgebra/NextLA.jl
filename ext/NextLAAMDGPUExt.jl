@@ -38,9 +38,9 @@ const NATIVE_STRIDED_BATCHED_TYPES = Union{Float32, Float64, ComplexF32, Complex
 function _syrk_native!(uplo::Char,
                        trans::Char,
                        alpha,
-                       A::AMDGPU.ROCArray{<:Any, 2},
+                       A::AMDGPU.StridedROCMatrix{<:Any},
                        beta,
-                       C::AMDGPU.ROCArray{<:Any, 2})
+                       C::AMDGPU.StridedROCMatrix{<:Any})
     n, k = NextLA._syrk_dims(uplo, trans, A, C)
     lda = max(1, stride(A, 2))
     ldc = max(1, stride(C, 2))
@@ -70,9 +70,9 @@ end
 function _syrk_batched_native!(uplo::Char,
                                trans::Char,
                                alpha,
-                               A::AMDGPU.ROCArray{<:Any, 3},
+                               A::AMDGPU.StridedROCArray{<:Any, 3},
                                beta,
-                               C::AMDGPU.ROCArray{<:Any, 3})
+                               C::AMDGPU.StridedROCArray{<:Any, 3})
     size(A, 3) == size(C, 3) || size(A, 3) == 1 ||
         throw(DimensionMismatch("syrk_batched!: A and C batch sizes are incompatible"))
     n, k = NextLA._syrk_dims(uplo, trans, @view(A[:, :, 1]), @view(C[:, :, 1]))
@@ -88,9 +88,9 @@ end
 function NextLA.syrk!(uplo::Char,
                       trans::Char,
                       alpha,
-                      A::AMDGPU.ROCArray{<:Any, 2},
+                      A::AMDGPU.StridedROCMatrix{<:Any},
                       beta,
-                      C::AMDGPU.ROCArray{<:Any, 2})
+                      C::AMDGPU.StridedROCMatrix{<:Any})
     return _syrk_native!(uplo, trans, alpha, A, beta, C)
 end
 
@@ -106,9 +106,9 @@ end
 function NextLA.syrk_batched!(uplo::Char,
                               trans::Char,
                               alpha,
-                              A::AMDGPU.ROCArray{<:Any, 3},
+                              A::AMDGPU.StridedROCArray{<:Any, 3},
                               beta,
-                              C::AMDGPU.ROCArray{<:Any, 3})
+                              C::AMDGPU.StridedROCArray{<:Any, 3})
     return _syrk_batched_native!(uplo, trans, alpha, A, beta, C)
 end
 
@@ -176,10 +176,10 @@ end
 function _gemm_strided_batched_ex!(transA::Char,
                                    transB::Char,
                                    alpha,
-                                   A::AMDGPU.ROCArray{<:Any, 3},
-                                   B::AMDGPU.ROCArray{<:Any, 3},
+                                   A::AMDGPU.StridedROCArray{<:Any, 3},
+                                   B::AMDGPU.StridedROCArray{<:Any, 3},
                                    beta,
-                                   C::AMDGPU.ROCArray{<:Any, 3},
+                                   C::AMDGPU.StridedROCArray{<:Any, 3},
                                    compute_type::Type)
     batchA = size(A, 3)
     batchB = size(B, 3)
@@ -236,14 +236,19 @@ end
 function NextLA.gemm_batched!(transA::Char,
                               transB::Char,
                               alpha,
-                              A::AMDGPU.ROCArray{<:Any, 3},
-                              B::AMDGPU.ROCArray{<:Any, 3},
+                              A::AMDGPU.StridedROCArray{<:Any, 3},
+                              B::AMDGPU.StridedROCArray{<:Any, 3},
                               beta,
-                              C::AMDGPU.ROCArray{<:Any, 3})
+                              C::AMDGPU.StridedROCArray{<:Any, 3})
     if _supports_native_strided_batched(eltype(A), eltype(B), eltype(C))
-        return rocBLAS.gemm_strided_batched!(transA, transB, alpha, A, B, beta, C)
+        return _gemm_strided_batched_ex!(transA, transB, alpha, A, B, beta, C, eltype(C))
     elseif _supports_native_gemm(eltype(A), eltype(B), eltype(C))
-        return rocBLAS.gemm_batched!(transA, transB, alpha, A, B, beta, C)
+        if A isa AMDGPU.ROCArray{<:Any, 3} &&
+           B isa AMDGPU.ROCArray{<:Any, 3} &&
+           C isa AMDGPU.ROCArray{<:Any, 3}
+            return rocBLAS.gemm_batched!(transA, transB, alpha, A, B, beta, C)
+        end
+        throw(ArgumentError("AMDGPU strided batched GEMM views are supported only for eltypes with native strided-batched kernels"))
     end
     throw(ArgumentError("AMDGPU strided batched GEMM is not supported for eltypes $(eltype(A)), $(eltype(B)), and $(eltype(C))"))
 end
@@ -266,10 +271,10 @@ end
 function NextLA.gemmEx_batched!(transA::Char,
                                 transB::Char,
                                 alpha,
-                                A::AMDGPU.ROCArray{<:Any, 3},
-                                B::AMDGPU.ROCArray{<:Any, 3},
+                                A::AMDGPU.StridedROCArray{<:Any, 3},
+                                B::AMDGPU.StridedROCArray{<:Any, 3},
                                 beta,
-                                C::AMDGPU.ROCArray{<:Any, 3};
+                                C::AMDGPU.StridedROCArray{<:Any, 3};
                                 compute_type::Type = NextLA.default_compute_type(alpha, A, B, beta, C))
     NextLA._check_compute_type(compute_type)
     if compute_type == NextLA.default_compute_type(alpha, A, B, beta, C)

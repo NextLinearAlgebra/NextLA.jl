@@ -36,10 +36,10 @@ end
 function NextLA.gemm_batched!(transA::Char,
                               transB::Char,
                               alpha,
-                              A::CUDA.CuArray{<:Any,3},
-                              B::CUDA.CuArray{<:Any,3},
+                              A::CUDA.StridedCuArray{<:Any,3},
+                              B::CUDA.StridedCuArray{<:Any,3},
                               beta,
-                              C::CUDA.CuArray{<:Any,3})
+                              C::CUDA.StridedCuArray{<:Any,3})
     return CUBLAS.gemm_strided_batched!(transA, transB, alpha, A, B, beta, C)
 end
 
@@ -61,10 +61,10 @@ end
 function NextLA.gemmEx_batched!(transA::Char,
                                 transB::Char,
                                 alpha,
-                                A::CUDA.CuArray{<:Any,3},
-                                B::CUDA.CuArray{<:Any,3},
+                                A::CUDA.StridedCuArray{<:Any,3},
+                                B::CUDA.StridedCuArray{<:Any,3},
                                 beta,
-                                C::CUDA.CuArray{<:Any,3};
+                                C::CUDA.StridedCuArray{<:Any,3};
                                 compute_type::Type=NextLA.default_compute_type(alpha, A, B, beta, C))
     NextLA._check_compute_type(compute_type)
     if compute_type == NextLA.default_compute_type(alpha, A, B, beta, C)
@@ -76,9 +76,9 @@ end
 function NextLA.syrk!(uplo::Char,
                       trans::Char,
                       alpha,
-                      A::CUDA.CuArray{<:Any,2},
+                      A::CUDA.StridedCuMatrix{<:Any},
                       beta,
-                      C::CUDA.CuArray{<:Any,2})
+                      C::CUDA.StridedCuMatrix{<:Any})
     return CUBLAS.syrk!(uplo, trans, alpha, A, beta, C)
 end
 
@@ -95,9 +95,9 @@ end
 function NextLA.syrk_batched!(uplo::Char,
                               trans::Char,
                               alpha,
-                              A::CUDA.CuArray{<:Any,3},
+                              A::CUDA.StridedCuArray{<:Any,3},
                               beta,
-                              C::CUDA.CuArray{<:Any,3})
+                              C::CUDA.StridedCuArray{<:Any,3})
     @warn "syrk_batched! falling back to batched gemm!" backend = "CUDA" layout = :strided
     return NextLA._syrk_batched_fallback!(uplo, trans, alpha, A, beta, C)
 end
@@ -165,10 +165,10 @@ end
 function _gemm_strided_batched_ex!(transA::Char,
                                    transB::Char,
                                    alpha,
-                                   A::CUDA.CuArray{<:Any,3},
-                                   B::CUDA.CuArray{<:Any,3},
+                                   A::CUDA.StridedCuArray{<:Any,3},
+                                   B::CUDA.StridedCuArray{<:Any,3},
                                    beta,
-                                   C::CUDA.CuArray{<:Any,3},
+                                   C::CUDA.StridedCuArray{<:Any,3},
                                    compute_type::Type)
     batchA = size(A, 3)
     batchB = size(B, 3)

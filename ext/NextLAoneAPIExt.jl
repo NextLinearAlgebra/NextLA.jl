@@ -14,9 +14,9 @@ const support = oneAPI.Support
 function _syrk_strided_batched_native!(uplo::Char,
                                        trans::Char,
                                        alpha,
-                                       A::oneAPI.oneArray{T,3},
+                                       A::oneAPI.oneStridedArray{T,3},
                                        beta,
-                                       C::oneAPI.oneArray{T,3}) where {T}
+                                       C::oneAPI.oneStridedArray{T,3}) where {T}
     size(A, 3) == size(C, 3) || size(A, 3) == 1 ||
         throw(DimensionMismatch("syrk_batched!: A and C batch sizes are incompatible"))
     n, k = NextLA._syrk_dims(uplo, trans, @view(A[:, :, 1]), @view(C[:, :, 1]))
@@ -70,10 +70,10 @@ end
 function NextLA.gemm_batched!(transA::Char,
                               transB::Char,
                               alpha,
-                              A::oneAPI.oneArray{<:Any,3},
-                              B::oneAPI.oneArray{<:Any,3},
+                              A::oneAPI.oneStridedArray{<:Any,3},
+                              B::oneAPI.oneStridedArray{<:Any,3},
                               beta,
-                              C::oneAPI.oneArray{<:Any,3})
+                              C::oneAPI.oneStridedArray{<:Any,3})
     oneMKL.gemm_strided_batched!(transA, transB, alpha, A, B, beta, C)
     return C
 end
@@ -92,10 +92,10 @@ end
 function NextLA.gemmEx_batched!(transA::Char,
                                 transB::Char,
                                 alpha,
-                                A::oneAPI.oneArray{<:Any, 3},
-                                B::oneAPI.oneArray{<:Any, 3},
+                                A::oneAPI.oneStridedArray{<:Any, 3},
+                                B::oneAPI.oneStridedArray{<:Any, 3},
                                 beta,
-                                C::oneAPI.oneArray{<:Any, 3};
+                                C::oneAPI.oneStridedArray{<:Any, 3};
                                 compute_type::Type = NextLA.default_compute_type(alpha, A, B, beta, C))
     throw(ArgumentError("NextLA.gemmEx_batched! is not supported on oneAPI"))
 end
@@ -103,9 +103,9 @@ end
 function NextLA.syrk!(uplo::Char,
                       trans::Char,
                       alpha,
-                      A::oneAPI.oneArray{<:Any,2},
+                      A::oneAPI.oneStridedVecOrMat{<:Any},
                       beta,
-                      C::oneAPI.oneArray{<:Any,2})
+                      C::oneAPI.oneStridedMatrix{<:Any})
     oneMKL.syrk!(uplo, trans, alpha, A, beta, C)
     return C
 end
@@ -123,9 +123,9 @@ end
 function NextLA.syrk_batched!(uplo::Char,
                               trans::Char,
                               alpha,
-                              A::oneAPI.oneArray{<:Any,3},
+                              A::oneAPI.oneStridedArray{<:Any,3},
                               beta,
-                              C::oneAPI.oneArray{<:Any,3})
+                              C::oneAPI.oneStridedArray{<:Any,3})
     _syrk_strided_batched_native!(uplo, trans, alpha, A, beta, C)
     return C
 end
