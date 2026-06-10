@@ -25,8 +25,17 @@ function benchmark_op(op, reset_op, backend)
     return min_time_ns
 end
 
-function run_time_pure_lu(A_fp64::CuMatrix, T_prec::DataType)
-    return run_time_mixed_lu(A_fp64, [T_prec])
+function run_time_pure_lu(A_fp64::CuMatrix, T_prec::DataType, block_size::Int=2048)
+    backend = KernelAbstractions.get_backend(A_fp64)
+
+    A_to_factor = T_prec.(A_fp64)
+    A_clean = copy(A_to_factor)
+    
+    op = () -> lu_recursive!(A_to_factor, block_size)
+    reset_op = () -> copyto!(A_to_factor, A_clean)
+
+    time_ns = benchmark_op(op, reset_op, backend)
+    return time_ns / 1_000_000
 end
 
 function run_time_mixed_lu(A_fp64::CuMatrix, precisions::Vector)

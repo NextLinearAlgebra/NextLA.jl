@@ -9,9 +9,28 @@ include("benchmark.jl")
 # --- Accuracy Helper Functions ---
 # ==============================================================================
 
-function get_accuracy_pure_lu(A_fp64::CuMatrix, T_prec::DataType)
-    # Route through the recursive framework with a single precision to evaluate NextLA's baseline
-    return get_accuracy_mixed_lu(A_fp64, [T_prec])
+# function get_accuracy_pure_lu(A_fp64::CuMatrix, T_prec::DataType)
+#     # Route through the recursive framework with a single precision to evaluate NextLA's baseline
+#     return get_accuracy_mixed_lu(A_fp64, [T_prec])
+# end
+
+function get_accuracy_pure_lu(A_fp64::CuMatrix, T_prec::DataType, block_size::Int=2048)
+    A_to_factor = T_prec.(A_fp64)
+    
+    # Hit the flat recursive driver directly!
+    lu_recursive!(A_to_factor, block_size)
+    
+    # Reconstruct A = L * U
+    A_cpu = Matrix(A_to_factor)
+    L = tril(A_cpu, -1) + I
+    U = triu(A_cpu)
+    
+    A_reconstructed = Float64.(L * U)
+    
+    error_norm = norm(A_reconstructed - Matrix(A_fp64))
+    orig_norm = norm(Matrix(A_fp64))
+    
+    return max(error_norm / orig_norm, 1e-20)
 end
 
 function get_accuracy_mixed_lu(A_fp64::CuMatrix, precisions::Vector)
