@@ -6,6 +6,8 @@ using oneAPI
 const oneMKL = oneAPI.oneMKL
 const support = oneAPI.Support
 
+@inline NextLA.SUBGROUP_SIZE(::Type{<:oneAPI.oneAPIBackend}) = Val(32)
+
 @inline _onemkl_syrk_fname(::Type{Float32}) = support.onemklSsyrk_batch_strided
 @inline _onemkl_syrk_fname(::Type{Float64}) = support.onemklDsyrk_batch_strided
 @inline _onemkl_syrk_fname(::Type{ComplexF32}) = support.onemklCsyrk_batch_strided

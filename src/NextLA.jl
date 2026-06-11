@@ -10,6 +10,8 @@ import LinearAlgebra.BLAS: @blasfunc
 using Random: Random
 using KernelAbstractions
 
+@inline SUBGROUP_SIZE(::Type{<:KernelAbstractions.CPU}) = Val(1)
+
 """
 	lamch(::Type{T}, cmach) where{T<: Number}
 

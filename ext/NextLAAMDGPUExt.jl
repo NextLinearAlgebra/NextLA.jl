@@ -8,6 +8,8 @@ const rocBLAS = AMDGPU.rocBLAS
 const NATIVE_GEMM_TYPES = Union{Float16, Float32, Float64, ComplexF32, ComplexF64}
 const NATIVE_STRIDED_BATCHED_TYPES = Union{Float32, Float64, ComplexF32, ComplexF64}
 
+@inline NextLA.SUBGROUP_SIZE(::Type{<:AMDGPU.ROCBackend}) = Val(64)
+
 @inline _rocblas_datatype(::Type{Float16}) = rocBLAS.rocblas_datatype_f16_r
 @inline _rocblas_datatype(::Type{Float32}) = rocBLAS.rocblas_datatype_f32_r
 @inline _rocblas_datatype(::Type{Float64}) = rocBLAS.rocblas_datatype_f64_r

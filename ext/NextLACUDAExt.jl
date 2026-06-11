@@ -6,6 +6,8 @@ using CUDA
 const CUBLAS = CUDA.CUBLAS
 const NATIVE_GEMM_TYPES = Union{Float16, Float32, Float64, ComplexF32, ComplexF64}
 
+@inline NextLA.SUBGROUP_SIZE(::Type{<:CUDA.CUDABackend}) = Val(32)
+
 @inline _cublas_compute_type(::Type{Float16}) = CUBLAS.CUBLAS_COMPUTE_16F
 @inline _cublas_compute_type(::Type{Float32}) = CUBLAS.CUBLAS_COMPUTE_32F
 @inline _cublas_compute_type(::Type{Float64}) = CUBLAS.CUBLAS_COMPUTE_64F

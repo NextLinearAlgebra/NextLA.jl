@@ -7,6 +7,8 @@ using LinearAlgebra
 const MPS = Metal.MPS
 const MtlMatrixBatchView{T} = SubArray{T, 3, <:Metal.MtlArray{T, 3}, <:Any, false} where {T}
 
+@inline NextLA.SUBGROUP_SIZE(::Type{<:Metal.MetalBackend}) = Val(64)
+
 @inline function _supports_mps_batched_matmul(::Type{Tin}, ::Type{Tin}, ::Type{Tout}) where {Tin, Tout}
     return (Tin, Tout) in MPS.MPS_VALID_MATMUL_TYPES
 end
