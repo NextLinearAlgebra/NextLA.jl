@@ -1,10 +1,6 @@
 export FullMixedPrec, reconstruct_matrix
 
 # Full precision data structure utilizing a recursive data type.
-# Modified from SymmMixedPrec: 
-# - Removed uplo parameter as this is for full matrices.
-# - Replaced OffDiag with explicit A21 and A12 block matrices.
-# - Added corresponding A21_scale and A12_scale for quantization.
 struct FullMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
     A11::Union{FullMixedPrec{T_Base}, Nothing}
     A22::Union{FullMixedPrec{T_Base}, Nothing}
@@ -31,7 +27,6 @@ function FullMixedPrec(
     
     @assert n == m "A must be square for recursive factorization structure"
 
-    # Base Case Condition
     if length(precisions) == 1 || n <= 1
         T_Base = precisions[1]
         local base_matrix
@@ -57,17 +52,14 @@ function FullMixedPrec(
         return FullMixedPrec{T_Base}(nothing, nothing, nothing, nothing, nothing, nothing, base_scale, base_matrix, (n, n))
     end
 
-    # Recursive split point
     mid = isinteger(log2(n)) ? div(n, 2) : 2^floor(Int, log2(n))
 
     T_OffDiag = precisions[1]
     remaining_precisions = precisions[2:end]
 
-    # Recursively subdivide the diagonal blocks
     A11 = FullMixedPrec(view(A, 1:mid, 1:mid); precisions=remaining_precisions)
     A22 = FullMixedPrec(view(A, mid+1:n, mid+1:n); precisions=remaining_precisions)
 
-    # Extract the views for A21 and A12
     view_A21 = view(A, mid+1:n, 1:mid)
     view_A12 = view(A, 1:mid, mid+1:n)
 
@@ -148,7 +140,6 @@ function reconstruct_matrix(A::FullMixedPrec{T_Base}) where {T_Base}
     n2, m2 = size(C22)
     n = n1 + n2
 
-    # Allocate full matrix on the same device as the leaf blocks
     C_full = similar(C21, T_Base, n, n)
     
     C_full[1:n1, 1:m1] .= C11

@@ -1,7 +1,5 @@
 export unified_rectrxm!
 using StochasticRounding
-include("wrappers.jl")
-
 
 function stochastic_convert(::Type{T_out}, M_in::AbstractArray) where T_out
     M_out = similar(M_in, T_out)
@@ -9,13 +7,7 @@ function stochastic_convert(::Type{T_out}, M_in::AbstractArray) where T_out
     return M_out
 end
 
-"""
-    quantize(matrix::AbstractMatrix{T}) where T <: AbstractFloat
 
-Quantizes a floating-point matrix into `Float16` representation to prevent overflow.
-Scales the matrix by a factor `s` if the maximum absolute value exceeds the `Float16` maximum.
-Returns the quantized matrix and the scaling factor `s`.
-"""
 function quantize(matrix::AbstractMatrix{T}) where T <: AbstractFloat
     FP16_MAX_VAL = 65504.0f0
     alpha = maximum(abs, matrix) 
@@ -26,35 +18,30 @@ function quantize(matrix::AbstractMatrix{T}) where T <: AbstractFloat
 
     if alpha > FP16_MAX_VAL
         s = Float32(alpha / FP16_MAX_VAL)
+        
         quantized_matrix = similar(matrix, Float16, size(matrix))
+        print("CLAMPING3")
         @. quantized_matrix = Float16(round(clamp(matrix / s, -FP16_MAX_VAL, FP16_MAX_VAL)))
     else
         s = 1.0f0
+
         quantized_matrix = similar(matrix, Float16, size(matrix))
+        
         @. quantized_matrix = Float16(matrix)
     end
 
     return quantized_matrix, s
 end
 
-"""
-    dequantize(quantized_matrix::AbstractMatrix{Float16}, s::Float32, original_eltype::DataType)
-
-Dequantizes a `Float16` matrix back to its original element type using the scaling factor `s`.
-"""
 function dequantize(quantized_matrix::AbstractMatrix{Float16}, s::Float32, original_eltype::DataType)
     dequantized_matrix = similar(quantized_matrix, original_eltype, size(quantized_matrix))
+    
     @. dequantized_matrix = quantized_matrix * s
+
     return dequantized_matrix
 end
 
-"""
-    GEMM_ADD!(A, B, C::AnyGPUArray, scale::Float32=1.0f0)
-    GEMM_ADD!(A, B, C::oneAPI.oneDeviceArray, scale::Float32=1.0f0)
 
-Performs a generalized matrix multiplication addition `C = C + scale * A * B`
-using hardware-specific BLAS routines. Handles mixed-precision accumulation safely.
-"""
 function GEMM_ADD!(A, B, C::AnyGPUArray, scale::Float32=1.0f0)
     transA = A isa Transpose ? 'T' : 'N'
     transB = B isa Transpose ? 'T' : 'N'
@@ -64,6 +51,7 @@ function GEMM_ADD!(A, B, C::AnyGPUArray, scale::Float32=1.0f0)
         if eltype(C) == Float16
             C_op = Float32.(C)
             gemmEx!(transA, transB, scale, A_mat, B_mat, 1.0f0, C_op)
+            #print("CLAMPING4")
             clamp!(C_op, floatmin(Float16), floatmax(Float16))
             copy!(C, C_op)
         else
@@ -75,13 +63,6 @@ function GEMM_ADD!(A, B, C::AnyGPUArray, scale::Float32=1.0f0)
     end
 end
 
-"""
-    GEMM_SUB!(C::AnyGPUArray, A, B, scale::Float32=1.0f0)
-    GEMM_SUB!(C::oneAPI.oneDeviceArray, A, B, scale::Float32=1.0f0)
-
-Performs a generalized matrix multiplication subtraction `C = C - scale * A * B`
-using hardware-specific BLAS routines. Handles mixed-precision accumulation safely.
-"""
 function GEMM_SUB!(C::AnyGPUArray, A, B, scale::Float32=1.0f0)
     transA = A isa Transpose ? 'T' : 'N'
     transB = B isa Transpose ? 'T' : 'N'
@@ -91,6 +72,7 @@ function GEMM_SUB!(C::AnyGPUArray, A, B, scale::Float32=1.0f0)
         if eltype(C) == Float16
             C_op = Float32.(C)
             gemmEx!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C_op)
+            #print("CLAMPING5")
             clamp!(C_op, floatmin(Float16), floatmax(Float16))
             copy!(C, C_op)
         else
@@ -101,6 +83,7 @@ function GEMM_SUB!(C::AnyGPUArray, A, B, scale::Float32=1.0f0)
         gemm!(transA, transB, T_C(-scale), A_mat, B_mat, T_C(1.0), C)
     end
 end
+
 
 function GEMM_ADD!(A, B, C::oneAPI.oneDeviceArray, scale::Float32=1.0f0)
     transA = A isa Transpose ? 'T' : 'N'
@@ -130,6 +113,11 @@ function dispatch_trsm!(side, uplo, trans, diag, alpha, A, B)
     end
 end
 
+#_dispatch_trsm_kernel!(side, uplo, trans, diag, alpha, A::CUDA.StridedCuArray, B::CUDA.StridedCuArray) = CUBLAS.trsm!(side, uplo, trans, diag, alpha, A, B)
+#_dispatch_trsm_kernel!(side, uplo, trans, diag, alpha, A::AMDGPU.StridedROCArray, B::AMDGPU.StridedROCArray) = AMDGPU.rocBLAS.trsm!(side, uplo, trans, diag, alpha, A, B)
+#_dispatch_trsm_kernel!(side, uplo, trans, diag, alpha, A::oneAPI.oneDeviceArray, B::oneAPI.oneDeviceArray) = oneMKL.trsm!(side, uplo, trans, diag, alpha, A, B)
+
+
 function dispatch_trmm!(side, uplo, trans, diag, alpha, A, B)
     if eltype(A) == Float16
         B_temp = Float32.(B)
@@ -139,6 +127,11 @@ function dispatch_trmm!(side, uplo, trans, diag, alpha, A, B)
         trmm!(side, uplo, trans, diag, alpha, A, B, B)
     end
 end
+
+#_dispatch_trmm_kernel!(side, uplo, trans, diag, alpha, A::CUDA.StridedCuArray, B::CUDA.StridedCuArray, C::CUDA.StridedCuArray) = CUBLAS.trmm!(side, uplo, trans, diag, alpha, A, B, C)
+#_dispatch_trmm_kernel!(side, uplo, trans, diag, alpha, A::AMDGPU.StridedROCArray, B::AMDGPU.StridedROCArray, C::AMDGPU.StridedROCArray) = AMDGPU.rocBLAS.trmm!(side, uplo, trans, diag, alpha, A, B, C)
+#_dispatch_trmm_kernel!(side, uplo, trans, diag, alpha, A::oneAPI.oneDeviceArray, B::oneAPI.oneDeviceArray, C::oneAPI.oneDeviceArray) = oneMKL.trmm!(side, uplo, trans, diag, alpha, A, B, C)
+
 
 """
 Unified recursive function for triangular matrix solve (TRSM) and multiply (TRMM) operations.
@@ -190,6 +183,7 @@ function unified_rectrxm!(
     if func == 'S'
         threshold = 256
         B .= alpha .* B
+        
     end
     unified_rec(func, side, uplo, diag, A, B, threshold)
     if func == 'M'
@@ -198,12 +192,14 @@ function unified_rectrxm!(
     return B
 end
 
+# overload for 7 arguments (default diag = 'N')
 function unified_rectrxm!(
         side::Char, uplo::Char, transpose::Char, alpha::Number, func::Char, A::AbstractMatrix, B::AbstractMatrix
     )
     return unified_rectrxm!(side, uplo, transpose, 'N', alpha, func, A, B)
 end
 
+# unified rec for transposed matrices
 function unified_rec(func::Char, side::Char, uplo::Char, diag::Char,
     A::Transpose{T, M},
     B::StridedMatrix{T}, threshold::Int=256;
@@ -215,12 +211,32 @@ function unified_rec(func::Char, side::Char, uplo::Char, diag::Char,
 
     if n <= threshold
         if func == 'S'
+            # if side == 'L' && uplo == 'L'
+            #     LeftLowerTRSM!(A, B)
+            # elseif side == 'L' && uplo == 'U'
+            #     LeftUpperTRSM!(A, B)
+            # elseif side == 'R' && uplo == 'L'
+            #     RightLowerTRSM!(A, B)
+            # else
+            #     RightUpperTRSM!(A, B)   
+            # end
             dispatch_trsm!(side, uplo, 'T', diag, 1.0f0, A_orig, B)
-        else 
+        else # func == 'M'
+            # if side == 'L' && uplo == 'L'
+            #     LeftLowerTRMM!(A, B)
+            # elseif side == 'L' && uplo == 'U'
+            #     LeftUpperTRMM!(A, B)
+            # elseif side == 'R' && uplo == 'L'
+            #     RightLowerTRMM!(A, B)
+            # else
+            #     RightUpperTRMM!(A, B)
+            # end
             dispatch_trmm!(side, uplo, 'T', diag, 1.0f0, A_orig, B)
         end
         return B
     end
+
+    A_orig = parent(A)
 
     mid = isinteger(log2(n)) ? div(n, 2) : 2^floor(Int, log2(n))
 
@@ -267,6 +283,7 @@ function unified_rec(func::Char, side::Char, uplo::Char, diag::Char,
     return B
 end
 
+# overloaded without diag for standard matrices
 function unified_rec(func::Char, side::Char, uplo::Char,
     A::Union{Transpose{T, M}, StridedMatrix{T}},
     B::StridedMatrix{T}, threshold::Int=256;
@@ -275,6 +292,7 @@ function unified_rec(func::Char, side::Char, uplo::Char,
     return unified_rec(func, side, uplo, 'N', A, B, threshold; A_scale=A_scale)
 end
 
+# unified rec with no mixed prec
 function unified_rec(func::Char, side::Char, uplo::Char, diag::Char,
     A::StridedMatrix{T},
     B::StridedMatrix{T}, threshold::Int=256;
@@ -283,19 +301,41 @@ function unified_rec(func::Char, side::Char, uplo::Char, diag::Char,
     n = size(A, 1)
     if n <= threshold
         if func == 'S'
+            # if side == 'L' && uplo == 'L'
+            #     LeftLowerTRSM!(A, B)
+            # elseif side == 'L' && uplo == 'U'
+            #     LeftUpperTRSM!(A, B)
+            # elseif side == 'R' && uplo == 'L'
+            #     RightLowerTRSM!(A, B)
+            # else
+            #     RightUpperTRSM!(A, B)   
+            # end
             dispatch_trsm!(side, uplo, 'N', diag, 1.0f0, A, B)
-        else 
+        else # func == 'M'
+            # if side == 'L' && uplo == 'L'
+            #     LeftLowerTRMM!(A, B)
+            # elseif side == 'L' && uplo == 'U'
+            #     LeftUpperTRMM!(A, B)
+            # elseif side == 'R' && uplo == 'L'
+            #     RightLowerTRMM!(A, B)
+            # else
+            #     RightUpperTRMM!(A, B)
+            # end
             dispatch_trmm!(side, uplo, 'N', diag, 1.0f0, A, B)
         end
         return B    
     end
 
+    # split point
     if isinteger(log2(n))
         mid = div(n, 2)
     else
         mid = 2 ^ floor(Int, log2(n))
     end
 
+    mid_remainder = n - mid
+
+    # block views
     A11 = view(A, 1:mid,       1:mid)
     A22 = view(A, mid+1:n,     mid+1:n)
     A21 = view(A, mid+1:n,     1:mid)
@@ -309,6 +349,7 @@ function unified_rec(func::Char, side::Char, uplo::Char, diag::Char,
         B2 = view(B, :,         mid+1:n)
     end
 
+    # first half
     if (side == 'L' && uplo == 'L' && func == 'S') || 
         (side == 'R' && uplo == 'U' && func == 'S') || 
         (side == 'L' && uplo == 'U' && func == 'M') || 
@@ -316,35 +357,45 @@ function unified_rec(func::Char, side::Char, uplo::Char, diag::Char,
 
         unified_rec(func, side, uplo, diag, A11, B1, threshold; A_scale = A_scale)
 
+        # GEMM update in mixed precision if deep enough
         if side == 'L'
             if func == 'S'
+                # GEMM_SUB!(B2, A21, B1)
                 GEMM_SUB!(B2, A21, B1, A_scale)
-            else  
+            else  # func == 'M'
+                # GEMM_ADD!(A12, B2, B1)
                 GEMM_ADD!(A12, B2, B1, A_scale)
             end
-        else  
+        else  # side == 'R'
             if func == 'S'
+                # GEMM_SUB!(B2, B1, A12)
                 GEMM_SUB!(B2, B1, A12, A_scale)
-            else  
+            else  # func == 'M'
+                # GEMM_ADD!(B2, A21, B1)
                 GEMM_ADD!(B2, A21, B1, A_scale)
             end
         end
 
         unified_rec(func, side, uplo, diag, A22, B2, threshold; A_scale = A_scale)
 
+    # second half
     else
         unified_rec(func, side, uplo, diag, A22, B2, threshold; A_scale = A_scale)
 
         if side == 'L'
             if func == 'S'
+                # GEMM_SUB!(B1, A12, B2)
                 GEMM_SUB!(B1, A12, B2, A_scale)
-            else  
+            else  # func == 'M'
+                # GEMM_ADD!(A21, B1, B2)
                 GEMM_ADD!(A21, B1, B2, A_scale)
             end
-        else  
+        else  # side == 'R'
             if func == 'S'
+                # GEMM_SUB!(B1, B2, A21)
                 GEMM_SUB!(B1, B2, A21, A_scale)
-            else  
+            else  # func == 'M'
+                # GEMM_ADD!(B1, A12, B2)
                 GEMM_ADD!(B1, A12, B2, A_scale)
             end
         end
@@ -355,6 +406,9 @@ function unified_rec(func::Char, side::Char, uplo::Char, diag::Char,
     return B
 end
 
+
+
+# This is the multiple dispatch for the recursive data structure for A
 """
 Unified recursive function for triangular matrix solve (TRSM) and multiply (TRMM) operations.
 
@@ -367,17 +421,16 @@ Arguments:
 - uplo::Char: Specifies the triangular part of the matrix to reference:
     - 'U': Use the upper triangle.
     - 'L': Use the lower triangle.
-- trans::Char: Specifies the transposition operation:
+- transpose::Char: Specifies the transposition operation:
     - 'N': No transpose.
     - 'T': Transpose.
     - 'C': Conjugate transpose.
-- diag::Char: Specifies whether the matrix is unit triangular.
 - alpha::Number: Scalar multiplier applied to the operation.
 - func::Char: Specifies the function type:
     - 'S': Solve (TRSM, A * X = alpha * B).
     - 'M': Multiply (TRMM, Update B = alpha * A * B or alpha * B * A).
-- A::AbstractMixedPrec: The triangular matrix, with mixed precision data structure.
-- B::StridedMatrix: The matrix to multiply or solve for.
+- A::TriMixedPrec: The triangular matrix, with mixed precision data structure.
+- B::AbstractMatrix: The matrix to multiply or solve for.
 
 Returns:
 - Updated matrix `B` after performing the specified operation.
@@ -418,13 +471,6 @@ function unified_rectrxm!(
     return unified_rectrxm!(side, uplo, trans, 'N', alpha, func, A, B)
 end
 
-"""
-    unified_rec_mixed(func::Char, side::Char, uplo::Char, diag::Char, A, B, threshold::Int=256)
-
-Recursive core function for mixed-precision triangular solve/multiply operations.
-Recursively divides matrices into blocks, handling necessary scaling and element type
-conversions between the precision hierarchies of `A` and `B`.
-"""
 function unified_rec_mixed(
     func::Char, side::Char, uplo::Char, diag::Char,
     A::AbstractMixedPrec{T_Base},
@@ -452,6 +498,7 @@ function unified_rec_mixed(
                 B ./= A_scale
             else
                 temp_B_f32 = Float32.(B) .* A_scale
+                print("CLAMPING8")
                 clamp!(temp_B_f32, floatmin(eltype(B)), floatmax(eltype(B)))
                 copy!(B, temp_B_f32)
             end
@@ -477,6 +524,7 @@ function unified_rec_mixed(
             B2 = view(B, :,         mid+1:n)
         end
 
+        # Handle FullMixedPrec properly
         if hasproperty(A, :A21)
             OffDiag_block = (uplo == 'L') ? A.A21 : A.A12
         else
@@ -510,6 +558,7 @@ function unified_rec_mixed(
                         end
                     else
                         B2_lp = A_type.(B2) 
+                        # GEMM_SUB!(B2_lp, OffDiag_block, A_type.(B1))
                         GEMM_SUB!(B2_lp, OffDiag_block, A_type.(B1), A_scale)
                         copy!(B2, B2_lp)
                     end
@@ -524,6 +573,7 @@ function unified_rec_mixed(
                         end
                     else
                         B1_lp = A_type.(B1)
+                        # GEMM_ADD!(OffDiag_block, A_type.(B2), B1_lp)
                         GEMM_ADD!(OffDiag_block, A_type.(B2), B1_lp, A_scale)
                         copy!(B1, B1_lp)
                     end
@@ -538,10 +588,11 @@ function unified_rec_mixed(
                         end
                     else
                         B2_lp = A_type.(B2) 
+                        # GEMM_SUB!(B2_lp, A_type.(B1), OffDiag_block)
                         GEMM_SUB!(B2_lp, A_type.(B1), OffDiag_block, A_scale)
                         copy!(B2, B2_lp)
                     end
-                else 
+                else # side == 'R' && func == 'M'
                     if A_type == Float16
                         if B_type !== Float64
                             GEMM_ADD!(A_type.(B2), OffDiag_block, B1, A_scale)
@@ -552,18 +603,23 @@ function unified_rec_mixed(
                         end
                     else
                         B1_lp = A_type.(B1)
+                        # GEMM_ADD!(A_type.(B2), OffDiag_block, B1_lp) 
                         GEMM_ADD!(A_type.(B2), OffDiag_block, B1_lp, A_scale)
                         copy!(B1, B1_lp) 
                     end
                 end
             else
                 if side == 'L' && func == 'S'
+                    # GEMM_SUB!(B2, OffDiag_block, B1)
                     GEMM_SUB!(B2, OffDiag_block, B1, A_scale)
                 elseif side == 'L' && func == 'M'
+                    # GEMM_ADD!(OffDiag_block, B2, B1)
                     GEMM_ADD!(OffDiag_block, B2, B1, A_scale)
                 elseif side == 'R' && func == 'S'
+                    # GEMM_SUB!(B2, B1, OffDiag_block)
                     GEMM_SUB!(B2, B1, OffDiag_block, A_scale)
-                else 
+                else # side == 'R' && func == 'M'
+                    # GEMM_ADD!(B2, OffDiag_block, B1)
                     GEMM_ADD!(B2, OffDiag_block, B1, A_scale)
                 end
             end
@@ -592,6 +648,7 @@ function unified_rec_mixed(
                         end
                     else
                         B1_lp = A_type.(B1)
+                        # GEMM_SUB!(B1_lp, OffDiag_block, A_type.(copy(B2)))
                         GEMM_SUB!(B1_lp, OffDiag_block, A_type.(B2), A_scale)
                         copy!(B1, B1_lp)
                     end
@@ -606,6 +663,7 @@ function unified_rec_mixed(
                         end
                     else
                         B2_lp = A_type.(B2)
+                        # GEMM_ADD!(OffDiag_block, A_type.(B1), B2_lp)
                         GEMM_ADD!(OffDiag_block, A_type.(B1), B2_lp, A_scale)
                         copy!(B2, B2_lp)
                     end
@@ -620,10 +678,11 @@ function unified_rec_mixed(
                         end
                     else
                         B1_lp = A_type.(B1)
+                        # GEMM_SUB!(B1_lp, A_type.(B2), OffDiag_block)
                         GEMM_SUB!(B1_lp, A_type.(B2), OffDiag_block, A_scale)
                         copy!(B1, B1_lp)
                     end
-                else 
+                else # side == 'R' && func == 'M'
                     if A_type == Float16
                         if B_type !== Float64
                             GEMM_ADD!(A_type.(B1), OffDiag_block, B2, A_scale)
@@ -634,18 +693,23 @@ function unified_rec_mixed(
                         end
                     else
                         B2_lp = A_type.(B2)
+                        # GEMM_ADD!(A_type.(B1), OffDiag_block, B2_lp) 
                         GEMM_ADD!(A_type.(B1), OffDiag_block, B2_lp, A_scale)
                         copy!(B2, B2_lp) 
                     end
                 end
             else
                 if side == 'L' && func == 'S'
+                    # GEMM_SUB!(B1, OffDiag_block, B2)
                     GEMM_SUB!(B1, OffDiag_block, B2, A_scale)
                 elseif side == 'L' && func == 'M'
+                    # GEMM_ADD!(OffDiag_block, B1, B2)
                     GEMM_ADD!(OffDiag_block, B1, B2, A_scale)
                 elseif side == 'R' && func == 'S'
+                    # GEMM_SUB!(B1, B2, OffDiag_block)
                     GEMM_SUB!(B1, B2, OffDiag_block, A_scale)
-                else 
+                else # side == 'R' && func == 'M'
+                    # GEMM_ADD!(B1, OffDiag_block, B2)
                     GEMM_ADD!(B1, OffDiag_block, B2, A_scale)
                 end
             end
@@ -654,10 +718,13 @@ function unified_rec_mixed(
         end
 
         return B
+
     end
     
 end
 
+
+# mixed precision rectrxm for transpose
 function unified_rec_mixed(
     func::Char, side::Char, uplo::Char, diag::Char,
     A::TransposedMixedPrec,
@@ -705,7 +772,7 @@ function unified_rec_mixed(
        (side == 'R' && uplo == 'U' && func == 'S') || 
        (side == 'L' && uplo == 'U' && func == 'M') || 
        (side == 'R' && uplo == 'L' && func == 'M')
-       
+        
         unified_rec_mixed(func, side, uplo, diag, A11_trans, B1, threshold)
         
         
@@ -834,7 +901,7 @@ function unified_rec_mixed(
                     GEMM_SUB!(B1_lp, A_type.(B2), OffDiag_block_trans, A_scale)
                     copy!(B1, B1_lp)
                 end
-            else 
+            else # side == 'R' && func == 'M'
                 if A_type == Float16
                     if B_type !== Float64
                         GEMM_ADD!(B2, A_type.(B1), OffDiag_block_trans, A_scale)
@@ -867,6 +934,7 @@ function unified_rec_mixed(
     return B
 end
 
+# overloaded unified_rec_mixed without diag for transpose
 function unified_rec_mixed(
     func::Char, side::Char, uplo::Char,
     A::TransposedMixedPrec,

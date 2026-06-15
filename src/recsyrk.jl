@@ -1,93 +1,15 @@
-using AMDGPU
+include("wrappers.jl")
 using CUDA
-using oneAPI
 using StochasticRounding
 
+"""
+    _syrk_dispatch!(op::Symbol, alpha::Number, A::CUDA.StridedCuArray, B::CUDA.StridedCuArray, beta::Number, C::CUDA.StridedCuArray)
 
-
+Handles type-conversion and hardware routing for symmetric rank-k updates and general matrix multiplications.
+"""
 function _syrk_dispatch!(
     op::Symbol,
     alpha::Number, A::CUDA.StridedCuArray, B::CUDA.StridedCuArray, beta::Number, C::CUDA.StridedCuArray
-)
-    TC = eltype(C)
-    TA = eltype(A)
-
-    if op === :SYRK
-        if TA == TC && TC in (Float32, Float64)
-            CUBLAS.syrk!('L', 'N', TC(alpha), A, TC(beta), C)
-        elseif TA == Float16 && TC in (Float16, Float32)
-            CUBLAS.gemmEx!('N', 'T', alpha, A, A, beta, C)
-        else
-            compute_type = Float32
-            
-            C_temp = (TC == compute_type) ? C : compute_type.(C)
-
-            if TA == Float32
-                CUBLAS.syrk!('L', 'N', compute_type(alpha), A, compute_type(beta), C_temp)
-            elseif TA == Float16
-                CUBLAS.gemmEx!('N', 'T', alpha, A, A, beta, C_temp)
-            else
-                A_temp = compute_type.(A)
-                CUBLAS.syrk!('L', 'N', compute_type(alpha), A_temp, compute_type(beta), C_temp)
-            end
-            
-            if C !== C_temp
-                copy!(C, C_temp)
-            end
-        end
-
-    elseif op === :GEMM
-        TB = eltype(B)
-        if TA == TB == TC && TC in (Float32, Float64)
-            CUBLAS.gemm!('N', 'T', TC(alpha), A, B, TC(beta), C)
-        elseif TA == Float16 && TB == Float16 && TC in (Float16, Float32)
-            CUBLAS.gemmEx!('N', 'T', alpha, A, B, beta, C)
-        else
-            # print("type a:", eltype(A), "type b:", eltype(B), "type c:", eltype(C))
-            A_final = (TA == TC) ? A : TC.(A)
-            B_final = (TB == TC) ? B : TC.(B)
-            if TC in (Float32, Float64)
-                CUBLAS.gemm!('N', 'T', TC(alpha), A_final, B_final, TC(beta), C)
-            else 
-                CUBLAS.gemmEx!('N', 'T', alpha, A_final, B_final, beta, C)
-            end
-        end
-    end
-end
-
-# function _syrk_dispatch!(
-#     op::Symbol,
-#     alpha::Number, A::AMDGPU.StridedROCArray, B::AMDGPU.StridedROCArray, beta::Number, C::AMDGPU.StridedROCArray
-# )
-#     TC = eltype(C)
-#     TA = eltype(A)
-
-#     if op === :SYRK
-#         if TA == TC && TC in (Float32, Float64)
-#             ROCBLAS.syrk!('L', 'N', TC(alpha), A, TC(beta), C)
-#         elseif TA == Float16 && TC in (Float16, Float32)
-#             ROCBLAS.gemm_ex!('N', 'T', alpha, A, A, beta, C)
-#         else
-#             A_converted = TC.(A)
-#             ROCBLAS.syrk!('L', 'N', TC(alpha), A_converted, TC(beta), C)
-#         end
-#     elseif op === :GEMM
-#         TB = eltype(B)
-#         if TA == TB == TC && TC in (Float32, Float64)
-#             ROCBLAS.gemm!('N', 'T', TC(alpha), A, B, TC(beta), C)
-#         elseif TA == Float16 && TB == Float16 && TC in (Float16, Float32)
-#             ROCBLAS.gemm_ex!('N', 'T', alpha, A, B, beta, C)
-#         else
-#             A_final = (TA == TC) ? A : TC.(A)
-#             B_final = (TB == TC) ? B : TC.(B)
-#             ROCBLAS.gemm!('N', 'T', TC(alpha), A_final, B_final, TC(beta), C)
-#         end
-#     end
-# end
-
-function _syrk_dispatch!(
-    op::Symbol,
-    alpha::Number, A::AMDGPU.StridedROCArray, B::AMDGPU.StridedROCArray, beta::Number, C::AMDGPU.StridedROCArray
 )
     TC = eltype(C)
     TA = eltype(A)
@@ -98,9 +20,24 @@ function _syrk_dispatch!(
         elseif TA == Float16 && TC in (Float16, Float32)
             gemmEx!('N', 'T', alpha, A, A, beta, C)
         else
-            A_converted = TC.(A)
-            syrk!('L', 'N', TC(alpha), A_converted, TC(beta), C)
+            compute_type = Float32
+            
+            C_temp = (TC == compute_type) ? C : compute_type.(C)
+
+            if TA == Float32
+                syrk!('L', 'N', compute_type(alpha), A, compute_type(beta), C_temp)
+            elseif TA == Float16
+                gemmEx!('N', 'T', alpha, A, A, beta, C_temp)
+            else
+                A_temp = compute_type.(A)
+                syrk!('L', 'N', compute_type(alpha), A_temp, compute_type(beta), C_temp)
+            end
+            
+            if C !== C_temp
+                copy!(C, C_temp)
+            end
         end
+
     elseif op === :GEMM
         TB = eltype(B)
         if TA == TB == TC && TC in (Float32, Float64)
@@ -110,42 +47,21 @@ function _syrk_dispatch!(
         else
             A_final = (TA == TC) ? A : TC.(A)
             B_final = (TB == TC) ? B : TC.(B)
-            gemm!('N', 'T', TC(alpha), A_final, B_final, TC(beta), C)
+            if TC in (Float32, Float64)
+                gemm!('N', 'T', TC(alpha), A_final, B_final, TC(beta), C)
+            else 
+                gemmEx!('N', 'T', alpha, A_final, B_final, beta, C)
+            end
         end
     end
 end
 
-function _syrk_dispatch!(
-    op::Symbol,
-    alpha::Number, A::oneAPI.oneDeviceArray, B::oneAPI.oneDeviceArray, beta::Number, C::oneAPI.oneDeviceArray
-)
-    TC = eltype(C)
-    TA = eltype(A)
+"""
+    _recsyrk_impl!(alpha::Number, A::AbstractMatrix, beta::Number, C::AbstractMatrix, threshold::Int; parallel::Bool)
 
-    if op === :SYRK
-        if TA == TC && TC in (Float32, Float64)
-            oneMKL.syrk!('L', 'N', TC(alpha), A, TC(beta), C)
-        elseif TA == Float16 && TC in (Float16, Float32)
-            oneMKL.gemm!('N', 'T', alpha, A, A, beta, C)
-        else
-            A_converted = TC.(A)
-            oneMKL.syrk!('L', 'N', TC(alpha), A_converted, TC(beta), C)
-        end
-    elseif op === :GEMM
-        TB = eltype(B)
-        if TA == TB == TC && TC in (Float32, Float64)
-            oneMKL.gemm!('N', 'T', TC(alpha), A, B, TC(beta), C)
-        elseif TA == Float16 && TB == Float16 && TC in (Float16, Float32)
-            oneMKL.gemm!('N', 'T', alpha, A, B, beta, C)
-        else
-            A_final = (TA == TC) ? A : TC.(A)
-            B_final = (TB == TC) ? B : TC.(B)
-            oneMKL.gemm!('N', 'T', TC(alpha), A_final, B_final, TC(beta), C)
-        end
-    end
-end
-
-
+Internal implementation for nested recursive symmetric rank-k updates.
+Recursively divides matrices into sub-blocks and applies updates in-place, falling back to standard hardware routines using the dispatch helper at the base case.
+"""
 function _recsyrk_impl!(
     alpha::Number, A::AbstractMatrix, beta::Number, C::AbstractMatrix,
     threshold::Int; parallel::Bool
@@ -175,6 +91,12 @@ function _recsyrk_impl!(
     end
 end
 
+"""
+    _recsyrk_impl!(alpha::Number, A::AbstractMatrix, beta::Number, C::SymmMixedPrec; parallel::Bool)
+
+Internal implementation for nested recursive symmetric rank-k updates specifically for the `SymmMixedPrec` block structure.
+Recursively divides matrices into sub-blocks and applies updates in-place, falling back to standard hardware routines using the dispatch helper at the base case.
+"""
 function _recsyrk_impl!(
     alpha::Number, A::AbstractMatrix, beta::Number, C::SymmMixedPrec;
     parallel::Bool
@@ -200,9 +122,14 @@ function _recsyrk_impl!(
     end
 end
 
-
 const PARALLEL_THRESHOLD = 4096
 
+"""
+    recsyrk!(alpha::Number, A::AbstractMatrix, beta::Number, C::SymmMixedPrec)
+
+Performs an in-place, nested recursive block symmetric rank-k update on a symmetric mixed-precision matrix structure.
+Falls back to standard hardware routines using the dispatch helper at the base case.
+"""
 function recsyrk!(
     alpha::Number, A::AbstractMatrix, beta::Number, C::SymmMixedPrec
 )
@@ -215,7 +142,12 @@ function recsyrk!(
     _recsyrk_impl!(alpha, A, beta, C, parallel=should_parallelize)
 end
 
+"""
+    recsyrk!(alpha::Number, A::AbstractMatrix, beta::Number, C::AbstractMatrix, threshold::Int=256)
 
+Performs an in-place, nested recursive block symmetric rank-k update (`C = alpha*A*Aᵀ + beta*C`).
+Falls back to standard hardware routines using the dispatch helper at the specified base case threshold.
+"""
 function recsyrk!(
     alpha::Number, A::AbstractMatrix, beta::Number, C::AbstractMatrix, threshold::Int=256
 )

@@ -1,20 +1,20 @@
 export recgemm!
+include("wrappers.jl")
 
 function _gemm_dispatch!(alpha, A::AbstractMatrix, B::AbstractMatrix, beta, C::AbstractMatrix)
-    # Base hardware dispatch (Terminal Node)
     TA, TB, TC = eltype(A), eltype(B), eltype(C)
     
     if TA == TB == TC && TC in (Float32, Float64)
-        CUBLAS.gemm!('N', 'N', TC(alpha), A, B, TC(beta), C)
+        gemm!('N', 'N', TC(alpha), A, B, TC(beta), C)
     elseif TA == Float16 && TB == Float16 && TC in (Float16, Float32)
-        CUBLAS.gemmEx!('N', 'N', alpha, A, B, beta, C)
+        gemmEx!('N', 'N', alpha, A, B, beta, C)
     else
         A_final = (TA == TC) ? A : TC.(A)
         B_final = (TB == TC) ? B : TC.(B)
         if TC in (Float32, Float64)
-            CUBLAS.gemm!('N', 'N', TC(alpha), A_final, B_final, TC(beta), C)
+            gemm!('N', 'N', TC(alpha), A_final, B_final, TC(beta), C)
         else
-            CUBLAS.gemmEx!('N', 'N', alpha, A_final, B_final, beta, C)
+            gemmEx!('N', 'N', alpha, A_final, B_final, beta, C)
         end
     end
 end
@@ -24,7 +24,6 @@ function recgemm!(alpha, A::AbstractMatrix, B::AbstractMatrix, beta, C::Abstract
 end
 
 function recgemm!(alpha, A::AbstractMatrix, B::AbstractMatrix, beta, C::FullMixedPrec; parallel::Bool=(size(C, 1) > 512))
-    # Base case check
     if C.BaseCase !== nothing
         _gemm_dispatch!(alpha, A, B, beta, C.BaseCase)
         return
@@ -33,13 +32,11 @@ function recgemm!(alpha, A::AbstractMatrix, B::AbstractMatrix, beta, C::FullMixe
     n = size(C, 1)
     mid = size(C.A11, 1)
 
-    # View generation for A
     A11 = view(A, 1:mid, 1:mid)
     A12 = view(A, 1:mid, mid+1:n)
     A21 = view(A, mid+1:n, 1:mid)
     A22 = view(A, mid+1:n, mid+1:n)
 
-    # View generation for B
     B11 = view(B, 1:mid, 1:mid)
     B12 = view(B, 1:mid, mid+1:n)
     B21 = view(B, mid+1:n, 1:mid)

@@ -3,7 +3,7 @@ include("benchmark.jl")
 
 function run_recgemm_benchmark()
     # Define the matrix sizes to test
-    n_values = [2048, 4096, 8192, 16384, 32768, 65536] #16, 32, 256, 512, 1024, 
+    n_values = [16384, 32768, 65536] #16, 32, 256, 512, 1024, 
 
     # Define the different mixed-precision scenarios
     test_scenarios = Dict(
