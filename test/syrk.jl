@@ -1,5 +1,6 @@
 using Test
 using LinearAlgebra
+using Logging
 
 function _syrk_expected(uplo::Char, trans::Char, alpha, A, beta, C)
     prod = trans == 'N' ? A * transpose(A) : transpose(A) * A
@@ -9,6 +10,7 @@ end
 function _triangle_matches(uplo::Char, got::AbstractMatrix, expected::AbstractMatrix)
     n = size(got, 1)
     if uplo == 'U'
+        # syrk is only required to overwrite the selected triangle.
         for j in 1:n, i in 1:j
             @inbounds isapprox(got[i, j], expected[i, j]) || return false
         end
@@ -41,6 +43,7 @@ end
     C_batch3 = cat(C_batch..., dims = 3)
     expected_batch3 = cat(expected_batch..., dims = 3)
 
+    # test exercise nontrivial strides
     A_view_parent = Float32[
         9  8  7  6;
         1  2  3  4;
@@ -61,7 +64,9 @@ end
             A_single_dev = _to_backend(AT, copy(A_single))
             C_single_dev = _to_backend(AT, copy(C_single))
 
-            NextLA.syrk!(uplo, trans, alpha, A_single_dev, beta, C_single_dev)
+            # should dispatch directly to the backend implementation.
+            @test occursin(_expected_syrk_file(name), _method_file(NextLA.syrk!, uplo, trans, alpha, A_single_dev, beta, C_single_dev))
+            @test_logs min_level=Logging.Warn NextLA.syrk!(uplo, trans, alpha, A_single_dev, beta, C_single_dev)
             sync(C_single_dev)
             @test _triangle_matches(uplo, Array(C_single_dev), expected_single)
 
@@ -70,19 +75,23 @@ end
             A_sub_dev = @view A_view_dev[2:3, 2:4]
             C_sub_dev = @view C_view_dev[2:3, 2:3]
 
-            NextLA.syrk!('L', trans, alpha, A_sub_dev, beta, C_sub_dev)
+            # subviews catch backends that only work for dense parent arrays.
+            @test occursin(_expected_syrk_file(name), _method_file(NextLA.syrk!, 'L', trans, alpha, A_sub_dev, beta, C_sub_dev))
+            @test_logs min_level=Logging.Warn NextLA.syrk!('L', trans, alpha, A_sub_dev, beta, C_sub_dev)
             sync(C_view_dev)
             @test _triangle_matches('L', Array(C_sub_dev), expected_view)
 
             A_batch_dev = _to_backend(AT, deepcopy(A_batch))
             C_batch_dev = _to_backend(AT, deepcopy(C_batch))
 
-            if name in ("CPU", "CUDA", "oneAPI", "Metal")
+            # batched syrk is backend-dependent: check dispatch and fallback
+            @test occursin(_expected_syrk_batched_file(name), _method_file(NextLA.syrk_batched!, uplo, trans, alpha, A_batch_dev, beta, C_batch_dev))
+            if _syrk_batched_warns(name, :pointer)
                 @test_logs (:warn, r"syrk_batched! falling back to batched gemm!") NextLA.syrk_batched!(
                     uplo, trans, alpha, A_batch_dev, beta, C_batch_dev
                 )
             else
-                NextLA.syrk_batched!(uplo, trans, alpha, A_batch_dev, beta, C_batch_dev)
+                @test_logs min_level=Logging.Warn NextLA.syrk_batched!(uplo, trans, alpha, A_batch_dev, beta, C_batch_dev)
             end
             sync(first(C_batch_dev))
 
@@ -93,12 +102,14 @@ end
             A_batch3_dev = _to_backend(AT, copy(A_batch3))
             C_batch3_dev = _to_backend(AT, copy(C_batch3))
 
-            if name in ("CPU", "CUDA", "Metal")
+            # 3d strided syrk
+            @test occursin(_expected_syrk_batched_file(name), _method_file(NextLA.syrk_batched!, uplo, trans, alpha, A_batch3_dev, beta, C_batch3_dev))
+            if _syrk_batched_warns(name, :strided)
                 @test_logs (:warn, r"syrk_batched! falling back to batched gemm!") NextLA.syrk_batched!(
                     uplo, trans, alpha, A_batch3_dev, beta, C_batch3_dev
                 )
             else
-                NextLA.syrk_batched!(uplo, trans, alpha, A_batch3_dev, beta, C_batch3_dev)
+                @test_logs min_level=Logging.Warn NextLA.syrk_batched!(uplo, trans, alpha, A_batch3_dev, beta, C_batch3_dev)
             end
             sync(C_batch3_dev)
             for i in axes(expected_batch3, 3)

@@ -7,6 +7,7 @@ const CUBLAS = CUDA.CUBLAS
 const NATIVE_GEMM_TYPES = Union{Float16, Float32, Float64, ComplexF32, ComplexF64}
 
 @inline NextLA.SUBGROUP_SIZE(::Type{<:CUDA.CUDABackend}) = Val(32)
+@inline NextLA.supports_pointer_batched(::Type{<:CUDA.CUDABackend}) = true
 
 @inline _cublas_compute_type(::Type{Float16}) = CUBLAS.CUBLAS_COMPUTE_16F
 @inline _cublas_compute_type(::Type{Float32}) = CUBLAS.CUBLAS_COMPUTE_32F
@@ -25,14 +26,56 @@ const NATIVE_GEMM_TYPES = Union{Float16, Float32, Float64, ComplexF32, ComplexF6
 @inline _supports_native_gemm(::Type{T}, ::Type{T}, ::Type{T}) where {T<:NATIVE_GEMM_TYPES} = true
 @inline _supports_native_gemm(::Type, ::Type, ::Type) = false
 
+@inline function _unsafe_batch_strided(batch::AbstractVector{<:CUDA.StridedCuMatrix{T}}) where {T}
+    return CUDA.CuArray(pointer.(batch))
+end
+
 function NextLA.gemm_batched!(transA::Char,
                               transB::Char,
                               alpha,
-                              A::AbstractVector{<:CUDA.CuArray{<:Any,2}},
-                              B::AbstractVector{<:CUDA.CuArray{<:Any,2}},
+                              A::AbstractVector{<:CUDA.CuArray{T,2}},
+                              B::AbstractVector{<:CUDA.CuArray{T,2}},
                               beta,
-                              C::AbstractVector{<:CUDA.CuArray{<:Any,2}})
+                              C::AbstractVector{<:CUDA.CuArray{T,2}}) where {T}
     return CUBLAS.gemm_batched!(transA, transB, alpha, A, B, beta, C)
+end
+
+function NextLA.gemm_batched!(transA::Char,
+                              transB::Char,
+                              alpha,
+                              A::AbstractVector{<:CUDA.StridedCuMatrix{T}},
+                              B::AbstractVector{<:CUDA.StridedCuMatrix{T}},
+                              beta,
+                              C::AbstractVector{<:CUDA.StridedCuMatrix{T}}) where {T}
+    length(A) == length(B) == length(C) || throw(DimensionMismatch("gemm_batched!: matrix batches must have matching lengths"))
+    isempty(A) && return C
+
+    m, n, k, lda, ldb, ldc = NextLA._gemm_dims(transA, transB, A[1], B[1], C[1])
+    for i in eachindex(A, B, C)
+        NextLA._gemm_dims(transA, transB, A[i], B[i], C[i]) == (m, n, k, lda, ldb, ldc) ||
+            throw(DimensionMismatch("gemm_batched!: all matrices in a batch must share dimensions and strides"))
+    end
+
+    Aptrs = _unsafe_batch_strided(A)
+    Bptrs = _unsafe_batch_strided(B)
+    Cptrs = _unsafe_batch_strided(C)
+
+    try
+        compute_enum = _cublas_compute_type(T)
+        scalar_type = _cublas_scalar_type(T)
+        CUBLAS.cublasGemmBatchedEx(
+            CUBLAS.handle(), transA, transB, m, n, k, CUDA.CuRef{scalar_type}(alpha),
+            Aptrs, eltype(A[1]), lda, Bptrs, eltype(B[1]), ldb,
+            CUDA.CuRef{scalar_type}(beta), Cptrs, eltype(C[1]), ldc,
+            length(A), compute_enum, CUBLAS.CUBLAS_GEMM_DEFAULT,
+        )
+    finally
+        CUDA.unsafe_free!(Cptrs)
+        CUDA.unsafe_free!(Bptrs)
+        CUDA.unsafe_free!(Aptrs)
+    end
+
+    return C
 end
 
 function NextLA.gemm_batched!(transA::Char,
@@ -45,18 +88,56 @@ function NextLA.gemm_batched!(transA::Char,
     return CUBLAS.gemm_strided_batched!(transA, transB, alpha, A, B, beta, C)
 end
 
+function NextLA.gemm_batched_ptrs!(transA::Char,
+                                   transB::Char,
+                                   alpha,
+                                   Aptrs::CUDA.CuArray,
+                                   Aref::AbstractMatrix{T},
+                                   Bptrs::CUDA.CuArray,
+                                   Bref::AbstractMatrix{T},
+                                   beta,
+                                   Cptrs::CUDA.CuArray,
+                                   Cref::AbstractMatrix{T},
+                                   batch_count::Integer) where {T}
+    batch_count <= 0 && return Cptrs
+
+    m, n, k, lda, ldb, ldc = NextLA._gemm_dims(transA, transB, Aref, Bref, Cref)
+    compute_enum = _cublas_compute_type(T)
+    scalar_type = _cublas_scalar_type(T)
+
+    CUBLAS.cublasGemmBatchedEx(
+        CUBLAS.handle(), transA, transB, m, n, k, CUDA.CuRef{scalar_type}(alpha),
+        Aptrs, eltype(Aref), lda, Bptrs, eltype(Bref), ldb,
+        CUDA.CuRef{scalar_type}(beta), Cptrs, eltype(Cref), ldc,
+        Int(batch_count), compute_enum, CUBLAS.CUBLAS_GEMM_DEFAULT,
+    )
+    return Cptrs
+end
+
 function NextLA.gemmEx_batched!(transA::Char,
                                 transB::Char,
                                 alpha,
-                                A::AbstractVector{<:CUDA.CuArray{<:Any,2}},
-                                B::AbstractVector{<:CUDA.CuArray{<:Any,2}},
+                                A::AbstractVector{<:CUDA.CuArray{T,2}},
+                                B::AbstractVector{<:CUDA.CuArray{T,2}},
                                 beta,
-                                C::AbstractVector{<:CUDA.CuArray{<:Any,2}};
-                                compute_type::Type=NextLA.default_compute_type(alpha, A, B, beta, C))
+                                C::AbstractVector{<:CUDA.CuArray{T,2}};
+                                compute_type::Type=NextLA.default_compute_type(alpha, A, B, beta, C)) where {T}
     NextLA._check_compute_type(compute_type)
     if compute_type == NextLA.default_compute_type(alpha, A, B, beta, C)
         return NextLA.gemm_batched!(transA, transB, alpha, A, B, beta, C)
     end
+    return _gemm_batched_ex!(transA, transB, alpha, A, B, beta, C, compute_type)
+end
+
+function NextLA.gemmEx_batched!(transA::Char,
+                                transB::Char,
+                                alpha,
+                                A::AbstractVector{<:CUDA.StridedCuMatrix{T}},
+                                B::AbstractVector{<:CUDA.StridedCuMatrix{T}},
+                                beta,
+                                C::AbstractVector{<:CUDA.StridedCuMatrix{T}};
+                                compute_type::Type=NextLA.default_compute_type(alpha, A, B, beta, C)) where {T}
+    NextLA._check_compute_type(compute_type)
     return _gemm_batched_ex!(transA, transB, alpha, A, B, beta, C, compute_type)
 end
 
@@ -87,11 +168,11 @@ end
 function NextLA.syrk_batched!(uplo::Char,
                               trans::Char,
                               alpha,
-                              A::AbstractVector{<:CUDA.CuArray{<:Any,2}},
+                              A::AbstractVector{<:CUDA.CuArray{T,2}},
                               beta,
-                              C::AbstractVector{<:CUDA.CuArray{<:Any,2}})
-    @warn "syrk_batched! falling back to batched gemm!" backend = "CUDA" layout = :pointer
-    return NextLA._syrk_batched_fallback!(uplo, trans, alpha, A, beta, C)
+                              C::AbstractVector{<:CUDA.CuArray{T,2}}) where {T}
+    @warn "syrk_batched! falling back to batched gemm!" backend = "CUDA" layout = :pointer maxlog=1
+    return NextLA.gemm_batched!(trans, NextLA._syrk_batched_gemm_trans(trans), alpha, A, A, beta, C)
 end
 
 function NextLA.syrk_batched!(uplo::Char,
@@ -100,8 +181,8 @@ function NextLA.syrk_batched!(uplo::Char,
                               A::CUDA.StridedCuArray{<:Any,3},
                               beta,
                               C::CUDA.StridedCuArray{<:Any,3})
-    @warn "syrk_batched! falling back to batched gemm!" backend = "CUDA" layout = :strided
-    return NextLA._syrk_batched_fallback!(uplo, trans, alpha, A, beta, C)
+    @warn "syrk_batched! falling back to batched gemm!" backend = "CUDA" layout = :strided maxlog=1
+    return NextLA.gemm_batched!(trans, NextLA._syrk_batched_gemm_trans(trans), alpha, A, A, beta, C)
 end
 
 #Ex versions 
@@ -113,7 +194,7 @@ function _gemm_ex!(transA::Char,
                    beta,
                    C::CUDA.CuArray{<:Any,2},
                    compute_type::Type)
-    m, n, k, lda, ldb, ldc = _gemm_dims(transA, transB, A, B, C)
+    m, n, k, lda, ldb, ldc = NextLA._gemm_dims(transA, transB, A, B, C)
     compute_enum = _cublas_compute_type(compute_type)
     scalar_type = _cublas_scalar_type(compute_type)
 
@@ -128,25 +209,25 @@ end
 function _gemm_batched_ex!(transA::Char,
                            transB::Char,
                            alpha,
-                           A::AbstractVector{<:CUDA.CuArray{<:Any,2}},
-                           B::AbstractVector{<:CUDA.CuArray{<:Any,2}},
+                           A::AbstractVector{<:CUDA.StridedCuMatrix{<:Any}},
+                           B::AbstractVector{<:CUDA.StridedCuMatrix{<:Any}},
                            beta,
-                           C::AbstractVector{<:CUDA.CuArray{<:Any,2}},
+                           C::AbstractVector{<:CUDA.StridedCuMatrix{<:Any}},
                            compute_type::Type)
     length(A) == length(B) == length(C) || throw(DimensionMismatch("gemm_batched!: matrix batches must have matching lengths"))
     isempty(A) && return C
 
-    m, n, k, lda, ldb, ldc = _gemm_dims(transA, transB, A[1], B[1], C[1])
+    m, n, k, lda, ldb, ldc = NextLA._gemm_dims(transA, transB, A[1], B[1], C[1])
     for i in eachindex(A, B, C)
-        _gemm_dims(transA, transB, A[i], B[i], C[i]) == (m, n, k, lda, ldb, ldc) ||
+        NextLA._gemm_dims(transA, transB, A[i], B[i], C[i]) == (m, n, k, lda, ldb, ldc) ||
             throw(DimensionMismatch("gemm_batched!: all matrices in a batch must share dimensions and strides"))
     end
 
     compute_enum = _cublas_compute_type(compute_type)
     scalar_type = _cublas_scalar_type(compute_type)
-    Aptrs = CUBLAS.unsafe_batch(A)
-    Bptrs = CUBLAS.unsafe_batch(B)
-    Cptrs = CUBLAS.unsafe_batch(C)
+    Aptrs = _unsafe_batch_strided(A)
+    Bptrs = _unsafe_batch_strided(B)
+    Cptrs = _unsafe_batch_strided(C)
 
     try
         CUBLAS.cublasGemmBatchedEx(
@@ -178,7 +259,7 @@ function _gemm_strided_batched_ex!(transA::Char,
     (batchA == batchC || batchA == 1) || throw(DimensionMismatch("gemm_batched!: A and C batch sizes are incompatible"))
     (batchB == batchC || batchB == 1) || throw(DimensionMismatch("gemm_batched!: B and C batch sizes are incompatible"))
 
-    m, n, k, lda, ldb, ldc = _gemm_dims(transA, transB, @view(A[:, :, 1]), @view(B[:, :, 1]), @view(C[:, :, 1]))
+    m, n, k, lda, ldb, ldc = NextLA._gemm_dims(transA, transB, @view(A[:, :, 1]), @view(B[:, :, 1]), @view(C[:, :, 1]))
     strideA = batchA == 1 ? 0 : stride(A, 3)
     strideB = batchB == 1 ? 0 : stride(B, 3)
     strideC = stride(C, 3)

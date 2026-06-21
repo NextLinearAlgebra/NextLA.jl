@@ -9,8 +9,12 @@ import LinearAlgebra: BLAS, LAPACK
 import LinearAlgebra.BLAS: @blasfunc
 using Random: Random
 using KernelAbstractions
+using KernelAbstractions.Extras: @unroll
 
 @inline SUBGROUP_SIZE(::Type{<:KernelAbstractions.CPU}) = Val(1)
+@inline _val_parameter(::Val{W}) where {W} = W
+@inline supports_pointer_batched(backend) = supports_pointer_batched(typeof(backend))
+@inline supports_pointer_batched(::Type) = false
 
 """
 	lamch(::Type{T}, cmach) where{T<: Number}
@@ -55,9 +59,6 @@ function lamch(::Type{T}, cmach) where {T <: Number}
 end
 
 include("NextLAMatrix.jl")
-include("TLR/TLRmodule.jl")
-using .TLRmodule: AbstractTileOrder, TileColMajor, TileRowMajor
-using .TLRmodule: TileFactorBuffer, TLRMatrix, GeneralTLRMatrix, similar_tlr, tile_linear_index
 include("lu.jl")
 include("trmm.jl")
 include("trsm.jl")

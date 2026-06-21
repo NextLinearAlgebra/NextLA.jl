@@ -42,6 +42,27 @@ function gemm_batched!(transA::Char,
     return C
 end
 
+"""
+    gemm_batched_ptrs!(transA, transB, alpha, Aptrs, Aref, Bptrs, Bref, beta, Cptrs, Cref, batch_count)
+
+Internal batched GEMM helper that accepts device arrays of matrix base pointers.
+`Aref`, `Bref`, and `Cref` are representative matrices used only to infer the
+shared GEMM dimensions and leading dimensions for the pointed-to batches.
+"""
+function gemm_batched_ptrs!(transA::Char,
+                            transB::Char,
+                            alpha,
+                            Aptrs,
+                            Aref::AbstractMatrix,
+                            Bptrs,
+                            Bref::AbstractMatrix,
+                            beta,
+                            Cptrs,
+                            Cref::AbstractMatrix,
+                            batch_count::Integer)
+    throw(ArgumentError("NextLA.gemm_batched_ptrs! is supported only on CUDA and AMDGPU"))
+end
+
 function gemm_batched!(transA::Char,
                        transB::Char,
                        alpha,

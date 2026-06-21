@@ -118,8 +118,8 @@ function NextLA.syrk_batched!(uplo::Char,
                               A::AbstractVector{<:oneAPI.oneArray{<:Any,2}},
                               beta,
                               C::AbstractVector{<:oneAPI.oneArray{<:Any,2}})
-    @warn "syrk_batched! falling back to batched gemm!" backend = "oneAPI" layout = :pointer
-    return NextLA._syrk_batched_fallback!(uplo, trans, alpha, A, beta, C)
+    @warn "syrk_batched! falling back to batched gemm!" backend = "oneAPI" layout = :pointer maxlog=1
+    return NextLA.gemm_batched!(trans, NextLA._syrk_batched_gemm_trans(trans), alpha, A, A, beta, C)
 end
 
 function NextLA.syrk_batched!(uplo::Char,

@@ -1,5 +1,6 @@
 using Test
 using LinearAlgebra
+using Logging
 
 @test NextLA.GEMM_COMPUTE_TYPES == (Float16, Float32, Float64, ComplexF32, ComplexF64, Int32)
 @test !(:gemmEx! in names(NextLA))
@@ -11,6 +12,7 @@ _apply_transpose(A::AbstractMatrix, trans::Char) =
     throw(ArgumentError("Unsupported transpose flag `$trans`"))
 
 @testset "batched gemm" begin
+    # tiny fixture so every backend runs the same arithmetic path cheaply.
     transA_batch = 'N'
     transB_batch = 'N'
     alpha_batch = Float32(2)
@@ -22,6 +24,7 @@ _apply_transpose(A::AbstractMatrix, trans::Char) =
     B_batch3 = cat(B_batch..., dims = 3)
     C_batch3 = cat(C_batch..., dims = 3)
 
+    # reuse the pointer-batch reference for the equivalent strided layout.
     expected_batch = [
         alpha_batch * _apply_transpose(A_batch[i], transA_batch) *
         _apply_transpose(B_batch[i], transB_batch) +
@@ -47,6 +50,7 @@ _apply_transpose(A::AbstractMatrix, trans::Char) =
                 sync(C_single_dev)
                 @test Array(C_single_dev) ≈ expected_single
             else
+                # unsupported backends should fail visibly
                 @test_throws ArgumentError NextLA.gemmEx!(
                     transA_batch, transB_batch, alpha_batch, A_single_dev, B_single_dev, beta_batch, C_single_dev
                 )
@@ -56,7 +60,11 @@ _apply_transpose(A::AbstractMatrix, trans::Char) =
             B_batch_dev = _to_backend(AT, deepcopy(B_batch))
             C_batch_dev = _to_backend(AT, deepcopy(C_batch))
 
-            NextLA.gemm_batched!(transA_batch, transB_batch, alpha_batch, A_batch_dev, B_batch_dev, beta_batch, C_batch_dev)
+            # check that GPU backends do not quietly drop to the generic CPU loop.
+            @test occursin(_expected_gemm_batched_file(name), _method_file(NextLA.gemm_batched!, transA_batch, transB_batch, alpha_batch, A_batch_dev, B_batch_dev, beta_batch, C_batch_dev))
+            @test_logs min_level=Logging.Warn NextLA.gemm_batched!(
+                transA_batch, transB_batch, alpha_batch, A_batch_dev, B_batch_dev, beta_batch, C_batch_dev
+            )
             sync(first(C_batch_dev))
 
             for i in eachindex(expected_batch)
@@ -84,7 +92,11 @@ _apply_transpose(A::AbstractMatrix, trans::Char) =
             B_batch3_dev = _to_backend(AT, copy(B_batch3))
             C_batch3_dev = _to_backend(AT, copy(C_batch3))
 
-            NextLA.gemm_batched!(transA_batch, transB_batch, alpha_batch, A_batch3_dev, B_batch3_dev, beta_batch, C_batch3_dev)
+            # strided 3d batches should resolve to the backend-specific implementation.
+            @test occursin(_expected_gemm_batched_file(name), _method_file(NextLA.gemm_batched!, transA_batch, transB_batch, alpha_batch, A_batch3_dev, B_batch3_dev, beta_batch, C_batch3_dev))
+            @test_logs min_level=Logging.Warn NextLA.gemm_batched!(
+                transA_batch, transB_batch, alpha_batch, A_batch3_dev, B_batch3_dev, beta_batch, C_batch3_dev
+            )
             sync(C_batch3_dev)
             @test Array(C_batch3_dev) ≈ expected_batch3
 
@@ -97,6 +109,7 @@ _apply_transpose(A::AbstractMatrix, trans::Char) =
                 sync(C_batch3_ex_dev)
                 @test Array(C_batch3_ex_dev) ≈ expected_batch3
             else
+                # unsupported backends should fail visibly
                 @test_throws ArgumentError NextLA.gemmEx_batched!(
                     transA_batch, transB_batch, alpha_batch, A_batch3_ex_dev, B_batch3_ex_dev, beta_batch, C_batch3_ex_dev
                 )

@@ -17,6 +17,24 @@ end
     return (Tin, Tout) in MPS.MPS_VALID_MATMUL_TYPES
 end
 
+@inline function _materialize_batch_view(A::MtlMatrixBatchView)
+    dense = similar(parent(A), size(A))
+    copyto!(dense, A)
+    return dense
+end
+
+@inline _dense_mtl_batch(A::Metal.MtlArray{<:Any,3}) = A
+@inline _dense_mtl_batch(A::MtlMatrixBatchView) = _materialize_batch_view(A)
+
+@inline function _copyback_mtl_batch!(C::Metal.MtlArray{<:Any,3}, Cdense)
+    return Cdense
+end
+
+@inline function _copyback_mtl_batch!(C::MtlMatrixBatchView, Cdense)
+    copyto!(C, Cdense)
+    return C
+end
+
 function _gemm_batched_mps!(transA::Char,
                             transB::Char,
                             alpha,
@@ -73,7 +91,25 @@ function NextLA.gemm_batched!(transA::Char,
                               B::MtlMatrixBatchView,
                               beta,
                               C::MtlMatrixBatchView)
-    throw(ArgumentError("Metal batched GEMM does not support 3D MtlArray views; use dense MtlArray batches"))
+    Adense = _dense_mtl_batch(A)
+    Bdense = _dense_mtl_batch(B)
+    Cdense = _dense_mtl_batch(C)
+    NextLA.gemm_batched!(transA, transB, alpha, Adense, Bdense, beta, Cdense)
+    return _copyback_mtl_batch!(C, Cdense)
+end
+
+function NextLA.gemm_batched!(transA::Char,
+                              transB::Char,
+                              alpha,
+                              A::Union{Metal.MtlArray{<:Any, 3}, MtlMatrixBatchView},
+                              B::Union{Metal.MtlArray{<:Any, 3}, MtlMatrixBatchView},
+                              beta,
+                              C::Union{Metal.MtlArray{<:Any, 3}, MtlMatrixBatchView})
+    Adense = _dense_mtl_batch(A)
+    Bdense = _dense_mtl_batch(B)
+    Cdense = _dense_mtl_batch(C)
+    _gemm_batched_mps!(transA, transB, alpha, Adense, Bdense, beta, Cdense)
+    return _copyback_mtl_batch!(C, Cdense)
 end
 
 function NextLA.gemmEx_batched!(transA::Char,
@@ -147,7 +183,7 @@ function NextLA.syrk_batched!(uplo::Char,
                               beta,
                               C::Metal.MtlArray{<:Any, 3})
     NextLA._syrk_dims(uplo, trans, @view(A[:, :, 1]), @view(C[:, :, 1]))
-    @warn "syrk_batched! falling back to batched gemm!" backend = "Metal" layout = :strided
+    @warn "syrk_batched! falling back to batched gemm!" backend = "Metal" layout = :strided maxlog=1
     return NextLA.gemm_batched!(trans, trans == 'N' ? 'T' : 'N', alpha, A, A, beta, C)
 end
 
@@ -157,7 +193,23 @@ function NextLA.syrk_batched!(uplo::Char,
                               A::MtlMatrixBatchView,
                               beta,
                               C::MtlMatrixBatchView)
-    throw(ArgumentError("Metal batched SYRK does not support 3D MtlArray views; use dense MtlArray batches"))
+    Adense = _dense_mtl_batch(A)
+    Cdense = _dense_mtl_batch(C)
+    NextLA.syrk_batched!(uplo, trans, alpha, Adense, beta, Cdense)
+    return _copyback_mtl_batch!(C, Cdense)
+end
+
+function NextLA.syrk_batched!(uplo::Char,
+                              trans::Char,
+                              alpha,
+                              A::Union{Metal.MtlArray{<:Any, 3}, MtlMatrixBatchView},
+                              beta,
+                              C::Union{Metal.MtlArray{<:Any, 3}, MtlMatrixBatchView})
+    Adense = _dense_mtl_batch(A)
+    Cdense = _dense_mtl_batch(C)
+    @warn "syrk_batched! falling back to batched gemm!" backend = "Metal" layout = :strided maxlog=1
+    NextLA.gemm_batched!(trans, trans == 'N' ? 'T' : 'N', alpha, Adense, Adense, beta, Cdense)
+    return _copyback_mtl_batch!(C, Cdense)
 end
 
 function NextLA.syrk_batched!(uplo::Char,
@@ -167,7 +219,7 @@ function NextLA.syrk_batched!(uplo::Char,
                               beta,
                               C::AbstractVector{<:Metal.MtlArray{<:Any, 2}})
     length(A) == length(C) || throw(DimensionMismatch("syrk_batched!: matrix batches must have matching lengths"))
-    @warn "syrk_batched! falling back to batched gemm!" backend = "Metal" layout = :pointer
+    @warn "syrk_batched! falling back to batched gemm!" backend = "Metal" layout = :pointer maxlog=1
     isempty(A) || NextLA._syrk_dims(uplo, trans, A[1], C[1])
     return NextLA.gemm_batched!(trans, trans == 'N' ? 'T' : 'N', alpha, A, A, beta, C)
 end

@@ -9,6 +9,7 @@ const NATIVE_GEMM_TYPES = Union{Float16, Float32, Float64, ComplexF32, ComplexF6
 const NATIVE_STRIDED_BATCHED_TYPES = Union{Float32, Float64, ComplexF32, ComplexF64}
 
 @inline NextLA.SUBGROUP_SIZE(::Type{<:AMDGPU.ROCBackend}) = Val(64)
+@inline NextLA.supports_pointer_batched(::Type{<:AMDGPU.ROCBackend}) = true
 
 @inline _rocblas_datatype(::Type{Float16}) = rocBLAS.rocblas_datatype_f16_r
 @inline _rocblas_datatype(::Type{Float32}) = rocBLAS.rocblas_datatype_f32_r
@@ -23,6 +24,10 @@ const NATIVE_STRIDED_BATCHED_TYPES = Union{Float32, Float64, ComplexF32, Complex
 
 @inline _supports_native_strided_batched(::Type{T}, ::Type{T}, ::Type{T}) where {T<:NATIVE_STRIDED_BATCHED_TYPES} = true
 @inline _supports_native_strided_batched(::Type, ::Type, ::Type) = false
+
+@inline function _device_batch_strided(batch::AbstractVector{<:AMDGPU.StridedROCMatrix{T}}) where {T}
+    return AMDGPU.ROCArray(pointer.(batch))
+end
 
 @inline _rocblas_syrk_fname(::Type{Float32}, ::Val{:single}) = rocBLAS.rocblas_ssyrk_64
 @inline _rocblas_syrk_fname(::Type{Float64}, ::Val{:single}) = rocBLAS.rocblas_dsyrk_64
@@ -54,9 +59,9 @@ end
 function _syrk_batched_native!(uplo::Char,
                                trans::Char,
                                alpha,
-                               A::AbstractVector{<:AMDGPU.ROCArray{<:Any, 2}},
+                               A::AbstractVector{<:AMDGPU.ROCArray{T, 2}},
                                beta,
-                               C::AbstractVector{<:AMDGPU.ROCArray{<:Any, 2}})
+                               C::AbstractVector{<:AMDGPU.ROCArray{T, 2}}) where {T}
     length(A) == length(C) || throw(DimensionMismatch("syrk_batched!: matrix batches must have matching lengths"))
     isempty(A) && return C
     n, k = NextLA._syrk_dims(uplo, trans, A[1], C[1])
@@ -99,9 +104,9 @@ end
 function NextLA.syrk_batched!(uplo::Char,
                               trans::Char,
                               alpha,
-                              A::AbstractVector{<:AMDGPU.ROCArray{<:Any, 2}},
+                              A::AbstractVector{<:AMDGPU.ROCArray{T, 2}},
                               beta,
-                              C::AbstractVector{<:AMDGPU.ROCArray{<:Any, 2}})
+                              C::AbstractVector{<:AMDGPU.ROCArray{T, 2}}) where {T}
     return _syrk_batched_native!(uplo, trans, alpha, A, beta, C)
 end
 
@@ -124,7 +129,7 @@ function _gemm_ex!(transA::Char,
                    beta,
                    C::AMDGPU.ROCArray{<:Any, 2},
                    compute_type::Type)
-    m, n, k, lda, ldb, ldc = _gemm_dims(transA, transB, A, B, C)
+    m, n, k, lda, ldb, ldc = NextLA._gemm_dims(transA, transB, A, B, C)
     scalar_type = compute_type
     alpha_ref = Ref{scalar_type}(alpha)
     beta_ref = Ref{scalar_type}(beta)
@@ -143,26 +148,26 @@ end
 function _gemm_batched_ex!(transA::Char,
                            transB::Char,
                            alpha,
-                           A::AbstractVector{<:AMDGPU.ROCArray{<:Any, 2}},
-                           B::AbstractVector{<:AMDGPU.ROCArray{<:Any, 2}},
+                           A::AbstractVector{<:AMDGPU.StridedROCMatrix{<:Any}},
+                           B::AbstractVector{<:AMDGPU.StridedROCMatrix{<:Any}},
                            beta,
-                           C::AbstractVector{<:AMDGPU.ROCArray{<:Any, 2}},
+                           C::AbstractVector{<:AMDGPU.StridedROCMatrix{<:Any}},
                            compute_type::Type)
     length(A) == length(B) == length(C) || throw(DimensionMismatch("gemm_batched!: matrix batches must have matching lengths"))
     isempty(A) && return C
 
-    m, n, k, lda, ldb, ldc = _gemm_dims(transA, transB, A[1], B[1], C[1])
+    m, n, k, lda, ldb, ldc = NextLA._gemm_dims(transA, transB, A[1], B[1], C[1])
     for i in eachindex(A, B, C)
-        _gemm_dims(transA, transB, A[i], B[i], C[i]) == (m, n, k, lda, ldb, ldc) ||
+        NextLA._gemm_dims(transA, transB, A[i], B[i], C[i]) == (m, n, k, lda, ldb, ldc) ||
             throw(DimensionMismatch("gemm_batched!: all matrices in a batch must share dimensions and strides"))
     end
 
     scalar_type = compute_type
     alpha_ref = Ref{scalar_type}(alpha)
     beta_ref = Ref{scalar_type}(beta)
-    Aptrs = rocBLAS.device_batch(A)
-    Bptrs = rocBLAS.device_batch(B)
-    Cptrs = rocBLAS.device_batch(C)
+    Aptrs = _device_batch_strided(A)
+    Bptrs = _device_batch_strided(B)
+    Cptrs = _device_batch_strided(C)
     rocBLAS.rocblas_gemm_batched_ex_64(
         rocBLAS.handle(), transA, transB, m, n, k,
         alpha_ref, Aptrs, _rocblas_datatype(eltype(A[1])), lda,
@@ -189,7 +194,7 @@ function _gemm_strided_batched_ex!(transA::Char,
     (batchA == batchC || batchA == 1) || throw(DimensionMismatch("gemm_batched!: A and C batch sizes are incompatible"))
     (batchB == batchC || batchB == 1) || throw(DimensionMismatch("gemm_batched!: B and C batch sizes are incompatible"))
 
-    m, n, k, lda, ldb, ldc = _gemm_dims(transA, transB, @view(A[:, :, 1]), @view(B[:, :, 1]), @view(C[:, :, 1]))
+    m, n, k, lda, ldb, ldc = NextLA._gemm_dims(transA, transB, @view(A[:, :, 1]), @view(B[:, :, 1]), @view(C[:, :, 1]))
     strideA = batchA == 1 ? 0 : stride(A, 3)
     strideB = batchB == 1 ? 0 : stride(B, 3)
     strideC = stride(C, 3)
@@ -228,11 +233,45 @@ end
 function NextLA.gemm_batched!(transA::Char,
                               transB::Char,
                               alpha,
-                              A::AbstractVector{<:AMDGPU.ROCArray{<:Any, 2}},
-                              B::AbstractVector{<:AMDGPU.ROCArray{<:Any, 2}},
+                              A::AbstractVector{<:AMDGPU.ROCArray{T, 2}},
+                              B::AbstractVector{<:AMDGPU.ROCArray{T, 2}},
                               beta,
-                              C::AbstractVector{<:AMDGPU.ROCArray{<:Any, 2}})
+                              C::AbstractVector{<:AMDGPU.ROCArray{T, 2}}) where {T}
     return rocBLAS.gemm_batched!(transA, transB, alpha, A, B, beta, C)
+end
+
+function NextLA.gemm_batched!(transA::Char,
+                              transB::Char,
+                              alpha,
+                              A::AbstractVector{<:AMDGPU.StridedROCMatrix{T}},
+                              B::AbstractVector{<:AMDGPU.StridedROCMatrix{T}},
+                              beta,
+                              C::AbstractVector{<:AMDGPU.StridedROCMatrix{T}}) where {T}
+    length(A) == length(B) == length(C) || throw(DimensionMismatch("gemm_batched!: matrix batches must have matching lengths"))
+    isempty(A) && return C
+
+    m, n, k, lda, ldb, ldc = NextLA._gemm_dims(transA, transB, A[1], B[1], C[1])
+    for i in eachindex(A, B, C)
+        NextLA._gemm_dims(transA, transB, A[i], B[i], C[i]) == (m, n, k, lda, ldb, ldc) ||
+            throw(DimensionMismatch("gemm_batched!: all matrices in a batch must share dimensions and strides"))
+    end
+
+    scalar_type = T
+    alpha_ref = Ref{scalar_type}(alpha)
+    beta_ref = Ref{scalar_type}(beta)
+    Aptrs = _device_batch_strided(A)
+    Bptrs = _device_batch_strided(B)
+    Cptrs = _device_batch_strided(C)
+    rocBLAS.rocblas_gemm_batched_ex_64(
+        rocBLAS.handle(), transA, transB, m, n, k,
+        alpha_ref, Aptrs, _rocblas_datatype(eltype(A[1])), lda,
+        Bptrs, _rocblas_datatype(eltype(B[1])), ldb,
+        beta_ref, Cptrs, _rocblas_datatype(eltype(C[1])), ldc,
+        Cptrs, _rocblas_datatype(eltype(C[1])), ldc,
+        length(C), _rocblas_datatype(T),
+        rocBLAS.rocblas_gemm_algo_standard, Int32(0), rocBLAS.rocblas_gemm_flags_none,
+    )
+    return C
 end
 
 function NextLA.gemm_batched!(transA::Char,
@@ -255,18 +294,59 @@ function NextLA.gemm_batched!(transA::Char,
     throw(ArgumentError("AMDGPU strided batched GEMM is not supported for eltypes $(eltype(A)), $(eltype(B)), and $(eltype(C))"))
 end
 
+function NextLA.gemm_batched_ptrs!(transA::Char,
+                                   transB::Char,
+                                   alpha,
+                                   Aptrs::AMDGPU.ROCArray,
+                                   Aref::AbstractMatrix{T},
+                                   Bptrs::AMDGPU.ROCArray,
+                                   Bref::AbstractMatrix{T},
+                                   beta,
+                                   Cptrs::AMDGPU.ROCArray,
+                                   Cref::AbstractMatrix{T},
+                                   batch_count::Integer) where {T}
+    batch_count <= 0 && return Cptrs
+
+    m, n, k, lda, ldb, ldc = NextLA._gemm_dims(transA, transB, Aref, Bref, Cref)
+    scalar_type = T
+    alpha_ref = Ref{scalar_type}(alpha)
+    beta_ref = Ref{scalar_type}(beta)
+    rocBLAS.rocblas_gemm_batched_ex_64(
+        rocBLAS.handle(), transA, transB, m, n, k,
+        alpha_ref, Aptrs, _rocblas_datatype(eltype(Aref)), lda,
+        Bptrs, _rocblas_datatype(eltype(Bref)), ldb,
+        beta_ref, Cptrs, _rocblas_datatype(eltype(Cref)), ldc,
+        Cptrs, _rocblas_datatype(eltype(Cref)), ldc,
+        Int(batch_count), _rocblas_datatype(T),
+        rocBLAS.rocblas_gemm_algo_standard, Int32(0), rocBLAS.rocblas_gemm_flags_none,
+    )
+    return Cptrs
+end
+
 function NextLA.gemmEx_batched!(transA::Char,
                                 transB::Char,
                                 alpha,
-                                A::AbstractVector{<:AMDGPU.ROCArray{<:Any, 2}},
-                                B::AbstractVector{<:AMDGPU.ROCArray{<:Any, 2}},
+                                A::AbstractVector{<:AMDGPU.ROCArray{T, 2}},
+                                B::AbstractVector{<:AMDGPU.ROCArray{T, 2}},
                                 beta,
-                                C::AbstractVector{<:AMDGPU.ROCArray{<:Any, 2}};
-                                compute_type::Type = NextLA.default_compute_type(alpha, A, B, beta, C))
+                                C::AbstractVector{<:AMDGPU.ROCArray{T, 2}};
+                                compute_type::Type = NextLA.default_compute_type(alpha, A, B, beta, C)) where {T}
     NextLA._check_compute_type(compute_type)
     if compute_type == NextLA.default_compute_type(alpha, A, B, beta, C)
         return NextLA.gemm_batched!(transA, transB, alpha, A, B, beta, C)
     end
+    return _gemm_batched_ex!(transA, transB, alpha, A, B, beta, C, compute_type)
+end
+
+function NextLA.gemmEx_batched!(transA::Char,
+                                transB::Char,
+                                alpha,
+                                A::AbstractVector{<:AMDGPU.StridedROCMatrix{T}},
+                                B::AbstractVector{<:AMDGPU.StridedROCMatrix{T}},
+                                beta,
+                                C::AbstractVector{<:AMDGPU.StridedROCMatrix{T}};
+                                compute_type::Type = NextLA.default_compute_type(alpha, A, B, beta, C)) where {T}
+    NextLA._check_compute_type(compute_type)
     return _gemm_batched_ex!(transA, transB, alpha, A, B, beta, C, compute_type)
 end
 
