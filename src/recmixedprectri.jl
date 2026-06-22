@@ -1,39 +1,41 @@
-# mixed precision triangular data structure utilizing a recursive data type 
+"""
+    TriMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
 
+A hierarchical, recursive mixed-precision data structure that maps to triangular matrices.
+It partitions the matrix into two recursive diagonal blocks (`A11`, `A22`) and a single dense 
+off-diagonal block (`OffDiag`), structured according to its `uplo` ('U' for upper, 'L' for lower) character.
+"""
 struct TriMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
-    # T_Diag is the diagonal precision we seek ; T_OffDiag is the off diagonal precision we seek
-
-    # A11 and A22 are the diagonal matrices - they are either another tri mixed precision matrix that will be further decomposed,
-    # or, once reaching a certain depth/base case, they are Nothing 
-    # OffDiag is the off diagonal matrix, which is either a matrix with the offdiag precision or Nothing in the case we are at the base case
-    # Base is the base case triangular matrix in the case we are at the base case; or Nothing otherwise
     A11::Union{TriMixedPrec{T_Base}, Nothing}
     A22::Union{TriMixedPrec{T_Base}, Nothing}
     OffDiag::Union{AbstractMatrix, Nothing}
     offDiag_scale::Union{Float32, Nothing}
     base_scale::Union{Float32, Nothing}
     BaseCase::Union{AbstractMatrix{T_Base}, Nothing}
-    uplo::Char # 'U' if upper tri, 'L' if lower
-    sz::Tuple{Int, Int} # the size of the triangular matrix
+    uplo::Char
+    sz::Tuple{Int, Int}
 end
 
+"""
+    TriMixedPrec(A::AbstractMatrix, uplo::Char; precisions::Vector{DataType})
 
+Constructs a `TriMixedPrec` representation of the triangular matrix `A`.
 
-# constructor for the triangular mixed precision
+Utilizes a base-2 recursive splitting scheme to divide the matrix into two diagonal triangular 
+blocks and one off-diagonal rectangular block. The algorithm maps the given `precisions` to 
+each depth level. For blocks evaluated as `Float16`, dynamic quantization is applied to safely 
+scale and clamp any values that exceed the `Float16` maximum (`65504.0f0`), ensuring robust 
+mixed-precision arithmetic without numerical overflow.
+"""
 function TriMixedPrec(
-    A::AbstractMatrix, 
+    A::AbstractMatrix,
     uplo::Char;
     precisions::Vector{DataType}
 )
-    # A : the original triangular matrix 
-    # uplo : 'U' if the matrix is upper trianular and 'L' if it is lower triangular 
-    # precision: a list of length the depth we want where each element corresponds to the precision we want at that depth's layer
-    
     FP16_MAX_VAL = 65504.0f0
-    n = size(A, 1) #A is square so m = n
-    @assert n == size(A, 2) # A must be square
+    n = size(A, 1)
+    @assert n == size(A, 2)
 
-    # we have reached the base case as there is just one precision
     if length(precisions) == 1
         T_Base = precisions[1]
 
@@ -45,7 +47,6 @@ function TriMixedPrec(
             if alpha > FP16_MAX_VAL
                 base_scale = Float32(alpha / FP16_MAX_VAL)
                 base_matrix = similar(A, Float16, size(A))
-                # print("CLAMPING1")
                 @. base_matrix = Float16(round(clamp(A / base_scale, -FP16_MAX_VAL, FP16_MAX_VAL)))
             else
                 base_scale = nothing
@@ -62,10 +63,9 @@ function TriMixedPrec(
             base_scale = nothing
         end
         
-        return TriMixedPrec{T_Base}(nothing, nothing, nothing, nothing, base_scale, base_matrix, uplo, (n, n)) # Updated constructor return
+        return TriMixedPrec{T_Base}(nothing, nothing, nothing, nothing, base_scale, base_matrix, uplo, (n, n))
     end
 
-    #otherwise we split the data structure recursively
     if isinteger(log2(n))
         mid = div(n, 2)
     else
@@ -75,27 +75,23 @@ function TriMixedPrec(
     T_OffDiag = precisions[1]
     remaining_precisions = precisions[2:end]
 
-    # Recursively construct the diagonal blocks.
     A11 = TriMixedPrec(view(A, 1:mid, 1:mid), uplo; precisions=remaining_precisions)
     A22 = TriMixedPrec(view(A, mid+1:n, mid+1:n), uplo; precisions=remaining_precisions)
 
-    #create off diag matrix with it's correct precision 
-    local offDiag_matrix 
+    local offDiag_matrix
     local offDiag_view
     local offDiag_scale = nothing
     if uplo == 'L'
         offDiag_view = view(A, mid+1:n, 1:mid)
-    else # uplo == 'U'
+    else
         offDiag_view = view(A, 1:mid, mid+1:n)
     end
 
-    # quantization step 
     if T_OffDiag == Float16
         alpha_offDiag = maximum(abs, offDiag_view)
         if alpha_offDiag > FP16_MAX_VAL
             offDiag_scale = Float32(alpha_offDiag / FP16_MAX_VAL)
             offDiag_matrix = similar(offDiag_view, Float16, size(offDiag_view))
-            # print("CLAMPING2")
             @. offDiag_matrix = Float16(round(clamp(offDiag_view / offDiag_scale, -FP16_MAX_VAL, FP16_MAX_VAL)))
         else
             offDiag_matrix = similar(offDiag_view, Float16, size(offDiag_view))
@@ -115,17 +111,11 @@ function TriMixedPrec(
     return TriMixedPrec{T_Final_Base}(A11, A22, offDiag_matrix, offDiag_scale, nothing, nothing, uplo, (n, n))
 end
 
-
-
-
 function Base.size(A::TriMixedPrec)
     return A.sz
 end
 
-
 function Base.getindex(A::TriMixedPrec{T_Base}, i::Int, j::Int) where {T_Base}
-    
-    # we are at the base case
     if A.BaseCase !== nothing
         return A.BaseCase[i, j]
     end
@@ -140,9 +130,9 @@ function Base.getindex(A::TriMixedPrec{T_Base}, i::Int, j::Int) where {T_Base}
         if A.uplo == 'L'
             return A.OffDiag[i - mid, j]
         else
-            return zero(T_Base) # The upper-right part of a lower-tri matrix is zero
+            return zero(T_Base)
         end
-    else # i <= mid && j > mid
+    else
         if A.uplo == 'U'
             return A.OffDiag[i, j - mid]
         else
@@ -150,7 +140,6 @@ function Base.getindex(A::TriMixedPrec{T_Base}, i::Int, j::Int) where {T_Base}
         end
     end
 end
-
 
 function Base.sizeof(A::TriMixedPrec)
     if A.BaseCase !== nothing
@@ -160,24 +149,24 @@ function Base.sizeof(A::TriMixedPrec)
     return sizeof(A.A11) + sizeof(A.A22) + sizeof(A.OffDiag)
 end
 
+"""
+    TriMixedPrec(A::SymmMixedPrec{T_Base})
 
-
-
-# constructor to convert a SymmMixedPrec into a TriMixedPrec
+Dynamically converts an existing `SymmMixedPrec` matrix structure into a `TriMixedPrec` format.
+"""
 function TriMixedPrec(A::SymmMixedPrec{T_Base}) where {T_Base}
-    
     if A.BaseCase !== nothing
         return TriMixedPrec{T_Base}(
-            nothing, nothing, nothing, 
-            nothing, A.base_scale, A.BaseCase, 
+            nothing, nothing, nothing,
+            nothing, A.base_scale, A.BaseCase,
             A.uplo, A.sz
         )
     end
 
     return TriMixedPrec{T_Base}(
-        TriMixedPrec(A.A11), # recursively convert A11
-        TriMixedPrec(A.A22), # recursively convert A22
-        A.OffDiag, 
+        TriMixedPrec(A.A11),
+        TriMixedPrec(A.A22),
+        A.OffDiag,
         A.offDiag_scale,
         nothing,  
         nothing,  

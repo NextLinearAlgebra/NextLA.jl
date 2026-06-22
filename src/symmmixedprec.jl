@@ -1,35 +1,33 @@
-abstract type AbstractMixedPrec{T} <: AbstractMatrix{T} end
+"""
+    SymmMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
 
-struct TransposedMixedPrec{T, M <: AbstractMixedPrec{T}} <: AbstractMixedPrec{T}
-    parent::M
-end
-
-Base.transpose(A::AbstractMixedPrec) = TransposedMixedPrec(A)
-
-Base.parent(A::TransposedMixedPrec) = A.parent
-Base.size(A::TransposedMixedPrec) = reverse(size(parent(A)))
-
-Base.getindex(A::TransposedMixedPrec, i::Int, j::Int) = parent(A)[j, i]
-
-# mixed precision symmetric data structure utilizing a recursive data type 
-
+A hierarchical, recursive mixed-precision data structure that maps to symmetric matrices.
+Only one triangle (specified by `uplo` as 'U' or 'L') is explicitly stored. It recursively 
+partitions the symmetric matrix into two symmetric diagonal sub-blocks (`A11`, `A22`) and 
+one corresponding off-diagonal block (`OffDiag`).
+"""
 struct SymmMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
     A11::Union{SymmMixedPrec{T_Base}, Nothing}
     A22::Union{SymmMixedPrec{T_Base}, Nothing}
-
     OffDiag::Union{AbstractMatrix, Nothing}
-
-    # scaling for quantization
     offDiag_scale::Union{Float32, Nothing}
     base_scale::Union{Float32, Nothing}
-
     BaseCase::Union{AbstractMatrix{T_Base}, Nothing}
-
-    uplo::Char # 'U' or 'L' to know which triangle is stored
+    uplo::Char
     sz::Tuple{Int, Int}
 end
 
+"""
+    SymmMixedPrec(A::AbstractMatrix, uplo::Char; precisions::Vector{DataType})
 
+Constructs a `SymmMixedPrec` representation of the symmetric matrix `A`.
+
+Uses a base-2 recursive splitting scheme to partition the indicated triangle ('U' or 'L') 
+into smaller symmetric blocks and rectangular off-diagonal views. To preserve bounds during 
+`Float16` conversion, per-block dynamic quantization handles elements by detecting values 
+exceeding `65504.0f0`, computing a scaling factor, and applying clamping. This ensures 
+high-magnitude structures safely avoid numerical overflow across the memory layout.
+"""
 function SymmMixedPrec(
     A::AbstractMatrix,
     uplo::Char;
@@ -49,7 +47,6 @@ function SymmMixedPrec(
             if alpha > FP16_MAX_VAL
                 base_scale = Float32(alpha / FP16_MAX_VAL)
                 base_matrix = similar(A, Float16, size(A))
-                # print("CLAMPING9")
                 @. base_matrix = Float16(round(clamp(A / base_scale, -FP16_MAX_VAL, FP16_MAX_VAL)))
             else
                 base_scale = nothing
@@ -78,17 +75,15 @@ function SymmMixedPrec(
     local offDiag_scale = nothing
     if uplo == 'L'
         offDiag_view = view(A, mid+1:n, 1:mid)
-    else 
+    else
         offDiag_view = view(A, 1:mid, mid+1:n)
     end
 
     if T_OffDiag == Float16
         alpha_offDiag = maximum(abs, offDiag_view)
         if alpha_offDiag > FP16_MAX_VAL
-            # print("this is alpha off diag:", alpha_offDiag)
             offDiag_scale = Float32(alpha_offDiag / FP16_MAX_VAL)
             offDiag_matrix = similar(offDiag_view, Float16, size(offDiag_view))
-            # print("CLAMPING10")
             @. offDiag_matrix = Float16(round(clamp(offDiag_view / offDiag_scale, -FP16_MAX_VAL, FP16_MAX_VAL)))
         else
             offDiag_matrix = similar(offDiag_view, Float16, size(offDiag_view))
@@ -104,16 +99,13 @@ function SymmMixedPrec(
     return SymmMixedPrec{T_Final_Base}(A11, A22, offDiag_matrix, offDiag_scale, nothing, nothing, uplo, (n, n))
 end
 
-
 function Base.size(A::SymmMixedPrec)
     return A.sz
 end
 
-
 function Base.transpose(A::SymmMixedPrec)
     return A
 end
-
 
 function Base.getindex(A::SymmMixedPrec{T_Base}, i::Int, j::Int) where {T_Base}
     if A.BaseCase !== nothing
@@ -132,17 +124,17 @@ function Base.getindex(A::SymmMixedPrec{T_Base}, i::Int, j::Int) where {T_Base}
     elseif i > mid && j > mid
         return A.A22[i - mid, j - mid]
 
-    elseif i > mid && j <= mid 
+    elseif i > mid && j <= mid
         if A.uplo == 'L'
             return A.OffDiag[i - mid, j]
-        else 
+        else
             return A.OffDiag[j, i - mid]
         end
 
-    else 
+    else
         if A.uplo == 'U'
             return A.OffDiag[i, j - mid]
-        else 
+        else
             return A.OffDiag[j - mid, i]
         end
     end

@@ -1,22 +1,49 @@
 export FullMixedPrec, reconstruct_matrix
 
-# Full precision data structure utilizing a recursive data type.
+abstract type AbstractMixedPrec{T} <: AbstractMatrix{T} end
+
+struct TransposedMixedPrec{T, M <: AbstractMixedPrec{T}} <: AbstractMixedPrec{T}
+    parent::M
+end
+
+Base.transpose(A::AbstractMixedPrec) = TransposedMixedPrec(A)
+
+Base.parent(A::TransposedMixedPrec) = A.parent
+Base.size(A::TransposedMixedPrec) = reverse(size(parent(A)))
+
+Base.getindex(A::TransposedMixedPrec, i::Int, j::Int) = parent(A)[j, i]
+
+"""
+    FullMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
+
+A hierarchical, recursive mixed-precision data structure that maps to full dense square matrices.
+It recursively partitions a matrix into four sub-blocks (`A11`, `A22`, `A21`, `A12`), enabling 
+varying precision levels to be stored dynamically at different depths of the recursive hierarchy.
+"""
 struct FullMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
     A11::Union{FullMixedPrec{T_Base}, Nothing}
     A22::Union{FullMixedPrec{T_Base}, Nothing}
-
     A21::Union{AbstractMatrix, Nothing}
     A12::Union{AbstractMatrix, Nothing}
-
-    # scaling for quantization
     A21_scale::Union{Float32, Nothing}
     A12_scale::Union{Float32, Nothing}
-    
     base_scale::Union{Float32, Nothing}
     BaseCase::Union{AbstractMatrix{T_Base}, Nothing}
     sz::Tuple{Int, Int}
 end
 
+"""
+    FullMixedPrec(A::AbstractMatrix; precisions::Vector{DataType})
+
+Constructs a `FullMixedPrec` representation of the dense square matrix `A`.
+
+The matrix is partitioned using a base-2 recursive splitting scheme. If the dimension `n` is a 
+power of 2, it splits evenly; otherwise, it splits at the largest power of 2 less than `n`.
+The recursion continues until only one precision remains in `precisions`, at which point it 
+forms a base case. For blocks assigned `Float16`, dynamic per-block quantization is applied 
+to prevent numerical overflow: values exceeding `65504.0f0` are scaled, clamped, and stored 
+alongside a `Float32` scaling factor.
+"""
 function FullMixedPrec(
     A::AbstractMatrix;
     precisions::Vector{DataType}
@@ -67,7 +94,6 @@ function FullMixedPrec(
     local A21_scale = nothing
     local A12_scale = nothing
 
-    # Handle A21 block
     if T_OffDiag == Float16
         alpha_A21 = maximum(abs, view_A21)
         if alpha_A21 > FP16_MAX_VAL
@@ -83,7 +109,6 @@ function FullMixedPrec(
         A21_matrix .= view_A21
     end
 
-    # Handle A12 block
     if T_OffDiag == Float16
         alpha_A12 = maximum(abs, view_A12)
         if alpha_A12 > FP16_MAX_VAL
@@ -118,14 +143,18 @@ function Base.getindex(A::FullMixedPrec{T_Base}, i::Int, j::Int) where {T_Base}
         return A.A11[i, j]
     elseif i > mid && j > mid
         return A.A22[i - mid, j - mid]
-    elseif i > mid && j <= mid 
+    elseif i > mid && j <= mid
         return A.A21[i - mid, j]
-    else # i <= mid && j > mid
+    else
         return A.A12[i, j - mid]
     end
 end
 
-# Helper function to copy the hierarchical matrix back into a flat GPU/CPU matrix
+"""
+    reconstruct_matrix(A::FullMixedPrec{T_Base})
+
+Copies the hierarchical mixed-precision matrix back into a flat, full-precision standard Matrix.
+"""
 function reconstruct_matrix(A::FullMixedPrec{T_Base}) where {T_Base}
     if A.BaseCase !== nothing
         return copy(A.BaseCase)
