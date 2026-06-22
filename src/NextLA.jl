@@ -71,6 +71,8 @@ include("syrk.jl")
 include("syrk_batched.jl")
 include("lauu2.jl")
 include("lauum.jl")
+include("potf2.jl")
+include("potrf.jl")
 
 include("geqrt.jl")
 include("geqr2.jl")
@@ -88,4 +90,12 @@ include("axpy.jl")
 include("pemv.jl")
 include("ttmqr.jl")
 include("ttqrt.jl")
+
+include("TLR/TLRmodule.jl")
+using .TLRmodule: TileOrderStyle, TileOrder, ColMajor, RowMajor, TileColMajor, TileRowMajor
+using .TLRmodule: tile_stride, tile_coords, inverse_tile_coords
+using .TLRmodule: TLRMatrix, tile_linear_index, tile_rank_index, inverse_tile_index
+using .TLRmodule: TileMap, PackedTileStorage
+using .TLRmodule: ndiag_tiles, noffdiag_tiles, tile_geometry, pack!
+using .TLRmodule: ara_batched!, compress!
 end

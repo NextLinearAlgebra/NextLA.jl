@@ -51,7 +51,6 @@ function matrix_generation(type, M, N; dist=:uniform, mode=:decay,
 end
 
 include("NextLAMatrix.jl")
-include("TLRMatrix.jl")
 include("lu.jl")
 include("unified_rectrxm.jl")
 include("trsm.jl")
@@ -74,3 +73,4 @@ include("pamm.jl")
 include("pemv.jl")
 include("gemm_batched.jl")
 include("syrk.jl")
+include("potrf.jl")
