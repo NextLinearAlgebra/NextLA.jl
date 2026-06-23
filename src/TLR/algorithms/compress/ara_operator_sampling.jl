@@ -1,4 +1,64 @@
-"""Operator-input sampling state and its reusable work buffers."""
+"""
+    OperatorSamplingState
+
+Sampling state for matrix-free/operator-based ARA compression.
+
+This state implements the generic operator-input path used when the matrix is
+available only through a linear operator `op` and its adjoint. The algorithm does
+not form dense tiles. Instead, each tile sample is obtained by embedding a
+tile-local test block into a global work buffer, applying the full operator, and
+then extracting the tile-local output block.
+
+For a tile `(i,j)` with global row support `I_i` and column support `J_j`, range
+sampling computes
+
+    Y_ij = A[I_i, J_j] * Ω
+
+by performing
+
+    Xwork[J_j, :] = Ω
+    Xwork[not in J_j, :] = 0
+    Ywork = op * Xwork
+    Y_ij = Ywork[I_i, :]
+
+Similarly, the corange/projection step computes
+
+    V_ij = A[I_i, J_j]' * U_ij
+
+by performing
+
+    Ywork[I_i, :] = U_ij
+    Ywork[not in I_i, :] = 0
+    Xwork = adjoint(op) * Ywork
+    V_ij = Xwork[J_j, :]
+
+This is the generic, correctness-oriented matrix-free sampling path. It assumes
+only that `op` supports multiplication by dense block work arrays and that
+`adjoint(op)` is available for the corange step.
+
+### Notes
+
+The current implementation samples one active tile at a time using reusable
+global work buffers. For each active tile, it zeros the global work buffer,
+injects the local sample block into the tile column support, applies the full
+operator, and slices out the tile row support. This avoids explicit dense tile
+formation, but it may perform many full-operator applications.
+
+A truly high-performance operator path would require a fused or batched sampling
+routine that can inject multiple tile supports into one structured work buffer,
+apply the operator once or a few times, and scatter/extract the corresponding
+tile-local samples. Such fusion is operator-specific: for a generic black-box
+`op`, the library cannot assume how to fuse multiple supported matvecs beyond
+calling `mul!`. Efficient fused sampling therefore requires either:
+
+  - a specialized `op` implementation that understands block-supported sampling,
+  - a custom kernel for the specific matvec routine,
+  - or an explicit backend hook that implements multi-support sampling directly.
+
+Until such an operator-specific fused sampler is provided, this path should be
+understood as the generic matrix-free ARA implementation, not necessarily the
+optimal performance path.
+"""
 struct OperatorSamplingState{Op,L,XT,YT}
     op::Op
     layout::L
