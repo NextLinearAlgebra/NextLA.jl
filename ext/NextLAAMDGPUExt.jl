@@ -4,6 +4,7 @@ using NextLA
 using AMDGPU
 
 const rocBLAS = AMDGPU.rocBLAS
+const rocSOLVER = AMDGPU.rocSOLVER
 
 const NATIVE_GEMM_TYPES = Union{Float16, Float32, Float64, ComplexF32, ComplexF64}
 const NATIVE_STRIDED_BATCHED_TYPES = Union{Float32, Float64, ComplexF32, ComplexF64}
@@ -41,6 +42,14 @@ end
 @inline _rocblas_syrk_fname(::Type{Float64}, ::Val{:strided}) = rocBLAS.rocblas_dsyrk_strided_batched_64
 @inline _rocblas_syrk_fname(::Type{ComplexF32}, ::Val{:strided}) = rocBLAS.rocblas_csyrk_strided_batched_64
 @inline _rocblas_syrk_fname(::Type{ComplexF64}, ::Val{:strided}) = rocBLAS.rocblas_zsyrk_strided_batched_64
+@inline _rocblas_trsm_strided_batched_fname(::Type{Float32}) = rocBLAS.rocblas_strsm_strided_batched_64
+@inline _rocblas_trsm_strided_batched_fname(::Type{Float64}) = rocBLAS.rocblas_dtrsm_strided_batched_64
+@inline _rocblas_trsm_strided_batched_fname(::Type{ComplexF32}) = rocBLAS.rocblas_ctrsm_strided_batched_64
+@inline _rocblas_trsm_strided_batched_fname(::Type{ComplexF64}) = rocBLAS.rocblas_ztrsm_strided_batched_64
+@inline _rocsolver_potrf_strided_batched_fname(::Type{Float32}) = rocSOLVER.rocsolver_spotrf_strided_batched_64
+@inline _rocsolver_potrf_strided_batched_fname(::Type{Float64}) = rocSOLVER.rocsolver_dpotrf_strided_batched_64
+@inline _rocsolver_potrf_strided_batched_fname(::Type{ComplexF32}) = rocSOLVER.rocsolver_cpotrf_strided_batched_64
+@inline _rocsolver_potrf_strided_batched_fname(::Type{ComplexF64}) = rocSOLVER.rocsolver_zpotrf_strided_batched_64
 
 function _syrk_native!(uplo::Char,
                        trans::Char,
@@ -117,6 +126,56 @@ function NextLA.syrk_batched!(uplo::Char,
                               beta,
                               C::AMDGPU.StridedROCArray{<:Any, 3})
     return _syrk_batched_native!(uplo, trans, alpha, A, beta, C)
+end
+
+function NextLA.trsm_batched!(side::Char,
+                              uplo::Char,
+                              transa::Char,
+                              diag::Char,
+                              A::AbstractVector{<:AMDGPU.StridedROCMatrix{T}},
+                              B::AbstractVector{<:AMDGPU.StridedROCMatrix{T}},
+                              alpha=one(T)) where {T}
+    rocBLAS.trsm_batched!(side, uplo, transa, diag, alpha, A, B)
+    return B
+end
+
+function NextLA.trsm_batched!(side::Char,
+                              uplo::Char,
+                              transa::Char,
+                              diag::Char,
+                              A::AMDGPU.StridedROCArray{T,3},
+                              B::AMDGPU.StridedROCArray{T,3},
+                              alpha=one(T)) where {T}
+    size(A, 3) == size(B, 3) || throw(DimensionMismatch("trsm_batched!: matrix batches must have matching lengths"))
+    mA, nA = size(@view A[:, :, 1])
+    m, n = size(@view B[:, :, 1])
+    mA == nA || throw(DimensionMismatch("A must be square"))
+    nA == (side == 'L' ? m : n) || throw(DimensionMismatch("trsm_batched!"))
+    lda = max(1, stride(A, 2))
+    ldb = max(1, stride(B, 2))
+    strideA = stride(A, 3)
+    strideB = stride(B, 3)
+    alpha_ref = Ref{T}(alpha)
+    fname = _rocblas_trsm_strided_batched_fname(T)
+    fname(rocBLAS.handle(), side, uplo, transa, diag, m, n, alpha_ref, A, lda, strideA, B, ldb, strideB, size(B, 3))
+    return B
+end
+
+function _potrf_batched_amdgpu!(uplo::Char,
+                                A::AMDGPU.StridedROCArray{T,3}) where {T}
+    n = LinearAlgebra.checksquare(@view A[:, :, 1])
+    lda = max(1, stride(A, 2))
+    strideA = stride(A, 3)
+    batch_count = size(A, 3)
+    status = similar(A, Int32, batch_count)
+    fname = _rocsolver_potrf_strided_batched_fname(T)
+    fname(rocBLAS.handle(), uplo, n, A, lda, strideA, status, batch_count)
+    return A, status
+end
+
+function NextLA.potrf_batched!(uplo::Char,
+                               A::AMDGPU.StridedROCArray{T,3}) where {T}
+    return _potrf_batched_amdgpu!(uplo, A)
 end
 
 # Ex verions 

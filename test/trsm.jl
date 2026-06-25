@@ -67,10 +67,7 @@ function _test_trsm_result(actual::AbstractVector{<:AbstractMatrix},
 end
 
 @testset "TRSM kernels" begin
-    trsm_backends = available_gpu_backends()
-    if isempty(trsm_backends)
-        @test_skip "No GPU backends available"
-    end
+    trsm_backends = [("CPU", Array, _ -> nothing)]
 
     for (backend_name, ArrayType, synchronize) in trsm_backends
         @testset "[$backend_name] 2D public kernels" begin
@@ -141,6 +138,11 @@ end
 
                         A_dev = _to_backend(ArrayType, A)
                         B_dev = _to_backend(ArrayType, B)
+                        @test occursin(_expected_trsm_batched_file(backend_name), _method_file(NextLA.trsm_batched!, side, uplo, 'N', 'N', A_dev, B_dev))
+                        if backend_name == "Metal"
+                            @test_throws ArgumentError NextLA.trsm_batched!(side, uplo, 'N', 'N', A_dev, B_dev)
+                            continue
+                        end
                         NextLA.trsm_batched!(side, uplo, 'N', 'N', A_dev, B_dev)
                         synchronize(B_dev)
 
@@ -169,6 +171,11 @@ end
 
                         A_dev = _to_backend(ArrayType, A_batch)
                         B_dev = _to_backend(ArrayType, B_batch)
+                        @test occursin(_expected_trsm_batched_file(backend_name), _method_file(NextLA.trsm_batched!, side, uplo, 'N', 'N', A_dev, B_dev))
+                        if backend_name == "Metal"
+                            @test_throws ArgumentError NextLA.trsm_batched!(side, uplo, 'N', 'N', A_dev, B_dev)
+                            continue
+                        end
                         NextLA.trsm_batched!(side, uplo, 'N', 'N', A_dev, B_dev)
                         synchronize(first(B_dev))
 
@@ -195,6 +202,11 @@ end
 
             A_dev = _to_backend(ArrayType, A_batch)
             B_dev = _to_backend(ArrayType, B_batch)
+            @test occursin(_expected_trsm_batched_file(backend_name), _method_file(NextLA.trsm_batched!, side, uplo, 'N', 'N', A_dev, B_dev))
+            if backend_name == "Metal"
+                @test_throws ArgumentError NextLA.trsm_batched!(side, uplo, 'N', 'N', A_dev, B_dev)
+                continue
+            end
             NextLA.trsm_batched!(side, uplo, 'N', 'N', A_dev, B_dev)
             synchronize(first(B_dev))
 

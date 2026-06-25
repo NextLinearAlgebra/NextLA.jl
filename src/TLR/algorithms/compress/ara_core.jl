@@ -431,7 +431,8 @@ function _ara_step!(
         end
 
         potrf_status = @view ws.potrf_status[1:state.n_active]
-        potrf_batched!('L', G_raw, potrf_status)
+        _, potrf_status_tmp = potrf_batched!('L', G_raw)
+        copyto!(potrf_status, potrf_status_tmp)
         trsm_batched!('R', 'L', transchar, 'N', G_raw, Y_current)
     end
 

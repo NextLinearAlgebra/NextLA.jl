@@ -420,26 +420,6 @@ function potrf!(uplo::Char,
     return _potrf_checked!(uplo, A, Val(OB), Val(IB), Val(RB), Val(MR); check)
 end
 
-function potrf_batched!(uplo::Char,
-                A::AbstractArray{T,3},
-                status::AbstractVector{Int32},
-                ::Val{OB},
-                ::Val{IB},
-                ::Val{RB},
-                ::Val{MR}) where {T,OB,IB,RB,MR}
-    return _potrf_blocked!(uplo, A, status, Val(OB), Val(IB), Val(RB), Val(MR))
-end
-
-function potrf_batched!(uplo::Char,
-                A::AbstractArray{T,3},
-                ::Val{OB},
-                ::Val{IB},
-                ::Val{RB},
-                ::Val{MR};
-                check::Bool = true) where {T,OB,IB,RB,MR}
-    return _potrf_checked!(uplo, A, Val(OB), Val(IB), Val(RB), Val(MR); check)
-end
-
 """
     potrf!(uplo, A; check=true)
 
@@ -466,6 +446,11 @@ sizes. Diagonal micro-panels are factored in shared memory, panel solves are
 applied immediately, and the trailing matrix is updated with BLAS-like kernels.
 Those tuning constants are internal and are not part of the public API.
 
+For three-dimensional arrays, the factorizations are solved with the native
+NextLA implementation over the batch dimension. This is distinct
+from [`potrf_batched!`](@ref), which is reserved for backend batched-library
+dispatch such as cuBLAS, rocBLAS, oneMKL, or the CPU BLAS loop fallback.
+
 At the moment the GPU implementation does not support `Float16` end to end.
 The blocked update path depends on `syrk`, and the required `Float16` `syrk`
 backend is not available here, so `potrf!` currently fails for `Float16`.
@@ -478,35 +463,4 @@ end
 function potrf!(uplo::Char, A::AbstractArray{T,3}; check::Bool = true) where {T}
      ob, ib, rb, mr = _potrf_default_config(T)
     return potrf!(uplo, A,  ob, ib, rb, mr; check)
-end
-
-"""
-    potrf_batched!(uplo, A; check=true)
-
-Compute an in-place batched Cholesky factorization of `A`.
-
-`A` must be a three-dimensional array whose slices `A[:, :, b]` are factored
-independently.
-
-By default this method throws `PosDefException` if any batch entry encounters a
-non-positive pivot. Pass `check=false` to suppress the exception and return
-`(A, status)`, where `status[b]` is `0` on success or the 1-based index of the
-first non-positive pivot in batch entry `b`.
-
-On GPU backends the batched implementation reuses the same blocked algorithm as
-the matrix case, but launches fused POTF2/TRSM kernels and trailing updates over
-the batch dimension.
-
-As in the matrix case, the current GPU implementation does not support
-`Float16` end to end because the blocked trailing update depends on `syrk`,
-and the required `Float16` `syrk` backend is not available here.
-"""
-function potrf_batched!(uplo::Char, A::AbstractArray{T,3}; check::Bool = true) where {T}
-     ob, ib, rb, mr = _potrf_default_config(T)
-    return potrf_batched!(uplo, A,  ob, ib, rb, mr; check)
-end
-
-function potrf_batched!(uplo::Char, A::AbstractArray{T,3}, status::AbstractVector{Int32}) where {T}
-     ob, ib, rb, mr = _potrf_default_config(T)
-    return potrf_batched!(uplo, A, status,  ob, ib, rb, mr)
 end

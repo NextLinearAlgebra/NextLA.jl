@@ -384,9 +384,9 @@ If `alpha != one(eltype(A))`, `B` is scaled before the solve. The input `A` is
 not modified.
 
 For three-dimensional arrays, corresponding slices of `A` and `B` are solved
-independently using the batched path. GPU backends use a type-selected blocked
-kernel configuration internally; those compile-time tuning parameters are not
-part of the public API.
+with the native NextLA implementation over the batch dimension. This is distinct
+from [`trsm_batched!`](@ref), which is reserved for backend batched-library
+dispatch such as cuBLAS, rocBLAS, oneMKL, or the CPU BLAS loop fallback.
 """
 function trsm!(side, uplo, transa, diag, A, B, alpha=one(eltype(A)))
     transa in ('N', 'T', 'C') || throw(ArgumentError("trsm: transa must be 'N', 'T', or 'C'"))
@@ -407,35 +407,4 @@ function trsm!(side, uplo, transa, diag, A, B, alpha=one(eltype(A)))
     else
         error("Unsupported combination of side='$side', uplo='$uplo'")
     end
-end
-
-"""
-    trsm_batched!(side, uplo, transa, diag, A, B, alpha=one(eltype(A)))
-
-Solve a batch of triangular systems in place.
-
-`A` and `B` must be three-dimensional arrays with equal batch sizes. Each slice
-`B[:, :, b]` is overwritten by the solution of the corresponding triangular
-system defined by `A[:, :, b]`. The meaning of `side`, `uplo`, `transa`, `diag`,
-and `alpha` is the same as for [`trsm`](@ref).
-
-On GPU backends the batched implementation inverts each diagonal block once per
-matrix, applies that inverse with batched GEMM, and updates the remaining work
-with batched GEMM as well.
-"""
-trsm_batched!(side, uplo, transa, diag, A::AbstractArray{<:Any,3}, B::AbstractArray{<:Any,3}, alpha=one(eltype(A))) =
-    trsm!(side, uplo, transa, diag, A, B, alpha)
-
-function trsm_batched!(side,
-                       uplo,
-                       transa,
-                       diag,
-                       A::AbstractVector{<:AbstractMatrix},
-                       B::AbstractVector{<:AbstractMatrix},
-                       alpha=one(eltype(first(A))))
-    length(A) == length(B) || throw(DimensionMismatch("trsm_batched!: matrix batches must have matching lengths"))
-    for bid in eachindex(A, B)
-        trsm!(side, uplo, transa, diag, A[bid], B[bid], alpha)
-    end
-    return B
 end
