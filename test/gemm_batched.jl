@@ -82,6 +82,24 @@ _apply_transpose(A::AbstractMatrix, trans::Char) =
                 for i in eachindex(expected_batch)
                     @test Array(C_batch_ex_dev[i]) ≈ expected_batch[i]
                 end
+
+                C_batch_mixed = [zeros(Float64, 2, 2), zeros(Float64, 2, 2)]
+                C_batch_mixed_dev = _to_backend(AT, deepcopy(C_batch_mixed))
+                expected_batch_mixed = [
+                    Float64(alpha_batch) .* Float64.(_apply_transpose(A_batch[i], transA_batch) * _apply_transpose(B_batch[i], transB_batch))
+                    for i in eachindex(A_batch)
+                ]
+
+                NextLA.gemmEx_batched!(
+                    transA_batch, transB_batch, alpha_batch,
+                    A_batch_ex_dev, B_batch_ex_dev, 0.0, C_batch_mixed_dev;
+                    compute_type=Float64,
+                )
+                sync(first(C_batch_mixed_dev))
+
+                for i in eachindex(expected_batch_mixed)
+                    @test Array(C_batch_mixed_dev[i]) ≈ expected_batch_mixed[i]
+                end
             else
                 @test_throws ArgumentError NextLA.gemmEx_batched!(
                     transA_batch, transB_batch, alpha_batch, A_batch_ex_dev, B_batch_ex_dev, beta_batch, C_batch_ex_dev

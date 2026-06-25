@@ -11,7 +11,7 @@ using Random
 using KernelAbstractions
 using KernelAbstractions.Extras: @unroll
 
-using ..NextLA: gemm_batched!, syrk_batched!, trsm_batched!, potrf_batched!
+using ..NextLA: gemm_batched!, gemmEx_batched!, syrk_batched!, trsm_batched!, potrf_batched!
 
 export TileOrderStyle, TileOrder, ColMajor, RowMajor, TileColMajor, TileRowMajor
 export TileMap
