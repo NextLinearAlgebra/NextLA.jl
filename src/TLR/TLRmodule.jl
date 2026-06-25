@@ -7,15 +7,15 @@ compression algorithms used by `NextLA`.
 module TLRmodule
 
 using LinearAlgebra
+using Random
 using KernelAbstractions
 using KernelAbstractions.Extras: @unroll
 
-using ..NextLA: gemm_batched!, gemm_batched_ptrs!, syrk_batched!, trsm_batched!, potrf_batched!, supports_pointer_batched
+using ..NextLA: gemm_batched!, syrk_batched!, trsm_batched!, potrf_batched!
 
 export TileOrderStyle, TileOrder, ColMajor, RowMajor, TileColMajor, TileRowMajor
 export TileMap
 export AbstractTLRStorage, UVTileStorage
-export AbstractTLROperator, TLRLinearOperator
 export TLRMatrix
 export compress!
 

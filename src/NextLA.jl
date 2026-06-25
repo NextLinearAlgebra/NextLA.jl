@@ -96,11 +96,10 @@ include("ttqrt.jl")
 include("TLR/TLRmodule.jl")
 using .TLRmodule: TileOrderStyle, TileOrder, ColMajor, RowMajor, TileColMajor, TileRowMajor
 using .TLRmodule: tile_stride, tile_coords, inverse_tile_coords
-using .TLRmodule: AbstractTLROperator, TLRLinearOperator
 using .TLRmodule: TLRMatrix, tile_linear_index, tile_storage_index, inverse_tile_index
 using .TLRmodule: TileMap, AbstractTLRStorage, UVTileStorage
-using .TLRmodule: ndiag_tiles, noffdiag_tiles, tile_origin_coords, tile_sizes, offdiag_linear_index, to_tiles!
+using .TLRmodule: ndiag_tiles, noffdiag_tiles, tile_origin_coords, tile_sizes, offdiag_linear_index
 using .TLRmodule: blocksize, maxrank, compress_diag, ranks, dense_diag, left_factors, right_factors, nstored_tiles
-using .TLRmodule: PackedDenseTileStorage, ara_batched!, compress!
+using .TLRmodule: PackedDenseTileStorage, compress!
 using .TLRmodule: rademacher_word, rademacher_sign, sample_range_rademacher!, sample_range_rademacher_reference!
 end
