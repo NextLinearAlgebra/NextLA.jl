@@ -27,16 +27,8 @@ include("storage/uv_storage.jl")
 
 include("container/tlrmatrix.jl")
 include("container/access.jl")
-include("operator.jl")
 
-include("algorithms/compress/to_tiles.jl")
-include("algorithms/compress/prepare_dense.jl")
-include("algorithms/compress/prepare_operator.jl")
-include("algorithms/compress/ara_core.jl")
-include("algorithms/compress/ara_dense_sampling.jl")
-include("algorithms/compress/ara_operator_sampling.jl")
 include("experimental/rademacher_sampling.jl")
-include("algorithms/compress/interface.jl")
 include("algorithms/compress/compress.jl")
 
 end

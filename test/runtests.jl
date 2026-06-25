@@ -53,7 +53,6 @@ end
 include("NextLAMatrix.jl")
 
 include("TLR/tilemap_and_constructor.jl")
-include("TLR/compression.jl")
 
 include("lu.jl")
 include("unified_rectrxm.jl")
