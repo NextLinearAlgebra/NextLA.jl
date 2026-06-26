@@ -42,10 +42,10 @@ function reconstruct_tlr(A_tlr::NextLA.TLRMatrix)
             @view storage.D[1:tile_m, 1:tile_n, tile_i]
         else
             batch = NextLA.compress_diag(A_tlr) ? linear : NextLA.tile_storage_index(A_tlr, tile_i, tile_j)
-            r = Int(storage.ranks[batch])
+            r = Int(NextLA.ranks(A_tlr)[batch])
             r == 0 ? zeros(T, tile_m, tile_n) :
-                Matrix(@view(storage.U[1:tile_m, 1:r, batch])) *
-                Matrix(adjoint(@view(storage.V[1:tile_n, 1:r, batch])))
+                Matrix(NextLA.tile_u(A_tlr, batch)) *
+                Matrix(adjoint(NextLA.tile_v(A_tlr, batch)))
         end
 
         A[rows, cols] .= tile
@@ -65,15 +65,14 @@ function assert_tile_rank_and_error(
     atol_rank::Int=0,
     rtol_error=1f-4,
 )
-    storage = A_tlr.storage
     batch = expected_storage_slot(A_tlr, tile_i, tile_j)
-    rank = Int(storage.ranks[batch])
+    rank = Int(NextLA.ranks(A_tlr)[batch])
     @test abs(rank - expected_rank) <= atol_rank
 
     tile_m, tile_n = size(tile_ref)
     approx = rank == 0 ? zeros(eltype(tile_ref), tile_m, tile_n) :
-        Matrix(@view(storage.U[1:tile_m, 1:rank, batch])) *
-        Matrix(adjoint(@view(storage.V[1:tile_n, 1:rank, batch])))
+        Matrix(NextLA.tile_u(A_tlr, batch)) *
+        Matrix(adjoint(NextLA.tile_v(A_tlr, batch)))
     relerr = norm(tile_ref - approx) / max(norm(tile_ref), eps(real(eltype(tile_ref))))
     @test relerr <= rtol_error
 end

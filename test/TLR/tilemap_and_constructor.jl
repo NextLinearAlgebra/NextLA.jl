@@ -73,7 +73,7 @@ end
             Aall = NextLA.TLRMatrix(prototype, 16, 16; compress_diag=true)
 
             @test size(A) == (32, 32)
-            @test A.storage isa NextLA.UVTileStorage
+            @test A.storage isa NextLA.UniformTileStorage
             @test A.layout.order isa NextLA.TileColMajor
             @test NextLA.blocksize(A) == 16
             @test NextLA.maxrank(A) == 16
@@ -113,4 +113,51 @@ end
         @test_throws BoundsError NextLA.tile_linear_index(A, 1, 3)
         @test_throws ArgumentError NextLA.tile_storage_index(A, 1, 1)
     end
+end
+
+@testset "TLR factor access and compaction preserve boundary tile sizes" begin
+    A_tlr = NextLA.TLRMatrix(zeros(Float64, 10, 10), 4, 3)
+    U = NextLA.left_factors(A_tlr)
+    V = NextLA.right_factors(A_tlr)
+    rk = NextLA.ranks(A_tlr)
+
+    bottom_slot = NextLA.tile_storage_index(A_tlr, 3, 1)
+    right_slot = NextLA.tile_storage_index(A_tlr, 1, 3)
+
+    rk[bottom_slot] = 2
+    U[1:2, 1:2, bottom_slot] .= [1.0 2.0; 3.0 4.0]
+    U[3:4, 1:2, bottom_slot] .= -99.0
+    V[1:4, 1:2, bottom_slot] .= reshape(collect(1.0:8.0), 4, 2)
+
+    rk[right_slot] = 2
+    U[1:4, 1:2, right_slot] .= reshape(collect(11.0:18.0), 4, 2)
+    V[1:2, 1:2, right_slot] .= [5.0 6.0; 7.0 8.0]
+    V[3:4, 1:2, right_slot] .= -77.0
+
+    @test size(NextLA.tile_u(A_tlr, bottom_slot)) == (2, 2)
+    @test size(NextLA.tile_v(A_tlr, bottom_slot)) == (4, 2)
+    @test stride(NextLA.tile_u(A_tlr, bottom_slot), 2) == 4
+    @test stride(NextLA.tile_v(A_tlr, right_slot), 2) == 4
+    @test Matrix(NextLA.tile_u(A_tlr, bottom_slot)) == [1.0 2.0; 3.0 4.0]
+    @test Matrix(NextLA.tile_v(A_tlr, bottom_slot)) == reshape(collect(1.0:8.0), 4, 2)
+
+    @test size(NextLA.tile_u(A_tlr, right_slot)) == (4, 2)
+    @test size(NextLA.tile_v(A_tlr, right_slot)) == (2, 2)
+    @test Matrix(NextLA.tile_u(A_tlr, right_slot)) == reshape(collect(11.0:18.0), 4, 2)
+    @test Matrix(NextLA.tile_v(A_tlr, right_slot)) == [5.0 6.0; 7.0 8.0]
+
+    NextLA.compact!(A_tlr)
+
+    @test A_tlr.storage isa NextLA.CompactTileStorage
+    @test size(NextLA.tile_u(A_tlr, bottom_slot)) == (2, 2)
+    @test size(NextLA.tile_v(A_tlr, bottom_slot)) == (4, 2)
+    @test stride(NextLA.tile_u(A_tlr, bottom_slot), 2) == 2
+    @test stride(NextLA.tile_v(A_tlr, right_slot), 2) == 2
+    @test Matrix(NextLA.tile_u(A_tlr, bottom_slot)) == [1.0 2.0; 3.0 4.0]
+    @test Matrix(NextLA.tile_v(A_tlr, bottom_slot)) == reshape(collect(1.0:8.0), 4, 2)
+
+    @test size(NextLA.tile_u(A_tlr, right_slot)) == (4, 2)
+    @test size(NextLA.tile_v(A_tlr, right_slot)) == (2, 2)
+    @test Matrix(NextLA.tile_u(A_tlr, right_slot)) == reshape(collect(11.0:18.0), 4, 2)
+    @test Matrix(NextLA.tile_v(A_tlr, right_slot)) == [5.0 6.0; 7.0 8.0]
 end
