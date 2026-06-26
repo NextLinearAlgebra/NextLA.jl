@@ -364,4 +364,23 @@ function NextLA.gemmEx!(transA::Char,
     return _gemm_ex!(transA, transB, alpha, A, B, beta, C, compute_type)
 end
 
+# ─── Stream API ───────────────────────────────────────────────────────────────
+
+NextLA.create_streams(::CUDA.CUDABackend, n::Int) = [CUDA.CuStream() for _ in 1:n]
+
+function NextLA.with_stream(f, ::CUDA.CUDABackend, s::CUDA.CuStream)
+    CUDA.stream!(f, s)
+end
+
+NextLA.sync_stream(::CUDA.CUDABackend, s::CUDA.CuStream) = CUDA.synchronize(s)
+
+function NextLA.sync_streams_with_default(::CUDA.CUDABackend,
+                                          streams::AbstractVector{<:CUDA.CuStream})
+    ev = CUDA.CuEvent()
+    CUDA.record(ev)                   # record on the current (default) stream
+    for s in streams
+        CUDA.wait(ev, s)              # GPU-side: each stream waits for ev
+    end
+end
+
 end
