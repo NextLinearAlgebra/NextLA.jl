@@ -19,7 +19,7 @@ catch
 end
 
 using NextLA
-using NextLA: TLRMatrix, compress!, left_factors, right_factors, dense_diag, ranks,
+using NextLA: TLRMatrix, compress!, tile_u, tile_v, dense_diag, ranks,
               ndiag_tiles, noffdiag_tiles, tile_origin_coords, tile_sizes,
               offdiag_linear_index, inverse_tile_index
 
@@ -51,20 +51,17 @@ end
 # ── tile-by-tile relative Frobenius error ─────────────────────────────────────
 function rel_error(A_cpu::AbstractMatrix, A_tlr::TLRMatrix)
     layout = A_tlr.layout
-    # pull factors to CPU (no-op if already CPU)
-    U  = Array(left_factors(A_tlr))
-    V  = Array(right_factors(A_tlr))
     D  = Array(dense_diag(A_tlr))
-    rk = Array(ranks(A_tlr))
-
     err_sq = norm_sq = 0.0
     for ob in 1:noffdiag_tiles(layout)
         lin = offdiag_linear_index(layout, ob)
         i, j = inverse_tile_index(layout, lin)
         p0, q0 = tile_origin_coords(layout, i, j)
-        tm, tn = tile_sizes(layout, i, j);  kr = rk[ob]
+        tm, tn = tile_sizes(layout, i, j)
         tile  = A_cpu[p0:p0+tm-1, q0:q0+tn-1]
-        recon = view(U,1:tm,1:kr,ob) * view(V,1:tn,1:kr,ob)'
+        U_ob  = Array(tile_u(A_tlr, ob))
+        V_ob  = Array(tile_v(A_tlr, ob))
+        recon = U_ob * V_ob'
         err_sq  += sum(abs2, tile - recon)
         norm_sq += sum(abs2, tile)
     end
@@ -100,14 +97,14 @@ function run_case(A_cpu, true_rk, device_label, B, MAXRANK, TOL;
     T1 = TLRMatrix(A, B, MAXRANK); gpu_sync()
     t1 = @elapsed begin; compress!(T1, A); gpu_sync(); end
     e1 = rel_error(A_cpu, T1)
-    ok1 = !any(isnan, Array(left_factors(T1)))
+    ok1 = !any(isnan, Array(T1.int_U))
 
     # ── Algorithm 2: cholqr + NS + adaptive truncation ───────────────────────
     T2 = TLRMatrix(A, B, MAXRANK); gpu_sync()
     t2 = @elapsed begin; compress!(T2, A; tol=TOL); gpu_sync(); end
     e2  = rel_error(A_cpu, T2)
     rk2 = Array(ranks(T2))
-    ok2 = !any(isnan, Array(left_factors(T2)))
+    ok2 = !any(isnan, Array(T2.int_U))
 
     layout = T2.layout
     noff = noffdiag_tiles(layout)
@@ -130,34 +127,17 @@ end
 
 # ── per-tile orthogonality errors for U and V ────────────────────────────────
 function ortho_errors(A_tlr::TLRMatrix)
-    layout = A_tlr.layout
-
-    # Pull factors/ranks to CPU. No-op if already CPU.
-    U  = Array(left_factors(A_tlr))
-    V  = Array(right_factors(A_tlr))
-    rk = Array(ranks(A_tlr))
-
-    noff = noffdiag_tiles(layout)
-
-    u_errs = Float64[]
-    v_errs = Float64[]
-
+    layout  = A_tlr.layout
+    rk      = Array(ranks(A_tlr))
+    noff    = noffdiag_tiles(layout)
+    u_errs  = Float64[]
     for ob in 1:noff
-        lin = offdiag_linear_index(layout, ob)
-        i, j = inverse_tile_index(layout, lin)
-
-        tm, tn = tile_sizes(layout, i, j)
         kr = Int(rk[ob])
-
         kr == 0 && continue
-
-        Uob = @view U[1:tm, 1:kr, ob]
-
+        Uob = Array(tile_u(A_tlr, ob))
         Ikr = Matrix{eltype(Uob)}(I, kr, kr)
-
         push!(u_errs, norm(Uob' * Uob - Ikr))
     end
-
     return u_errs
 end
 

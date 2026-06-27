@@ -1,51 +1,60 @@
-"""Return the nominal tile size of `A`."""
-@inline blocksize(A::TLRMatrix) = blocksize(A.layout)
-"""Return the maximum tile rank representable in `A`."""
-@inline maxrank(A::TLRMatrix) = maxrank(A.storage)
-"""Return whether diagonal tiles are compressed in `A`."""
-@inline compress_diag(A::TLRMatrix) = compress_diag(A.storage)
-"""Return the rank buffer owned by `A.storage`."""
-@inline ranks(A::TLRMatrix) = ranks(A.storage)
-"""Return the dense diagonal tile storage owned by `A.storage`."""
-@inline dense_diag(A::TLRMatrix) = dense_diag(A.storage)
-"""Return the left low-rank factors owned by `A.storage`."""
-@inline left_factors(A::TLRMatrix) = left_factors(A.storage)
-"""Return the right low-rank factors owned by `A.storage`."""
-@inline right_factors(A::TLRMatrix) = right_factors(A.storage)
-"""Return the number of low-rank tile slots owned by `A.storage`."""
-@inline nstored_tiles(A::TLRMatrix) = stored_tile_count(A.storage, A.layout)
-
-# ─── Storage-agnostic per-tile factor accessors ───────────────────────────────
+@inline blocksize(A::TLRMatrix)     = A.layout.tile_m
+@inline maxrank(A::TLRMatrix)       = A.maxrank
+@inline compress_diag(A::TLRMatrix) = A.compress_diag
+@inline ranks(A::TLRMatrix)         = A.ranks
+@inline dense_diag(A::TLRMatrix)    = A.D
+@inline nstored_tiles(A::TLRMatrix) = noffdiag_tiles(A.layout)
 
 """
-    tile_u(A_tlr, ob) → AbstractMatrix
-
-Return the left factor for off-diagonal tile `ob`, trimmed to its effective
-rank.  Works for both `UniformTileStorage` and `CompactTileStorage`.
+Return a named tuple `(interior, right, bottom)` of the left low-rank factor
+arrays for each tile category.
 """
-@inline tile_u(A::TLRMatrix, ob::Integer) = tile_u(A.storage, A.layout, ob)
+@inline left_factors(A::TLRMatrix) =
+    (interior = A.int_U, right = A.right_U, bottom = A.bottom_U)
 
 """
-    tile_v(A_tlr, ob) → AbstractMatrix
-
-Return the right factor for off-diagonal tile `ob`, trimmed to its effective
-rank.  Works for both `UniformTileStorage` and `CompactTileStorage`.
+Return a named tuple `(interior, right, bottom)` of the right low-rank factor
+arrays for each tile category.
 """
-@inline tile_v(A::TLRMatrix, ob::Integer) = tile_v(A.storage, A.layout, ob)
+@inline right_factors(A::TLRMatrix) =
+    (interior = A.int_V, right = A.right_V, bottom = A.bottom_V)
 
-# Padded storage: trim both the tile height and effective rank.
-# The returned SubArray still inherits the parent slot stride, so boundary
-# tiles in UniformTileStorage remain physically column-strided by the nominal
-# block size rather than densely repacked to their logical height.
-@inline function tile_u(s::UniformTileStorage, layout::TileMap, ob::Integer)
-    lin = offdiag_linear_index(layout, Int(ob))
-    tile_i, tile_j = inverse_tile_index(layout, lin)
-    tile_m, _ = tile_sizes(layout, tile_i, tile_j)
-    view(s.U, 1:tile_m, 1:Int(s.ranks[ob]), ob)
+# ─── Per-tile factor accessors ────────────────────────────────────────────────
+
+"""
+    tile_u(A, ob) → AbstractMatrix
+
+Left low-rank factor for off-diagonal tile `ob`, trimmed to its effective rank.
+The returned view aliases the underlying storage — no allocation.
+"""
+@inline function tile_u(A::TLRMatrix, ob::Integer)
+    k   = A.local_index[ob]
+    r   = Int(A.ranks[ob])
+    cat = A.category[ob]
+    if cat == _TILE_INT
+        return view(A.int_U,    :, 1:r, k)
+    elseif cat == _TILE_RIGHT
+        return view(A.right_U,  :, 1:r, k)
+    else
+        return view(A.bottom_U, :, 1:r, k)
+    end
 end
-@inline function tile_v(s::UniformTileStorage, layout::TileMap, ob::Integer)
-    lin = offdiag_linear_index(layout, Int(ob))
-    tile_i, tile_j = inverse_tile_index(layout, lin)
-    _, tile_n = tile_sizes(layout, tile_i, tile_j)
-    view(s.V, 1:tile_n, 1:Int(s.ranks[ob]), ob)
+
+"""
+    tile_v(A, ob) → AbstractMatrix
+
+Right low-rank factor for off-diagonal tile `ob`, trimmed to its effective rank.
+The returned view aliases the underlying storage — no allocation.
+"""
+@inline function tile_v(A::TLRMatrix, ob::Integer)
+    k   = A.local_index[ob]
+    r   = Int(A.ranks[ob])
+    cat = A.category[ob]
+    if cat == _TILE_INT
+        return view(A.int_V,    :, 1:r, k)
+    elseif cat == _TILE_RIGHT
+        return view(A.right_V,  :, 1:r, k)
+    else
+        return view(A.bottom_V, :, 1:r, k)
+    end
 end

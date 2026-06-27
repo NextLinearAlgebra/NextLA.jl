@@ -123,7 +123,24 @@ function NextLA.gemmEx_batched!(transA::Char,
                                 B::AbstractVector{<:CUDA.StridedCuMatrix{<:Any}},
                                 beta,
                                 C::AbstractVector{<:CUDA.StridedCuMatrix{<:Any}})
-    return CUBLAS.gemmBatchedEx!(transA, transB, alpha, A, B, beta, C)
+    length(A) == length(B) == length(C) || throw(DimensionMismatch("gemm_batched!: matrix batches must have matching lengths"))
+    isempty(A) && return C
+
+    Aptrs = _unsafe_batch_strided(A)
+    Bptrs = _unsafe_batch_strided(B)
+    Cptrs = _unsafe_batch_strided(C)
+
+    try
+        NextLA.gemmEx_batched_ptrs!(
+            transA, transB, alpha, Aptrs, A[1], Bptrs, B[1], beta, Cptrs, C[1], length(C),
+        )
+    finally
+        CUDA.unsafe_free!(Cptrs)
+        CUDA.unsafe_free!(Bptrs)
+        CUDA.unsafe_free!(Aptrs)
+    end
+
+    return C
 end
 
 function NextLA.gemmEx_batched!(transA::Char,

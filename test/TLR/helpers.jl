@@ -29,7 +29,7 @@ end
 function reconstruct_tlr(A_tlr::NextLA.TLRMatrix)
     T = eltype(A_tlr)
     A = zeros(T, size(A_tlr))
-    storage = A_tlr.storage
+    D = NextLA.dense_diag(A_tlr)
 
     for linear in 1:prod(size(A_tlr.layout))
         tile_i, tile_j = NextLA.inverse_tile_index(A_tlr.layout, linear)
@@ -38,14 +38,14 @@ function reconstruct_tlr(A_tlr::NextLA.TLRMatrix)
         rows = p0:(p0 + tile_m - 1)
         cols = q0:(q0 + tile_n - 1)
 
-        tile = if !NextLA.compress_diag(A_tlr) && tile_i == tile_j
-            @view storage.D[1:tile_m, 1:tile_n, tile_i]
+        tile = if tile_i == tile_j
+            @view D[1:tile_m, 1:tile_n, tile_i]
         else
-            batch = NextLA.compress_diag(A_tlr) ? linear : NextLA.tile_storage_index(A_tlr, tile_i, tile_j)
-            r = Int(NextLA.ranks(A_tlr)[batch])
+            ob = NextLA.tile_storage_index(A_tlr, tile_i, tile_j)
+            r = Int(NextLA.ranks(A_tlr)[ob])
             r == 0 ? zeros(T, tile_m, tile_n) :
-                Matrix(NextLA.tile_u(A_tlr, batch)) *
-                Matrix(adjoint(NextLA.tile_v(A_tlr, batch)))
+                Matrix(NextLA.tile_u(A_tlr, ob)) *
+                Matrix(adjoint(NextLA.tile_v(A_tlr, ob)))
         end
 
         A[rows, cols] .= tile
