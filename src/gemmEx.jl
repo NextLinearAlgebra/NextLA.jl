@@ -1,3 +1,7 @@
+export gemm!
+
+const gemm! = LinearAlgebra.mul!
+
 @inline function _gemm_dims(transA::Char,
                             transB::Char,
                             A::AbstractMatrix,
@@ -16,7 +20,7 @@
 end
 
 """
-    gemmEx!(transA, transB, alpha, A, B, beta, C; compute_type=default_compute_type(alpha, A, B, beta, C))
+    gemmEx!(transA, transB, alpha, A, B, beta, C)
 
 Compute the matrix product
 
@@ -24,11 +28,9 @@ Compute the matrix product
 
 and store the result in `C`.
 
-`gemmEx!` is an advanced `NextLA` API for backends that support explicit
-compute-type GEMM. It is available as `NextLA.gemmEx!` and is not part of the
-primary exported surface.
-
-Use `gemmEx!` when you want to choose the GEMM compute type explicitly.
+`gemmEx!` is an advanced `NextLA` API for backends that support mixed-type GEMM
+where the result storage may differ from the operand storage. It is available
+as `NextLA.gemmEx!` and is not part of the primary exported surface.
 
 `op(A)` and `op(B)` are determined by `transA` and `transB`, which may be:
 - `'N'`: no transpose
@@ -36,8 +38,8 @@ Use `gemmEx!` when you want to choose the GEMM compute type explicitly.
 - `'C'`: adjoint
 
 ## Notes
-- On GPU backends, if `compute_type` matches the backend default for the given
-  inputs, `gemmEx!` falls back to the standard backend GEMM path.
+- The accumulation / compute type is inferred from `alpha`, `beta`, and the
+  operand/result element types using [`default_compute_type`](@ref).
 - `gemmEx!` is currently implemented only for `CUDA` and `AMDGPU` backends.
 - If a backend does not support a requested storage and compute type
   combination, backend-specific errors may be raised.
@@ -50,7 +52,6 @@ function gemmEx!(transA::Char,
                  A::AbstractMatrix,
                  B::AbstractMatrix,
                  beta,
-                 C::AbstractMatrix;
-                 compute_type::Type = default_compute_type(alpha, A, B, beta, C))
+                 C::AbstractMatrix)
     throw(ArgumentError("NextLA.gemmEx! is supported only on CUDA and AMDGPU"))
 end

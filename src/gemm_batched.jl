@@ -5,9 +5,10 @@ export gemm_batched!
 
 Compute a batched matrix product and store the result in `C`.
 
-Two storage forms are supported:
+Three storage forms are supported:
 - `AbstractArray{T,3}` for strided batches
 - `AbstractVector` of matrices for pointer batches
+- backend pointer arrays plus representative matrices for explicit pointer-batch calls
 
 Each batch entry applies
 
@@ -40,6 +41,22 @@ function gemm_batched!(transA::Char,
         BLAS.gemm!(transA, transB, eltype(Ci)(alpha), Ai, Bi, eltype(Ci)(beta), Ci)
     end
     return C
+end
+
+function gemm_batched!(transA::Char,
+                       transB::Char,
+                       alpha,
+                       Aptrs,
+                       Aref::AbstractMatrix,
+                       Bptrs,
+                       Bref::AbstractMatrix,
+                       beta,
+                       Cptrs,
+                       Cref::AbstractMatrix,
+                       batch_count::Integer)
+    return gemm_batched_ptrs!(
+        transA, transB, alpha, Aptrs, Aref, Bptrs, Bref, beta, Cptrs, Cref, batch_count,
+    )
 end
 
 """
@@ -102,9 +119,9 @@ function gemm_batched!(transA::Char,
 end
 
 """
-    gemmEx_batched!(transA, transB, alpha, A, B, beta, C; compute_type=default_compute_type(alpha, A, B, beta, C))
+    gemmEx_batched!(transA, transB, alpha, A, B, beta, C)
 
-Compute a batched matrix product with explicit control over the compute type.
+Compute a mixed-type batched matrix product.
 
 Each batch entry applies
 
@@ -112,20 +129,16 @@ Each batch entry applies
 
 where `op(A)` and `op(B)` are determined by `transA` and `transB`.
 
-`gemmEx_batched!` is an advanced `NextLA` API for backends that support
-explicit compute-type batched GEMM. It is available as
-`NextLA.gemmEx_batched!` and is not part of the primary exported surface.
-
-Use `gemmEx_batched!` when you want to choose the GEMM compute type explicitly
-for a batched operation.
+`gemmEx_batched!` is an advanced `NextLA` API for batched mixed-type GEMM. It
+is available as `NextLA.gemmEx_batched!` and is not part of the primary
+exported surface.
 
 ## Notes
-- If `compute_type` matches the backend default, `gemmEx_batched!` falls back
-  to `gemm_batched!`.
-- `gemmEx_batched!` is currently implemented for CUDA and AMDGPU. Other
-  backends, including CPU, report that it is unsupported.
-- If a backend does not provide a dedicated Ex batched GEMM path, it may fall
-  back to the corresponding standard batched GEMM implementation.
+- The accumulation / compute type is inferred from `alpha`, `beta`, and the
+  operand/result element types using [`default_compute_type`](@ref).
+- Same-type batched calls may fall back to `gemm_batched!` on backends that do
+  not expose a mixed-type batched GEMM primitive.
+- Mixed-type batched GEMM is currently implemented for CUDA and AMDGPU.
 - If a backend does not support a requested storage and compute type
   combination, backend-specific errors may be raised.
 - Algorithm selection and backend-specific math modes are out of scope for this
@@ -139,7 +152,12 @@ function gemmEx_batched!(transA::Char,
                          beta,
                          C::AbstractArray{<:Any, 3};
                          compute_type::Type = default_compute_type(alpha, A, B, beta, C))
-    throw(ArgumentError("NextLA.gemmEx_batched! is supported only on CUDA and AMDGPU"))
+    _check_compute_type(compute_type)
+    if eltype(A) == eltype(B) == eltype(C) &&
+       compute_type == default_compute_type(alpha, A, B, beta, C)
+        return gemm_batched!(transA, transB, alpha, A, B, beta, C)
+    end
+    throw(ArgumentError("NextLA.gemmEx_batched! is supported only on CUDA and AMDGPU for mixed-type batched GEMM"))
 end
 
 function gemmEx_batched!(transA::Char,
@@ -150,5 +168,28 @@ function gemmEx_batched!(transA::Char,
                          beta,
                          C::AbstractVector{<:AbstractArray{<:Any, 2}};
                          compute_type::Type = default_compute_type(alpha, A, B, beta, C))
-    throw(ArgumentError("NextLA.gemmEx_batched! is supported only on CUDA and AMDGPU"))
+    _check_compute_type(compute_type)
+    if eltype(A) == eltype(B) == eltype(C) &&
+       compute_type == default_compute_type(alpha, A, B, beta, C)
+        return gemm_batched!(transA, transB, alpha, A, B, beta, C)
+    end
+    throw(ArgumentError("NextLA.gemmEx_batched! is supported only on CUDA and AMDGPU for mixed-type batched GEMM"))
+end
+
+function gemmEx_batched!(transA::Char,
+                         transB::Char,
+                         alpha,
+                         Aptrs,
+                         Aref::AbstractMatrix,
+                         Bptrs,
+                         Bref::AbstractMatrix,
+                         beta,
+                         Cptrs,
+                         Cref::AbstractMatrix,
+                         batch_count::Integer;
+                         compute_type::Type = default_compute_type(alpha, Aref, Bref, beta, Cref))
+    return gemmEx_batched_ptrs!(
+        transA, transB, alpha, Aptrs, Aref, Bptrs, Bref, beta, Cptrs, Cref, batch_count;
+        compute_type,
+    )
 end

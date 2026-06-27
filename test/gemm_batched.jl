@@ -5,6 +5,7 @@ using Logging
 @test NextLA.GEMM_COMPUTE_TYPES == (Float16, Float32, Float64, ComplexF32, ComplexF64, Int32)
 @test !(:gemmEx! in names(NextLA))
 @test !(:gemmEx_batched! in names(NextLA))
+@test NextLA.gemm! === LinearAlgebra.mul!
 @test NextLA.default_compute_type(Float16(1), Float16[1 2; 3 4], Float16[1 0; 0 1], Float16(0), Float16[0 0; 0 0]) == Float16
 
 _apply_transpose(A::AbstractMatrix, trans::Char) =
@@ -23,6 +24,9 @@ _apply_transpose(A::AbstractMatrix, trans::Char) =
     A_batch3 = cat(A_batch..., dims = 3)
     B_batch3 = cat(B_batch..., dims = 3)
     C_batch3 = cat(C_batch..., dims = 3)
+    A_batch_mixed = [Float16[1 2; 3 4], Float16[1 0; 2 1]]
+    B_batch_mixed = [Float16[0 1; 1 0], Float16[1 2; 0 1]]
+    C_batch_mixed = [zeros(Float32, 2, 2), zeros(Float32, 2, 2)]
 
     # reuse the pointer-batch reference for the equivalent strided layout.
     expected_batch = [
@@ -33,6 +37,11 @@ _apply_transpose(A::AbstractMatrix, trans::Char) =
     ]
 
     expected_batch3 = cat(expected_batch..., dims = 3)
+    expected_batch_mixed = [
+        Float32(alpha_batch) .* Float32.(_apply_transpose(A_batch_mixed[i], transA_batch) * _apply_transpose(B_batch_mixed[i], transB_batch))
+        for i in eachindex(A_batch_mixed)
+    ]
+    expected_batch3_mixed = cat(expected_batch_mixed..., dims = 3)
 
     A_single = Float32[1 2; 3 4]
     B_single = Float32[0 1; 1 0]
@@ -49,6 +58,14 @@ _apply_transpose(A::AbstractMatrix, trans::Char) =
                 NextLA.gemmEx!(transA_batch, transB_batch, alpha_batch, A_single_dev, B_single_dev, beta_batch, C_single_dev)
                 sync(C_single_dev)
                 @test Array(C_single_dev) ≈ expected_single
+
+                A_single_mixed = _to_backend(AT, Float16[1 2; 3 4])
+                B_single_mixed = _to_backend(AT, Float16[0 1; 1 0])
+                C_single_mixed = _to_backend(AT, zeros(Float32, 2, 2))
+                expected_single_mixed = Float32(alpha_batch) .* Float32.(Float16[1 2; 3 4] * Float16[0 1; 1 0])
+                NextLA.gemmEx!(transA_batch, transB_batch, alpha_batch, A_single_mixed, B_single_mixed, 0.0f0, C_single_mixed)
+                sync(C_single_mixed)
+                @test Array(C_single_mixed) ≈ expected_single_mixed
             else
                 # unsupported backends should fail visibly
                 @test_throws ArgumentError NextLA.gemmEx!(
@@ -75,25 +92,21 @@ _apply_transpose(A::AbstractMatrix, trans::Char) =
             B_batch_ex_dev = _to_backend(AT, deepcopy(B_batch))
             C_batch_ex_dev = _to_backend(AT, deepcopy(C_batch))
 
+            NextLA.gemmEx_batched!(transA_batch, transB_batch, alpha_batch, A_batch_ex_dev, B_batch_ex_dev, beta_batch, C_batch_ex_dev)
+            sync(first(C_batch_ex_dev))
+
+            for i in eachindex(expected_batch)
+                @test Array(C_batch_ex_dev[i]) ≈ expected_batch[i]
+            end
+
             if name in ("CUDA", "AMDGPU")
-                NextLA.gemmEx_batched!(transA_batch, transB_batch, alpha_batch, A_batch_ex_dev, B_batch_ex_dev, beta_batch, C_batch_ex_dev)
-                sync(first(C_batch_ex_dev))
-
-                for i in eachindex(expected_batch)
-                    @test Array(C_batch_ex_dev[i]) ≈ expected_batch[i]
-                end
-
-                C_batch_mixed = [zeros(Float64, 2, 2), zeros(Float64, 2, 2)]
+                A_batch_mixed_dev = _to_backend(AT, deepcopy(A_batch_mixed))
+                B_batch_mixed_dev = _to_backend(AT, deepcopy(B_batch_mixed))
                 C_batch_mixed_dev = _to_backend(AT, deepcopy(C_batch_mixed))
-                expected_batch_mixed = [
-                    Float64(alpha_batch) .* Float64.(_apply_transpose(A_batch[i], transA_batch) * _apply_transpose(B_batch[i], transB_batch))
-                    for i in eachindex(A_batch)
-                ]
 
                 NextLA.gemmEx_batched!(
                     transA_batch, transB_batch, alpha_batch,
-                    A_batch_ex_dev, B_batch_ex_dev, 0.0, C_batch_mixed_dev;
-                    compute_type=Float64,
+                    A_batch_mixed_dev, B_batch_mixed_dev, 0.0f0, C_batch_mixed_dev,
                 )
                 sync(first(C_batch_mixed_dev))
 
@@ -102,7 +115,11 @@ _apply_transpose(A::AbstractMatrix, trans::Char) =
                 end
             else
                 @test_throws ArgumentError NextLA.gemmEx_batched!(
-                    transA_batch, transB_batch, alpha_batch, A_batch_ex_dev, B_batch_ex_dev, beta_batch, C_batch_ex_dev
+                    transA_batch, transB_batch, alpha_batch,
+                    _to_backend(AT, deepcopy(A_batch_mixed)),
+                    _to_backend(AT, deepcopy(B_batch_mixed)),
+                    0.0f0,
+                    _to_backend(AT, deepcopy(C_batch_mixed)),
                 )
             end
 
@@ -122,15 +139,73 @@ _apply_transpose(A::AbstractMatrix, trans::Char) =
             B_batch3_ex_dev = _to_backend(AT, copy(B_batch3))
             C_batch3_ex_dev = _to_backend(AT, copy(C_batch3))
 
+            NextLA.gemmEx_batched!(transA_batch, transB_batch, alpha_batch, A_batch3_ex_dev, B_batch3_ex_dev, beta_batch, C_batch3_ex_dev)
+            sync(C_batch3_ex_dev)
+            @test Array(C_batch3_ex_dev) ≈ expected_batch3
+
             if name in ("CUDA", "AMDGPU")
-                NextLA.gemmEx_batched!(transA_batch, transB_batch, alpha_batch, A_batch3_ex_dev, B_batch3_ex_dev, beta_batch, C_batch3_ex_dev)
-                sync(C_batch3_ex_dev)
-                @test Array(C_batch3_ex_dev) ≈ expected_batch3
+                A_batch3_mixed = cat(A_batch_mixed..., dims = 3)
+                B_batch3_mixed = cat(B_batch_mixed..., dims = 3)
+                C_batch3_mixed = zeros(Float32, 2, 2, 2)
+                A_batch3_mixed_dev = _to_backend(AT, copy(A_batch3_mixed))
+                B_batch3_mixed_dev = _to_backend(AT, copy(B_batch3_mixed))
+                C_batch3_mixed_dev = _to_backend(AT, copy(C_batch3_mixed))
+
+                NextLA.gemmEx_batched!(transA_batch, transB_batch, alpha_batch, A_batch3_mixed_dev, B_batch3_mixed_dev, 0.0f0, C_batch3_mixed_dev)
+                sync(C_batch3_mixed_dev)
+                @test Array(C_batch3_mixed_dev) ≈ expected_batch3_mixed
             else
                 # unsupported backends should fail visibly
                 @test_throws ArgumentError NextLA.gemmEx_batched!(
-                    transA_batch, transB_batch, alpha_batch, A_batch3_ex_dev, B_batch3_ex_dev, beta_batch, C_batch3_ex_dev
+                    transA_batch, transB_batch, alpha_batch,
+                    _to_backend(AT, cat(A_batch_mixed..., dims = 3)),
+                    _to_backend(AT, cat(B_batch_mixed..., dims = 3)),
+                    0.0f0,
+                    _to_backend(AT, zeros(Float32, 2, 2, 2)),
                 )
+            end
+
+            if name in ("CUDA", "AMDGPU")
+                Aptrs = _device_pointer_batch(name, A_batch_ex_dev)
+                Bptrs = _device_pointer_batch(name, B_batch_ex_dev)
+                C_ptr_batch_dev = _to_backend(AT, deepcopy(C_batch))
+                Cptrs = _device_pointer_batch(name, C_ptr_batch_dev)
+
+                NextLA.gemm_batched!(
+                    transA_batch, transB_batch, alpha_batch,
+                    Aptrs, A_batch_ex_dev[1], Bptrs, B_batch_ex_dev[1], beta_batch, Cptrs, C_ptr_batch_dev[1], length(C_ptr_batch_dev),
+                )
+                sync(first(C_ptr_batch_dev))
+                for i in eachindex(expected_batch)
+                    @test Array(C_ptr_batch_dev[i]) ≈ expected_batch[i]
+                end
+
+                C_ptr_ex_batch_dev = _to_backend(AT, deepcopy(C_batch))
+                Cptrs_ex = _device_pointer_batch(name, C_ptr_ex_batch_dev)
+                NextLA.gemmEx_batched!(
+                    transA_batch, transB_batch, alpha_batch,
+                    Aptrs, A_batch_ex_dev[1], Bptrs, B_batch_ex_dev[1], beta_batch, Cptrs_ex, C_ptr_ex_batch_dev[1], length(C_ptr_ex_batch_dev),
+                )
+                sync(first(C_ptr_ex_batch_dev))
+                for i in eachindex(expected_batch)
+                    @test Array(C_ptr_ex_batch_dev[i]) ≈ expected_batch[i]
+                end
+
+                A_batch_mixed_dev = _to_backend(AT, deepcopy(A_batch_mixed))
+                B_batch_mixed_dev = _to_backend(AT, deepcopy(B_batch_mixed))
+                Aptrs_mixed = _device_pointer_batch(name, A_batch_mixed_dev)
+                Bptrs_mixed = _device_pointer_batch(name, B_batch_mixed_dev)
+                C_ptr_mixed_dev = _to_backend(AT, deepcopy(C_batch_mixed))
+                Cptrs_mixed = _device_pointer_batch(name, C_ptr_mixed_dev)
+
+                NextLA.gemmEx_batched!(
+                    transA_batch, transB_batch, alpha_batch,
+                    Aptrs_mixed, A_batch_mixed_dev[1], Bptrs_mixed, B_batch_mixed_dev[1], 0.0f0, Cptrs_mixed, C_ptr_mixed_dev[1], length(C_ptr_mixed_dev),
+                )
+                sync(first(C_ptr_mixed_dev))
+                for i in eachindex(expected_batch_mixed)
+                    @test Array(C_ptr_mixed_dev[i]) ≈ expected_batch_mixed[i]
+                end
             end
         end
     end

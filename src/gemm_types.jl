@@ -3,8 +3,8 @@ export GEMM_COMPUTE_TYPES, default_compute_type
 """
     GEMM_COMPUTE_TYPES
 
-`compute_type` values accepted by the advanced `NextLA.gemmEx!` and
-`NextLA.gemmEx_batched!` APIs.
+`compute_type` values inferred or used internally by the advanced
+`NextLA.gemmEx!` and `NextLA.gemmEx_batched!` APIs.
 
 `compute_type` is the Julia type used to request the GEMM accumulation type.
 These are plain Julia types, not backend-specific math modes such as TF32 or
@@ -16,12 +16,13 @@ other fast-math settings.
    `C = A * B` for dense matrices.
 2. `gemm_batched!` and `syrk!` form the main public surface for GEMM-like BLAS
    wrappers.
-3. `NextLA.gemmEx!` and `NextLA.gemmEx_batched!` are advanced APIs to use when
-   you want to choose `compute_type` explicitly.
+3. `NextLA.gemmEx!` and `NextLA.gemmEx_batched!` are advanced APIs for
+   mixed-type GEMM where the result storage may differ from the operand
+   storage.
 
-If `compute_type` matches the backend's ordinary GEMM behavior, the `Ex`
-methods fall back to the corresponding standard GEMM path. If you request a
-non-default `compute_type`, support depends on the backend.
+`compute_type` is inferred from `alpha`, `beta`, and the operand/result types
+using [`default_compute_type`](@ref). Support for the inferred combination
+depends on the backend.
 
 The table below summarizes the current behavior.
 
@@ -31,7 +32,7 @@ Standard GEMM behavior:
 | --- | --- | --- | --- | --- | --- |
 | `gemmEx!` with default `compute_type` | unsupported | `CUBLAS.gemm!` | `rocBLAS.gemm!` | unsupported | unsupported |
 | `gemm_batched!` | loop of standard GEMMs | pointer or strided batched GEMM | pointer or strided batched GEMM | pointer or strided batched GEMM | strided MPS matmul |
-| `gemmEx_batched!` with default `compute_type` | unsupported | falls back to `gemm_batched!` | falls back to `gemm_batched!` | unsupported | unsupported |
+| `gemmEx_batched!` with default `compute_type` | falls back to `gemm_batched!` | falls back to `gemm_batched!` | falls back to `gemm_batched!` | falls back to `gemm_batched!` for same-type batches | falls back to `gemm_batched!` for same-type batches |
 | `syrk!` | `BLAS.syrk!` | `CUBLAS.syrk!` | native rocBLAS SYRK | `oneMKL.syrk!` | MPS GEMM fallback |
 
 Representative non-default `compute_type` combinations:
@@ -81,8 +82,7 @@ end
 """
     default_compute_type(alpha, A, B, beta, C)
 
-Return the default `compute_type` used by `NextLA` when `compute_type` is not
-specified explicitly.
+Return the default `compute_type` inferred by `NextLA` for mixed-type GEMM.
 
 The rule is intentionally simple and backend-agnostic:
 - `Float16` defaults to `Float16`

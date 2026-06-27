@@ -31,9 +31,8 @@ end
     k_buf = @localmem Int32 (1,)
     acc = zero(T)
     @inbounds for row in 1:size(V, 1)
-        ;
-        x = V[row, j, ob];
-        acc += x * x;
+        x = V[row, j, ob]
+        acc += x * x
     end
     @inbounds norms_s[j] = acc
     @inbounds perm_s[j] = Int32(j)
