@@ -20,8 +20,7 @@ end
 
 using NextLA
 using NextLA: TLRMatrix, compress!, tile_u, tile_v, dense_diag, ranks,
-              ndiag_tiles, noffdiag_tiles, tile_origin_coords, tile_sizes,
-              offdiag_linear_index, inverse_tile_index
+              ndiag_tiles, noffdiag_tiles, tile_origin_coords, tile_size, alloc_workspace
 
 # ── generate a matrix whose off-diagonal tiles have rank in [r_lo, r_hi] ─────
 function generate_tiled_lowrank(n::Int, b::Int;
@@ -50,14 +49,13 @@ end
 
 # ── tile-by-tile relative Frobenius error ─────────────────────────────────────
 function rel_error(A_cpu::AbstractMatrix, A_tlr::TLRMatrix)
-    layout = A_tlr.layout
     D  = Array(dense_diag(A_tlr))
     err_sq = norm_sq = 0.0
-    for ob in 1:noffdiag_tiles(layout)
-        lin = offdiag_linear_index(layout, ob)
-        i, j = inverse_tile_index(layout, lin)
-        p0, q0 = tile_origin_coords(layout, i, j)
-        tm, tn = tile_sizes(layout, i, j)
+    for ob in 1:noffdiag_tiles(A_tlr)
+        lin = NextLA.TLRmodule._linear_from_offdiag(A_tlr, ob)
+        i, j = NextLA.TLRmodule._inverse_tile_index(A_tlr, lin)
+        p0, q0 = tile_origin_coords(A_tlr, i, j)
+        tm, tn = tile_size(A_tlr, i, j)
         tile  = A_cpu[p0:p0+tm-1, q0:q0+tn-1]
         U_ob  = Array(tile_u(A_tlr, ob))
         V_ob  = Array(tile_v(A_tlr, ob))
@@ -65,9 +63,9 @@ function rel_error(A_cpu::AbstractMatrix, A_tlr::TLRMatrix)
         err_sq  += sum(abs2, tile - recon)
         norm_sq += sum(abs2, tile)
     end
-    for k in 1:ndiag_tiles(layout)
-        p0, q0 = tile_origin_coords(layout, k, k)
-        tm, tn = tile_sizes(layout, k, k)
+    for k in 1:ndiag_tiles(A_tlr)
+        p0, q0 = tile_origin_coords(A_tlr, k, k)
+        tm, tn = tile_size(A_tlr, k, k)
         tile = A_cpu[p0:p0+tm-1, q0:q0+tn-1]
         err_sq  += sum(abs2, tile - D[1:tm,1:tn,k])
         norm_sq += sum(abs2, tile)
@@ -90,27 +88,29 @@ function run_case(A_cpu, true_rk, device_label, B, MAXRANK, TOL;
 
     # warmup (JIT)
     Aw = TLRMatrix(A, B, MAXRANK)
-    compress!(Aw, A);          gpu_sync()
-    compress!(Aw, A; tol=TOL); gpu_sync()
+    wsw = alloc_workspace(Aw)
+    compress!(Aw, A, wsw);          gpu_sync()
+    compress!(Aw, A, wsw; tol=TOL); gpu_sync()
 
     # ── Algorithm 1: cholqr2, fixed rank ─────────────────────────────────────
     T1 = TLRMatrix(A, B, MAXRANK); gpu_sync()
-    t1 = @elapsed begin; compress!(T1, A); gpu_sync(); end
+    ws1 = alloc_workspace(T1)
+    t1 = @elapsed begin; compress!(T1, A, ws1); gpu_sync(); end
     e1 = rel_error(A_cpu, T1)
     ok1 = !any(isnan, Array(T1.int_U))
 
     # ── Algorithm 2: cholqr + NS + adaptive truncation ───────────────────────
     T2 = TLRMatrix(A, B, MAXRANK); gpu_sync()
-    t2 = @elapsed begin; compress!(T2, A; tol=TOL); gpu_sync(); end
+    ws2 = alloc_workspace(T2)
+    t2 = @elapsed begin; compress!(T2, A, ws2; tol=TOL); gpu_sync(); end
     e2  = rel_error(A_cpu, T2)
     rk2 = Array(ranks(T2))
     ok2 = !any(isnan, Array(T2.int_U))
 
-    layout = T2.layout
-    noff = noffdiag_tiles(layout)
+    noff  = noffdiag_tiles(T2)
     exact = sum(1:noff) do ob
-        lin = offdiag_linear_index(layout, ob)
-        i, j = inverse_tile_index(layout, lin)
+        lin  = NextLA.TLRmodule._linear_from_offdiag(T2, ob)
+        i, j = NextLA.TLRmodule._inverse_tile_index(T2, lin)
         rk2[ob] == true_rk[i, j]
     end
 
@@ -127,9 +127,8 @@ end
 
 # ── per-tile orthogonality errors for U and V ────────────────────────────────
 function ortho_errors(A_tlr::TLRMatrix)
-    layout  = A_tlr.layout
     rk      = Array(ranks(A_tlr))
-    noff    = noffdiag_tiles(layout)
+    noff    = noffdiag_tiles(A_tlr)
     u_errs  = Float64[]
     for ob in 1:noff
         kr = Int(rk[ob])
@@ -169,13 +168,15 @@ println("view alloc check: ",
         " B (vs ", @allocated(copy(zeros(Float32,128,128))), " B for data copy)")
 println()
 
-for n in [2048, 4096, 8192]
+for n in [2046, 4094, 8190]
     @printf("═══ n = %d ════════════════════════════════════════════\n", n)
 
     t_gen = @elapsed A_cpu, true_rk = generate_tiled_lowrank(n, B)
     @printf("  matrix generated in %.3f s  (%.0f MB)\n\n", t_gen, n^2*4/1e6)
 
-    run_case(A_cpu, true_rk, "CPU", B, MAXRANK, TOL)
+    if n<=8192
+        run_case(A_cpu, true_rk, "CPU", B, MAXRANK, TOL)
+    end
 
     if HAS_CUDA
         println()

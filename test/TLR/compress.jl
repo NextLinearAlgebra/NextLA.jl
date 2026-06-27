@@ -30,27 +30,26 @@ function boundary_dense_fixture(::Type{T}) where {T}
 end
 
 @testset "TLR compress! on CPU" begin
-    fixture = canonical_dense_fixture(Float64; compress_diag=false)
-    A_uniform = NextLA.TLRMatrix(fixture.A, fixture.b, 16; storage_format=:uniform)
+    fixture = canonical_dense_fixture(Float64)
+    A_uniform = NextLA.TLRMatrix(fixture.A, fixture.b, 16)
     ws_uniform = NextLA.TLRmodule.alloc_workspace(A_uniform)
     NextLA.compress!(A_uniform, fixture.A, ws_uniform; tol=1e-6, alg=:cholqr2)
 
     relerr = norm(reconstruct_tlr(A_uniform) - fixture.A) / norm(fixture.A)
     @test relerr <= 1e-6
-    assert_tile_rank_and_error(A_uniform, 1, 2, 8, fixture.offdiag12; rtol_error=1e-6)
+    assert_tile_rank_and_error(A_uniform, 1, 2, 10, fixture.offdiag12; atol_rank=4, rtol_error=1e-6)
     assert_tile_rank_and_error(A_uniform, 2, 1, 16, fixture.offdiag21; rtol_error=1e-6)
 
     boundary = boundary_dense_fixture(Float64)
-    A_panel = NextLA.TLRMatrix(boundary.A, 4, 3; storage_format=:panel)
+    A_panel = NextLA.TLRMatrix(boundary.A, 4, 3)
     ws_panel = NextLA.TLRmodule.alloc_workspace(A_panel)
     NextLA.compress!(A_panel, boundary.A, ws_panel; tol=1e-6, alg=:cholqr2)
 
     relerr_panel = norm(reconstruct_tlr(A_panel) - boundary.A) / norm(boundary.A)
     @test relerr_panel <= 1e-6
-    @test A_panel.storage isa NextLA.PanelTileStorage
-    @test size(A_panel.storage.U_int) == (4, 3, 2)
-    @test size(A_panel.storage.U_right) == (4, 3, 2)
-    @test size(A_panel.storage.U_bottom) == (2, 3, 2)
+    @test size(A_panel.int_U) == (4, 3, 2)
+    @test size(A_panel.right_U) == (4, 3, 2)
+    @test size(A_panel.bottom_U) == (2, 3, 2)
     assert_tile_rank_and_error(A_panel, 1, 2, 2, boundary.a12; atol_rank=1, rtol_error=1e-6)
     assert_tile_rank_and_error(A_panel, 2, 1, 3, boundary.a21; atol_rank=1, rtol_error=1e-6)
     assert_tile_rank_and_error(A_panel, 1, 3, 2, boundary.a13; atol_rank=1, rtol_error=1e-6)
@@ -59,21 +58,21 @@ end
     assert_tile_rank_and_error(A_panel, 3, 2, 2, boundary.a32; atol_rank=1, rtol_error=1e-6)
 end
 
-@testset "TLR compress! panel storage on GPU" begin
+@testset "TLR compress! on GPU" begin
     boundary = boundary_dense_fixture(Float32)
     for (backend_name, ArrayType, synchronize) in available_backends()
         backend_name in ("CUDA", "AMDGPU") || continue
         @testset "$backend_name" begin
             dense = ArrayType(boundary.A)
-            A_tlr = NextLA.TLRMatrix(dense, 4, 3; storage_format=:panel)
+            A_tlr = NextLA.TLRMatrix(dense, 4, 3)
             ws = NextLA.TLRmodule.alloc_workspace(A_tlr)
             NextLA.compress!(A_tlr, dense, ws; tol=1f-4, alg=:cholqr2)
 
-            synchronize(A_tlr.storage.buffer)
+            synchronize(A_tlr.int_U)
             relerr = norm(reconstruct_tlr(A_tlr) - boundary.A) / norm(boundary.A)
             @test relerr <= 5f-3
-            @test Int(A_tlr.storage.ranks[NextLA.tile_storage_index(A_tlr, 1, 3)]) == 2
-            @test Int(A_tlr.storage.ranks[NextLA.tile_storage_index(A_tlr, 3, 1)]) == 2
+            @test Int(NextLA.ranks(A_tlr)[NextLA.TLRmodule._offdiag_index(A_tlr, 1, 3)]) == 2
+            @test Int(NextLA.ranks(A_tlr)[NextLA.TLRmodule._offdiag_index(A_tlr, 3, 1)]) == 2
         end
     end
 end

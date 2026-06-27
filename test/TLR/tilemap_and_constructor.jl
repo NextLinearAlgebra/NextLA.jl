@@ -1,9 +1,8 @@
 include("helpers.jl")
 
-@testset "TLR TileMap and geometry" begin
+@testset "TLR geometry" begin
     @testset "column-major index table" begin
-        order = NextLA.TileColMajor(3, 3)
-        layout = NextLA.TLRmodule.TileMap(order, 4, 4, 10, 9)
+        A = NextLA.TLRMatrix(zeros(Float32, 10, 9), 4, 4; tile_order=NextLA.TileColMajor)
         expected = [
             (1, 1, 1, 1, 1, 4, 4),
             (2, 1, 2, 5, 1, 4, 4),
@@ -17,25 +16,25 @@ include("helpers.jl")
         ]
 
         for (i, j, linear, p0, q0, tile_m, tile_n) in expected
-            @test NextLA.tile_linear_index(order, i, j) == linear
-            @test NextLA.inverse_tile_index(layout, linear) == (i, j)
-            @test NextLA.tile_origin_coords(layout, i, j) == (p0, q0)
-            @test NextLA.tile_sizes(layout, i, j) == (tile_m, tile_n)
+            @test NextLA.TLRmodule._tile_linear_index(A, i, j) == linear
+            @test NextLA.TLRmodule._inverse_tile_index(A, linear) == (i, j)
+            @test NextLA.tile_origin_coords(A, i, j) == (p0, q0)
+            @test NextLA.tile_size(A, i, j) == (tile_m, tile_n)
         end
 
-        @test NextLA.TLRmodule.offdiag_batch_index(layout, 2, 1) == 1
-        @test NextLA.TLRmodule.offdiag_batch_index(layout, 3, 1) == 2
-        @test NextLA.TLRmodule.offdiag_batch_index(layout, 1, 2) == 3
-        @test NextLA.TLRmodule.offdiag_batch_index(layout, 1, 3) == 5
-        @test NextLA.offdiag_linear_index(layout, 1) == 2
-        @test NextLA.offdiag_linear_index(layout, 2) == 3
-        @test NextLA.offdiag_linear_index(layout, 3) == 4
-        @test NextLA.offdiag_linear_index(layout, 5) == 7
+        @test NextLA.tilegrid_size(A) == (3, 3)
+        @test NextLA.TLRmodule._offdiag_index(A, 2, 1) == 1
+        @test NextLA.TLRmodule._offdiag_index(A, 3, 1) == 2
+        @test NextLA.TLRmodule._offdiag_index(A, 1, 2) == 3
+        @test NextLA.TLRmodule._offdiag_index(A, 1, 3) == 5
+        @test NextLA.TLRmodule._linear_from_offdiag(A, 1) == 2
+        @test NextLA.TLRmodule._linear_from_offdiag(A, 2) == 3
+        @test NextLA.TLRmodule._linear_from_offdiag(A, 3) == 4
+        @test NextLA.TLRmodule._linear_from_offdiag(A, 5) == 7
     end
 
     @testset "row-major index table" begin
-        order = NextLA.TileRowMajor(3, 3)
-        layout = NextLA.TLRmodule.TileMap(order, 4, 4, 10, 9)
+        A = NextLA.TLRMatrix(zeros(Float32, 10, 9), 4, 4; tile_order=NextLA.TileRowMajor)
         expected = [
             (1, 1, 1, 1, 1, 4, 4),
             (1, 2, 2, 1, 5, 4, 4),
@@ -49,19 +48,20 @@ include("helpers.jl")
         ]
 
         for (i, j, linear, p0, q0, tile_m, tile_n) in expected
-            @test NextLA.tile_linear_index(order, i, j) == linear
-            @test NextLA.inverse_tile_index(layout, linear) == (i, j)
-            @test NextLA.tile_origin_coords(layout, i, j) == (p0, q0)
-            @test NextLA.tile_sizes(layout, i, j) == (tile_m, tile_n)
+            @test NextLA.TLRmodule._tile_linear_index(A, i, j) == linear
+            @test NextLA.TLRmodule._inverse_tile_index(A, linear) == (i, j)
+            @test NextLA.tile_origin_coords(A, i, j) == (p0, q0)
+            @test NextLA.tile_size(A, i, j) == (tile_m, tile_n)
         end
 
-        @test NextLA.TLRmodule.offdiag_batch_index(layout, 1, 2) == 1
-        @test NextLA.TLRmodule.offdiag_batch_index(layout, 1, 3) == 2
-        @test NextLA.TLRmodule.offdiag_batch_index(layout, 2, 1) == 3
-        @test NextLA.TLRmodule.offdiag_batch_index(layout, 3, 1) == 5
-        @test NextLA.offdiag_linear_index(layout, 1) == 2
-        @test NextLA.offdiag_linear_index(layout, 2) == 3
-        @test NextLA.offdiag_linear_index(layout, 5) == 7
+        @test NextLA.tilegrid_size(A) == (3, 3)
+        @test NextLA.TLRmodule._offdiag_index(A, 1, 2) == 1
+        @test NextLA.TLRmodule._offdiag_index(A, 1, 3) == 2
+        @test NextLA.TLRmodule._offdiag_index(A, 2, 1) == 3
+        @test NextLA.TLRmodule._offdiag_index(A, 3, 1) == 5
+        @test NextLA.TLRmodule._linear_from_offdiag(A, 1) == 2
+        @test NextLA.TLRmodule._linear_from_offdiag(A, 2) == 3
+        @test NextLA.TLRmodule._linear_from_offdiag(A, 5) == 7
     end
 end
 
@@ -70,19 +70,19 @@ end
         @testset "$backend_name" begin
             prototype = ArrayType(zeros(Float32, 32, 32))
             # 32×32 with b=16: 2×2 tile grid, no boundary tiles
-            A = NextLA.TLRMatrix(prototype, 16, 16; compress_diag=false)
+            A = NextLA.TLRMatrix(prototype, 16, 16)
 
             @test size(A) == (32, 32)
-            @test A.layout.order isa NextLA.TileColMajor
+            @test NextLA.tilegrid_size(A) == (2, 2)
+            @test NextLA.TLRmodule.tileorder(A) isa NextLA.TileColMajor
             @test NextLA.blocksize(A) == 16
             @test NextLA.maxrank(A) == 16
-            @test !NextLA.compress_diag(A)
             @test size(A.int_U) == (16, 16, 2)
             @test size(A.int_V) == (16, 16, 2)
-            @test size(A.right_U) == (16, 16, 0)
-            @test size(A.right_V) == (16, 16, 0)
-            @test size(A.bottom_U) == (16, 16, 0)
-            @test size(A.bottom_V) == (16, 16, 0)
+            @test size(A.right_U, 3) == 0   # no right boundary
+            @test size(A.right_V, 3) == 0
+            @test size(A.bottom_U, 3) == 0  # no bottom boundary
+            @test size(A.bottom_V, 3) == 0
             @test size(NextLA.dense_diag(A)) == (16, 16, 2)
             @test size(NextLA.ranks(A)) == (2,)
             @test all(iszero, Array(NextLA.ranks(A)))
@@ -103,15 +103,26 @@ end
         end
     end
 
+    @testset "dispatch by order" begin
+        order_tag(::NextLA.TLRMatrix{<:Any,<:Any,<:Any,<:Any,NextLA.TileColMajor}) = :col
+        order_tag(::NextLA.TLRMatrix{<:Any,<:Any,<:Any,<:Any,NextLA.TileRowMajor}) = :row
+
+        A_col = NextLA.TLRMatrix(zeros(Float32, 8, 8), 4, 2; tile_order=NextLA.TileColMajor)
+        A_row = NextLA.TLRMatrix(zeros(Float32, 8, 8), 4, 2; tile_order=NextLA.TileRowMajor)
+
+        @test order_tag(A_col) == :col
+        @test order_tag(A_row) == :row
+    end
+
     @testset "constructor validation" begin
         @test_throws ArgumentError NextLA.TLRMatrix(zeros(Float64, 5, 5), -1, 2)
         @test_throws ArgumentError NextLA.TLRMatrix(zeros(Float64, 5, 5), 0, 2)
         @test_throws ArgumentError NextLA.TLRMatrix(zeros(Float64, 5, 5), 2, -1)
 
         A = NextLA.TLRMatrix(zeros(Float64, 8, 8), 4, 2)
-        @test_throws BoundsError  NextLA.tile_linear_index(A, 3, 1)
-        @test_throws BoundsError  NextLA.tile_linear_index(A, 1, 3)
-        @test_throws ArgumentError NextLA.tile_storage_index(A, 1, 1)
+        @test_throws BoundsError  NextLA.TLRmodule._tile_linear_index(A, 3, 1)
+        @test_throws BoundsError  NextLA.TLRmodule._tile_linear_index(A, 1, 3)
+        @test_throws ArgumentError NextLA.TLRmodule._offdiag_index(A, 1, 1)
     end
 end
 
@@ -119,9 +130,9 @@ end
     # 10×10 with b=4: 3×3 tile grid, tail_m=tail_n=2
     A_tlr = NextLA.TLRMatrix(zeros(Float64, 10, 10), 4, 3)
 
-    internal_slot = NextLA.tile_storage_index(A_tlr, 1, 2)
-    bottom_slot   = NextLA.tile_storage_index(A_tlr, 3, 1)
-    right_slot    = NextLA.tile_storage_index(A_tlr, 1, 3)
+    internal_slot = NextLA.TLRmodule._offdiag_index(A_tlr, 1, 2)
+    bottom_slot   = NextLA.TLRmodule._offdiag_index(A_tlr, 3, 1)
+    right_slot    = NextLA.TLRmodule._offdiag_index(A_tlr, 1, 3)
 
     @test A_tlr.category[internal_slot] == NextLA.TLRmodule._TILE_INT
     @test A_tlr.category[bottom_slot]   == NextLA.TLRmodule._TILE_BOTTOM

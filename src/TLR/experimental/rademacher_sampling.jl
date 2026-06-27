@@ -94,7 +94,7 @@ end
     linear_batch = OFFDIAG_ONLY ? offdiag_linear_index(layout, batch) : batch
     tile_i, tile_j = inverse_tile_index(layout, linear_batch)
     p0, q0 = tile_origin_coords(layout, tile_i, tile_j)
-    tile_m, tile_n = tile_sizes(layout, tile_i, tile_j)
+    tile_m, tile_n = tile_size(layout, tile_i, tile_j)
     cta_row_start = (cta_row_block - 1) * ROWS_CTA
     sblk_start = (sblk_block - 1) * SBLK + 1
     sblk_valid = min(SBLK, S - sblk_start + 1)
@@ -353,7 +353,7 @@ function sample_range_rademacher_reference!(Y::AbstractArray{T,3},
         linear_batch = offdiag_only ? offdiag_linear_index(layout, batch) : batch
         tile_i, tile_j = inverse_tile_index(layout, linear_batch)
         p0, q0 = tile_origin_coords(layout, tile_i, tile_j)
-        tile_m, tile_n = tile_sizes(layout, tile_i, tile_j)
+        tile_m, tile_n = tile_size(layout, tile_i, tile_j)
 
         for row_in_tile in 1:tile_m
             for sreg_start in 1:CPW:S

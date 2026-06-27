@@ -18,20 +18,16 @@ export TileColMajor, TileRowMajor
 export TLRMatrix
 export compress!
 export tile_u, tile_v
-export blocksize, maxrank, compress_diag, ranks, dense_diag
-export left_factors, right_factors, nstored_tiles
-export ndiag_tiles, noffdiag_tiles, tile_origin_coords, tile_sizes
-export offdiag_linear_index, tile_linear_index, tile_storage_index, inverse_tile_index
-export tile_stride, tile_coords, inverse_tile_coords
+export blocksize, maxrank, ranks, dense_diag, tilegrid_size
+export left_factors, right_factors
+export ndiag_tiles, noffdiag_tiles, tile_origin_coords, tile_size
+export alloc_workspace, CompressWorkspace
 
-include("geometry/order.jl")
-include("geometry/tilemap.jl")
+include("container/order.jl")
 
 include("container/tlrmatrix.jl")
 include("container/access.jl")
 
-include("experimental/rademacher_sampling.jl")
 include("algorithms/compress.jl")
-include("algorithms/gemm.jl")
 
 end
