@@ -1,4 +1,4 @@
-export compress!
+export compress!, workspace_info
 
 # ─── Kernels ──────────────────────────────────────────────────────────────────
 
@@ -68,20 +68,16 @@ end
     bV = size(V, 1)
     if j <= k
         @inbounds for row in 1:bU
-            ;
             U_out[row, j, ob] = U[row, src, ob];
         end
         @inbounds for row in 1:bV
-            ;
             V_out[row, j, ob] = V[row, src, ob];
         end
     else
         @inbounds for row in 1:bU
-            ;
             U_out[row, j, ob] = zero(T);
         end
         @inbounds for row in 1:bV
-            ;
             V_out[row, j, ob] = zero(T);
         end
     end
@@ -116,74 +112,82 @@ end
 
 # ─── Workspace structs ────────────────────────────────────────────────────────
 
+# Scratch buffers for one tile category during compress!.
+#
+# Temporal reuse:
+#   V doubles as Omega: filled with randn! for the range sketch (step 1),
+#   then overwritten by the co-range A^T·U (step 3). No separate Omega needed.
+#
+#   U_tmp doubles as UG: Newton-Schulz writes U·G_T here (step 2),
+#   then truncation uses it as the sorted-U output (step 4). No separate UG.
 struct CompressCategoryWorkspace{
-    ObsT<:Vector{Int},
-    OmegaT<:AbstractArray,
-    UT<:AbstractArray,
-    VT<:AbstractArray,
-    YHiT<:AbstractArray,
-    GHiT<:AbstractArray,
-    GTT<:AbstractArray,
-    UGT<:AbstractArray,
-    UTmpT<:AbstractArray,
-    VTmpT<:AbstractArray,
+    ObsT  <: Vector{Int},
+    UT    <: AbstractArray,   # aliases A_tlr panel — U factors + sketch target
+    VT    <: AbstractArray,   # aliases A_tlr panel — Omega initially, then V = A^T U
+    YHiT  <: AbstractArray,   # high-precision U copy for cholqr
+    GHiT  <: AbstractArray,   # high-precision Gram matrix for cholqr
+    GTT   <: AbstractArray,   # working-precision Gram matrix (Newton-Schulz)
+    UTmpT <: AbstractArray,   # UG buffer (NS) reused as sorted-U (truncation)
+    VTmpT <: AbstractArray,   # sorted-V output (truncation)
     RanksT,
 }
     obs::ObsT
-    Omega::OmegaT
-    U::UT           # aliases A_tlr panel array directly
-    V::VT           # aliases A_tlr panel array directly
+    U::UT
+    V::VT
     Y_hi::YHiT
     G_hi::GHiT
     G_T::GTT
-    UG::UGT
     U_tmp::UTmpT
     V_tmp::VTmpT
     ranks_local::RanksT
 end
 
-struct CompressWorkspace{IntWS,RightWS,BottomWS,StreamV}
+struct CompressWorkspace{IntWS, RightWS, BottomWS, BufT, BufHiT, StreamV}
     interior::IntWS
     right::RightWS
     bottom::BottomWS
+    buf_T::BufT      # flat T-precision backing buffer (G_T + U_tmp + V_tmp, all categories)
+    buf_hi::BufHiT   # flat Thi-precision backing buffer (Y_hi + G_hi, all categories)
     streams::StreamV
 end
 
 # ─── Workspace allocation ─────────────────────────────────────────────────────
 
-function _allocate_category_workspace(
-    prototype,
-    obs::Vector{Int},
-    tile_m::Int,
-    tile_n::Int,
-    max_rank::Int,
-    ::Type{T},
-    ::Type{Thi},
-    rank_type::Type{<:Integer};
-    U_store=nothing,
-    V_store=nothing,
-) where {T,Thi}
-    count = length(obs)
-    Omega = similar(prototype, T, tile_n, max_rank, count)
-    U = U_store === nothing ? similar(prototype, T, tile_m, max_rank, count) : U_store
-    V = V_store === nothing ? similar(prototype, T, tile_n, max_rank, count) : V_store
-    Y_hi = similar(prototype, Thi, tile_m, max_rank, count)
-    G_hi = similar(prototype, Thi, max_rank, max_rank, count)
-    G_T = similar(prototype, T, max_rank, max_rank, count)
-    UG = similar(prototype, T, tile_m, max_rank, count)
-    U_tmp = similar(prototype, T, tile_m, max_rank, count)
-    V_tmp = similar(prototype, T, tile_n, max_rank, count)
-    ranks_local = similar(prototype, rank_type, count)
-    return CompressCategoryWorkspace(
-        obs, Omega, U, V, Y_hi, G_hi, G_T, UG, U_tmp, V_tmp, ranks_local,
+# Carve a reshaped view from a flat buffer starting at offset `off` (1-based).
+@inline function _buf_view(buf, off::Int, dims::Vararg{Int})
+    len = prod(dims)
+    reshape(view(buf, off:off + len - 1), dims...)
+end
+
+@inline _category_specs(A_tlr, b, tail_m, tail_n) = (
+    (; name="interior", obs=A_tlr.obs_int, U=A_tlr.int_U, V=A_tlr.int_V, tm=b, tn=b),
+    (; name="right",    obs=A_tlr.obs_right, U=A_tlr.right_U, V=A_tlr.right_V, tm=b, tn=tail_n),
+    (; name="bottom",   obs=A_tlr.obs_bottom, U=A_tlr.bottom_U, V=A_tlr.bottom_V, tm=tail_m, tn=b),
+)
+
+@inline _scratch_sizes(tm, tn, r, n) = ((r*r + tm*r + tn*r) * n, (tm*r + r*r) * n)
+
+function _carve_category_workspace(buf_T, pT::Int, buf_hi, pH::Int, spec, r::Int, rank_type, proto)
+    n = length(spec.obs)
+    G_T   = _buf_view(buf_T,  pT, r,       r, n); pT += r*r*n
+    U_tmp = _buf_view(buf_T,  pT, spec.tm, r, n); pT += spec.tm*r*n
+    V_tmp = _buf_view(buf_T,  pT, spec.tn, r, n); pT += spec.tn*r*n
+    Y_hi  = _buf_view(buf_hi, pH, spec.tm, r, n); pH += spec.tm*r*n
+    G_hi  = _buf_view(buf_hi, pH, r,       r, n); pH += r*r*n
+    cat = CompressCategoryWorkspace(
+        spec.obs, spec.U, spec.V, Y_hi, G_hi, G_T, U_tmp, V_tmp,
+        similar(proto, rank_type, n),
     )
+    cat, pT, pH
 end
 
 """
     alloc_workspace(A_tlr) → CompressWorkspace
 
-Pre-allocate all scratch buffers for `compress!`.  Reuse across calls on
-matrices with the same layout to avoid repeated device allocations:
+Pre-allocate all scratch buffers for `compress!`.  Two flat device allocations
+(one in working precision T, one in accumulation precision Thi) serve all three
+tile categories; U and V alias A_tlr storage directly.  Reuse across repeated
+calls on the same matrix layout:
 
     ws = alloc_workspace(A_tlr)
     for A in matrices
@@ -191,28 +195,106 @@ matrices with the same layout to avoid repeated device allocations:
     end
 """
 function alloc_workspace(A_tlr::TLRMatrix{<:Any,T}) where {T}
-    prototype = A_tlr.D          # same backend/element type as all factor arrays
+    Thi       = _compress_accum_type(T)
+    proto     = A_tlr.D
     rank_type = eltype(A_tlr.ranks)
-    r = A_tlr.maxrank
-    Thi = _compress_accum_type(T)
-    b = A_tlr.tile_m
+    r  = A_tlr.maxrank
+    b  = A_tlr.tile_m
     mt, nt = tilegrid_size(A_tlr)
     tail_m = max(A_tlr.m - (mt - 1) * b, 1)
     tail_n = max(A_tlr.n - (nt - 1) * b, 1)
+    specs = _category_specs(A_tlr, b, tail_m, tail_n)
 
-    interior = _allocate_category_workspace(
-        prototype, A_tlr.obs_int, b, b, r, T, Thi, rank_type;
-        U_store=A_tlr.int_U, V_store=A_tlr.int_V,
-    )
-    right = _allocate_category_workspace(
-        prototype, A_tlr.obs_right, b, tail_n, r, T, Thi, rank_type;
-        U_store=A_tlr.right_U, V_store=A_tlr.right_V,
-    )
-    bottom = _allocate_category_workspace(
-        prototype, A_tlr.obs_bottom, tail_m, b, r, T, Thi, rank_type;
-        U_store=A_tlr.bottom_U, V_store=A_tlr.bottom_V,
-    )
-    return CompressWorkspace(interior, right, bottom, create_streams(A_tlr.backend, 3))
+    sT = sH = 0
+    for spec in specs
+        dT, dH = _scratch_sizes(spec.tm, spec.tn, r, length(spec.obs))
+        sT += dT
+        sH += dH
+    end
+
+    buf_T  = similar(proto, T, max(sT, 1))
+    buf_hi = similar(proto, Thi, max(sH, 1))
+    fill!(buf_T,  zero(T))
+    fill!(buf_hi, zero(Thi))
+
+    pT = Ref(1)
+    pH = Ref(1)
+    cats = map(specs) do spec
+        cat, pT[], pH[] = _carve_category_workspace(
+            buf_T, pT[], buf_hi, pH[], spec, r, rank_type, proto)
+        cat
+    end
+
+    CompressWorkspace(cats..., buf_T, buf_hi, create_streams(A_tlr.backend, 3))
+end
+
+"""
+    workspace_info([io,] A_tlr)
+
+Print the scratch memory required by `alloc_workspace(A_tlr)` broken down by
+category and array.  U and V are aliased to `A_tlr` storage (no extra allocation);
+everything else is fresh scratch.
+"""
+function workspace_info(io::IO, A_tlr::TLRMatrix{<:Any,T}) where {T}
+    Thi = _compress_accum_type(T)
+    sT  = sizeof(T)
+    sThi = sizeof(Thi)
+    r   = A_tlr.maxrank
+    b   = A_tlr.tile_m
+    mt, nt = tilegrid_size(A_tlr)
+    tail_m = max(A_tlr.m - (mt - 1) * b, 1)
+    tail_n = max(A_tlr.n - (nt - 1) * b, 1)
+    specs = _category_specs(A_tlr, b, tail_m, tail_n)
+
+    _mb(bytes) = bytes / 1_048_576
+    _fmt_mb(x) = lpad(_fixed_3(_mb(x)), 10)
+
+    println(io, "compress! workspace for $(A_tlr.m)×$(A_tlr.n)  b=$(b)  r=$(r)  T=$(T)  Thi=$(Thi)")
+    println(io, "  U/V aliased to A_tlr storage — not counted below.")
+    println(io, "  ┌──────────────┬───────┬────────────┬────────────┬────────────┐")
+    println(io, "  │ category     │ tiles │  work (MB) │  hi   (MB) │  total(MB) │")
+    println(io, "  │              │       │  T=$(T) │ Thi=$(Thi) │            │")
+    println(io, "  ├──────────────┼───────┼────────────┼────────────┼────────────┤")
+
+    total_T = total_Thi = 0
+    for spec in specs
+        n = length(spec.obs)
+        scratch_T, scratch_Thi = _scratch_sizes(spec.tm, spec.tn, r, n)
+        sT_cat = scratch_T * sT
+        sThi_cat = scratch_Thi * sThi
+        total_T += sT_cat
+        total_Thi += sThi_cat
+        println(io,
+            "  │ ", rpad(spec.name, 12),
+            " │ ", lpad(string(n), 5),
+            " │ ", _fmt_mb(sT_cat),
+            " │ ", _fmt_mb(sThi_cat),
+            " │ ", _fmt_mb(sT_cat + sThi_cat),
+            " │")
+    end
+
+    println(io, "  ├──────────────┼───────┼────────────┼────────────┼────────────┤")
+    println(io,
+        "  │ ", rpad("TOTAL", 12),
+        " │ ", lpad("", 5),
+        " │ ", _fmt_mb(total_T),
+        " │ ", _fmt_mb(total_Thi),
+        " │ ", _fmt_mb(total_T + total_Thi),
+        " │")
+    println(io, "  └──────────────┴───────┴────────────┴────────────┴────────────┘")
+end
+workspace_info(A_tlr::TLRMatrix) = workspace_info(stdout, A_tlr)
+
+function _fixed_3(x::Real)
+    y = round(Float64(x); digits=3)
+    s = string(y)
+    dot = findfirst(==('.'), s)
+    if isnothing(dot)
+        return s * ".000"
+    end
+    decimals = lastindex(s) - dot
+    decimals >= 3 && return s
+    return s * repeat("0", 3 - decimals)
 end
 
 # ─── Orthogonalisation helpers ────────────────────────────────────────────────
@@ -227,7 +309,7 @@ function _cholqr_pass!(Y_hi::AbstractArray{Thi,3}, G_hi, backend) where {Thi}
     _add_reg_diag_kernel!(backend)(G_hi, reg; ndrange=(r, count))
     potrf_batched!('U', G_hi)
     trsm_batched!('R', 'U', 'N', 'N', G_hi, Y_hi, one(Thi))
-    return Y_hi
+    Y_hi
 end
 
 function _newton_schulz!(U::AbstractArray{T,3}, G_T, UG; niters::Int=1) where {T}
@@ -238,7 +320,7 @@ function _newton_schulz!(U::AbstractArray{T,3}, G_T, UG; niters::Int=1) where {T
         gemm_batched!('N', 'N', one(T), U, G_T, zero(T), UG)
         @. U = T(3) / 2 * U - T(1) / 2 * UG
     end
-    return U
+    U
 end
 
 function _truncate!(U::AbstractArray{T,3}, V, rk, U_tmp, V_tmp, eps_sq, backend) where {T}
@@ -250,7 +332,7 @@ function _truncate!(U::AbstractArray{T,3}, V, rk, U_tmp, V_tmp, eps_sq, backend)
         ndrange=(R * noff,), workgroupsize=R)
     copyto!(U, U_tmp)
     copyto!(V, V_tmp)
-    return U
+    U
 end
 
 # ─── Per-category compression pipeline ───────────────────────────────────────
@@ -265,14 +347,15 @@ function _compress_category!(
     ns_iters::Int,
 ) where {T}
     isempty(cat.obs) && return cat
-    Random.randn!(cat.Omega)
+
     A_tiles = _tile_views(A, A_tlr, cat.obs)
-    Omega_tiles = _batch_views(cat.Omega)
     U_tiles = _batch_views(cat.U)
     V_tiles = _batch_views(cat.V)
 
     # Step 1: range sampling  Y = A·Ω → U
-    gemm_batched!('N', 'N', one(T), A_tiles, Omega_tiles, zero(T), U_tiles)
+    # V holds Ω (filled with randn!) for now; step 3 will overwrite it with A^T·U.
+    Random.randn!(cat.V)
+    gemm_batched!('N', 'N', one(T), A_tiles, V_tiles, zero(T), U_tiles)
 
     # Step 2: orthogonalise U (in higher precision)
     copyto!(cat.Y_hi, cat.U)
@@ -283,28 +366,19 @@ function _compress_category!(
     else   # :cholqr_ns
         _cholqr_pass!(cat.Y_hi, cat.G_hi, backend)
         copyto!(cat.U, cat.Y_hi)
-        _newton_schulz!(cat.U, cat.G_T, cat.UG; niters=ns_iters)
+        # U_tmp doubles as the UG buffer here; it is free until truncation (step 4).
+        _newton_schulz!(cat.U, cat.G_T, cat.U_tmp; niters=ns_iters)
     end
 
-    # Step 3: co-range  V = Aᵀ·U
+    # Step 3: co-range  V = Aᵀ·U  (overwrites the Ω we no longer need)
     gemm_batched!(_adjoint_blas_char(T), 'N', one(T), A_tiles, U_tiles, zero(T), V_tiles)
 
     # Step 4: rank detection + truncation (fused SMEM kernel)
     _truncate!(cat.U, cat.V, cat.ranks_local, cat.U_tmp, cat.V_tmp, eps_sq, backend)
-    return cat
+    cat
 end
 
 # ─── Storage helpers ──────────────────────────────────────────────────────────
-
-function _zero_offdiag!(A_tlr::TLRMatrix{<:Any,T}) where {T}
-    fill!(A_tlr.int_U, zero(T))
-    fill!(A_tlr.int_V, zero(T))
-    fill!(A_tlr.right_U, zero(T))
-    fill!(A_tlr.right_V, zero(T))
-    fill!(A_tlr.bottom_U, zero(T))
-    fill!(A_tlr.bottom_V, zero(T))
-    fill!(A_tlr.ranks, zero(eltype(A_tlr.ranks)))
-end
 
 # Copy per-category local ranks back into the global A_tlr.ranks vector.
 function _store_ranks!(A_tlr::TLRMatrix, cat::CompressCategoryWorkspace)
@@ -325,7 +399,6 @@ function _compress_categories!(
     alg::Symbol,
     ns_iters::Int,
 ) where {T}
-    _zero_offdiag!(A_tlr)
     cats = (ws.interior, ws.right, ws.bottom)
     if A_tlr.backend isa KernelAbstractions.CPU
         for cat in cats
@@ -344,10 +417,8 @@ function _compress_categories!(
     for cat in cats
         _store_ranks!(A_tlr, cat)
     end
-    return A_tlr
+    A_tlr
 end
-
-# ─── Public API ───────────────────────────────────────────────────────────────
 
 """
     compress!(A_tlr, A [, ws]; tol=0.0, alg=:cholqr2, ns_iters=1)
@@ -373,11 +444,8 @@ and stored in `ranks(A_tlr)`.  Factor arrays are updated in-place; call
 
 `ns_iters` — Newton-Schulz iterations (only for `alg = :cholqr_ns`).
 """
-function compress!(A_tlr::TLRMatrix{<:Any,T}, A::AbstractMatrix{T};
-    tol::Real=0.0, alg::Symbol=:cholqr2, ns_iters::Int=1) where {T}
-    ws = alloc_workspace(A_tlr)
-    compress!(A_tlr, A, ws; tol, alg, ns_iters)
-end
+compress!(A_tlr::TLRMatrix{<:Any,T}, A::AbstractMatrix{T}; kwargs...) where {T} =
+    compress!(A_tlr, A, alloc_workspace(A_tlr); kwargs...)
 
 function compress!(A_tlr::TLRMatrix{<:Any,T}, A::AbstractMatrix{T},
     ws::CompressWorkspace;
@@ -400,6 +468,6 @@ function compress!(A_tlr::TLRMatrix{<:Any,T}, A::AbstractMatrix{T},
 
     RT = real(T); eps_sq = RT(tol)^2
     _compress_categories!(A_tlr, A, ws, eps_sq, alg, ns_iters)
-    
-    return A_tlr
+
+    A_tlr
 end

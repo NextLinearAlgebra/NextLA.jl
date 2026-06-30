@@ -21,13 +21,13 @@ export tile_u, tile_v
 export blocksize, maxrank, ranks, dense_diag, tilegrid_size
 export left_factors, right_factors
 export ndiag_tiles, noffdiag_tiles, tile_origin_coords, tile_size
-export alloc_workspace, CompressWorkspace
+export alloc_workspace, workspace_info
 
 include("container/order.jl")
 
 include("container/tlrmatrix.jl")
-include("container/access.jl")
 
 include("algorithms/compress.jl")
+include("algorithms/gemm.jl")
 
 end

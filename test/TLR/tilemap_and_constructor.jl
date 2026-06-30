@@ -75,7 +75,7 @@ end
             @test size(A) == (32, 32)
             @test NextLA.tilegrid_size(A) == (2, 2)
             @test NextLA.TLRmodule.tileorder(A) isa NextLA.TileColMajor
-            @test NextLA.blocksize(A) == 16
+            @test NextLA.blocksize(A) == (16,16)
             @test NextLA.maxrank(A) == 16
             @test size(A.int_U) == (16, 16, 2)
             @test size(A.int_V) == (16, 16, 2)
