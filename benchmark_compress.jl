@@ -19,7 +19,7 @@ catch
 end
 
 using NextLA
-using NextLA: TLRMatrix, compress!, tile_u, tile_v, dense_diag, ranks,
+using NextLA: TLRMatrix, compress!, tile_u, tile_v, dense_diag, dense_diag_corner, ranks,
               ndiag_tiles, noffdiag_tiles, tile_origin_coords, tile_size, alloc_workspace
 
 # ── generate a matrix whose off-diagonal tiles have rank in [r_lo, r_hi] ─────
@@ -50,6 +50,7 @@ end
 # ── tile-by-tile relative Frobenius error ─────────────────────────────────────
 function rel_error(A_cpu::AbstractMatrix, A_tlr::TLRMatrix)
     D  = Array(dense_diag(A_tlr))
+    D_corner = Array(dense_diag_corner(A_tlr))
     err_sq = norm_sq = 0.0
     for ob in 1:noffdiag_tiles(A_tlr)
         lin = NextLA.TLRmodule._linear_from_offdiag(A_tlr, ob)
@@ -67,7 +68,8 @@ function rel_error(A_cpu::AbstractMatrix, A_tlr::TLRMatrix)
         p0, q0 = tile_origin_coords(A_tlr, k, k)
         tm, tn = tile_size(A_tlr, k, k)
         tile = A_cpu[p0:p0+tm-1, q0:q0+tn-1]
-        err_sq  += sum(abs2, tile - D[1:tm,1:tn,k])
+        diag_tile = k <= size(D, 3) ? @view(D[1:tm, 1:tn, k]) : @view(D_corner[1:tm, 1:tn, 1])
+        err_sq  += sum(abs2, tile - diag_tile)
         norm_sq += sum(abs2, tile)
     end
     sqrt(err_sq / norm_sq)

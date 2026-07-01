@@ -74,7 +74,7 @@ end
 
             @test size(A) == (32, 32)
             @test NextLA.tilegrid_size(A) == (2, 2)
-            @test NextLA.TLRmodule.tileorder(A) isa NextLA.TileColMajor
+            @test NextLA.TLRmodule.tile_order(A) isa NextLA.TileColMajor
             @test NextLA.blocksize(A) == (16,16)
             @test NextLA.maxrank(A) == 16
             @test size(A.int_U) == (16, 16, 2)
@@ -84,6 +84,8 @@ end
             @test size(A.bottom_U, 3) == 0  # no bottom boundary
             @test size(A.bottom_V, 3) == 0
             @test size(NextLA.dense_diag(A)) == (16, 16, 2)
+            @test size(NextLA.dense_diag_corner(A)) == (16, 16, 0)
+            @test NextLA.dense_diag_corner(A) === A.D_corner
             @test size(NextLA.ranks(A)) == (2,)
             @test all(iszero, Array(NextLA.ranks(A)))
             @test length(A.obs_int) == 2
@@ -100,6 +102,7 @@ end
             synchronize(A.int_U)
             synchronize(A.int_V)
             synchronize(A.D)
+            synchronize(A.D_corner)
         end
     end
 
@@ -123,6 +126,11 @@ end
         @test_throws BoundsError  NextLA.TLRmodule._tile_linear_index(A, 3, 1)
         @test_throws BoundsError  NextLA.TLRmodule._tile_linear_index(A, 1, 3)
         @test_throws ArgumentError NextLA.TLRmodule._offdiag_index(A, 1, 1)
+
+        A_small = NextLA.TLRMatrix(zeros(Float64, 2, 2), 4, 2)
+        @test size(NextLA.dense_diag(A_small)) == (4, 4, 0)
+        @test size(A_small.D_corner) == (2, 2, 1)
+        @test size(NextLA.dense_diag_corner(A_small)) == (2, 2, 1)
     end
 end
 
@@ -143,6 +151,9 @@ end
     @test size(A_tlr.right_V)  == (2, 3, 2)   # tail_n=2
     @test size(A_tlr.bottom_U) == (2, 3, 2)   # 2 bottom-boundary tiles: (3,1),(3,2), tail_m=2
     @test size(A_tlr.bottom_V) == (4, 3, 2)
+    @test size(A_tlr.D)        == (4, 4, 2)
+    @test size(A_tlr.D_corner) == (2, 2, 1)
+    @test size(NextLA.dense_diag_corner(A_tlr)) == (2, 2, 1)
 
     # Write data for interior tile
     ki = A_tlr.local_index[internal_slot]

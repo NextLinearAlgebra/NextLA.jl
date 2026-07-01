@@ -19,7 +19,8 @@ each stored as a separate contiguous 3-D factor array:
 | `right_V`  | `[tail_n, maxrank, n_right]`| right boundary  |
 | `bottom_U` | `[tail_m, maxrank, n_bot]`  | bottom boundary |
 | `bottom_V` | `[b,      maxrank, n_bot]`  | bottom boundary |
-| `D`        | `[b, b,   n_diag]`          | diagonal        |
+| `D`        | `[b, b,   n_full_diag]`     | full diagonal   |
+| `D_corner` | `[tm, tn, 1 or 0]`          | corner diagonal |
 
 Category membership (`category`) and the global→local index map
 (`local_index`) are computed once at construction and cached as `const`
@@ -44,7 +45,8 @@ mutable struct TLRMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},RankT<:In
     bottom_U::Arr3T     # [tail_m,  maxrank, n_bottom] — zero depth when m%b==0
     bottom_V::Arr3T     # [b,       maxrank, n_bottom]
 
-    const D::Arr3T      # [b, b, n_diag]  dense diagonal tiles
+    const D::Arr3T        # [b, b, n_full_diag]  dense full diagonal tiles
+    const D_corner::Arr3T # [tm, tn, 1 or 0]     corner diagonal tile, if needed
 
     # Per-tile effective rank — always CPU, mutable after compress!
     ranks::Vector{RankT}
@@ -108,7 +110,33 @@ end
 @inline blocksize(A::TLRMatrix) = (A.tile_m, A.tile_n)
 @inline maxrank(A::TLRMatrix) = A.maxrank
 @inline ranks(A::TLRMatrix) = A.ranks
+
+"""
+    dense_diag(A)
+
+Return the packed batch of full-size diagonal tiles. When the final diagonal
+tile is smaller than `blocksize(A)`, it is stored separately in
+[`dense_diag_corner`](@ref).
+"""
 @inline dense_diag(A::TLRMatrix) = A.D
+
+"""
+    dense_diag_corner(A)
+
+Return the packed corner diagonal storage. When there is no smaller final
+diagonal tile, this is a zero-depth array.
+"""
+@inline dense_diag_corner(A::TLRMatrix) = A.D_corner
+@inline _nfull_diag_tiles(A::TLRMatrix) = size(A.D, 3)
+
+@inline function _diag_tile_view(A::TLRMatrix, tile_k::Int)
+    1 <= tile_k <= ndiag_tiles(A) || throw(BoundsError(1:ndiag_tiles(A), tile_k))
+    if tile_k <= _nfull_diag_tiles(A)
+        return view(A.D, :, :, tile_k)
+    end
+    size(A.D_corner, 3) != 0 || throw(BoundsError(1:_nfull_diag_tiles(A), tile_k))
+    return view(A.D_corner, :, :, 1)
+end
 
 """
 Return a named tuple `(interior, right, bottom)` of the left low-rank factor
@@ -165,12 +193,12 @@ The returned view aliases the underlying storage — no allocation.
 end
 
 """
-    tileorder(A::TLRMatrix)
+    tile_order(A::TLRMatrix)
 
 Return the tile traversal / storage order used by `A`
 (e.g. `TileRowMajor` or `TileColMajor`).
 """
-@inline tileorder(A::TLRMatrix) = A.order
+@inline tile_order(A::TLRMatrix) = A.order
 
 @inline _tile_linear_index(A::TLRMatrix, i::Integer, j::Integer) =
     tile_linear_index(A.order, tilegrid_size(A)..., i, j)
@@ -314,14 +342,20 @@ function TLRMatrix(
     right_V = _alloc_zeros(backend, T, tn_s, maxrank, n_right)
     bottom_U = _alloc_zeros(backend, T, tm_s, maxrank, n_bottom)
     bottom_V = _alloc_zeros(backend, T, b, maxrank, n_bottom)
-    D = _alloc_zeros(backend, T, b, b, n_diag)
+    corner_tm = n_diag == mt ? (m - (mt - 1) * b) : b
+    corner_tn = n_diag == nt ? (n - (nt - 1) * b) : b
+    has_diag_corner = n_diag > 0 && (corner_tm != b || corner_tn != b)
+    n_full_diag = n_diag - Int(has_diag_corner)
+
+    D = _alloc_zeros(backend, T, b, b, n_full_diag)
+    D_corner = _alloc_zeros(backend, T, max(corner_tm, 1), max(corner_tn, 1), has_diag_corner ? 1 : 0)
 
     ranks = zeros(rank_type, mt * nt - n_diag)
 
     return TLRMatrix{typeof(backend),T,typeof(int_U),rank_type,typeof(order)}(
         backend, order, m, n, b, b,
         int_U, int_V, right_U, right_V, bottom_U, bottom_V,
-        D, ranks, maxrank,
+        D, D_corner, ranks, maxrank,
         obs_int, obs_right, obs_bottom, local_index, category,
     )
 end

@@ -30,6 +30,7 @@ function reconstruct_tlr(A_tlr::NextLA.TLRMatrix)
     T = eltype(A_tlr)
     A = zeros(T, size(A_tlr))
     D = Array(NextLA.dense_diag(A_tlr))
+    D_corner = Array(NextLA.dense_diag_corner(A_tlr))
 
     for linear in 1:prod(NextLA.tilegrid_size(A_tlr))
         tile_i, tile_j = NextLA.TLRmodule._inverse_tile_index(A_tlr, linear)
@@ -39,7 +40,11 @@ function reconstruct_tlr(A_tlr::NextLA.TLRMatrix)
         cols = q0:(q0 + tile_n - 1)
 
         tile = if tile_i == tile_j
-            @view D[1:tile_m, 1:tile_n, tile_i]
+            if tile_i <= size(D, 3)
+                @view D[1:tile_m, 1:tile_n, tile_i]
+            else
+                @view D_corner[1:tile_m, 1:tile_n, 1]
+            end
         else
             ob = NextLA.TLRmodule._offdiag_index(A_tlr, tile_i, tile_j)
             r = Int(NextLA.ranks(A_tlr)[ob])

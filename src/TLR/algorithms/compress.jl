@@ -3,15 +3,26 @@ export compress!, workspace_info
 # ─── Kernels ──────────────────────────────────────────────────────────────────
 
 @kernel function _copy_diag_kernel!(D::AbstractArray{T,3},
-    A::AbstractMatrix{T}, m::Int, n::Int, tile_m::Int, tile_n::Int) where {T}
+    A::AbstractMatrix{T}, tile_m::Int, tile_n::Int) where {T}
     row, col, b = @index(Global, NTuple)
     p0 = (b - 1) * tile_m + 1
     q0 = (b - 1) * tile_n + 1
-    tm = min(tile_m, m - p0 + 1)
-    tn = min(tile_n, n - q0 + 1)
-    if row <= tm && col <= tn
-        @inbounds D[row, col, b] = A[p0+row-1, q0+col-1]
+    @inbounds D[row, col, b] = A[p0+row-1, q0+col-1]
+end
+
+function _copy_diagonal_from_dense!(A_tlr::TLRMatrix{<:Any,T}, A::AbstractMatrix{T}) where {T}
+    n_full_diag = _nfull_diag_tiles(A_tlr)
+    _copy_diag_kernel!(A_tlr.backend)(
+        A_tlr.D, A, A_tlr.tile_m, A_tlr.tile_n;
+        ndrange=(A_tlr.tile_m, A_tlr.tile_n, n_full_diag),
+    )
+    if size(A_tlr.D_corner, 3) != 0
+        tile_k = ndiag_tiles(A_tlr)
+        p0, q0 = tile_origin_coords(A_tlr, tile_k, tile_k)
+        tm, tn = tile_size(A_tlr, tile_k, tile_k)
+        copyto!(view(A_tlr.D_corner, 1:tm, 1:tn, 1), view(A, p0:(p0 + tm - 1), q0:(q0 + tn - 1)))
     end
+    return A_tlr
 end
 
 @kernel function _add_reg_diag_kernel!(G::AbstractArray{T,3}, reg::T) where {T}
@@ -459,12 +470,7 @@ function compress!(A_tlr::TLRMatrix{<:Any,T}, A::AbstractMatrix{T},
         throw(ArgumentError("alg must be :cholqr2 or :cholqr_ns"))
     tol >= 0 || throw(ArgumentError("tol must be >= 0"))
 
-    n_diag = ndiag_tiles(A_tlr)
-
-    _copy_diag_kernel!(A_tlr.backend)(
-        A_tlr.D, A, A_tlr.m, A_tlr.n, A_tlr.tile_m, A_tlr.tile_n;
-        ndrange=(A_tlr.tile_m, A_tlr.tile_n, n_diag),
-    )
+    _copy_diagonal_from_dense!(A_tlr, A)
 
     RT = real(T); eps_sq = RT(tol)^2
     _compress_categories!(A_tlr, A, ws, eps_sq, alg, ns_iters)
