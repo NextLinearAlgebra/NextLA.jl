@@ -30,5 +30,6 @@ include("container/tlrmatrix.jl")
 
 include("algorithms/compress.jl")
 include("algorithms/uncompress.jl")
+include("algorithms/gemm/gemm.jl")
 
 end
