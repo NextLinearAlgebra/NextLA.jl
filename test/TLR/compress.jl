@@ -58,6 +58,80 @@ end
     assert_tile_rank_and_error(A_panel, 3, 2, 2, boundary.a32; atol_rank=1, rtol_error=1e-6)
 end
 
+@testset "TLR compress! error indicator and FAIL semantics" begin
+    b = 64
+    maxr = 16
+
+    # (1) Saturated tile: numerical rank ≫ maxrank must be flagged, not
+    # silently reported as converged, and the residual estimate must be honest.
+    rng = MersenneTwister(7)
+    Q1 = Matrix(qr(randn(rng, b, b)).Q)
+    Q2 = Matrix(qr(randn(rng, b, b)).Q)
+    hard = Q1 * Diagonal(10.0 .^ range(0, -6, length=b)) * Q2'
+    easy = make_lowrank_tile(Float64, b, 4; seed=2)
+    A = assemble_block_matrix(
+        make_dense_tile(Float64, b; seed=1), hard,
+        easy, make_dense_tile(Float64, b; seed=3))
+    A_tlr = NextLA.TLRMatrix(A, b, maxr)
+    NextLA.compress!(A_tlr, A; tol=1e-3)
+
+    ob_hard = NextLA.TLRmodule._offdiag_index(A_tlr, 1, 2)
+    ob_easy = NextLA.TLRmodule._offdiag_index(A_tlr, 2, 1)
+    resid = NextLA.residuals(A_tlr)
+
+    @test Int(NextLA.ranks(A_tlr)[ob_hard]) == maxr
+    @test resid[ob_hard] > 1e-3
+    true_err = norm(hard - Matrix(NextLA.tile_u(A_tlr, ob_hard)) *
+                           Matrix(adjoint(NextLA.tile_v(A_tlr, ob_hard))))
+    @test isapprox(resid[ob_hard], true_err; rtol=1e-2)
+
+    @test Int(NextLA.ranks(A_tlr)[ob_easy]) == 4
+    @test resid[ob_easy] <= 1e-3
+    easy_err = norm(easy - Matrix(NextLA.tile_u(A_tlr, ob_easy)) *
+                           Matrix(adjoint(NextLA.tile_v(A_tlr, ob_easy))))
+    @test easy_err < 1e-10
+
+    # (2) Tiny-scale tiles: the relative cholqr shift keeps rank detection
+    # working at scale 1e-7 (an absolute shift swamps the Gram matrix here).
+    tiny12 = 1e-7 .* make_lowrank_tile(Float64, b, 3; seed=5)
+    tiny21 = 1e-7 .* make_lowrank_tile(Float64, b, 5; seed=6)
+    At = assemble_block_matrix(
+        make_dense_tile(Float64, b; seed=7), tiny12,
+        tiny21, make_dense_tile(Float64, b; seed=8))
+    At_tlr = NextLA.TLRMatrix(At, b, maxr)
+    NextLA.compress!(At_tlr, At; tol=1e-10)
+    @test Int(NextLA.ranks(At_tlr)[NextLA.TLRmodule._offdiag_index(At_tlr, 1, 2)]) == 3
+    @test Int(NextLA.ranks(At_tlr)[NextLA.TLRmodule._offdiag_index(At_tlr, 2, 1)]) == 5
+    @test all(NextLA.residuals(At_tlr) .<= 1e-10)
+
+    # (3) Zero tile: exact rank 0 with zero residual, even at tol = 0.
+    Az = assemble_block_matrix(
+        make_dense_tile(Float64, b; seed=9), zeros(Float64, b, b),
+        make_lowrank_tile(Float64, b, 2; seed=10), make_dense_tile(Float64, b; seed=11))
+    Az_tlr = NextLA.TLRMatrix(Az, b, maxr)
+    NextLA.compress!(Az_tlr, Az; tol=0.0)
+    ob_zero = NextLA.TLRmodule._offdiag_index(Az_tlr, 1, 2)
+    @test Int(NextLA.ranks(Az_tlr)[ob_zero]) == 0
+    @test NextLA.residuals(Az_tlr)[ob_zero] == 0.0
+
+    # (4) rel=true scales the budget per tile: an absolute tol flattens the
+    # small-scale tile to rank 0, the relative one preserves it.
+    small = 1e-8 .* make_lowrank_tile(Float64, b, 6; seed=12)
+    Am = assemble_block_matrix(
+        make_dense_tile(Float64, b; seed=13), make_lowrank_tile(Float64, b, 6; seed=14),
+        small, make_dense_tile(Float64, b; seed=15))
+    Am_tlr = NextLA.TLRMatrix(Am, b, maxr)
+    ob_small = NextLA.TLRmodule._offdiag_index(Am_tlr, 2, 1)
+
+    NextLA.compress!(Am_tlr, Am; tol=1e-5)
+    @test Int(NextLA.ranks(Am_tlr)[ob_small]) == 0
+    @test NextLA.residuals(Am_tlr)[ob_small] <= 1e-5   # dropped, but within budget
+
+    NextLA.compress!(Am_tlr, Am; tol=1e-5, rel=true)
+    @test Int(NextLA.ranks(Am_tlr)[ob_small]) == 6
+    @test NextLA.residuals(Am_tlr)[ob_small] <= 1e-5 * norm(small)
+end
+
 @testset "TLR uncompress! on CPU" begin
     for order in (NextLA.TileColMajor(), NextLA.TileRowMajor())
         @testset "$(order)" begin

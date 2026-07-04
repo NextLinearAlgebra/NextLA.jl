@@ -48,8 +48,9 @@ mutable struct TLRMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},RankT<:In
     const D::Arr3T        # [b, b, n_full_diag]  dense full diagonal tiles
     const D_corner::Arr3T # [tm, tn, 1 or 0]     corner diagonal tile, if needed
 
-    # Per-tile effective rank — always CPU, mutable after compress!
+    # Per-tile diagnostics — always CPU, contents written by compress!
     ranks::Vector{RankT}
+    const resid::Vector{Float64}  # estimated Frobenius error per off-diagonal tile
     const maxrank::Int
 
     # Cached geometry — computed once from the dense/tile dimensions:
@@ -110,6 +111,21 @@ end
 @inline blocksize(A::TLRMatrix) = (A.tile_m, A.tile_n)
 @inline maxrank(A::TLRMatrix) = A.maxrank
 @inline ranks(A::TLRMatrix) = A.ranks
+
+"""
+    residuals(A) -> Vector{Float64}
+
+Estimated Frobenius-norm error of each off-diagonal tile's low-rank
+approximation, indexed like [`ranks`](@ref) and written by [`compress!`](@ref).
+
+The estimate includes the range-capture error of the randomized sketch
+(the Yu–Gu–Li error indicator), so a tile whose spectrum does not fit within
+`maxrank` reports its true residual instead of silently claiming convergence:
+such a tile has `ranks(A)[ob] == maxrank(A)` and `residuals(A)[ob]` above the
+requested tolerance, and should be treated as a candidate for dense storage
+or a higher-rank second pass.
+"""
+@inline residuals(A::TLRMatrix) = A.resid
 
 """
     dense_diag(A)
@@ -351,11 +367,12 @@ function TLRMatrix(
     D_corner = _alloc_zeros(backend, T, max(corner_tm, 1), max(corner_tn, 1), has_diag_corner ? 1 : 0)
 
     ranks = zeros(rank_type, mt * nt - n_diag)
+    resid = zeros(Float64, mt * nt - n_diag)
 
     return TLRMatrix{typeof(backend),T,typeof(int_U),rank_type,typeof(order)}(
         backend, order, m, n, b, b,
         int_U, int_V, right_U, right_V, bottom_U, bottom_V,
-        D, D_corner, ranks, maxrank,
+        D, D_corner, ranks, resid, maxrank,
         obs_int, obs_right, obs_bottom, local_index, category,
     )
 end

@@ -16,10 +16,10 @@ using ..NextLA: create_streams, with_stream, sync_stream, sync_streams_with_defa
 
 export TileColMajor, TileRowMajor
 export TLRMatrix
-export compress!
+export compress!, alloc_workspace, workspace_info
 export uncompress!
 export tile_u, tile_v
-export blocksize, maxrank, ranks, dense_diag, dense_diag_corner, tilegrid_size
+export blocksize, maxrank, ranks, residuals, dense_diag, dense_diag_corner, tilegrid_size
 export left_factors, right_factors
 export ndiag_tiles, noffdiag_tiles, tile_origin_coords, tile_size
 export alloc_workspace, workspace_info
