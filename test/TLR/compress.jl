@@ -33,7 +33,7 @@ end
     fixture = canonical_dense_fixture(Float64)
     A_uniform = NextLA.TLRMatrix(fixture.A, fixture.b, 16)
     ws_uniform = NextLA.TLRmodule.alloc_workspace(A_uniform)
-    NextLA.compress!(A_uniform, fixture.A, ws_uniform; tol=1e-6, alg=:cholqr2)
+    NextLA.compress!(A_uniform, fixture.A, ws_uniform; tol=1e-6)
 
     relerr = norm(reconstruct_tlr(A_uniform) - fixture.A) / norm(fixture.A)
     @test relerr <= 1e-6
@@ -43,7 +43,7 @@ end
     boundary = boundary_dense_fixture(Float64)
     A_panel = NextLA.TLRMatrix(boundary.A, 4, 3)
     ws_panel = NextLA.TLRmodule.alloc_workspace(A_panel)
-    NextLA.compress!(A_panel, boundary.A, ws_panel; tol=1e-6, alg=:cholqr2)
+    NextLA.compress!(A_panel, boundary.A, ws_panel; tol=1e-6)
 
     relerr_panel = norm(reconstruct_tlr(A_panel) - boundary.A) / norm(boundary.A)
     @test relerr_panel <= 1e-6
@@ -138,7 +138,7 @@ end
             fixture = canonical_dense_fixture(Float64)
             A_uniform = NextLA.TLRMatrix(fixture.A, fixture.b, 16; tile_order=order)
             ws_uniform = NextLA.TLRmodule.alloc_workspace(A_uniform)
-            NextLA.compress!(A_uniform, fixture.A, ws_uniform; tol=1e-6, alg=:cholqr2)
+            NextLA.compress!(A_uniform, fixture.A, ws_uniform; tol=1e-6)
 
             dense_uniform = fill(-1.0, size(fixture.A))
             NextLA.uncompress!(dense_uniform, A_uniform)
@@ -156,7 +156,7 @@ end
             boundary = boundary_dense_fixture(Float64)
             A_boundary = NextLA.TLRMatrix(boundary.A, 4, 3; tile_order=order)
             ws_boundary = NextLA.TLRmodule.alloc_workspace(A_boundary)
-            NextLA.compress!(A_boundary, boundary.A, ws_boundary; tol=1e-6, alg=:cholqr2)
+            NextLA.compress!(A_boundary, boundary.A, ws_boundary; tol=1e-6)
 
             dense_boundary = fill(-2.0, size(boundary.A))
             NextLA.uncompress!(dense_boundary, A_boundary)
@@ -166,7 +166,7 @@ end
             small = Float64[2 1; -1 3]
             A_small = NextLA.TLRMatrix(small, 4, 2; tile_order=order)
             ws_small = NextLA.TLRmodule.alloc_workspace(A_small)
-            NextLA.compress!(A_small, small, ws_small; tol=1e-12, alg=:cholqr2)
+            NextLA.compress!(A_small, small, ws_small; tol=1e-12)
 
             dense_small = fill(-5.0, size(small))
             NextLA.uncompress!(dense_small, A_small)
@@ -214,7 +214,7 @@ end
             dense = ArrayType(boundary.A)
             A_tlr = NextLA.TLRMatrix(dense, 4, 3)
             ws = NextLA.TLRmodule.alloc_workspace(A_tlr)
-            NextLA.compress!(A_tlr, dense, ws; tol=1f-4, alg=:cholqr2)
+            NextLA.compress!(A_tlr, dense, ws; tol=1f-4)
 
             synchronize(A_tlr.int_U)
             relerr = norm(reconstruct_tlr(A_tlr) - boundary.A) / norm(boundary.A)
@@ -234,7 +234,7 @@ end
                 dense = ArrayType(boundary.A)
                 A_tlr = NextLA.TLRMatrix(dense, 4, 3; tile_order=order)
                 ws = NextLA.TLRmodule.alloc_workspace(A_tlr)
-                NextLA.compress!(A_tlr, dense, ws; tol=1f-4, alg=:cholqr2)
+                NextLA.compress!(A_tlr, dense, ws; tol=1f-4)
 
                 dense_roundtrip = ArrayType(fill(Float32(-4), size(boundary.A)))
                 NextLA.uncompress!(dense_roundtrip, A_tlr)
