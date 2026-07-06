@@ -232,7 +232,8 @@ end
             NextLA.uncompress!(dense_zero_rank, zero_rank)
 
             for linear in 1:prod(NextLA.tilegrid_size(zero_rank))
-                tile_i, tile_j = NextLA.TLRmodule._inverse_tile_index(zero_rank, linear)
+                tile_i, tile_j = NextLA.TLRmodule.inverse_tile_index(
+                    zero_rank.order, NextLA.tilegrid_size(zero_rank)..., linear)
                 p0, q0 = NextLA.tile_origin_coords(zero_rank, tile_i, tile_j)
                 tm, tn = NextLA.tile_size(zero_rank, tile_i, tile_j)
                 rows = p0:(p0 + tm - 1)
@@ -285,5 +286,34 @@ end
                 @test relerr <= 5f-3
             end
         end
+    end
+end
+
+@testset "compress_tiles! on a packed tile batch" begin
+    M = NextLA.TLRmodule
+    rng = MersenneTwister(7)
+    b = 6; n = 4; kout = 3
+    true_ranks = [2, 2, 3, 3]
+
+    P = zeros(Float64, b, b, n)
+    refs = Matrix{Float64}[]
+    for k in 1:n
+        r = true_ranks[k]
+        Tk = randn(rng, b, r) * randn(rng, r, b)
+        P[:, :, k] = Tk
+        push!(refs, copy(Tk))
+    end
+
+    U = zeros(Float64, b, kout, n)
+    V = zeros(Float64, b, kout, n)
+    ws = M.alloc_tile_workspace(U, V, b, b, kout, n; oversample=4)
+    M.compress_tiles!(M.PackedTiles(P), ws; eps_sq=1e-12, rel=false)
+
+    ranks = Array(ws.ranks_local)
+    for k in 1:n
+        @test ranks[k] == true_ranks[k]
+        r = Int(ranks[k])
+        recon = U[:, 1:r, k] * V[:, 1:r, k]'
+        @test norm(recon - refs[k]) / norm(refs[k]) <= 1e-6
     end
 end
