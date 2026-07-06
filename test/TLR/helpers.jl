@@ -33,7 +33,7 @@ function reconstruct_tlr(A_tlr::NextLA.TLRMatrix)
     D_corner = Array(NextLA.dense_diag_corner(A_tlr))
 
     for linear in 1:prod(NextLA.tilegrid_size(A_tlr))
-        tile_i, tile_j = NextLA.TLRmodule._inverse_tile_index(A_tlr, linear)
+        tile_i, tile_j = NextLA.TLRmodule.inverse_tile_index(A_tlr.order, NextLA.tilegrid_size(A_tlr)..., linear)
         p0, q0 = NextLA.tile_origin_coords(A_tlr, tile_i, tile_j)
         tile_m, tile_n = NextLA.tile_size(A_tlr, tile_i, tile_j)
         rows = p0:(p0 + tile_m - 1)

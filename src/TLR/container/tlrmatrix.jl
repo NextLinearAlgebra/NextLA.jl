@@ -113,7 +113,7 @@ end
 @inline blocksize(A::TLRMatrix) = (A.tile_m, A.tile_n)
 @inline maxrank(A::TLRMatrix) = A.maxrank
 @inline ranks(A::TLRMatrix) = A.ranks
-@inline get_backend(A::TLRMatrix) = A.backend
+@inline KernelAbstractions.get_backend(A::TLRMatrix) = A.backend
 
 """
     residuals(A) -> Vector{Float64}
@@ -219,12 +219,6 @@ Return the tile traversal / storage order used by `A`
 """
 @inline tile_order(A::TLRMatrix) = A.order
 
-@inline _tile_linear_index(A::TLRMatrix, i::Integer, j::Integer) =
-    tile_linear_index(A.order, tilegrid_size(A)..., i, j)
-
-@inline _inverse_tile_index(A::TLRMatrix, linear::Integer) =
-    inverse_tile_index(A.order, tilegrid_size(A)..., linear)
-
 """
     _offdiag_index(A, i, j) -> Int
 
@@ -234,23 +228,6 @@ This is the key used to index `A.ranks`, `A.local_index`, and `A.category`.
 """
 @inline _offdiag_index(A::TLRMatrix, i::Integer, j::Integer) =
     _offdiag_index(A.order, tilegrid_size(A)..., Int(i), Int(j))
-
-"""
-    _linear_from_offdiag(A, ob) -> Int
-
-Map a global off-diagonal index `ob` back to its linear position in the full
-tile grid, accounting for the skipped diagonal tiles.
-Inverse of `_offdiag_index(A, i, j)`.
-"""
-@inline function _linear_from_offdiag(A::TLRMatrix{<:Any,<:Any,<:Any,<:Any,TileColMajor}, ob::Int)
-    mt, _ = tilegrid_size(A)
-    return ob + min(ndiag_tiles(A), cld(ob, mt))
-end
-
-@inline function _linear_from_offdiag(A::TLRMatrix{<:Any,<:Any,<:Any,<:Any,TileRowMajor}, ob::Int)
-    _, nt = tilegrid_size(A)
-    return ob + min(ndiag_tiles(A), cld(ob, nt))
-end
 
 """
     tile_origin_coords(A, tile_i, tile_j) -> (row0, col0)
@@ -264,11 +241,9 @@ of tile `(tile_i, tile_j)`.
 """
     _offdiag_coords(A, ob) -> (tile_i, tile_j)
 
-Logical tile coordinates of off-diagonal slot `ob`, for any tile order. Collapses
-the `_linear_from_offdiag` → `_inverse_tile_index` pair that every caller used to
-spell out by hand; inverse of [`_offdiag_index`](@ref). Served from the precomputed
-`A.coords` table (built by [`_build_geometry`](@ref)) — an O(1) lookup, no grid
-arithmetic per call.
+Logical tile coordinates of off-diagonal slot `ob`, for any tile order. Inverse
+of [`_offdiag_index`](@ref), served from the precomputed `A.coords` table (built
+by [`_build_geometry`](@ref)) — an O(1) lookup, no grid arithmetic per call.
 """
 @inline _offdiag_coords(A::TLRMatrix, ob::Integer) = @inbounds A.coords[ob]
 
@@ -399,8 +374,8 @@ function TLRMatrix(
     D = zeros(backend, T, b, b, n_full_diag)
     D_corner = zeros(backend, T, max(corner_tm, 1), max(corner_tn, 1), has_diag_corner ? 1 : 0)
 
-    ranks = zeros(rank_type, mt * nt - n_diag)
-    resid = zeros(Float64, mt * nt - n_diag)
+    ranks = Base.zeros(rank_type, mt * nt - n_diag)
+    resid = Base.zeros(Float64, mt * nt - n_diag)
 
     return TLRMatrix{typeof(backend),T,typeof(int_U),rank_type,typeof(order)}(
         backend, order, m, n, b, b,

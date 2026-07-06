@@ -91,8 +91,7 @@ function rel_error(A_cpu::AbstractMatrix, A_tlr::TLRMatrix)
     norm_sq = 0.0
 
     for ob in 1:noffdiag_tiles(A_tlr)
-        lin = NextLA.TLRmodule._linear_from_offdiag(A_tlr, ob)
-        i, j = NextLA.TLRmodule._inverse_tile_index(A_tlr, lin)
+        i, j = NextLA.TLRmodule._offdiag_coords(A_tlr, ob)
         p0, q0 = tile_origin_coords(A_tlr, i, j)
         tm, tn = tile_size(A_tlr, i, j)
         tile = view(A_cpu, p0:p0 + tm - 1, q0:q0 + tn - 1)
@@ -141,8 +140,7 @@ function rank_recovery(A_tlr::TLRMatrix, true_ranks::AbstractMatrix{<:Integer})
     exact_recoverable = 0
 
     for ob in 1:noff
-        lin = NextLA.TLRmodule._linear_from_offdiag(A_tlr, ob)
-        i, j = NextLA.TLRmodule._inverse_tile_index(A_tlr, lin)
+        i, j = NextLA.TLRmodule._offdiag_coords(A_tlr, ob)
         truth = Int(true_ranks[i, j])
         got = Int(rk[ob])
         exact += got == truth
