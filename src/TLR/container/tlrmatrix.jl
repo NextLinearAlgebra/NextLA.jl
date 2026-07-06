@@ -22,9 +22,10 @@ each stored as a separate contiguous 3-D factor array:
 | `D`        | `[b, b,   n_full_diag]`     | full diagonal   |
 | `D_corner` | `[tm, tn, 1 or 0]`          | corner diagonal |
 
-Category membership (`category`) and the global→local index map
-(`local_index`) are computed once at construction and cached as `const`
-fields, so no geometry work is repeated during compression or GEMM.
+Category membership (`category`), the global→local index map (`local_index`),
+and each off-diagonal tile's grid coordinates (`coords`) are computed once at
+construction and cached as `const` fields, so no geometry work is repeated
+during compression or GEMM.
 
 `int_U/V`, `right_U/V`, `bottom_U/V` are **mutable** to support future
 storage reorganisation (e.g. rank bucketing) without rebuilding the container.
@@ -59,6 +60,7 @@ mutable struct TLRMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},RankT<:In
     const obs_bottom::Vector{Int}  # global off-diagonal indices of bottom-boundary tiles
     const local_index::Vector{Int} # global ob → category-local slot (1-based)
     const category::Vector{UInt8}  # global ob → _TILE_INT / _TILE_RIGHT / _TILE_BOTTOM
+    const coords::Vector{Tuple{Int,Int}} # global ob → (tile_i, tile_j)
 end
 
 Base.eltype(::Type{<:TLRMatrix{<:Any,T}}) where {T} = T
@@ -111,6 +113,7 @@ end
 @inline blocksize(A::TLRMatrix) = (A.tile_m, A.tile_n)
 @inline maxrank(A::TLRMatrix) = A.maxrank
 @inline ranks(A::TLRMatrix) = A.ranks
+@inline get_backend(A::TLRMatrix) = A.backend
 
 """
     residuals(A) -> Vector{Float64}
@@ -259,6 +262,40 @@ of tile `(tile_i, tile_j)`.
     ((tile_i - 1) * A.tile_m + 1, (tile_j - 1) * A.tile_n + 1)
 
 """
+    _offdiag_coords(A, ob) -> (tile_i, tile_j)
+
+Logical tile coordinates of off-diagonal slot `ob`, for any tile order. Collapses
+the `_linear_from_offdiag` → `_inverse_tile_index` pair that every caller used to
+spell out by hand; inverse of [`_offdiag_index`](@ref). Served from the precomputed
+`A.coords` table (built by [`_build_geometry`](@ref)) — an O(1) lookup, no grid
+arithmetic per call.
+"""
+@inline _offdiag_coords(A::TLRMatrix, ob::Integer) = @inbounds A.coords[ob]
+
+"""
+    _dense_tile_view(dense, A, tile_i, tile_j) -> SubArray
+
+Zero-copy view of the `(tile_i, tile_j)` block of dense matrix `dense`, sized to
+the tile's actual (possibly boundary-truncated) extent. This is the single
+primitive behind every "carve out the dense tile" site in compress, uncompress,
+and gemm.
+"""
+@inline function _dense_tile_view(dense::AbstractMatrix, A::TLRMatrix, tile_i::Integer, tile_j::Integer)
+    p0, q0 = tile_origin_coords(A, Int(tile_i), Int(tile_j))
+    tm, tn = tile_size(A, Int(tile_i), Int(tile_j))
+    return view(dense, p0:(p0 + tm - 1), q0:(q0 + tn - 1))
+end
+
+"""
+    _offdiag_tile_view(dense, A, ob) -> SubArray
+
+Dense view of the off-diagonal tile at slot `ob`. Convenience combiner:
+`_dense_tile_view(dense, A, _offdiag_coords(A, ob)...)`.
+"""
+@inline _offdiag_tile_view(dense::AbstractMatrix, A::TLRMatrix, ob::Integer) =
+    _dense_tile_view(dense, A, _offdiag_coords(A, ob)...)
+
+"""
     _offdiag_index(order, mt, nt, tile_i, tile_j) -> Int
 
 Return the position of off-diagonal tile `(tile_i, tile_j)` in the
@@ -289,6 +326,7 @@ function _build_geometry(order, m::Int, n::Int, tile_m::Int, tile_n::Int)
     noff = mt * nt - ndiag
     local_index = Vector{Int}(undef, noff)
     category = Vector{UInt8}(undef, noff)
+    coords = Vector{Tuple{Int,Int}}(undef, noff)
     obs_int = Int[]
     obs_right = Int[]
     obs_bottom = Int[]
@@ -297,6 +335,7 @@ function _build_geometry(order, m::Int, n::Int, tile_m::Int, tile_n::Int)
         i, j = inverse_tile_index(order, mt, nt, linear)
         i == j && continue
         ob = _offdiag_index(order, mt, nt, i, j)
+        coords[ob] = (i, j)
         if has_right && j == nt
             push!(obs_right, ob)
             category[ob] = _TILE_RIGHT
@@ -311,13 +350,7 @@ function _build_geometry(order, m::Int, n::Int, tile_m::Int, tile_n::Int)
             local_index[ob] = length(obs_int)
         end
     end
-    return obs_int, obs_right, obs_bottom, local_index, category
-end
-
-@inline function _alloc_zeros(backend, ::Type{T}, dims...) where {T}
-    a = KernelAbstractions.allocate(backend, T, dims...)
-    fill!(a, zero(T))
-    return a
+    return obs_int, obs_right, obs_bottom, local_index, category, coords
 end
 
 """
@@ -341,7 +374,7 @@ function TLRMatrix(
     tail_m = m % b   # logical height of last tile row (== b when m%b==0)
     tail_n = n % b   # logical width  of last tile col (== b when n%b==0)
 
-    obs_int, obs_right, obs_bottom, local_index, category = _build_geometry(order, m, n, b, b)
+    obs_int, obs_right, obs_bottom, local_index, category, coords = _build_geometry(order, m, n, b, b)
 
     n_int = length(obs_int)
     n_right = length(obs_right)
@@ -352,19 +385,19 @@ function TLRMatrix(
     tm_s = max(tail_m, 1)
     tn_s = max(tail_n, 1)
 
-    int_U = _alloc_zeros(backend, T, b, maxrank, n_int)
-    int_V = _alloc_zeros(backend, T, b, maxrank, n_int)
-    right_U = _alloc_zeros(backend, T, b, maxrank, n_right)
-    right_V = _alloc_zeros(backend, T, tn_s, maxrank, n_right)
-    bottom_U = _alloc_zeros(backend, T, tm_s, maxrank, n_bottom)
-    bottom_V = _alloc_zeros(backend, T, b, maxrank, n_bottom)
+    int_U = zeros(backend, T, b, maxrank, n_int)
+    int_V = zeros(backend, T, b, maxrank, n_int)
+    right_U = zeros(backend, T, b, maxrank, n_right)
+    right_V = zeros(backend, T, tn_s, maxrank, n_right)
+    bottom_U = zeros(backend, T, tm_s, maxrank, n_bottom)
+    bottom_V = zeros(backend, T, b, maxrank, n_bottom)
     corner_tm = n_diag == mt ? (m - (mt - 1) * b) : b
     corner_tn = n_diag == nt ? (n - (nt - 1) * b) : b
     has_diag_corner = n_diag > 0 && (corner_tm != b || corner_tn != b)
     n_full_diag = n_diag - Int(has_diag_corner)
 
-    D = _alloc_zeros(backend, T, b, b, n_full_diag)
-    D_corner = _alloc_zeros(backend, T, max(corner_tm, 1), max(corner_tn, 1), has_diag_corner ? 1 : 0)
+    D = zeros(backend, T, b, b, n_full_diag)
+    D_corner = zeros(backend, T, max(corner_tm, 1), max(corner_tn, 1), has_diag_corner ? 1 : 0)
 
     ranks = zeros(rank_type, mt * nt - n_diag)
     resid = zeros(Float64, mt * nt - n_diag)
@@ -373,7 +406,7 @@ function TLRMatrix(
         backend, order, m, n, b, b,
         int_U, int_V, right_U, right_V, bottom_U, bottom_V,
         D, D_corner, ranks, resid, maxrank,
-        obs_int, obs_right, obs_bottom, local_index, category,
+        obs_int, obs_right, obs_bottom, local_index, category, coords,
     )
 end
 

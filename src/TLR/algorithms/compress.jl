@@ -1,6 +1,29 @@
 export compress!
 
-# ─── Kernels ──────────────────────────────────────────────────────────────────
+# ----------- helpers -------------------
+
+# accumulation precision used for cholqr and norms accumulation
+@inline _compress_accum_type(::Type{Float16}) = Float32
+@inline _compress_accum_type(::Type{Float32}) = Float64
+@inline _compress_accum_type(::Type{Float64}) = Float64
+@inline _compress_accum_type(::Type{ComplexF32}) = ComplexF64
+@inline _compress_accum_type(::Type{ComplexF64}) = ComplexF64
+@inline _compress_accum_type(::Type{T}) where {T} = T
+
+@inline _adjoint_blas_char(::Type{<:Complex}) = 'C'
+@inline _adjoint_blas_char(::Type) = 'T'
+
+"""
+    _batch_views(A, r=size(A, 2)) -> Vector{<:AbstractMatrix}
+
+Per-batch-entry views into a `[m, maxrank, n]` factor array, trimmed to the
+first `r` columns. Used to build `gemm_batched!` operand vectors; shared with
+`uncompress.jl`.
+"""
+@inline _batch_views(A::AbstractArray{T,3}, r::Int=size(A, 2)) where {T} =
+    [view(A, :, 1:r, k) for k in axes(A, 3)]
+
+# ------- kernels --------
 
 @kernel function _copy_diag_kernel!(D::AbstractArray{T,3},
     A::AbstractMatrix{T}, tile_m::Int, tile_n::Int) where {T}
@@ -14,8 +37,7 @@ end
     _copy_diagonal_from_dense!(A_tlr, A) -> A_tlr
 
 Populate `A_tlr`'s dense diagonal storage (`A_tlr.D` and, if present,
-`A_tlr.D_corner`) from the corresponding tiles of dense matrix `A`. Called
-once at the start of [`compress!`](@ref), before any off-diagonal sketching.
+`A_tlr.D_corner`) from the corresponding tiles of dense matrix `A`.
 """
 function _copy_diagonal_from_dense!(A_tlr::TLRMatrix{<:Any,T}, A::AbstractMatrix{T}) where {T}
     n_full_diag = _nfull_diag_tiles(A_tlr)
@@ -25,9 +47,8 @@ function _copy_diagonal_from_dense!(A_tlr::TLRMatrix{<:Any,T}, A::AbstractMatrix
     )
     if size(A_tlr.D_corner, 3) != 0
         tile_k = ndiag_tiles(A_tlr)
-        p0, q0 = tile_origin_coords(A_tlr, tile_k, tile_k)
         tm, tn = tile_size(A_tlr, tile_k, tile_k)
-        copyto!(view(A_tlr.D_corner, 1:tm, 1:tn, 1), view(A, p0:(p0 + tm - 1), q0:(q0 + tn - 1)))
+        copyto!(view(A_tlr.D_corner, 1:tm, 1:tn, 1), _dense_tile_view(A, A_tlr, tile_k, tile_k))
     end
     return A_tlr
 end
@@ -42,30 +63,29 @@ end
      refine pass:  eps · r · max(diag) — eps-level, so the second pass undoes the
                    column-norm deflation the rescue shift introduced
    A zero Gram (zero tile) gets shift 1: potrf stays PD and Y stays zero. =#
-@kernel function _cholqr_shift_compute_kernel!(regs::AbstractVector{RT},
-    G::AbstractArray{Thi,3}, trace_coeff::RT, maxdiag_coeff::RT) where {RT,Thi}
-    b = @index(Global, Linear)
+@kernel function _cholqr_shift_kernel!(
+    G::AbstractArray{Thi,3}, trace_coeff::RT, maxdiag_coeff::RT) where {Thi,RT}
+    b = @index(Group, Linear)
+    j = @index(Local, Linear)
+    shift = @localmem RT (1,)
     r = size(G, 1)
-    tr = zero(RT)
-    mx = zero(RT)
-    @inbounds for i in 1:r
-        d = RT(real(G[i, i, b]))
-        tr += d
-        mx = max(mx, d)
+    if j == 1
+        tr = zero(RT)
+        mx = zero(RT)
+        @inbounds for i in 1:r
+            d = RT(real(G[i, i, b]))
+            tr += d
+            mx = max(mx, d)
+        end
+        reg = trace_coeff * (tr / r) + maxdiag_coeff * mx
+        @inbounds shift[1] = ifelse(reg > zero(RT), reg, one(RT))
     end
-    reg = trace_coeff * (tr / r) + maxdiag_coeff * mx
-    @inbounds regs[b] = ifelse(reg > zero(RT), reg, one(RT))
+    @synchronize
+    @inbounds G[j, j, b] += Thi(shift[1])
 end
 
-# Adds the per-slab shift regs[b] (from _cholqr_shift_compute_kernel!) to diag(G).
-@kernel function _cholqr_shift_apply_kernel!(G::AbstractArray{T,3}, regs::AbstractVector) where {T}
-    j, b = @index(Global, NTuple)
-    @inbounds G[j, j, b] += T(regs[b])
-end
-
-#= Per-tile squared Frobenius norm of the dense source tiles, accumulated in
-   Float64 — the reference term of the error indicator ‖A‖² − ‖V‖².
-   One workgroup per tile; R threads stride over the tile columns. =#
+# Per-tile squared Frobenius norm of the dense tiles, with hp accumulation
+# TODO use warp intrinsics for the in-warp reduction
 @kernel function _tile_norm_sq_kernel!(out::AbstractVector{Float64},
     A::AbstractMatrix{T}, p0s, q0s, tm::Int, tn::Int, ::Val{R}) where {T,R}
     ob = @index(Group, Linear)
@@ -92,405 +112,202 @@ end
     end
 end
 
-#= Fused norm + descending sort + greedy threshold + column gather.
-   One workgroup per off-diagonal tile; R = r_eff threads per workgroup.
+"""
+    _fused_truncate_kernel!(U_out, V_out, Q, V, rk, err_sq, normA_sq,
+                            eps_sq, rel, R_keep, ::Val{S}, ::Val{W})
 
-   The squared error of the truncated factorization decomposes (U orthonormal) as
-     ‖A − U_k V_kᴴ‖² = resid + Σ_{dropped} ‖v_j‖²,  resid = ‖A‖² − Σ_j ‖v_j‖²
-   where `resid` is the range-capture error the sketch itself left behind
-   (the randQB_EI error indicator).  The greedy drop below spends only the
-   budget that remains after accounting for it, and the total goes to `err_sq`.
+Select the retained rank for each off-diagonal tile and gather the selected
+columns from the `S`-wide sketch factors into the maxrank-wide output panels.
+One workgroup handles one tile. Its local threads are split into subgroups of
+width `W`; each subgroup cooperatively computes column energies for one sketch
+column at a time, then lane 1 of each subgroup acts as that column's
+representative for norm reduction.
 
-   The columns are ordered by a parallel rank sort (each thread counts the
-   columns that outrank its own, ties broken by index) rather than a serial
-   bubble sort, and the gather runs threads-along-rows so the workgroup's
-   accesses are contiguous in the column-major leading dimension. =#
+The squared error of the truncated factorization decomposes, with orthonormal
+`Q`, as
+
+    ‖A - Q_k V_k'‖² = resid + Σ dropped ‖v_j‖²
+    resid = ‖A‖² - Σ_j ‖v_j‖²
+
+where `resid` is the randQB_EI range-capture error left by the sketch. The
+kernel greedily drops the currently-smallest remaining `V`-column energy while
+it fits in the remaining error budget, then drops extra smallest columns if
+needed to satisfy `R_keep = min(maxrank, S)`. Surviving source columns are
+compacted in original order.
+
+The final gather runs threads along rows so consecutive threads touch
+contiguous column-major memory.
+"""
 @kernel function _fused_truncate_kernel!(
     U_out::AbstractArray{T,3}, V_out::AbstractArray{T,3},
-    U::AbstractArray{T,3}, V::AbstractArray{T,3},
+    Q::AbstractArray{T,3}, V::AbstractArray{T,3},
     rk::AbstractVector, err_sq::AbstractVector{Float64},
     normA_sq::AbstractVector{Float64},
-    eps_sq::Float64, rel::Bool, ::Val{R}) where {T,R}
+    eps_sq::Float64, rel::Bool, R_keep::Int, ::Val{S}, ::Val{W}
+) where {T,S,W}
+
     ob = @index(Group, Linear)
-    j = @index(Local, Linear)
-    norms        = @localmem Float64 (R,)   # unsorted column norms
-    sorted_norms = @localmem Float64 (R,)   # norms in descending order
-    sorted_src   = @localmem Int32   (R,)   # source column of each sorted slot
+    tid = @index(Local, Linear)
+
+    nthreads = @uniform @groupsize()[1]
+
+    lane = ((tid - 1) % W) + 1
+    subgroup = ((tid - 1) ÷ W) + 1
+    nsubgroups = nthreads ÷ W
+
+    norms = @localmem Float64 (S,)          # unsorted column norms
+    partial = @localmem Float64 (S, W)      # per-lane partial sums
+
+    dropped_flag = @localmem Int32 (S,)     # 1 if column is dropped, else 0
+    kept_src = @localmem Int32 (S,)         # compacted surviving source columns
     k_buf = @localmem Int32 (1,)
 
-    #= Phase A — squared norm of each V column (thread ↔ column).
-       (locals do not survive @synchronize — KA splits the body there — so sizes
-       are recomputed in each phase rather than hoisted.) =#
-    acc = 0.0
-    @inbounds for row in 1:size(V, 1)
-        acc += _abs2_f64(V[row, j, ob])
-    end
-    @inbounds norms[j] = acc
-    @synchronize
+    # Phase A — squared norm of each V column, one subgroup per column.
+    for col in subgroup:nsubgroups:S
+        acc = 0.0
 
-    #= Phase B — parallel rank sort: thread j places its column at the descending
-       slot given by the count of stronger columns (ties broken by index, so the
-       ordering is a total order identical to a stable descending sort). =#
-    my_norm = @inbounds norms[j]
-    slot = 1
-    @inbounds for i in 1:R
-        ni = norms[i]
-        (ni > my_norm || (ni == my_norm && i < j)) && (slot += 1)
-    end
-    @inbounds sorted_norms[slot] = my_norm
-    @inbounds sorted_src[slot] = Int32(j)
-    @synchronize
-
-    # Phase C — EI-corrected budget accounting on the sorted norms (thread 1).
-    if j == 1
-        total = 0.0
-        @inbounds for i in 1:R
-            total += sorted_norms[i]
+        for row in lane:W:size(V, 1)
+            @inbounds acc += _abs2_f64(V[row, col, ob])
         end
+
+        @inbounds partial[col, lane] = acc
+    end
+
+    @synchronize
+
+    # KA's CPU backend drops plain scalar locals across @synchronize (only @index
+    # and @uniform values survive), so recompute the per-lane indices here.
+    lane = ((tid - 1) % W) + 1
+    subgroup = ((tid - 1) ÷ W) + 1
+    nsubgroups = nthreads ÷ W
+
+    for col in subgroup:nsubgroups:S
+        if lane == 1
+            total = 0.0
+
+            @inbounds for i in 1:W
+                total += partial[col, i]
+            end
+
+            @inbounds norms[col] = total
+        end
+    end
+
+    @synchronize
+
+    # Phase B greedy tail removal.
+    if tid == 1
+        total = 0.0
+
+        @inbounds for i in 1:S
+            total += norms[i]
+            dropped_flag[i] = Int32(0)
+        end
+
         nA_sq = @inbounds normA_sq[ob]
+
         resid = max(nA_sq - total, 0.0)
-        #= resid = ‖A‖² − ‖V‖² is a difference of two O(‖A‖²) sums, so it cannot
-           resolve range-capture error below the rounding floor of V (formed in T
-           with GEMM inner dimension size(U,1)). Below that floor the value is pure
-           cancellation noise — treat the range as captured, or an oversampled
-           sketch would report a spurious residual and never truncate. A genuinely
-           under-captured range sits orders of magnitude above the floor and
-           survives, still driving the FAIL path. =#
+
+        # resid = ‖A‖² − ‖V‖² 
         epsT = Float64(eps(real(T)))
-        resid_floor = Float64(size(U, 1)) * epsT * nA_sq
+        resid_floor = Float64(size(Q, 1)) * epsT * nA_sq
         resid = ifelse(resid < resid_floor, 0.0, resid)
-        #= A precision-T sketch resolves relative error no finer than √eps(T), so a
-           requested tol below that floor cannot be honoured: the sketch's noise
-           columns then straddle the budget and inflate the rank by 1–2 spurious
-           columns. Floor the drop budget at eps(T)·‖A‖² so those columns are
-           dropped and the true rank is recovered; the reconstruction error then
-           sits at the √eps(T) floor rather than at the (unreachable) tol. =#
+
+        # precision floor
         target = rel ? eps_sq * nA_sq : eps_sq
         budget = max(target, epsT * nA_sq) - resid
-        k_val = R
+
+        k_val = S
         dropped = 0.0
+
+        # find the smallest undropped column which fits the budget and drop it
         if budget >= 0.0
-            @inbounds for idx in R:-1:1
-                cost = sorted_norms[idx]
-                cost <= budget || break
-                budget -= cost
-                dropped += cost
-                k_val -= 1
+            while k_val > 0
+                best_col = Int32(0)
+                best_norm = Inf
+
+                @inbounds for col in 1:S
+                    if dropped_flag[col] == 0
+                        nc = norms[col]
+
+                        # tie-break by smaller column index
+                        if nc < best_norm || (nc == best_norm && col < Int(best_col))
+                            best_norm = nc
+                            best_col = Int32(col)
+                        end
+                    end
+                end
+
+                if best_col != 0 && best_norm <= budget
+                    @inbounds dropped_flag[Int(best_col)] = Int32(1)
+                    budget -= best_norm
+                    dropped += best_norm
+                    k_val -= 1
+                else
+                    break
+                end
             end
         end
-        rk[ob] = eltype(rk)(k_val)
-        err_sq[ob] = resid + dropped
-        k_buf[1] = Int32(k_val)
+
+        # pass twoL if tolerance keeps more than `maxrank` columns, 
+        # drop the smallest columns until the stored rank fits.
+        while k_val > R_keep
+            best_col = Int32(0)
+            best_norm = Inf
+
+            @inbounds for col in 1:S
+                if dropped_flag[col] == 0
+                    nc = norms[col]
+
+                    if nc < best_norm || (nc == best_norm && col < Int(best_col))
+                        best_norm = nc
+                        best_col = Int32(col)
+                    end
+                end
+            end
+
+            @inbounds dropped_flag[Int(best_col)] = Int32(1)
+            dropped += best_norm
+            k_val -= 1
+        end
+
+        # Phase C - compact kept columns
+        pos = 1
+
+        @inbounds for col in 1:S
+            if dropped_flag[col] == 0
+                kept_src[pos] = Int32(col)
+                pos += 1
+            end
+        end
+
+        @inbounds rk[ob] = eltype(rk)(k_val)
+        @inbounds err_sq[ob] = resid + dropped
+        @inbounds k_buf[1] = Int32(k_val)
     end
+
     @synchronize
 
-    #= Phase D — coalesced gather: loop over output columns, threads stride the
-       rows so consecutive threads touch consecutive (contiguous) memory. =#
     k = Int(@inbounds k_buf[1])
-    bU = size(U, 1)
-    bV = size(V, 1)
-    @inbounds for jj in 1:R
-        if jj <= k
-            src = Int(sorted_src[jj])
-            row = j
-            while row <= bU
-                U_out[row, jj, ob] = U[row, src, ob]
-                row += R
-            end
-            row = j
-            while row <= bV
-                V_out[row, jj, ob] = V[row, src, ob]
-                row += R
-            end
-        else
-            row = j
-            while row <= bU
-                U_out[row, jj, ob] = zero(T)
-                row += R
-            end
-            row = j
-            while row <= bV
-                V_out[row, jj, ob] = zero(T)
-                row += R
-            end
+    Rmax = size(U_out, 2)
+    # U_out has size(Q,1)=tm rows, V_out has size(V,1)=tn rows; these differ on
+    # boundary tiles, so each gather uses its own row bound.
+    bU = size(U_out, 1)
+    bV = size(V_out, 1)
+
+    @inbounds for jj in 1:Rmax
+        src = jj <= k ? Int(kept_src[jj]) : 0
+        for row in tid:nthreads:bU
+            U_out[row, jj, ob] = jj <= k ? Q[row, src, ob] : zero(T)
+        end
+        for row in tid:nthreads:bV
+            V_out[row, jj, ob] = jj <= k ? V[row, src, ob] : zero(T)
         end
     end
 end
 
-# ─── Tile-view helpers ────────────────────────────────────────────────────────
-
 """
-    _tile_views(A, A_tlr, obs) -> Vector{<:AbstractMatrix}
-
-Dense-source views for each off-diagonal tile in `obs`, in category-local
-order. Shared with `uncompress.jl`.
-"""
-function _tile_views(A::AbstractMatrix, A_tlr::TLRMatrix, obs::Vector{Int})
-    return map(obs) do ob
-        lin = _linear_from_offdiag(A_tlr, ob)
-        ti, tj = _inverse_tile_index(A_tlr, lin)
-        p0, q0 = tile_origin_coords(A_tlr, ti, tj)
-        tm, tn = tile_size(A_tlr, ti, tj)
-        view(A, p0:(p0+tm-1), q0:(q0+tn-1))
-    end
-end
-
-"""
-    _batch_views(A, r=size(A, 2)) -> Vector{<:AbstractMatrix}
-
-Per-batch-entry views into a `[m, maxrank, n]` factor array, trimmed to the
-first `r` columns. Used to build `gemm_batched!` operand vectors; shared with
-`uncompress.jl`.
-"""
-@inline _batch_views(A::AbstractArray{T,3}, r::Int=size(A, 2)) where {T} =
-    [view(A, :, 1:r, k) for k in axes(A, 3)]
-
-# ─── Precision helpers ────────────────────────────────────────────────────────
-
-#= Accumulation precision used for orthogonalisation (Cholesky-QR) and norm
-bookkeeping. Use higher precision accumulation for better numerical stability. =#
-@inline _compress_accum_type(::Type{Float16}) = Float32
-@inline _compress_accum_type(::Type{Float32}) = Float64
-@inline _compress_accum_type(::Type{Float64}) = Float64
-@inline _compress_accum_type(::Type{ComplexF32}) = ComplexF64
-@inline _compress_accum_type(::Type{ComplexF64}) = ComplexF64
-@inline _compress_accum_type(::Type{T}) where {T} = T
-
-"""
-    _adjoint_blas_char(T) -> Char
-
-BLAS transpose flag for the conjugate transpose of element type `T`: `'C'` for
-complex types, `'T'` otherwise.
-"""
-@inline _adjoint_blas_char(::Type{<:Complex}) = 'C'
-@inline _adjoint_blas_char(::Type) = 'T'
-
-# ─── Workspace structs ────────────────────────────────────────────────────────
-
-"""
-    CompressCategoryWorkspace
-
-Scratch buffers and cached views for one off-diagonal tile category
-(interior, right-boundary, or bottom-boundary) during [`compress!`](@ref).
-`U`/`V` alias the corresponding `A_tlr` panel; every other field is scratch
-carved from the flat buffers in [`CompressWorkspace`](@ref) by
-[`_carve_category_workspace`](@ref).
-
-One buffer is reused across pipeline steps rather than separately allocated:
-- `V` doubles as Ω: filled with `randn!` for the range sketch (step 1), then
-  overwritten by the co-range `Aᴴ·U` (step 3).
-- `U_tmp` and `V_tmp` hold the truncation kernel's sorted output before it is
-  copied back into `U`/`V`.
-
-See [`_compress_category!`](@ref) for the step-by-step pipeline.
-"""
-struct CompressCategoryWorkspace{
-    ObsT  <: Vector{Int},
-    UT    <: AbstractArray,   # aliases A_tlr panel — U factors + sketch target
-    VT    <: AbstractArray,   # aliases A_tlr panel — Omega initially, then V = A^T U
-    YHiT  <: AbstractArray,   # high-precision U copy for cholqr (r_eff wide)
-    GHiT  <: AbstractArray,   # high-precision Gram matrix for cholqr (r_eff²)
-    UTmpT <: AbstractArray,   # sorted-U output (truncation)
-    VTmpT <: AbstractArray,   # sorted-V output (truncation)
-    TileVT,                   # cached Vector-of-views into U/V (r_eff columns)
-    RanksT,
-    ErrT,                     # device Float64 — per-tile squared error estimate
-    NormT,                    # device Float64 — per-tile ‖A_tile‖²_F
-    CoordT,                   # device Int32 — tile origin coordinates
-    RegT,                     # device real(Thi) — per-slab cholqr shifts
-}
-    obs::ObsT
-    r_eff::Int                # sketch width: min(maxrank, tile_m, tile_n)
-    U::UT
-    V::VT
-    U_tiles::TileVT           # cached GEMM operand views (rebuilt only on alloc)
-    V_tiles::TileVT
-    Y_hi::YHiT
-    G_hi::GHiT
-    U_tmp::UTmpT
-    V_tmp::VTmpT
-    ranks_local::RanksT
-    err_sq_local::ErrT
-    normA_sq::NormT
-    p0s::CoordT
-    q0s::CoordT
-    regs::RegT
-end
-
-"""
-    CompressWorkspace
-
-Top-level scratch space for [`compress!`](@ref): one
-[`CompressCategoryWorkspace`](@ref) per tile category (`interior`, `right`,
-`bottom`), backed by two flat device allocations shared across all three —
-`buf_T` in working precision `T` (`U_tmp` + `V_tmp`) and `buf_hi` in
-accumulation precision `Thi` (`Y_hi` + `G_hi`) — plus one stream per category
-for GPU backends. Build with [`alloc_workspace`](@ref) and reuse across calls
-on matrices of the same layout.
-"""
-struct CompressWorkspace{IntWS, RightWS, BottomWS, BufT, BufHiT, StreamV}
-    interior::IntWS
-    right::RightWS
-    bottom::BottomWS
-    buf_T::BufT      # flat T-precision backing buffer (U_tmp + V_tmp, all categories)
-    buf_hi::BufHiT   # flat Thi-precision backing buffer (Y_hi + G_hi, all categories)
-    streams::StreamV
-end
-
-# ─── Workspace allocation ─────────────────────────────────────────────────────
-
-"""
-    _buf_view(buf, off, dims...) -> reshaped view
-
-Reshaped view of `prod(dims)` elements from the flat buffer `buf`, starting
-at 1-based offset `off`. Callers are responsible for keeping `off` in sync
-with the element counts predicted by [`_scratch_sizes`](@ref) — see
-[`_carve_category_workspace`](@ref).
-"""
-@inline function _buf_view(buf, off::Int, dims::Vararg{Int})
-    len = prod(dims)
-    reshape(view(buf, off:off + len - 1), dims...)
-end
-
-"""
-    _category_specs(A_tlr, b, tail_m, tail_n) -> (interior, right, bottom)
-
-Geometry and storage for the three off-diagonal tile categories, as named
-tuples `(; obs, U, V, tm, tn)`. `obs` indexes into `A_tlr.ranks`/`A_tlr.resid`;
-`U`/`V` are the corresponding panel arrays; `tm`/`tn` are the tile dimensions
-for that category (`tail_m`/`tail_n` may be smaller than `b` at a boundary).
-"""
-@inline _category_specs(A_tlr, b, tail_m, tail_n) = (
-    (; obs=A_tlr.obs_int, U=A_tlr.int_U, V=A_tlr.int_V, tm=b, tn=b),
-    (; obs=A_tlr.obs_right, U=A_tlr.right_U, V=A_tlr.right_V, tm=b, tn=tail_n),
-    (; obs=A_tlr.obs_bottom, U=A_tlr.bottom_U, V=A_tlr.bottom_V, tm=tail_m, tn=b),
-)
-
-"""
-    _scratch_sizes(tm, tn, r, n) -> (n_T, n_hi)
-
-Element counts of the working-precision (`n_T`: `U_tmp` + `V_tmp`) and
-accumulation-precision (`n_hi`: `Y_hi` + `G_hi`, at `r_eff = min(r, tm, tn)`)
-scratch for one category of `n` tiles of size `tm × tn` and sketch width `r`.
-Must stay in lockstep with the carving order in
-[`_carve_category_workspace`](@ref); used by `alloc_workspace` to size the two
-flat backing buffers up front.
-"""
-@inline function _scratch_sizes(tm, tn, r, n)
-    r_eff = min(r, tm, tn)
-    ((tm*r + tn*r) * n, (tm*r_eff + r_eff*r_eff) * n)
-end
-
-"""
-    _tile_origin_vectors(A_tlr, obs, proto) -> (p0s, q0s)
-
-Device vectors of the 1-based `(row, col)` origin of each tile in `obs`,
-built on the host and uploaded once. Consumed by `_tile_norm_sq_kernel!` to
-locate each tile within the dense source matrix without recomputing tile
-geometry on every `compress!` call.
-"""
-function _tile_origin_vectors(A_tlr::TLRMatrix, obs::Vector{Int}, proto)
-    n = length(obs)
-    p0_host = Vector{Int32}(undef, n)
-    q0_host = Vector{Int32}(undef, n)
-    for (k, ob) in enumerate(obs)
-        lin = _linear_from_offdiag(A_tlr, ob)
-        ti, tj = _inverse_tile_index(A_tlr, lin)
-        p0, q0 = tile_origin_coords(A_tlr, ti, tj)
-        p0_host[k] = Int32(p0)
-        q0_host[k] = Int32(q0)
-    end
-    p0s = similar(proto, Int32, n)
-    q0s = similar(proto, Int32, n)
-    copyto!(p0s, p0_host)
-    copyto!(q0s, q0_host)
-    p0s, q0s
-end
-
-"""
-    _carve_category_workspace(A_tlr, buf_T, pT, buf_hi, pH, spec, r, rank_type, proto, Thi)
-        -> (CompressCategoryWorkspace, pT′, pH′)
-
-Build one category's [`CompressCategoryWorkspace`](@ref): `U_tmp`/`V_tmp`
-and `Y_hi`/`G_hi` are views carved from `buf_T`/`buf_hi` at offsets `pT`/`pH`
-(advanced and returned as `pT′`/`pH′` for the next category); `U`/`V` alias the
-live `A_tlr` panel from `spec` rather than being freshly allocated. The carve
-order here must match the element counts [`_scratch_sizes`](@ref) predicted.
-"""
-function _carve_category_workspace(A_tlr::TLRMatrix, buf_T, pT::Int, buf_hi, pH::Int,
-    spec, r::Int, rank_type, proto, ::Type{Thi}) where {Thi}
-    n = length(spec.obs)
-    r_eff = min(r, spec.tm, spec.tn)
-    U_tmp = _buf_view(buf_T,  pT, spec.tm, r,     n); pT += spec.tm*r*n
-    V_tmp = _buf_view(buf_T,  pT, spec.tn, r,     n); pT += spec.tn*r*n
-    Y_hi  = _buf_view(buf_hi, pH, spec.tm, r_eff, n); pH += spec.tm*r_eff*n
-    G_hi  = _buf_view(buf_hi, pH, r_eff,   r_eff, n); pH += r_eff*r_eff*n
-    p0s, q0s = _tile_origin_vectors(A_tlr, spec.obs, proto)
-    gemm_r = max(r_eff, 1)   # width of the cached GEMM operand views
-    U_tiles = _batch_views(spec.U, gemm_r)
-    V_tiles = _batch_views(spec.V, gemm_r)
-    cat = CompressCategoryWorkspace(
-        spec.obs, r_eff, spec.U, spec.V, U_tiles, V_tiles, Y_hi, G_hi, U_tmp, V_tmp,
-        similar(proto, rank_type, n),
-        similar(proto, Float64, n),
-        similar(proto, Float64, n),
-        p0s, q0s,
-        similar(proto, typeof(real(zero(Thi))), n),
-    )
-    cat, pT, pH
-end
-
-"""
-    alloc_workspace(A_tlr) → CompressWorkspace
-
-Pre-allocate all scratch buffers for `compress!`.  Two flat device allocations
-(one in working precision T, one in accumulation precision Thi) serve all three
-tile categories; U and V alias A_tlr storage directly.  Reuse across repeated
-calls on the same matrix layout:
-
-    ws = alloc_workspace(A_tlr)
-    for A in matrices
-        compress!(A_tlr, A, ws; tol=1f-3)
-    end
-"""
-function alloc_workspace(A_tlr::TLRMatrix{<:Any,T}) where {T}
-    Thi       = _compress_accum_type(T)
-    proto     = A_tlr.D
-    rank_type = eltype(A_tlr.ranks)
-    r  = A_tlr.maxrank
-    b  = A_tlr.tile_m
-    mt, nt = tilegrid_size(A_tlr)
-    tail_m = max(A_tlr.m - (mt - 1) * b, 1)
-    tail_n = max(A_tlr.n - (nt - 1) * b, 1)
-    specs = _category_specs(A_tlr, b, tail_m, tail_n)
-
-    sT = sH = 0
-    for spec in specs
-        dT, dH = _scratch_sizes(spec.tm, spec.tn, r, length(spec.obs))
-        sT += dT
-        sH += dH
-    end
-
-    buf_T  = similar(proto, T, max(sT, 1))
-    buf_hi = similar(proto, Thi, max(sH, 1))
-    fill!(buf_T,  zero(T))
-    fill!(buf_hi, zero(Thi))
-
-    pT = Ref(1)
-    pH = Ref(1)
-    cats = map(specs) do spec
-        cat, pT[], pH[] = _carve_category_workspace(
-            A_tlr, buf_T, pT[], buf_hi, pH[], spec, r, rank_type, proto, Thi)
-        cat
-    end
-
-    CompressWorkspace(cats..., buf_T, buf_hi, create_streams(A_tlr.backend, 3))
-end
-
-# ─── Orthogonalisation helpers ────────────────────────────────────────────────
-
-"""
-    _cholqr_pass!(Y_hi, G_hi, regs, backend; rescue::Bool) -> Y_hi
+    cholqr!(Y_hi, G_hi, backend; rescue::Bool) -> Y_hi
 
 One shifted Cholesky-QR pass, orthogonalising the columns of each batch entry
 of `Y_hi` in place (`Y_hi ← Y_hi · R⁻¹` via `G_hi = Y_hiᴴY_hi = RᴴR`).
@@ -499,135 +316,209 @@ of `Y_hi` in place (`Y_hi ← Y_hi · R⁻¹` via `G_hi = Y_hiᴴY_hi = RᴴR`).
 sketches; `rescue=false` uses an `eps`-level shift so the pass restores the
 column norms the rescue shift deflated — the truncation step's error
 indicator needs orthonormal columns to be trustworthy. See
-[`_cholqr_shift_compute_kernel!`](@ref) for the shift formulas.
+[`_cholqr_shift_kernel!`](@ref) for the shift formulas.
 """
-function _cholqr_pass!(Y_hi::AbstractArray{Thi,3}, G_hi, regs, backend; rescue::Bool) where {Thi}
+function cholqr!(Y_hi::AbstractArray{Thi,3}, G_hi, backend; rescue::Bool) where {Thi}
     count = size(Y_hi, 3)
     count == 0 && return Y_hi
     r = size(Y_hi, 2)
-    RT = typeof(real(zero(Thi)))
+    RT = real(Thi)
+
+    # G = Y'Y 
     gemm_batched!(_adjoint_blas_char(Thi), 'N', one(Thi), Y_hi, Y_hi, zero(Thi), G_hi)
+    
     trace_coeff   = rescue ? RT(sqrt(eps(RT))) : zero(RT)
     maxdiag_coeff = rescue ? zero(RT) : RT(r) * eps(RT)
-    _cholqr_shift_compute_kernel!(backend)(regs, G_hi, trace_coeff, maxdiag_coeff; ndrange=(count,))
-    _cholqr_shift_apply_kernel!(backend)(G_hi, regs; ndrange=(r, count))
+    # G = G + shift·I
+    _cholqr_shift_kernel!(backend)(G_hi, trace_coeff, maxdiag_coeff;
+        ndrange=(r * count,), workgroupsize=r)
+    
+    # R = chol(G)
     potrf_batched!('U', G_hi)
+    
+    # Q = Y * inv(R)
     trsm_batched!('R', 'U', 'N', 'N', G_hi, Y_hi, one(Thi))
-    Y_hi
+    
+    return Y_hi
 end
 
 """
-    _truncate!(U, V, rk, err_sq, normA_sq, U_tmp, V_tmp, eps_sq, rel, backend) -> U
+    detect_rank!(U, V, Q_T, V_T, rk, err_sq, normA_sq, R_keep, eps_sq, rel, backend) -> U
 
-Rank detection and truncation via [`_fused_truncate_kernel!`](@ref): sorts each
-tile's columns by descending norm, greedily drops columns while staying within
-the error-indicator-corrected budget, and copies the retained (zero-padded)
-columns back into `U`/`V` using `U_tmp`/`V_tmp` as gather scratch. Writes the
-retained rank to `rk` and the squared error estimate to `err_sq`.
+Per-tile rank detection and truncation ([`_fused_truncate_kernel!`](@ref)):
+gather the retained columns from the sketch scratch `Q_T`/`V_T` into the panels
+`U`/`V`, writing the detected rank to `rk` and squared error to `err_sq`.
 """
-function _truncate!(U::AbstractArray{T,3}, V, rk, err_sq, normA_sq, U_tmp, V_tmp,
-    eps_sq::Float64, rel::Bool, backend) where {T}
+function detect_rank!(U::AbstractArray{T,3}, V, Q_T, V_T, rk, err_sq, normA_sq,
+    R_keep::Int, eps_sq::Float64, rel::Bool, backend) where {T}
     noff = size(U, 3)
     noff == 0 && return U
-    R = size(U, 2)
-    kernel! = _fused_truncate_kernel!(backend, R)
-    kernel!(U_tmp, V_tmp, U, V, rk, err_sq, normA_sq, eps_sq, rel, Val{R}();
-        ndrange=(R * noff,), workgroupsize=R)
-    U .= U_tmp
-    V .= V_tmp
+    S = size(Q_T, 2)
+    W = unwrap(SUBGROUP_SIZE(typeof(backend)))
+    nthreads = W * min(S, 8)
+    kernel! = _fused_truncate_kernel!(backend, nthreads)
+    kernel!(U, V, Q_T, V_T, rk, err_sq, normA_sq, eps_sq, rel, R_keep, Val{S}(), Val{W}();
+        ndrange=(nthreads * noff,), workgroupsize=nthreads)
     U
 end
 
-# ─── Per-category compression pipeline ───────────────────────────────────────
+# scratch for one tile category (interior / right / bottom) 
+#`U`/`V` alias the A_tlr output panels (maxrank-wide); the sketch
+struct CompressCategoryWorkspace{ObsT,PanelT,ScratchT,ScratchHiT,TileVT,RankVT,F64V,I32V}
+    obs::ObsT              # global off-diagonal indices in this category
+    S::Int                 # sketch width    = min(maxrank + oversample, tm, tn)
+    R_keep::Int            # max stored rank  = min(maxrank, S)
+    U::PanelT              # output left factors  (aliases A_tlr, maxrank-wide)
+    V::PanelT              # output right factors (aliases A_tlr, maxrank-wide)
+    Q_T::ScratchT          # orthonormal basis Q          (tm × S × n)
+    V_T::ScratchT          # random Ω, then co-range Aᴴ·Q (tn × S × n)
+    Q_tiles::TileVT        # per-tile GEMM operand views into Q_T / V_T
+    V_tiles::TileVT
+    Y_hi::ScratchHiT       # accumulation-precision Q copy for cholqr (tm × S × n)
+    G_hi::ScratchHiT       # accumulation-precision Gram matrix        (S × S × n)
+    ranks_local::RankVT    # per-tile detected rank
+    err_sq_local::F64V     # per-tile squared error estimate
+    normA_sq::F64V         # per-tile ‖A_tile‖²_F
+    p0s::I32V              # per-tile dense-source row origin (1-based)
+    q0s::I32V              # per-tile dense-source col origin (1-based)
+end
+
+# full scratch: one CompressCategoryWorkspace per tile category,
+# reusable for matrix layout + oversampling
+struct CompressWorkspace{IntWS, RightWS, BottomWS, StreamV}
+    interior::IntWS
+    right::RightWS
+    bottom::BottomWS
+    streams::StreamV # one execution stream for each category on gpu
+end
+
+# (obs, output U/V panels, tile dims) per off-diagonal category. `tail_m`/`tail_n`
+# are the boundary tile dimensions (both == b in the interior).
+@inline _category_specs(A_tlr, b, tail_m, tail_n) = (
+    (; obs=A_tlr.obs_int, U=A_tlr.int_U, V=A_tlr.int_V, tm=b, tn=b),
+    (; obs=A_tlr.obs_right, U=A_tlr.right_U, V=A_tlr.right_V, tm=b, tn=tail_n),
+    (; obs=A_tlr.obs_bottom, U=A_tlr.bottom_U, V=A_tlr.bottom_V, tm=tail_m, tn=b),
+)
+
+# prepare category's scratch at sketch width S
+function _alloc_category_workspace(A_tlr::TLRMatrix{<:Any,T}, spec, r::Int, p::Int, ::Type{Thi}) where {T,Thi}
+    backend = get_backend(A_tlr)
+    rank_type = eltype(A_tlr.ranks)
+    n = length(spec.obs)
+    S = max(min(r + p, spec.tm, spec.tn), 1)
+    
+    Q_T = zeros(backend, T, spec.tm, S, n)
+    V_T = zeros(backend, T, spec.tn, S, n)
+    Y_hi = zeros(backend, Thi, spec.tm, S, n)
+    G_hi = zeros(backend, Thi, S, S, n)
+    p0_host = Vector{Int32}(undef, n)
+    q0_host = Vector{Int32}(undef, n)
+
+    @inbounds for (k, ob) in enumerate(spec.obs)
+        p0, q0 = tile_origin_coords(A_tlr, _offdiag_coords(A_tlr, ob)...)
+        p0_host[k] = Int32(p0)
+        q0_host[k] = Int32(q0)
+    end
+
+    p0s = copyto!(allocate(backend, Int32, n), p0_host)
+    q0s = copyto!(allocate(backend, Int32, n), q0_host)
+    
+    return CompressCategoryWorkspace(
+        spec.obs, S, min(r, S), spec.U, spec.V, Q_T, V_T,
+        _batch_views(Q_T, S), _batch_views(V_T, S), Y_hi, G_hi,
+        zeros(backend, rank_type, n),
+        zeros(backend, Float64, n),
+        zeros(backend, Float64, n),
+        p0s,
+        q0s,
+    )
+end
 
 """
-    _compress_category!(backend, A_tlr, A, cat, eps_sq, rel) -> cat
+    alloc_workspace(A_tlr; oversample=0) → CompressWorkspace
 
-Compress every tile in one [`CompressCategoryWorkspace`](@ref) `cat`, writing
-the retained factors into `cat.U`/`cat.V` and the per-tile rank/error estimate
-into `cat.ranks_local`/`cat.err_sq_local`. No-op if `cat.obs` is empty.
+Pre-allocate `compress!` scratch for `A_tlr`, one bundle per off-diagonal tile
+category at sketch width `S = min(maxrank + oversample, tile)`; `U`/`V` alias
+`A_tlr` storage directly. Reuse across repeated calls on the same layout and
+`oversample`:
 
-Pipeline, `r_eff = cat.r_eff` columns wide (degenerates to rank 0 for every
-tile when `r_eff == 0`, i.e. `maxrank == 0`):
-1. Range sampling: `Y = A·Ω → U`, `Ω` drawn into `cat.V`.
-2. Orthogonalise `U` with two shifted Cholesky-QR passes in higher precision.
-3. Co-range: `V = Aᴴ·U`, overwriting `Ω`.
-4. Rank detection + truncation against the error-indicator-corrected budget.
-
-Called once per category from [`_compress_all_categories!`](@ref).
+    ws = alloc_workspace(A_tlr; oversample=8)
+    for A in matrices
+        compress!(A_tlr, A, ws; tol=1f-3)
+    end
 """
+function alloc_workspace(A_tlr::TLRMatrix{<:Any,T}; oversample::Int=0) where {T}
+    oversample >= 0 || throw(ArgumentError("oversample must be >= 0"))
+    Thi = _compress_accum_type(T)
+    
+    b = blocksize(A_tlr)[1]
+    mt, nt = tilegrid_size(A_tlr)
+    tail_m = max(A_tlr.m - (mt - 1) * b, 1)
+    tail_n = max(A_tlr.n - (nt - 1) * b, 1)
+    
+    specs = _category_specs(A_tlr, b, tail_m, tail_n)
+    cats = map(spec -> _alloc_category_workspace(A_tlr, spec, A_tlr.maxrank, oversample, Thi), specs)
+    
+    CompressWorkspace(cats..., create_streams(A_tlr.backend, 3))
+end
+
+# Randomized-sketch compression of one tile category (randQB_EI). Writes retained
+# factors into cat.U/cat.V and per-tile rank/error into cat.ranks_local/err_sq_local.
+# Degenerates to rank 0 for every tile when R_keep == 0 (maxrank == 0). The numbered
+# steps below are the range → orthogonalise → co-range → truncate pipeline.
 function _compress_category!(
-    backend,
     A_tlr::TLRMatrix,
     A::AbstractMatrix{T},
     cat::CompressCategoryWorkspace,
     eps_sq::Float64,
     rel::Bool,
 ) where {T}
+
     isempty(cat.obs) && return cat
-
+    backend = get_backend(A_tlr)
     n = length(cat.obs)
-    r_eff = cat.r_eff
-    r_full = size(cat.U, 2)
-    tm = size(cat.U, 1)
-    tn = size(cat.V, 1)
+    S = cat.S
+    R_keep = cat.R_keep
+    tm = size(cat.Q_T, 1)
+    tn = size(cat.V_T, 1)
 
-    if r_eff == 0   # maxrank == 0: every tile degenerates to rank 0
-        _tile_norm_sq_kernel!(backend, 1)(
-            cat.normA_sq, A, cat.p0s, cat.q0s, tm, tn, Val{1}();
-            ndrange=(n,), workgroupsize=1)
+    # Step 0: per-tile ‖A‖²_F — reference term for the error indicator (step 4).
+    Rnorm = max(S, 1)
+    _tile_norm_sq_kernel!(backend, Rnorm)(
+        cat.normA_sq, A, cat.p0s, cat.q0s, tm, tn, Val{Rnorm}();
+        ndrange=(Rnorm * n,), workgroupsize=Rnorm)
+
+    if R_keep == 0   # maxrank == 0: every tile degenerates to rank 0
         fill!(cat.ranks_local, zero(eltype(cat.ranks_local)))
         cat.err_sq_local .= cat.normA_sq
         return cat
     end
 
-    # Step 0: per-tile ‖A‖²_F — reference term for the error indicator (step 4).
-    _tile_norm_sq_kernel!(backend, r_eff)(
-        cat.normA_sq, A, cat.p0s, cat.q0s, tm, tn, Val{r_eff}();
-        ndrange=(r_eff * n,), workgroupsize=r_eff)
+    A_tiles = map(ob -> _offdiag_tile_view(A, A_tlr, ob), cat.obs)
 
-    A_tiles = _tile_views(A, A_tlr, cat.obs)
-    U_tiles = cat.U_tiles   # cached views into cat.U (first r_eff columns)
-    V_tiles = cat.V_tiles
-    U_eff = view(cat.U, :, 1:r_eff, :)
-    V_eff = view(cat.V, :, 1:r_eff, :)
+    # Step 1: range sampling  Q = A·Ω  (Ω drawn into V_T; step 3 overwrites it)
+    Random.randn!(cat.V_T)
+    gemm_batched!('N', 'N', one(T), A_tiles, cat.V_tiles, zero(T), cat.Q_tiles)
 
-    # Step 1: range sampling  Y = A·Ω → U
-    # V holds Ω (filled with randn!) for now; step 3 will overwrite it with A^T·U.
-    Random.randn!(cat.V)
-    gemm_batched!('N', 'N', one(T), A_tiles, V_tiles, zero(T), U_tiles)
+    # Step 2: orthogonalise Q (in higher precision)
+    cat.Y_hi .= cat.Q_T
+    cholqr!(cat.Y_hi, cat.G_hi, backend; rescue=true)
+    cholqr!(cat.Y_hi, cat.G_hi, backend; rescue=false)
+    cat.Q_T .= cat.Y_hi
 
-    # Step 2: orthogonalise U (in higher precision)
-    cat.Y_hi .= U_eff
-    _cholqr_pass!(cat.Y_hi, cat.G_hi, cat.regs, backend; rescue=true)
-    _cholqr_pass!(cat.Y_hi, cat.G_hi, cat.regs, backend; rescue=false)
-    U_eff .= cat.Y_hi
-
-    # Step 3: co-range  V = Aᴴ·U  (overwrites the Ω we no longer need)
-    gemm_batched!(_adjoint_blas_char(T), 'N', one(T), A_tiles, U_tiles, zero(T), V_tiles)
+    # Step 3: co-range  V = Aᴴ·Q  (overwrites the Ω we no longer need)
+    gemm_batched!(_adjoint_blas_char(T), 'N', one(T), A_tiles, cat.Q_tiles, zero(T), cat.V_tiles)
 
     # Step 4: rank detection + truncation (fused SMEM kernel, EI-corrected budget)
-    _truncate!(U_eff, V_eff, cat.ranks_local, cat.err_sq_local, cat.normA_sq,
-        view(cat.U_tmp, :, 1:r_eff, :), view(cat.V_tmp, :, 1:r_eff, :),
-        eps_sq, rel, backend)
-
-    # randn! polluted the padding columns of V with Ω samples; downstream GEMM
-    # relies on zeros beyond the effective rank.
-    if r_eff < r_full
-        view(cat.V, :, (r_eff+1):r_full, :) .= zero(T)
-    end
+    detect_rank!(cat.U, cat.V, cat.Q_T, cat.V_T, cat.ranks_local, cat.err_sq_local,
+        cat.normA_sq, R_keep, eps_sq, rel, backend)
     cat
 end
 
 # ─── Storage helpers ──────────────────────────────────────────────────────────
 
-"""
-    _store_category_results!(A_tlr, cat)
-
-Copy one category's local ranks and squared-error estimates (device or host
-vectors on `cat`) back into the global `A_tlr.ranks`/`A_tlr.resid`, converting
-squared error to the reported Frobenius residual. No-op if `cat.obs` is empty.
-"""
+# Scatter one category's local ranks / squared errors back into the global
+# A_tlr.ranks / A_tlr.resid (converting squared error to a Frobenius residual).
 function _store_category_results!(A_tlr::TLRMatrix, cat::CompressCategoryWorkspace)
     isempty(cat.obs) && return
     rk_host  = cat.ranks_local isa Vector ? cat.ranks_local : Array(cat.ranks_local)
@@ -640,15 +531,9 @@ end
 
 # ─── Orchestration ────────────────────────────────────────────────────────────
 
-"""
-    _compress_all_categories!(A_tlr, A, ws, eps_sq, rel) -> A_tlr
-
-Run [`_compress_category!`](@ref) for all three tile categories (interior,
-right-boundary, bottom-boundary) and store their results into `A_tlr`. On the
-CPU backend the categories run sequentially; on GPU backends each runs on its
-own stream (from `ws.streams`) and all streams are synchronised before results
-are stored, so the three categories overlap on-device.
-"""
+# Compress all three tile categories and scatter their results into A_tlr. On GPU
+# each category runs on its own stream (overlap) and is synced before storing; on
+# CPU they run sequentially.
 function _compress_all_categories!(
     A_tlr::TLRMatrix{<:Any,T},
     A::AbstractMatrix{T},
@@ -657,18 +542,19 @@ function _compress_all_categories!(
     rel::Bool,
 ) where {T}
     cats = (ws.interior, ws.right, ws.bottom)
-    if A_tlr.backend isa KernelAbstractions.CPU
+    backend = get_backend(A_tlr)
+    if backend isa KernelAbstractions.CPU
         for cat in cats
-            _compress_category!(A_tlr.backend, A_tlr, A, cat, eps_sq, rel)
+            _compress_category!(A_tlr, A, cat, eps_sq, rel)
         end
     else
         for (cat, stream) in zip(cats, ws.streams)
-            with_stream(A_tlr.backend, stream) do
-                _compress_category!(A_tlr.backend, A_tlr, A, cat, eps_sq, rel)
+            with_stream(backend, stream) do
+                _compress_category!(A_tlr, A, cat, eps_sq, rel)
             end
         end
         for stream in ws.streams
-            sync_stream(A_tlr.backend, stream)
+            sync_stream(backend, stream)
         end
     end
     for cat in cats
@@ -710,17 +596,21 @@ noise columns to chase an unreachable target.
 `rel` — when `true`, the budget for each tile is `tol * ‖A_tile‖_F` instead of
 the absolute `tol`.
 
+`oversample` — extra sketch columns `p` beyond `maxrank` for better range
+capture; the sketch width is `S = min(maxrank + p, tile)` and the stored rank is
+capped at `maxrank`. Must match the `oversample` passed to `alloc_workspace`.
+
 The sketch basis is orthogonalised with two shifted Cholesky-QR passes in
 higher precision.
 """
-compress!(A_tlr::TLRMatrix{<:Any,T}, A::AbstractMatrix{T}; kwargs...) where {T} =
-    compress!(A_tlr, A, alloc_workspace(A_tlr); kwargs...)
+compress!(A_tlr::TLRMatrix{<:Any,T}, A::AbstractMatrix{T}; oversample::Int=0, kwargs...) where {T} =
+    compress!(A_tlr, A, alloc_workspace(A_tlr; oversample); kwargs...)
 
 function compress!(A_tlr::TLRMatrix{<:Any,T}, A::AbstractMatrix{T},
     ws::CompressWorkspace;
     tol::Real=0.0, rel::Bool=false) where {T}
 
-    size(A, 1) == A_tlr.m && size(A, 2) == A_tlr.n ||
+    size(A) == (A_tlr.m, A_tlr.n) ||
         throw(DimensionMismatch("A dimensions must match A_tlr"))
     A_tlr.m == A_tlr.n && A_tlr.tile_m == A_tlr.tile_n ||
         throw(ArgumentError("compress! currently requires square matrices with square tiles"))

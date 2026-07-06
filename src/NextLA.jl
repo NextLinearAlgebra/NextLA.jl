@@ -12,7 +12,7 @@ using KernelAbstractions
 using KernelAbstractions.Extras: @unroll
 
 @inline SUBGROUP_SIZE(::Type{<:KernelAbstractions.CPU}) = Val(1)
-@inline _val_parameter(::Val{W}) where {W} = W
+@inline unwrap(::Val{x}) where {x} = x
 @inline supports_pointer_batched(backend) = supports_pointer_batched(typeof(backend))
 @inline supports_pointer_batched(::Type) = false
 

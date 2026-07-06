@@ -132,6 +132,47 @@ end
     @test NextLA.residuals(Am_tlr)[ob_small] <= 1e-5 * norm(small)
 end
 
+@testset "TLR compress! oversampling" begin
+    b = 64
+    maxr = 20
+    r12 = 5
+    r21 = 11
+
+    for T in (Float64, Float32)
+        tol = T == Float64 ? 1e-6 : 1.0f-3
+        A = assemble_block_matrix(
+            make_dense_tile(T, b; seed=41), make_lowrank_tile(T, b, r12; seed=42),
+            make_lowrank_tile(T, b, r21; seed=43), make_dense_tile(T, b; seed=44))
+
+        # Oversampling widens the sketch (S = maxr + p) but the stored rank stays
+        # capped at maxr; the exact-rank tiles are recovered for every p.
+        for p in (0, 4, 12)
+            A_tlr = NextLA.TLRMatrix(A, b, maxr)
+            ws = NextLA.alloc_workspace(A_tlr; oversample=p)
+            NextLA.compress!(A_tlr, A, ws; tol=tol, rel=true)
+
+            assert_tile_rank_and_error(A_tlr, 1, 2, r12,
+                make_lowrank_tile(T, b, r12; seed=42); rtol_error=2 * tol)
+            assert_tile_rank_and_error(A_tlr, 2, 1, r21,
+                make_lowrank_tile(T, b, r21; seed=43); rtol_error=2 * tol)
+
+            # stored rank never exceeds maxr even though S = maxr + p columns sketched
+            for ob in 1:NextLA.noffdiag_tiles(A_tlr)
+                @test Int(NextLA.ranks(A_tlr)[ob]) <= maxr
+            end
+        end
+    end
+
+    # oversample keyword flows through the argument-less form too.
+    A0 = assemble_block_matrix(
+        make_dense_tile(Float64, b; seed=51), make_lowrank_tile(Float64, b, 7; seed=52),
+        make_lowrank_tile(Float64, b, 3; seed=53), make_dense_tile(Float64, b; seed=54))
+    A0_tlr = NextLA.TLRMatrix(A0, b, maxr)
+    NextLA.compress!(A0_tlr, A0; tol=1e-6, rel=true, oversample=8)
+    @test Int(NextLA.ranks(A0_tlr)[NextLA.TLRmodule._offdiag_index(A0_tlr, 1, 2)]) == 7
+    @test Int(NextLA.ranks(A0_tlr)[NextLA.TLRmodule._offdiag_index(A0_tlr, 2, 1)]) == 3
+end
+
 @testset "TLR uncompress! on CPU" begin
     for order in (NextLA.TileColMajor(), NextLA.TileRowMajor())
         @testset "$(order)" begin

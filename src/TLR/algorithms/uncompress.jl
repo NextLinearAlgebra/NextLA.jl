@@ -16,9 +16,8 @@ function _copy_diagonal_to_dense!(A::AbstractMatrix{T}, A_tlr::TLRMatrix{<:Any,T
     )
     if size(A_tlr.D_corner, 3) != 0
         tile_k = ndiag_tiles(A_tlr)
-        p0, q0 = tile_origin_coords(A_tlr, tile_k, tile_k)
         tm, tn = tile_size(A_tlr, tile_k, tile_k)
-        copyto!(view(A, p0:(p0 + tm - 1), q0:(q0 + tn - 1)), view(A_tlr.D_corner, 1:tm, 1:tn, 1))
+        copyto!(_dense_tile_view(A, A_tlr, tile_k, tile_k), view(A_tlr.D_corner, 1:tm, 1:tn, 1))
     end
     return A
 end
@@ -34,7 +33,7 @@ function _uncompress_category!(
 
     U_tiles = _batch_views(U)
     V_tiles = _batch_views(V)
-    A_tiles = _tile_views(A, A_tlr, obs)
+    A_tiles = map(ob -> _offdiag_tile_view(A, A_tlr, ob), obs)
     gemm_batched!('N', _adjoint_blas_char(T), one(T), U_tiles, V_tiles, zero(T), A_tiles)
     return A
 end

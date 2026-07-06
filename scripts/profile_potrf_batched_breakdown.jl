@@ -28,7 +28,7 @@ end
 
 function profile_once!(A, status, ::Val{OB}, ::Val{IB}, ::Val{RB}, ::Val{MR}) where {OB,IB,RB,MR}
     backend = KernelAbstractions.get_backend(A)
-    W = NextLA._val_parameter(NextLA.SUBGROUP_SIZE(typeof(backend)))
+    W = NextLA.unwrap(NextLA.SUBGROUP_SIZE(typeof(backend)))
     n = NextLA._potrf_validate!(A, status)
     trans = eltype(A) <: Real ? 'T' : 'C'
     alpha = one(eltype(A))

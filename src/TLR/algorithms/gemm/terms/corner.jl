@@ -51,8 +51,8 @@ function _corner_term!(C, A::TLRMatrix{<:Any,T}, B::TLRMatrix, alpha; beta=one(T
     s_m = size(A.bottom_U, 1)
     s_n = size(B.right_V, 1)
 
-    S = KernelAbstractions.allocate(A.backend, T, r, r, np)
-    Tw = KernelAbstractions.allocate(A.backend, T, r, np, s_n)
+    S = allocate(A.backend, T, r, r, np)
+    Tw = allocate(A.backend, T, r, np, s_n)
 
     # Stage 1:  S_p = V_pᵀ W_p   (r×r, contract b), batched over p.
     V1 = [view(A.bottom_V, :, :, k) for k in 1:np]

@@ -8,11 +8,7 @@
 # targets distinct C tiles within itself → a single batched pair of GEMMs.
 # (Happy path: square, m % b == 0.)
 
-@inline function _dense_tile_view(C, A::TLRMatrix, tile_i::Int, tile_j::Int)
-    p0, q0 = tile_origin_coords(A, tile_i, tile_j)
-    tm, tn = tile_size(A, tile_i, tile_j)
-    return view(C, p0:(p0 + tm - 1), q0:(q0 + tn - 1))
-end
+# `_dense_tile_view(C, A, i, j)` (zero-copy dense tile block) lives in tlrmatrix.jl.
 
 function _offdiag_diag_category!(C, A::TLRMatrix{<:Any,T}, B::TLRMatrix, alpha, obs, U, V; beta=one(T)) where {T}
     n_cat = length(obs)
@@ -20,7 +16,7 @@ function _offdiag_diag_category!(C, A::TLRMatrix{<:Any,T}, B::TLRMatrix, alpha, 
     (n_cat == 0 || rA == 0) && return C
 
     coords = [_offdiag_coords(A, ob) for ob in obs]
-    Mws = KernelAbstractions.allocate(A.backend, T, rA, size(V, 1), n_cat)
+    Mws = allocate(A.backend, T, rA, size(V, 1), n_cat)
 
     Vvec  = [view(V, :, :, k) for k in 1:n_cat]
     BDvec = [_diag_tile_view(B, coords[k][2]) for k in 1:n_cat]
@@ -39,7 +35,7 @@ function _diag_offdiag_category!(C, A::TLRMatrix, B::TLRMatrix{<:Any,T}, alpha, 
     (n_cat == 0 || rB == 0) && return C
 
     coords = [_offdiag_coords(B, ob) for ob in obs]
-    Nws = KernelAbstractions.allocate(B.backend, T, size(U, 1), rB, n_cat)
+    Nws = allocate(B.backend, T, size(U, 1), rB, n_cat)
 
     ADvec = [_diag_tile_view(A, coords[k][1]) for k in 1:n_cat]
     Wvec  = [view(U, :, :, k) for k in 1:n_cat]

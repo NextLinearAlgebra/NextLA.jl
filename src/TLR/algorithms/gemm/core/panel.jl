@@ -42,9 +42,7 @@ this sub-grid's off-diagonal tiles in `Q×Q` enumeration order.
 """Tile-column index of local panel position `pos` within row `r` (skips `r`)."""
 @inline local_to_col(r::Integer, pos::Integer) = pos < r ? pos : pos + 1
 
-"""Tile coordinates `(row, col)` of off-diagonal index `ob`, for any tile order."""
-@inline _offdiag_coords(M::TLRMatrix, ob::Integer) =
-    _inverse_tile_index(M, _linear_from_offdiag(M, ob))
+# `_offdiag_coords` (tile coords of off-diagonal slot `ob`) lives in tlrmatrix.jl.
 
 # Construction
 

@@ -269,7 +269,7 @@ function _potrf_blocked!(uplo::Char,
     
     backend = KernelAbstractions.get_backend(A)
     backend isa KernelAbstractions.CPU && return _potrf_cpu_fallback!(uplo, A, status)
-    W = _val_parameter(SUBGROUP_SIZE(typeof(backend)))
+    W = unwrap(SUBGROUP_SIZE(typeof(backend)))
     
     # --- Guard Checks & Initializations ---    
     n = _potrf_validate!(A, status)

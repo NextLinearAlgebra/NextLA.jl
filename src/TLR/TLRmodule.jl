@@ -9,10 +9,12 @@ module TLRmodule
 using LinearAlgebra
 using Random
 using KernelAbstractions
+using KernelAbstractions: zeros, allocate
 using KernelAbstractions.Extras: @unroll
 
 using ..NextLA: gemm_batched!, gemmEx_batched!, syrk_batched!, trsm_batched!, potrf_batched!
 using ..NextLA: create_streams, with_stream, sync_stream, sync_streams_with_default
+using ..NextLA: SUBGROUP_SIZE, unwrap
 
 export TileColMajor, TileRowMajor
 export TLRMatrix

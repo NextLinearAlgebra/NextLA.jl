@@ -230,8 +230,8 @@ function allocate_workspace(::KAsGemmK, A::TLRMatrix{<:Any,T}, B::TLRMatrix,
     Uall = reshape(A.int_U, b, rA * noff, mt)
     # S[:,:,p,kk,il]: p = off-diagonal position within the run's column block, laid
     # out so a fused per-(i,k) Stage-1 GEMM writes a contiguous [rA, len·rB] slice.
-    Sbuf = KernelAbstractions.allocate(A.backend, T, rA, rB, maxJ, noff, maxI)
-    Tbuf = KernelAbstractions.allocate(A.backend, T, rA, noff, b, maxJ, maxI)
+    Sbuf = allocate(A.backend, T, rA, rB, maxJ, noff, maxI)
+    Tbuf = allocate(A.backend, T, rA, noff, b, maxJ, maxI)
     return RowWorkspace(ScratchS(Sbuf), ScratchT(Tbuf), Uall,
                         _row_batches(A, B, C, Sbuf, Tbuf, Uall, maxI, maxJ))
 end
@@ -246,8 +246,8 @@ function allocate_workspace(::KAsSerialLoop, A::TLRMatrix{<:Any,T}, B::TLRMatrix
     maxK, maxJ = _column_block(A, B, budget)
     Vall = reshape(A.int_V, b, rA * noff, nt)
     Uall = reshape(A.int_U, b, rA, noff, nt)
-    Sbuf = KernelAbstractions.allocate(A.backend, T, rA * noff, rB, maxJ, maxK)
-    Tbuf = KernelAbstractions.allocate(A.backend, T, rA, noff, b, maxJ, maxK)
+    Sbuf = allocate(A.backend, T, rA * noff, rB, maxJ, maxK)
+    Tbuf = allocate(A.backend, T, rA, noff, b, maxJ, maxK)
     return ColumnWorkspace(ScratchS(Sbuf), ScratchT(Tbuf), Vall, Uall,
                            _column_batches(A, B, C, Sbuf, Tbuf, Vall, Uall, maxK, maxJ))
 end
