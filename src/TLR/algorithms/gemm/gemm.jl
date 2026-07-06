@@ -76,10 +76,8 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix, B::TLRMatrix;
         throw(DimensionMismatch("size(A,2) must equal size(B,1)"))
     (size(C, 1), size(C, 2)) == (size(A, 1), size(B, 2)) ||
         throw(DimensionMismatch("C must be size(A,1) × size(B,2)"))
-    blocksize(A) == blocksize(B) ||
-        throw(DimensionMismatch("A and B must share the same block size"))
-    A.tile_m == A.tile_n == B.tile_m == B.tile_n ||
-        throw(DimensionMismatch("gemm! currently requires square tiles"))
+    A.nominal_tile_size == B.nominal_tile_size ||
+        throw(DimensionMismatch("A and B must share the same nominal tile size"))
 
     α = eltype(C)(alpha)
     β = eltype(C)(beta)

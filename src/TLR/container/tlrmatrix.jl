@@ -35,8 +35,7 @@ mutable struct TLRMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},RankT<:In
     const order::OrderT
     const m::Int
     const n::Int
-    const tile_m::Int
-    const tile_n::Int
+    const nominal_tile_size::Int
 
     # Off-diagonal low-rank factors (one 3-D array per panel category):
     int_U::Arr3T        # [b,       maxrank, n_int]
@@ -88,7 +87,7 @@ Total number of off-diagonal tiles in the matrix.
 Return the number of tile rows (`mt`) and tile columns (`nt`)
 in the matrix tiling.
 """
-@inline tilegrid_size(A::TLRMatrix) = (cld(A.m, A.tile_m), cld(A.n, A.tile_n))
+@inline tilegrid_size(A::TLRMatrix) = (cld(A.m, A.nominal_tile_size), cld(A.n, A.nominal_tile_size))
 
 """
     tile_size(A, tile_i, tile_j) -> (m_local, n_local)
@@ -98,19 +97,19 @@ handling boundary tiles that may be smaller than the nominal tile size.
 """
 @inline function tile_size(A::TLRMatrix, tile_i::Int, tile_j::Int)
     mt, nt = tilegrid_size(A)
+    b = A.nominal_tile_size
 
     row_size = tile_i == mt ?
-        A.m - (mt - 1) * A.tile_m :
-        A.tile_m
+        A.m - (mt - 1) * b :
+        b
 
     col_size = tile_j == nt ?
-        A.n - (nt - 1) * A.tile_n :
-        A.tile_n
+        A.n - (nt - 1) * b :
+        b
 
     return row_size, col_size
 end
 
-@inline blocksize(A::TLRMatrix) = (A.tile_m, A.tile_n)
 @inline maxrank(A::TLRMatrix) = A.maxrank
 @inline ranks(A::TLRMatrix) = A.ranks
 @inline KernelAbstractions.get_backend(A::TLRMatrix) = A.backend
@@ -134,7 +133,7 @@ or a higher-rank second pass.
     dense_diag(A)
 
 Return the packed batch of full-size diagonal tiles. When the final diagonal
-tile is smaller than `blocksize(A)`, it is stored separately in
+tile is smaller than the nominal tile size, it is stored separately in
 [`dense_diag_corner`](@ref).
 """
 @inline dense_diag(A::TLRMatrix) = A.D
@@ -236,7 +235,7 @@ Return the global 1-based coordinates of the top-left entry
 of tile `(tile_i, tile_j)`.
 """
 @inline tile_origin_coords(A::TLRMatrix, tile_i::Int, tile_j::Int) =
-    ((tile_i - 1) * A.tile_m + 1, (tile_j - 1) * A.tile_n + 1)
+    ((tile_i - 1) * A.nominal_tile_size + 1, (tile_j - 1) * A.nominal_tile_size + 1)
 
 """
     _offdiag_coords(A, ob) -> (tile_i, tile_j)
@@ -292,10 +291,10 @@ end
 
 # ─── Internal geometry helper ─────────────────────────────────────────────────
 
-function _build_geometry(order, m::Int, n::Int, tile_m::Int, tile_n::Int)
-    mt, nt = cld(m, tile_m), cld(n, tile_n)
-    has_right = n % tile_n != 0
-    has_bottom = m % tile_m != 0
+function _build_geometry(order, m::Int, n::Int, b::Int)
+    mt, nt = cld(m, b), cld(n, b)
+    has_right = n % b != 0
+    has_bottom = m % b != 0
 
     ndiag = min(mt, nt)
     noff = mt * nt - ndiag
@@ -349,7 +348,7 @@ function TLRMatrix(
     tail_m = m % b   # logical height of last tile row (== b when m%b==0)
     tail_n = n % b   # logical width  of last tile col (== b when n%b==0)
 
-    obs_int, obs_right, obs_bottom, local_index, category, coords = _build_geometry(order, m, n, b, b)
+    obs_int, obs_right, obs_bottom, local_index, category, coords = _build_geometry(order, m, n, b)
 
     n_int = length(obs_int)
     n_right = length(obs_right)
@@ -378,7 +377,7 @@ function TLRMatrix(
     resid = Base.zeros(Float64, mt * nt - n_diag)
 
     return TLRMatrix{typeof(backend),T,typeof(int_U),rank_type,typeof(order)}(
-        backend, order, m, n, b, b,
+        backend, order, m, n, b,
         int_U, int_V, right_U, right_V, bottom_U, bottom_V,
         D, D_corner, ranks, resid, maxrank,
         obs_int, obs_right, obs_bottom, local_index, category, coords,

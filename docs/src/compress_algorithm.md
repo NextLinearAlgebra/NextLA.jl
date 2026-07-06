@@ -16,12 +16,12 @@ fixed-width sketch by truncation.
 | symbol | meaning |
 | --- | --- |
 | `A` | dense input, `m × n` |
-| `b` | tile size (`tile_m = tile_n = b`) |
+| `b` | nominal tile size |
 | `r = maxrank` | fixed sketch width |
-| `r_eff` | `min(r, tile_m, tile_n)` — clamp for boundary / thin tiles |
+| `r_eff` | `min(r, m_tile, n_tile)` — clamp for boundary / thin tiles |
 | `T` | working precision (e.g. `Float32`) |
 | `Thi` | accumulation precision for orthogonalization (`Float64` for `Float32`) |
-| `Ω` | random Gaussian sketch matrix, `tile_n × r` |
+| `Ω` | random Gaussian sketch matrix, `n_tile × r` |
 | `U, V` | retained factors of a tile, `A_tile ≈ U · Vᴴ` |
 | `tol`, `rel` | error budget and whether it is relative to `‖A_tile‖_F` |
 | `eps(T)` | machine epsilon of `T` (`≈1.2e-7` for `Float32`) |
@@ -30,7 +30,7 @@ fixed-width sketch by truncation.
 
 ```text
 compress!(A_tlr, A; tol, rel):
-    assert A is square with square tiles
+    assert A is square
     eps_sq ← tol²
 
     copy the dense diagonal tiles of A into A_tlr.D (+ corner)
@@ -63,14 +63,14 @@ compress_category!(A_tlr, A, cat, eps_sq, rel):
 
     # ── Step 1: range sketch  Y = A · Ω ─────────────────────────────
     Ω ← randn!(...)                      # drawn into the V buffer
-    U ← A_tile · Ω                       # batched GEMM, U is tile_m × r_eff
+    U ← A_tile · Ω                       # batched GEMM, U is m_tile × r_eff
 
     # ── Step 2: orthogonalize the columns of U (in precision Thi) ────
     cholqr_pass!(U; rescue = true)       # shifted Cholesky-QR, pass 1
     cholqr_pass!(U; rescue = false)      # shifted Cholesky-QR, pass 2
 
     # ── Step 3: co-range  V = Aᴴ · U  (overwrites Ω) ─────────────────
-    V ← A_tileᴴ · U                      # batched GEMM, V is tile_n × r_eff
+    V ← A_tileᴴ · U                      # batched GEMM, V is n_tile × r_eff
 
     # ── Step 4: rank detection + truncation ─────────────────────────
     truncate!(U, V, cat.ranks, cat.resid_sq, cat.normA_sq, eps_sq, rel)

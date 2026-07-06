@@ -1,18 +1,18 @@
 export uncompress!
 
 @kernel function _copy_diag_kernel!(A::AbstractMatrix{T},
-    D::AbstractArray{T,3}, tile_m::Int, tile_n::Int) where {T}
-    row, col, b = @index(Global, NTuple)
-    p0 = (b - 1) * tile_m + 1
-    q0 = (b - 1) * tile_n + 1
-    @inbounds A[p0+row-1, q0+col-1] = D[row, col, b]
+    D::AbstractArray{T,3}, tile_size::Int) where {T}
+    row, col, batch = @index(Global, NTuple)
+    p0 = (batch - 1) * tile_size + 1
+    @inbounds A[p0+row-1, p0+col-1] = D[row, col, batch]
 end
 
 function _copy_diagonal_to_dense!(A::AbstractMatrix{T}, A_tlr::TLRMatrix{<:Any,T}) where {T}
     n_full_diag = _nfull_diag_tiles(A_tlr)
+    b = A_tlr.nominal_tile_size
     _copy_diag_kernel!(A_tlr.backend)(
-        A, A_tlr.D, A_tlr.tile_m, A_tlr.tile_n;
-        ndrange=(A_tlr.tile_m, A_tlr.tile_n, n_full_diag),
+        A, A_tlr.D, b;
+        ndrange=(b, b, n_full_diag),
     )
     if size(A_tlr.D_corner, 3) != 0
         tile_k = ndiag_tiles(A_tlr)
@@ -49,8 +49,8 @@ tiles are reconstructed category-by-category with batched GEMMs.
 function uncompress!(A::AbstractMatrix{T}, A_tlr::TLRMatrix{<:Any,T}) where {T}
     size(A, 1) == A_tlr.m && size(A, 2) == A_tlr.n ||
         throw(DimensionMismatch("A dimensions must match A_tlr"))
-    A_tlr.m == A_tlr.n && A_tlr.tile_m == A_tlr.tile_n ||
-        throw(ArgumentError("uncompress! currently requires square matrices with square tiles"))
+    A_tlr.m == A_tlr.n ||
+        throw(ArgumentError("uncompress! currently requires square matrices"))
 
     _copy_diagonal_to_dense!(A, A_tlr)
 

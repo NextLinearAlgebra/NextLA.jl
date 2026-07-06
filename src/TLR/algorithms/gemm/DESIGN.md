@@ -43,7 +43,8 @@ fact drives the whole traversal choice (§4).
 ## 2. Scope and invariants
 
 The hard term operates on the **uniform core** only (interior `b×b` off-diagonal
-tiles, `int_U`/`int_V`); square tiles; constant `maxrank` with zero-padded
+tiles, `int_U`/`int_V`), where `b` is the shared nominal tile size; constant
+`maxrank` with zero-padded
 inactive rank columns. It does not pack factors or materialise padded tensors —
 every stage operand is a zero-copy strided view, and both CPU and CUDA execute
 through `gemm_batched!`. Boundary panels (`right`/`bottom`) and the corner are
@@ -211,7 +212,7 @@ Per `ColumnRun(k0:k1, jpos0:jpos1)` (scratch `S`/`T` carry a `k`-axis:
 
 ## 8. Orchestration (`gemm.jl`)
 
-`gemm!` validates shapes/block sizes/square tiles, scales `C` by `beta`, adds the
+`gemm!` validates shapes and the shared nominal tile size, scales `C` by `beta`, adds the
 three easy terms, then calls `_offdiag_gemm!`, which is small:
 
 ```julia
