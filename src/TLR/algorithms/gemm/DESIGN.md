@@ -71,7 +71,7 @@ Files:
 | `schedule.jl` | budgeted `RowRun`/`ColumnRun` iterators; `allocate_workspace` and the reusable batch-view buffers |
 | `stage.jl` | `StageDescriptor` and the `execute_stage!` methods that lower each stage straight to `gemm_batched!` |
 | `diagonal.jl` | the three easy terms |
-| `gemm.jl` | `gemm!` entry + validation + `_offdiag_gemm!` orchestration |
+| `gemm.jl` | `gemm!` entry + validation + `_offdiag_offdiag_gemm!` orchestration |
 
 The key design rule: no single function knows about storage layout, stage
 algebra, diagonal skipping, workspace budgeting, and execution dispatch at once.
@@ -213,7 +213,7 @@ Per `ColumnRun(k0:k1, jpos0:jpos1)` (scratch `S`/`T` carry a `k`-axis:
 ## 8. Orchestration (`gemm.jl`)
 
 `gemm!` validates shapes and the shared nominal tile size, scales `C` by `beta`, adds the
-three easy terms, then calls `_offdiag_gemm!`, which is small:
+three easy terms, then calls `_offdiag_offdiag_gemm!`, which is small:
 
 ```julia
 placement = k_axis_schedule(stride1_axis_left(A), stride1_axis_right(B))

@@ -36,9 +36,10 @@ const COMBOS = (
 const CONFIGS = (
     (b=64,  nt=16, r=16),
     (b=64,  nt=32, r=16),
-    (b=32,  nt=64, r=8),    # many tiny tiles — most launch-bound
-    (b=128, nt=16, r=32),   # big tiles — most compute-bound
     (b=64,  nt=48, r=24),
+    (b=128, nt=16, r=32),   # big tiles — most compute-bound
+    (b=256, nt=16, r=64),
+    (b=32,  nt=64, r=8),    # many tiny tiles — most launch-bound
 )
 
 const T = Float64
@@ -62,7 +63,7 @@ function time_dense(backend, m)
         t = @elapsed begin; mul!(Cd, Ad, Bd); gpu_sync(); end
         push!(ts, t)
     end
-    return median(ts) * 1e3
+    return minimum(ts) * 1e3
 end
 
 function time_gemm(backend, b, nt, r, oA, oB)
@@ -81,7 +82,7 @@ function time_gemm(backend, b, nt, r, oA, oB)
         end
         push!(ts, t)
     end
-    return median(ts) * 1e3   # ms
+    return minimum(ts) * 1e3   # ms
 end
 
 function main()

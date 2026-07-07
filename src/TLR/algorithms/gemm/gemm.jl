@@ -30,14 +30,14 @@ include("terms/corner.jl")
 # ─── Hard term:  O_A O_B  ───────────────────────────────────────────────────────
 
 """
-    _offdiag_gemm!(C, A, B; alpha, budget) -> C
+    _offdiag_offdiag_gemm!(C, A, B; alpha, budget) -> C
 
 Accumulate `alpha · O_A O_B` into the dense `C`.  Selects the reduction placement
 from the operand layouts, then for each budgeted run lowers Stage 1/2/3 straight
 to `gemm_batched!` via `execute_stage!`.
 """
-function _offdiag_gemm!(C, A::TLRMatrix{<:Any,T}, B::TLRMatrix{<:Any,T};
-                        alpha, budget) where {T}
+function _offdiag_offdiag_gemm!(C, A::TLRMatrix{<:Any,T}, B::TLRMatrix{<:Any,T};
+                                alpha, budget) where {T}
     _, nt = _interior_grid(A)
     (nt == 1 || A.maxrank == 0 || B.maxrank == 0) && return C
 
@@ -82,7 +82,7 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix, B::TLRMatrix;
     α = eltype(C)(alpha)
     β = eltype(C)(beta)
     _easy_terms!(C, A, B, α, β)                              # β·C + D_AD_B + O_AD_B + D_AO_B
-    _offdiag_gemm!(C, A, B; alpha=α, budget=max_workspace)   # O_A O_B  (accumulate, β=1)
+    _offdiag_offdiag_gemm!(C, A, B; alpha=α, budget=max_workspace)   # O_A O_B  (accumulate, β=1)
     # Boundary hard terms (only fire when m % b ≠ 0); β already applied above.
     _corner_term!(C, A, B, α; beta=one(eltype(C)))          # vᵀx  (corner block)
     return C
@@ -106,17 +106,17 @@ function _easy_terms!(C, A::TLRMatrix{<:Any,T}, B::TLRMatrix, α, β) where {T}
         # Product is block-diagonal: nothing writes the off-diagonal of C, so it
         # must be scaled explicitly; D_A D_B then accumulates onto the diagonal.
         _scale_output!(C, β)
-        _diag_diag!(C, A, B, α)
+        _diag_diag_gemm!(C, A, B, α)
         return C
     end
 
-    diagonal_group = () -> _diag_diag!(C, A, B, α; beta=β)      # diagonal first-writer
+    diagonal_group = () -> _diag_diag_gemm!(C, A, B, α; beta=β)      # diagonal first-writer
     offdiagonal_group = function ()
         if A.maxrank > 0
-            _offdiag_diag!(C, A, B, α; beta=β)                 # off-diagonal first-writer
-            _diag_offdiag!(C, A, B, α; beta=one(T))            # accumulate (no-op if B.maxrank==0)
+            _offdiag_diag_gemm!(C, A, B, α; beta=β)                 # off-diagonal first-writer
+            _diag_offdiag_gemm!(C, A, B, α; beta=one(T))            # accumulate (no-op if B.maxrank==0)
         else
-            _diag_offdiag!(C, A, B, α; beta=β)                 # B.maxrank>0: off-diagonal first-writer
+            _diag_offdiag_gemm!(C, A, B, α; beta=β)                 # B.maxrank>0: off-diagonal first-writer
         end
     end
 

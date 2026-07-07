@@ -2,7 +2,7 @@
 #
 # Splitting the operands around the partial last tile,
 #   A = [A₁₁  u ;  vᵀ  α],   B = [B₁₁  x ;  yᵀ  β],
-# the corner block of C = AB is  vᵀx + αβ.  `αβ` is produced by `_diag_diag!`
+# the corner block of C = AB is  vᵀx + αβ.  `αβ` is produced by `_diag_diag_gemm!`
 # (D_corner · D_corner); this term adds
 #   vᵀx = Σ_p v_p x_p         (p = interior index 1..Q)
 # where v_p is A's bottom-row tile (mt,p) and x_p is B's right-column tile (p,nt).
