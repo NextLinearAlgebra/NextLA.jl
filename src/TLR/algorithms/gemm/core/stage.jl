@@ -129,7 +129,7 @@ function execute_stage!(d::StageDescriptor{Stage3,<:KAsGemmK})
     T = _ws_eltype(d.workspace)
     run = d.run
     ws = d.workspace
-    b = div(size(d.C, 1), size(ws.Ustacked, 3))
+    b = size(ws.Ustacked, 1)                 # nominal tile size (interior tiles are b×b)
     noff = size(ws.T.data, 2)
     rA = size(ws.T.data, 1)
     Jw = run_width(run)
@@ -213,7 +213,7 @@ function execute_stage!(d::StageDescriptor{Stage3,<:KAsSerialLoop})
     T = _ws_eltype(d.workspace)
     run = d.run
     ws = d.workspace
-    b = div(size(d.C, 1), size(ws.Ufactored, 4))
+    b = size(ws.Ufactored, 1)                # nominal tile size (interior tiles are b×b)
     vb = ws.batches
     noff = size(ws.Ufactored, 3)
     # `k` is the reduction axis: loop it (one accumulate GEMM per k), batching the

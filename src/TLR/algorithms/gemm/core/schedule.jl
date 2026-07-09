@@ -42,7 +42,7 @@ end
 @inline function _per_col_bytes(A::TLRMatrix{<:Any,T}, B::TLRMatrix) where {T}
     _, nt = _interior_grid(A)
     noff = nt - 1
-    return max(A.maxrank * noff * (A.nominal_tile_size + B.maxrank) * sizeof(T), 1)
+    return max(maxrank(A) * noff * (A.nominal_tile_size + maxrank(B)) * sizeof(T), 1)
 end
 
 # Row family: block the whole (i, j) tile grid into rectangular runs whose tile
@@ -129,8 +129,6 @@ end
 @inline run_height(run::RowRun) = run.i1 - run.i0 + 1
 @inline run_kdepth(run::ColumnRun) = run.k1 - run.k0 + 1
 
-# ─── S / T workspace and reusable batch views ───────────────────────────────────
-
 # Preallocated `Vector` of a concrete view type, sized once and refilled per run
 # via `empty!`/`push!` (capacity reused, no per-run allocation).
 @inline function _batchvec(x, n::Int)
@@ -161,8 +159,8 @@ end
 function _row_batches(A, B, C, Sbuf, Tbuf, Uall, maxI::Int, maxJ::Int)
     b = A.nominal_tile_size
     noff = _interior_grid(A)[2] - 1
-    rA = A.maxrank
-    rB = B.maxrank
+    rA = maxrank(A)
+    rB = maxrank(B)
     ntrip = noff * maxJ * maxI          # Stage 1/2 tilewise batch over (i, k, j)
     Ssample = view(Sbuf, :, :, 1, 1, 1)               # S[:,:,p,kk,il]
     Tsample = view(Tbuf, :, 1, :, 1, 1)
@@ -190,8 +188,8 @@ end
 function _column_batches(A, B, C, Sbuf, Tbuf, Vall, Uall, maxK::Int, maxJ::Int)
     b = A.nominal_tile_size
     noff = _interior_grid(A)[1] - 1
-    rA = A.maxrank
-    rB = B.maxrank
+    rA = maxrank(A)
+    rB = maxrank(B)
     nkj = maxK * maxJ                    # Stage 1/2 batch over (k, jpos)
     n3 = noff * maxJ                     # Stage 3 batch over (i, jpos) per k
     Vpanel = view(Vall, :, :, 1)
@@ -224,8 +222,8 @@ function allocate_workspace(::KAsGemmK, A::TLRMatrix{<:Any,T}, B::TLRMatrix,
     mt, nt = _interior_grid(A)
     b = A.nominal_tile_size
     noff = nt - 1
-    rA = A.maxrank
-    rB = B.maxrank
+    rA = maxrank(A)
+    rB = maxrank(B)
     maxI, maxJ = _row_block(A, B, budget)
     Uall = reshape(A.int_U, b, rA * noff, mt)
     # S[:,:,p,kk,il]: p = off-diagonal position within the run's column block, laid
@@ -241,7 +239,7 @@ function allocate_workspace(::KAsSerialLoop, A::TLRMatrix{<:Any,T}, B::TLRMatrix
     _, nt = _interior_grid(A)
     b = A.nominal_tile_size
     noff = nt - 1
-    rA = A.maxrank
+    rA = maxrank(A)
     rB = B.maxrank
     maxK, maxJ = _column_block(A, B, budget)
     Vall = reshape(A.int_V, b, rA * noff, nt)

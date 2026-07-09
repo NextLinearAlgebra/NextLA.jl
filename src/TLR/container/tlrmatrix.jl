@@ -35,7 +35,7 @@ mutable struct TLRMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},RankT<:In
     const order::OrderT
     const m::Int
     const n::Int
-    const nominal_tile_size::Int
+    const nominal_tile_size::Int # b
 
     # Off-diagonal low-rank factors (one 3-D array per panel category):
     int_U::Arr3T        # [b,       maxrank, n_int]

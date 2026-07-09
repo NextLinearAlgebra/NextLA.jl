@@ -55,6 +55,27 @@ end
                                       budget=1)
     end
 
+    # Non-uniform tiling (m % b ≠ 0): exercises the boundary decomposition — interior,
+    # right/bottom panels and corner. Covers the tail ≥ Q regime (n=87,b=16 → Q=5,s=7)
+    # that the Stage-3 tile-size fix unblocked, and tail < Q (n=35,b=8 → Q=4,s=3).
+    @testset "boundary tiling (m % b ≠ 0)" begin
+        for orderA in orders, orderB in orders
+            for (n, b, r) in ((35, 8, 3), (87, 16, 4), (46, 12, 5))
+                @testset "$(orderA) * $(orderB), n=$n b=$b" begin
+                    assert_tlr_gemm_matches_dense(Array, Float64, n, b, r, orderA, orderB, _ -> nothing;
+                                                  budget=1)
+                    assert_tlr_gemm_matches_dense(Array, Float64, n, b, r, orderA, orderB, _ -> nothing;
+                                                  budget=128 * 1024 * 1024)
+                end
+            end
+        end
+        @testset "boundary with zero rank" begin
+            assert_tlr_gemm_matches_dense(Array, Float64, 46, 10, 0,
+                                          NextLA.TileColMajor(), NextLA.TileRowMajor(), _ -> nothing;
+                                          budget=1)
+        end
+    end
+
 end
 
 @testset "TLR gemm! to dense on CUDA" begin
