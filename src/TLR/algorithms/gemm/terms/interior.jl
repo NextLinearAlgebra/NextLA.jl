@@ -174,7 +174,7 @@ function _offdiag_offdiag_gemm!(C, A::TLRMatrix{<:BackendT,T}, B::TLRMatrix{<:Ba
     ops = logical_operands(A, B)
     ws = allocate_workspace(placement, A, B, C, budget)
 
-    for run in runs(placement, A, B, budget)
+    @inbounds for run in runs(placement, A, B, budget)
         prepare_run!(placement, run, ws)
         execute_stage!(stage1(placement, run, ops, ws))
         execute_stage!(stage2(placement, run, ops, ws))
@@ -247,7 +247,7 @@ function tlr_gemm_rpanel_by_bpanel(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Bac
     s3t = Vector{typeof(view(Tbuf, 1:rA, :, 1))}()
     s3c = Vector{typeof(_dense_tile_view(C, A, 1, 1))}() # (b × b) tile view of C
 
-    for jrange in Iterators.partition(1:Q, maxJ)
+    @inbounds for jrange in Iterators.partition(1:Q, maxJ)
         j0 = first(jrange)
         j1 = last(jrange)
         Δ = length(jrange)

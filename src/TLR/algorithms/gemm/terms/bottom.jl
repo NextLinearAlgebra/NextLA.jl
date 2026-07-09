@@ -43,31 +43,29 @@ function tlr_gemm_bpanel_by_int(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backen
     S = allocate(A.backend, T, rA, rB, per, maxJ)
     Tw = allocate(A.backend, T, rA, b, per, maxJ)
 
-    j0 = 1
-    while j0 <= Q
-        j1 = min(j0 + maxJ - 1, Q)
+    @inbounds for jrange in Iterators.partition(1:Q, maxJ)
+        j0 = first(jrange)
         # Stage 1:  S_{j,kk} = V_iᵀ W_ij,  batched over (column j, off-diag position kk).
         gemm_batched!('T', 'N', one(T),
-            [view(A.bottom_V,:,:,local_to_col(j, kk)) for j in j0:j1 for kk in 1:per],
-            [view(B.int_U,:,:,_offdiag_index(order, Q, Q, local_to_col(j, kk), j)) for j in j0:j1 for kk in 1:per],
+            [view(A.bottom_V,:,:,local_to_col(j, kk)) for j in jrange for kk in 1:per],
+            [view(B.int_U,:,:,_offdiag_index(order, Q, Q, local_to_col(j, kk), j)) for j in jrange for kk in 1:per],
             zero(T),
-            [view(S,:,:,kk,(j-j0+1)) for j in j0:j1 for kk in 1:per])
+            [view(S,:,:,kk,(j-j0+1)) for j in jrange for kk in 1:per])
         # Stage 2:  T_{j,kk} = S_{j,kk} Z_ijᵀ,  same batch.
         gemm_batched!('N', 'T', one(T),
-            [view(S,:,:,kk,(j-j0+1)) for j in j0:j1 for kk in 1:per],
-            [view(B.int_V,:,:,_offdiag_index(order, Q, Q, local_to_col(j, kk), j)) for j in j0:j1 for kk in 1:per],
+            [view(S,:,:,kk,(j-j0+1)) for j in jrange for kk in 1:per],
+            [view(B.int_V,:,:,_offdiag_index(order, Q, Q, local_to_col(j, kk), j)) for j in jrange for kk in 1:per],
             zero(T),
-            [view(Tw,:,:,kk,(j-j0+1)) for j in j0:j1 for kk in 1:per])
+            [view(Tw,:,:,kk,(j-j0+1)) for j in jrange for kk in 1:per])
         # Stage 3:  C_bottom[j] += α·Σ_i U_i T_{j,kk}.  Loop the reduction (kk); each kk
         # writes distinct columns j, so batch over j and accumulate with β = 1.
         for kk in 1:per
             gemm_batched!('N', 'N', alpha,
-                [view(A.bottom_U,:,:,local_to_col(j, kk)) for j in j0:j1],
-                [view(Tw,:,:,kk,(j-j0+1)) for j in j0:j1],
+                [view(A.bottom_U,:,:,local_to_col(j, kk)) for j in jrange],
+                [view(Tw,:,:,kk,(j-j0+1)) for j in jrange],
                 one(T),
-                [_dense_tile_view(C, A, mt, j) for j in j0:j1])
+                [_dense_tile_view(C, A, mt, j) for j in jrange])
         end
-        j0 = j1 + 1
     end
     return C
 end
