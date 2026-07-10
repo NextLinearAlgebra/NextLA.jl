@@ -165,16 +165,17 @@ Accumulate `alpha · O_A O_B` into the dense `C`.  Selects the reduction placeme
 from the operand layouts, then for each budgeted run lowers Stage 1/2/3 straight
 to `gemm_batched!` via `execute_stage!`.
 """
-function _offdiag_offdiag_gemm!(C, A::TLRDenseDiagMatrix{<:BackendT,T}, B::TLRDenseDiagMatrix{<:BackendT,T};
-    alpha::T, budget) where {T,BackendT}
-    _, nt = _full_regular_grid(A)
-    (nt == 1 || maxrank(A) == 0 || maxrank(B) == 0) && return C
+function _offdiag_offdiag_gemm!(C, A::AbstractTLRMatrix{<:Any,T}, B::AbstractTLRMatrix{<:Any,T};
+    alpha::T, budget) where {T}
+    ops = logical_operands(A, B)
+    # tiles_per_row(ops.av) == 0 covers both `nt == 1` (SkipDiag: only the diagonal)
+    # and an empty grid; zero rank on either side leaves nothing to contract.
+    (tiles_per_row(ops.av) == 0 || rankdim(ops.av) == 0 || rankdim(ops.bw) == 0) && return C
 
     placement = k_axis_schedule(stride1_axis_left(A), stride1_axis_right(B))
-    ops = logical_operands(A, B)
-    ws = allocate_workspace(placement, A, B, C, budget)
+    ws = allocate_workspace(placement, ops, C, budget)
 
-    @inbounds for run in runs(placement, A, B, budget)
+    @inbounds for run in runs(placement, ops, budget)
         prepare_run!(placement, run, ws)
         execute_stage!(stage1(placement, run, ops, ws))
         execute_stage!(stage2(placement, run, ops, ws))

@@ -71,3 +71,29 @@ function gemm!(C::AbstractMatrix, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDense
     end
     return C
 end
+
+"""
+    gemm!(C, A::TLRMatrix, B::TLRMatrix; alpha=true, beta=false, max_workspace) -> C
+
+Fully low-rank TLR × TLR → dense `C := alpha·(A·B) + beta·C`.
+
+Currently restricted to tile-aligned dimensions (`m`, `n` divisible by the tile size);
+boundary tiles are a later extension.
+"""
+function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T};
+    alpha=true, beta=false, max_workspace::Int=DEFAULT_GEMM_BUDGET) where {BackendT,T}
+    size(A, 2) == size(B, 1) ||
+        throw(DimensionMismatch("size(A,2) must equal size(B,1)"))
+    (size(C, 1), size(C, 2)) == (size(A, 1), size(B, 2)) ||
+        throw(DimensionMismatch("C must be size(A,1) × size(B,2)"))
+    nominal_tile_size(A) == nominal_tile_size(B) ||
+        throw(DimensionMismatch("A and B must share the same nominal tile size"))
+    (all(iszero, tail_tile_size(A)) && all(iszero, tail_tile_size(B))) ||
+        throw(ArgumentError("gemm! on TLRMatrix currently requires tile-aligned dimensions (no boundary tiles)"))
+
+    α = T(alpha)
+    β = T(beta)
+    _scale_output!(C, β)
+    _offdiag_offdiag_gemm!(C, A, B; alpha=α, budget=max_workspace)
+    return C
+end

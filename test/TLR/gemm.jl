@@ -78,6 +78,66 @@ end
 
 end
 
+function fill_random_tlr!(A_tlr::NextLA.TLRMatrix, ArrayType::Type; seed::Integer)
+    rng = MersenneTwister(seed)
+    T = eltype(A_tlr)
+    for f in (A_tlr.int_U, A_tlr.int_V, A_tlr.right_U, A_tlr.right_V,
+              A_tlr.bottom_U, A_tlr.bottom_V, A_tlr.corner_U, A_tlr.corner_V)
+        length(f) == 0 && continue
+        f .= ArrayType(randn(rng, T, size(f)))
+    end
+    A_tlr.ranks .= A_tlr.maxrank
+    return A_tlr
+end
+
+# Fully low-rank TLR × TLR → dense over a (possibly rectangular) tile-aligned grid.
+# `A` is `mA×k`, `B` is `k×nB` (all divisible by `b`), so there are no boundary tiles
+# and the whole product is the `FullGrid` interior term.
+function assert_fulllr_gemm_matches_dense(ArrayType::Type, T::Type, mA::Int, k::Int, nB::Int,
+                                          b::Int, r::Int, orderA, orderB, synchronize; budget::Int,
+                                          alpha=T(1.3), beta=T(-0.4), atol=1e-10, rtol=1e-10)
+    A_tlr = NextLA.TLRMatrix(ArrayType(zeros(T, mA, k)), b, r; tile_order=orderA)
+    B_tlr = NextLA.TLRMatrix(ArrayType(zeros(T, k, nB)), b, r; tile_order=orderB)
+    fill_random_tlr!(A_tlr, ArrayType; seed=101)
+    fill_random_tlr!(B_tlr, ArrayType; seed=202)
+
+    rng = MersenneTwister(303)
+    C0_cpu = randn(rng, T, mA, nB)
+    C = ArrayType(C0_cpu)
+    NextLA.TLRmodule.gemm!(C, A_tlr, B_tlr; alpha=alpha, beta=beta, max_workspace=budget)
+    synchronize(C)
+
+    A_dense = reconstruct_tlr(A_tlr)
+    B_dense = reconstruct_tlr(B_tlr)
+    C_ref = alpha * A_dense * B_dense + beta * C0_cpu
+    @test isapprox(Array(C), C_ref; atol=atol, rtol=rtol)
+end
+
+@testset "full-LR TLR gemm! to dense on CPU" begin
+    orders = (NextLA.TileRowMajor(), NextLA.TileColMajor())
+    for orderA in orders, orderB in orders
+        @testset "$(orderA) * $(orderB)" begin
+            for budget in (1, 128 * 1024 * 1024)
+                # square grid (q = 3)
+                assert_fulllr_gemm_matches_dense(Array, Float64, 12, 12, 12, 4, 2,
+                                                 orderA, orderB, _ -> nothing; budget=budget)
+                # rectangular grid: q_m=3, q_c=2, q_n=4
+                assert_fulllr_gemm_matches_dense(Array, Float64, 12, 8, 16, 4, 3,
+                                                 orderA, orderB, _ -> nothing; budget=budget)
+            end
+        end
+    end
+
+    @testset "edge cases" begin
+        # single contraction tile (q_c = 1): kept by FullGrid, unlike the dense-diag interior
+        assert_fulllr_gemm_matches_dense(Array, Float64, 8, 4, 8, 4, 2,
+                                         NextLA.TileRowMajor(), NextLA.TileColMajor(), _ -> nothing; budget=1)
+        # zero rank
+        assert_fulllr_gemm_matches_dense(Array, Float64, 8, 8, 8, 4, 0,
+                                         NextLA.TileColMajor(), NextLA.TileRowMajor(), _ -> nothing; budget=1)
+    end
+end
+
 @testset "TLR gemm! to dense on CUDA" begin
     for (backend_name, ArrayType, synchronize) in available_backends()
         backend_name == "CUDA" || continue

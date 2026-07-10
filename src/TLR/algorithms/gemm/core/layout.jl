@@ -24,11 +24,12 @@ For the left operand `A`, `Ax` is `:i` or `:k`; for the right operand `B`,
 """
 struct Stride1Axis{Ax} end
 
-@inline stride1_axis_left(::TLRDenseDiagMatrix{<:Any,<:Any,<:Any,<:Any,TileColMajor}) = Stride1Axis{:i}()
-@inline stride1_axis_left(::TLRDenseDiagMatrix{<:Any,<:Any,<:Any,<:Any,TileRowMajor}) = Stride1Axis{:k}()
+# Order is the 3rd parameter of `AbstractTLRMatrix`, so these cover both container types.
+@inline stride1_axis_left(::AbstractTLRMatrix{<:Any,<:Any,TileColMajor}) = Stride1Axis{:i}()
+@inline stride1_axis_left(::AbstractTLRMatrix{<:Any,<:Any,TileRowMajor}) = Stride1Axis{:k}()
 
-@inline stride1_axis_right(::TLRDenseDiagMatrix{<:Any,<:Any,<:Any,<:Any,TileColMajor}) = Stride1Axis{:k}()
-@inline stride1_axis_right(::TLRDenseDiagMatrix{<:Any,<:Any,<:Any,<:Any,TileRowMajor}) = Stride1Axis{:j}()
+@inline stride1_axis_right(::AbstractTLRMatrix{<:Any,<:Any,TileColMajor}) = Stride1Axis{:k}()
+@inline stride1_axis_right(::AbstractTLRMatrix{<:Any,<:Any,TileRowMajor}) = Stride1Axis{:j}()
 
 """
     KAxisSchedule
@@ -77,3 +78,17 @@ struct JAsGemmN <: FreeAxisSchedule end
 @inline free_axis_schedule(::KAsGemmK{:k}) = FreeAsBatch()
 @inline free_axis_schedule(::KAsSerialLoop{:k}) = IAsGemmM()
 @inline free_axis_schedule(::KAsSerialLoop{:j}) = IJAsGemmMN()
+
+"""
+    GridKind
+
+Interior tile-grid enumeration policy of an operand. `SkipDiag` is the dense-diagonal
+interior (the diagonal tile is stored separately, so it is excluded from the low-rank
+grid); `FullGrid` is the fully low-rank interior (every tile present). The staged core
+consults this to decide how tile rows enumerate their contraction tiles, so one set of
+`execute_stage!` methods serves both container types; for `FullGrid` the skip helpers
+fold to identities. See `panel.jl` for the policy bodies.
+"""
+abstract type GridKind end
+struct SkipDiag <: GridKind end   # dense-diag interior: diagonal excluded
+struct FullGrid <: GridKind end   # fully low-rank: every tile present

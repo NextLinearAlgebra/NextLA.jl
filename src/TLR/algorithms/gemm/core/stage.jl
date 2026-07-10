@@ -35,12 +35,6 @@ end
 
 @inline prepare_run!(::KAsSerialLoop, ::ColumnRun, ::ColumnWorkspace) = nothing
 
-# Off-diagonal position of output column `j` within the run's block `[j0:j1]` for
-# contraction tile `k` (the diagonal column `j=k` is skipped, so columns past `k`
-# shift down by one). `S` is indexed by this `p`; `T` stays indexed by `jl`.
-@inline _offdiag_pos(j0::Int, k::Int, j::Int) = (j - j0 + 1) - ((j0 <= k) & (k < j) ? 1 : 0)
-# Panel-local index (in `rowpanel(k)`) of absolute column `j ≠ k`.
-@inline _panel_local(k::Int, j::Int) = j < k ? j : j - 1
 
 function execute_stage!(d::StageDescriptor{Stage1,<:KAsGemmK,<:Any,<:Any,<:Any,<:Any,<:Any,FreeAsBatch})
     T = _ws_eltype(d.workspace)
@@ -51,11 +45,11 @@ function execute_stage!(d::StageDescriptor{Stage1,<:KAsGemmK,<:Any,<:Any,<:Any,<
     _clear_batches!(vb.s1v, vb.s1w, vb.s1s)
 
     @inbounds for (il, i) in enumerate(run.i0:run.i1)
-        for kk in 1:ops.av.noff
-            k = local_to_col(i, kk)
+        for kk in 1:tiles_per_row(ops.av)
+            k = panel_col(ops.av, i, kk)
             for j in run.j0:run.j1
-                j == k && continue
-                p = _offdiag_pos(run.j0, k, j)
+                p = col_scratch_pos(ops.bw, run.j0, k, j)
+                p == 0 && continue
                 push!(vb.s1v, tilefactor(ops.av, i, k))
                 push!(vb.s1w, tilefactor(ops.bw, k, j))
                 push!(vb.s1s, view(ws.S.data, :, :, p, kk, il))
@@ -81,12 +75,12 @@ function execute_stage!(d::StageDescriptor{Stage1,<:KAsGemmK,<:Any,<:Any,<:Any,<
     rA = size(ws.S.data, 1)
 
     @inbounds for (il, i) in enumerate(run.i0:run.i1)
-        for kk in 1:ops.av.noff
-            k = local_to_col(i, kk)
-            jf = run.j0 == k ? run.j0 + 1 : run.j0          # first off-diagonal column
-            je = run.j1 == k ? run.j1 - 1 : run.j1          # last off-diagonal column
+        for kk in 1:tiles_per_row(ops.av)
+            k = panel_col(ops.av, i, kk)
+            jf = first_offdiag_col(ops.bw, run.j0, k)        # first included column
+            je = last_offdiag_col(ops.bw, run.j1, k)         # last included column
             jf > je && continue                              # block is only the diagonal
-            lrange = _panel_local(k, jf):_panel_local(k, je) # contiguous panel slice
+            lrange = panel_local(ops.bw, k, jf):panel_local(ops.bw, k, je) # contiguous panel slice
             len = length(lrange)
             Wpanel = rowpanel(ops.bw, k)
             Wsub = reshape(view(Wpanel, :, :, lrange), b, len * rB)
@@ -109,11 +103,11 @@ function execute_stage!(d::StageDescriptor{Stage2,<:KAsGemmK})
     _clear_batches!(vb.s2s, vb.s2z, vb.s2t)
 
     @inbounds for (il, i) in enumerate(run.i0:run.i1)
-        for kk in 1:ops.av.noff
-            k = local_to_col(i, kk)
+        for kk in 1:tiles_per_row(ops.av)
+            k = panel_col(ops.av, i, kk)
             for j in run.j0:run.j1
-                j == k && continue
-                p = _offdiag_pos(run.j0, k, j)
+                p = col_scratch_pos(ops.bw, run.j0, k, j)
+                p == 0 && continue
                 jl = j - run.j0 + 1
                 push!(vb.s2s, view(ws.S.data, :, :, p, kk, il))
                 push!(vb.s2z, tilefactor(ops.bz, k, j))
@@ -155,7 +149,7 @@ function execute_stage!(d::StageDescriptor{Stage1,<:KAsSerialLoop,<:Any,<:Any,<:
     @inbounds for (kx, k) in enumerate(run.k0:run.k1)
         Vpanel = view(ws.Vstacked, :, :, k)
         for (jx, jpos) in enumerate(run.jpos0:run.jpos1)
-            j = local_to_col(k, jpos)
+            j = panel_col(ops.bw, k, jpos)
             push!(vb.s1v, Vpanel)
             push!(vb.s1w, tilefactor(ops.bw, k, j))
             push!(vb.s1s, view(ws.S.data, :, :, jx, kx))
@@ -200,7 +194,7 @@ function execute_stage!(d::StageDescriptor{Stage2,<:KAsSerialLoop})
 
     @inbounds for (kx, k) in enumerate(run.k0:run.k1)
         for (jx, jpos) in enumerate(run.jpos0:run.jpos1)
-            j = local_to_col(k, jpos)
+            j = panel_col(ops.bz, k, jpos)
             push!(vb.s2s, view(ws.S.data, :, :, jx, kx))
             push!(vb.s2z, tilefactor(ops.bz, k, j))
             push!(vb.s2t, reshape(view(ws.T.data, :, :, :, jx, kx), rA_noff, b))
@@ -212,6 +206,7 @@ end
 function execute_stage!(d::StageDescriptor{Stage3,<:KAsSerialLoop})
     T = _ws_eltype(d.workspace)
     run = d.run
+    ops = d.ops
     ws = d.workspace
     b = size(ws.Ufactored, 1)                # nominal tile size (interior tiles are b×b)
     vb = ws.batches
@@ -222,9 +217,9 @@ function execute_stage!(d::StageDescriptor{Stage3,<:KAsSerialLoop})
     @inbounds for (kx, k) in enumerate(run.k0:run.k1)
         _clear_batches!(vb.s3u, vb.s3t, vb.s3c)
         for li in 1:noff
-            i = local_to_col(k, li)
+            i = panel_col(ops.au, k, li)
             for (jx, jpos) in enumerate(run.jpos0:run.jpos1)
-                j = local_to_col(k, jpos)
+                j = panel_col(ops.bw, k, jpos)
                 push!(vb.s3u, view(ws.Ufactored, :, :, li, k))
                 push!(vb.s3t, view(ws.T.data, :, li, :, jx, kx))
                 push!(vb.s3c, dense_tile(d.C, b, i, j))

@@ -67,7 +67,7 @@ Files:
 | file | responsibility |
 | --- | --- |
 | `layout.jl` | pure traits: `Stride1Axis`, `KAxisSchedule`, `FreeAxisSchedule`, and the functions deriving them from `TLRDenseDiagMatrix` types |
-| `panel.jl` | physical `PanelView` over factor storage + tile-coordinate utilities; logical operands (`LogicalTLROperands`), `ScratchS`/`ScratchT` |
+| `panel.jl` | `InteriorOperand` over factor storage + `GridKind` enumeration policy; logical operands (`LogicalTLROperands`), `ScratchS`/`ScratchT` |
 | `schedule.jl` | budgeted `RowRun`/`ColumnRun` iterators; `allocate_workspace` and the reusable batch-view buffers |
 | `stage.jl` | `StageDescriptor` and the `execute_stage!` methods that lower each stage straight to `gemm_batched!` |
 | `diagonal.jl` | the three easy terms |
@@ -119,23 +119,26 @@ Fusing `j` (B row-major makes `W_k,:` contiguous) turns Stage 1 from many tiny
 
 ## 5. Physical access (`panel.jl`)
 
-`PanelView{Side,Factor,Ax,M,A3}` wraps one flat factor array `[b, maxrank, n_off]`
-plus its `TLRDenseDiagMatrix` and `noff = nt-1`. `Side`/`Factor` (`LeftOperand`/`VFactor`,
-…) document which stage quantity a view is, so stage code never spells raw
-`view(A.int_V, …)`.
+`InteriorOperand{Kind,Order,A3}` wraps one flat factor array `[b, maxrank, ntiles]`
+plus its grid extents `(qm, qn)`, traversal `order`, and enumeration `Kind`
+(`SkipDiag`/`FullGrid`, §10). All tile addressing goes through the `Kind` policy, so
+the stage code is agnostic to whether the diagonal is stored separately.
 
-Accessors, all zero-copy:
+Accessors, all zero-copy (each dispatches on the operand's `Kind`):
 
-- `tilefactor(p, i, j)` — factor of off-diagonal tile `(i,j)` (via `_offdiag_index`);
-- `rowpanel(p, r)` — a contiguous `[b, maxrank, noff]` row panel;
-- `local_to_col(r, pos)` — map a row panel's local position to the actual tile
-  column, skipping the diagonal.
+- `tilefactor(p, i, j)` — factor of tile `(i,j)` (slot via `_offdiag_index` for
+  `SkipDiag`, `tile_linear_index` for `FullGrid`);
+- `rowpanel(p, r)` — a contiguous `[b, maxrank, tiles_per_row]` row panel;
+- `tiles_per_row(p)` — contraction tiles in a row (`qn-1` skipping the diagonal, or `qn`);
+- `panel_col(p, r, pos)` — row-panel local position → actual tile column;
+- `col_scratch_pos(p, j0, k, j)` — output column `j`'s scratch slot, `0` to skip it;
+- `first_offdiag_col`/`last_offdiag_col`/`panel_local` — fused-Stage-1 panel-slice bounds.
 
-`logical_operands(A, B)` bundles the stage-panel operands as
-`LogicalTLROperands(av=V, bw=W, bz=Z)`. Stage 3 uses the `U` views already
-stacked in workspace. The dense output is passed as `C` directly;
-`dense_tile(C, ...)` / `dense_rowblock(C, ...)` cut zero-copy `b×b` or row-block
-views of it.
+`logical_operands(A, B)` bundles the operands as
+`LogicalTLROperands(av=V, bw=W, bz=Z, au=U)` — `au` (A's `U`) is carried for the
+column family's tilewise Stage 3; the row family stacks `U` in workspace. The dense
+output is passed as `C` directly; `dense_tile(C, ...)` / `dense_rowblock(C, ...)` cut
+zero-copy `b×b` or row-block views of it.
 
 ## 6. Scheduling and workspace (`schedule.jl`)
 
@@ -327,11 +330,15 @@ end
 
 ### Implementation sequence (each step stays test-green)
 
-1. Swap `_interior_grid → _full_regular_grid` across gemm (mechanical; identical
-   on square, unlocks rectangular geometry).
-2. Slim `PanelView` into `InteriorOperand` + `GridKind`, wiring only `SkipDiag`
-   (pure refactor).
-3. Add `FullGrid` + the `TLRMatrix` interior path; test full-LR interior-only
-   (`m%b==0`) against a dense reference.
+1. **[done]** Swap `_interior_grid → _full_regular_grid` across gemm (mechanical;
+   identical on square, unlocks rectangular geometry).
+2. **[done]** Slim `PanelView` into `InteriorOperand` + `GridKind`, wiring only
+   `SkipDiag` (pure refactor).
+3. **[done]** Add `FullGrid` + the `TLRMatrix` interior path. `schedule.jl` is now
+   operand-driven with explicit rectangular extents (`_interior_geom`: `q_m`, `q_c`,
+   `q_n`, plus `perA_row`/`perA_col`/`perB_row` — all equal to `nt-1` on a square
+   `SkipDiag` interior). `gemm!(::TLRMatrix, ::TLRMatrix)` runs the full-grid staged
+   product; tested (square + rectangular, all four combos, both budgets) against a
+   dense reference. Restricted to tile-aligned dimensions (no boundary tiles).
 4. Add `TLRMatrix` boundary/corner terms, region by region, each test-guarded.
-5. Add the `gemm!(::TLRMatrix, ::TLRMatrix)` entry + rectangular tests.
+5. Extend `gemm!(::TLRMatrix, ::TLRMatrix)` to boundary tiles + rectangular tails.
