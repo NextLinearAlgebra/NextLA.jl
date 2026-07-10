@@ -7,6 +7,11 @@ storage.
 """
 abstract type AbstractTLRMatrix{BackendT<:Backend,T,OrderT<:TileOrderStyle} end
 
+const _TILE_INT = UInt8(1)      # regular interior tile category
+const _TILE_RIGHT = UInt8(2)    # right boundary tile category
+const _TILE_BOTTOM = UInt8(3)   # bottom boundary tile category
+const _TILE_CORNER = UInt8(4)   # bottom-right corner tile category
+
 Base.eltype(::Type{<:AbstractTLRMatrix{<:Any,T}}) where {T} = T
 Base.eltype(::AbstractTLRMatrix{<:Any,T}) where {T} = T
 Base.size(A::AbstractTLRMatrix) = (A.m, A.n)
@@ -51,6 +56,28 @@ end
 @inline residuals(A::AbstractTLRMatrix) = A.resid
 @inline KernelAbstractions.get_backend(A::AbstractTLRMatrix) = A.backend
 @inline tile_order(A::AbstractTLRMatrix) = A.order
+
+"""
+    _rank_index(A, i, j) -> Int
+
+Index into `ranks(A)` / `residuals(A)` for tile `(i, j)`. All TLR containers
+keep these diagnostic vectors tile-grid aligned, even when a concrete container
+stores some tiles densely. Dense tiles therefore still occupy a rank/residual
+slot; their values describe the represented tile, not necessarily low-rank
+factor storage.
+"""
+@inline function _rank_index(A::AbstractTLRMatrix, i::Int, j::Int)
+    mt, nt = tilegrid_size(A)
+    return tile_linear_index(A.order, mt, nt, i, j)
+end
+
+"""
+    _rank_index(A, category, k) -> Int
+
+Map a category-local storage slot to the tile-grid-aligned diagnostic slot.
+"""
+@inline _rank_index(A::AbstractTLRMatrix, cat::UInt8, k::Int) =
+    _rank_index(A, _category_coords(A, cat, k)...)
 
 @inline function tile_origin_coords(A::AbstractTLRMatrix, tile_i::Int, tile_j::Int)
     return ((tile_i - 1) * nominal_tile_size(A, 1) + 1,

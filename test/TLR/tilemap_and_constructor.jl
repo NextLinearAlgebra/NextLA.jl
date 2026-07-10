@@ -93,13 +93,16 @@ end
             @test size(NextLA.dense_diag(A)) == (16, 16, 2)
             @test size(NextLA.dense_diag_corner(A)) == (16, 16, 0)
             @test NextLA.dense_diag_corner(A) === A.D_corner
-            @test size(NextLA.ranks(A)) == (2,)
-            @test all(iszero, Array(NextLA.ranks(A)))
+            @test size(NextLA.ranks(A)) == (4,)
+            @test Int(NextLA.ranks(A)[NextLA.TLRmodule._rank_index(A, 1, 1)]) == 16
+            @test Int(NextLA.ranks(A)[NextLA.TLRmodule._rank_index(A, 2, 2)]) == 16
+            @test Int(NextLA.ranks(A)[NextLA.TLRmodule._rank_index(A, 1, 2)]) == 0
+            @test Int(NextLA.ranks(A)[NextLA.TLRmodule._rank_index(A, 2, 1)]) == 0
             @test size(A.int_U, 3) == 2
             @test size(A.right_U, 3) == 0
             @test size(A.bottom_U, 3) == 0
-            @test expected_storage_slot(A, 1, 2) == 2
-            @test expected_storage_slot(A, 2, 1) == 1
+            @test expected_storage_slot(A, 1, 2) == 3
+            @test expected_storage_slot(A, 2, 1) == 2
 
             synchronize(A.int_U)
             synchronize(A.int_V)

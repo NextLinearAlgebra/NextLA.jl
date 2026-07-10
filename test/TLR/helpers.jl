@@ -9,7 +9,7 @@ function make_lowrank_tile(::Type{T}, b::Int, r::Int; seed::Integer) where {T}
     end
     qleft = Matrix(qr(randn(rng, T, b, r)).Q)
     qright = Matrix(qr(randn(rng, T, b, r)).Q)
-    sigma = collect(range(T(2), T(1), length=r))
+    sigma = r == 1 ? [T(1)] : collect(range(T(2), T(1), length=r))
     return qleft[:, 1:r] * Diagonal(sigma) * qright[:, 1:r]'
 end
 
@@ -58,10 +58,31 @@ function reconstruct_tlr(A_tlr::NextLA.TLRDenseDiagMatrix)
     return A
 end
 
-expected_storage_slot(A_tlr::NextLA.TLRDenseDiagMatrix, i::Int, j::Int) = NextLA.TLRmodule._rank_index(A_tlr, i, j)
+function reconstruct_tlr(A_tlr::NextLA.TLRMatrix)
+    T = eltype(A_tlr)
+    A = zeros(T, size(A_tlr))
+
+    for linear in 1:prod(NextLA.tilegrid_size(A_tlr))
+        tile_i, tile_j = NextLA.TLRmodule.inverse_tile_index(A_tlr.order, NextLA.tilegrid_size(A_tlr)..., linear)
+        p0, q0 = NextLA.tile_origin_coords(A_tlr, tile_i, tile_j)
+        tile_m, tile_n = NextLA.tile_size(A_tlr, tile_i, tile_j)
+        rows = p0:(p0 + tile_m - 1)
+        cols = q0:(q0 + tile_n - 1)
+
+        r = Int(NextLA.ranks(A_tlr)[NextLA.TLRmodule._rank_index(A_tlr, tile_i, tile_j)])
+        U, V = NextLA.get_factors(A_tlr, tile_i, tile_j)
+        A[rows, cols] .= r == 0 ? zeros(T, tile_m, tile_n) :
+            Matrix(U) * Matrix(adjoint(V))
+    end
+
+    return A
+end
+
+expected_storage_slot(A_tlr::NextLA.AbstractTLRMatrix, i::Int, j::Int) =
+    NextLA.TLRmodule._rank_index(A_tlr, i, j)
 
 function assert_tile_rank_and_error(
-    A_tlr::NextLA.TLRDenseDiagMatrix,
+    A_tlr::NextLA.AbstractTLRMatrix,
     tile_i::Int,
     tile_j::Int,
     expected_rank::Int,

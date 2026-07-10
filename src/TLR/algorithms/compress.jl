@@ -51,7 +51,7 @@ function _copy_diagonal_from_dense!(A_tlr::TLRDenseDiagMatrix{<:Any,T}, A::Abstr
         tm, tn = tile_size(A_tlr, tile_k, tile_k)
         copyto!(view(A_tlr.D_corner, 1:tm, 1:tn, 1), _dense_tile_view(A, A_tlr, tile_k, tile_k))
     end
-    return A_tlr
+    return _set_dense_diagonal_diagnostics!(A_tlr)
 end
 
 #= Squared magnitude accumulated in Float64: the error indicator is a difference
@@ -392,11 +392,11 @@ function detect_rank!(U::AbstractArray{T,3}, V, Q_T, V_T, rk, err_sq, normA_sq,
     U
 end
 
-# scratch for one tile category (interior / right / bottom)
+# scratch for one tile category
 # `U`/`V` alias the A_tlr output panels (maxrank-wide); the sketch
-struct CompressCategoryWorkspace{PanelT,ScratchT,ScratchHiT,TileVT,RankVT,F64V,I32V}
-    cat::UInt8             # dense-diag tile category
-    rank0::Int             # index offset into A_tlr.ranks / A_tlr.resid
+struct CompressCategoryWorkspace{PanelT,ScratchT,ScratchHiT,TileVT,RankVT,F64V,I32V,RankIndexT}
+    cat::UInt8             # tile category
+    rank_indices::RankIndexT # category-local tile slot -> A_tlr.ranks / A_tlr.resid slot
     S::Int                 # sketch width    = min(maxrank + oversample, tm, tn)
     R_keep::Int            # max stored rank  = min(maxrank, S)
     U::PanelT              # output left factors  (aliases A_tlr, maxrank-wide)
@@ -414,12 +414,9 @@ struct CompressCategoryWorkspace{PanelT,ScratchT,ScratchHiT,TileVT,RankVT,F64V,I
     q0s::I32V              # per-tile dense-source col origin (1-based)
 end
 
-# full scratch: one CompressCategoryWorkspace per tile category,
-# reusable for matrix layout + oversampling
-struct CompressWorkspace{IntWS,RightWS,BottomWS,StreamV}
-    interior::IntWS
-    right::RightWS
-    bottom::BottomWS
+# reusable scratch for matrix layout + oversampling
+struct CompressWorkspace{CatsT,StreamV}
+    cats::CatsT
     streams::StreamV # one execution stream for each category on gpu
 end
 
@@ -515,17 +512,27 @@ function compress_tiles!(src::TileSource, cat::CompressCategoryWorkspace; eps_sq
     return cat
 end
 
-# (category, output U/V panels, tile dims, rank offset) per off-diagonal category.
-@inline _category_specs(A_tlr, bm, bn, tail_m, tail_n) = (
-    (; cat=_TILE_INT, n=size(A_tlr.int_U, 3), rank0=0, U=A_tlr.int_U, V=A_tlr.int_V, tm=bm, tn=bn),
-    (; cat=_TILE_RIGHT, n=size(A_tlr.right_U, 3), rank0=size(A_tlr.int_U, 3),
+# (category, output U/V panels, tile dims) per low-rank category.
+@inline _category_specs(A_tlr::TLRDenseDiagMatrix, bm, bn, tail_m, tail_n) = (
+    (; cat=_TILE_INT, n=size(A_tlr.int_U, 3), U=A_tlr.int_U, V=A_tlr.int_V, tm=bm, tn=bn),
+    (; cat=_TILE_RIGHT, n=size(A_tlr.right_U, 3),
         U=A_tlr.right_U, V=A_tlr.right_V, tm=bm, tn=tail_n),
-    (; cat=_TILE_BOTTOM, n=size(A_tlr.bottom_U, 3), rank0=size(A_tlr.int_U, 3) + size(A_tlr.right_U, 3),
+    (; cat=_TILE_BOTTOM, n=size(A_tlr.bottom_U, 3),
         U=A_tlr.bottom_U, V=A_tlr.bottom_V, tm=tail_m, tn=bn),
 )
 
+@inline _category_specs(A_tlr::TLRMatrix, bm, bn, tail_m, tail_n) = (
+    (; cat=_TILE_INT, n=size(A_tlr.int_U, 3), U=A_tlr.int_U, V=A_tlr.int_V, tm=bm, tn=bn),
+    (; cat=_TILE_RIGHT, n=size(A_tlr.right_U, 3),
+        U=A_tlr.right_U, V=A_tlr.right_V, tm=bm, tn=tail_n),
+    (; cat=_TILE_BOTTOM, n=size(A_tlr.bottom_U, 3),
+        U=A_tlr.bottom_U, V=A_tlr.bottom_V, tm=tail_m, tn=bn),
+    (; cat=_TILE_CORNER, n=size(A_tlr.corner_U, 3),
+        U=A_tlr.corner_U, V=A_tlr.corner_V, tm=tail_m, tn=tail_n),
+)
+
 # prepare category's scratch at sketch width S
-function _alloc_category_workspace(A_tlr::TLRDenseDiagMatrix{<:Any,T}, spec, r::Int, p::Int, ::Type{Thi}) where {T,Thi}
+function _alloc_category_workspace(A_tlr::AbstractTLRMatrix{<:Any,T}, spec, r::Int, p::Int, ::Type{Thi}) where {T,Thi}
     backend = get_backend(A_tlr)
     rank_type = eltype(A_tlr.ranks)
     n = spec.n
@@ -537,18 +544,20 @@ function _alloc_category_workspace(A_tlr::TLRDenseDiagMatrix{<:Any,T}, spec, r::
     G_hi = zeros(backend, Thi, S, S, n)
     p0_host = Vector{Int32}(undef, n)
     q0_host = Vector{Int32}(undef, n)
+    rank_indices = Vector{Int}(undef, n)
 
     @inbounds for k in 1:n
         p0, q0 = tile_origin_coords(A_tlr, _category_coords(A_tlr, spec.cat, k)...)
         p0_host[k] = Int32(p0)
         q0_host[k] = Int32(q0)
+        rank_indices[k] = _rank_index(A_tlr, spec.cat, k)
     end
 
     p0s = copyto!(allocate(backend, Int32, n), p0_host)
     q0s = copyto!(allocate(backend, Int32, n), q0_host)
 
     return CompressCategoryWorkspace(
-        spec.cat, spec.rank0, S, min(r, S), spec.U, spec.V, Q_T, V_T,
+        spec.cat, rank_indices, S, min(r, S), spec.U, spec.V, Q_T, V_T,
         _batch_views(Q_T, S), _batch_views(V_T, S), Y_hi, G_hi,
         zeros(backend, rank_type, n),
         zeros(backend, Float64, n),
@@ -571,7 +580,7 @@ category at sketch width `S = min(maxrank + oversample, tile)`; `U`/`V` alias
         compress!(A_tlr, A, ws; tol=1f-3)
     end
 """
-function alloc_workspace(A_tlr::TLRDenseDiagMatrix{<:Any,T}; oversample::Int=0) where {T}
+function alloc_workspace(A_tlr::AbstractTLRMatrix{<:Any,T}; oversample::Int=0) where {T}
     oversample >= 0 || throw(ArgumentError("oversample must be >= 0"))
     Thi = _compress_accum_type(T)
 
@@ -582,7 +591,7 @@ function alloc_workspace(A_tlr::TLRDenseDiagMatrix{<:Any,T}; oversample::Int=0) 
     specs = _category_specs(A_tlr, bm, bn, tail_m, tail_n)
     cats = map(spec -> _alloc_category_workspace(A_tlr, spec, A_tlr.maxrank, oversample, Thi), specs)
 
-    CompressWorkspace(cats..., create_streams(A_tlr.backend, 3))
+    CompressWorkspace(cats, create_streams(A_tlr.backend, length(cats)))
 end
 
 # Reshape `prod(dims)` elements of a flat arena starting after `off`, returning the
@@ -641,7 +650,7 @@ function carve_tile_workspace(U::AbstractArray{T,3}, V, tm::Int, tn::Int, kout::
     G_hi, accum_off = _take(accum, accum_off, S, S, ntiles)
     empty_i32 = allocate(backend, Int32, 0)
     cat = CompressCategoryWorkspace(
-        UInt8(0), 0, S, min(kout, S), U, V, Q_T, V_T,
+        UInt8(0), Int[], S, min(kout, S), U, V, Q_T, V_T,
         _batch_views(Q_T, S), _batch_views(V_T, S), Y_hi, G_hi,
         zeros(backend, rank_type, ntiles),
         zeros(backend, Float64, ntiles),
@@ -656,7 +665,7 @@ end
 
 Standalone [`CompressCategoryWorkspace`](@ref) for compressing an `ntiles`-batch of
 `tm×tn` tiles into output factors `U` (`tm×kout×ntiles`) and `V` (`tn×kout×ntiles`),
-not tied to a `TLRDenseDiagMatrix`. Allocates the two scratch arenas and carves them via
+not tied to a TLR matrix. Allocates the two scratch arenas and carves them via
 [`carve_tile_workspace`](@ref). Pair with [`compress_tiles!`](@ref) and a source
 such as [`PackedTiles`](@ref).
 """
@@ -673,7 +682,7 @@ end
 # Compress one off-diagonal tile category from the dense matrix `A`: wrap its tiles
 # as a `DenseTiles` source and run the input-agnostic core.
 function _compress_category!(
-    A_tlr::TLRDenseDiagMatrix,
+    A_tlr::AbstractTLRMatrix,
     A::AbstractMatrix,
     cat::CompressCategoryWorkspace,
     eps_sq::Float64,
@@ -690,30 +699,30 @@ end
 
 # Scatter one category's local ranks / squared errors back into the global
 # A_tlr.ranks / A_tlr.resid (converting squared error to a Frobenius residual).
-function _store_category_results!(A_tlr::TLRDenseDiagMatrix, cat::CompressCategoryWorkspace)
+function _store_category_results!(A_tlr::AbstractTLRMatrix, cat::CompressCategoryWorkspace)
     n = size(cat.U, 3)
     n == 0 && return
     rk_host = cat.ranks_local isa Vector ? cat.ranks_local : Array(cat.ranks_local)
     err_host = cat.err_sq_local isa Vector ? cat.err_sq_local : Array(cat.err_sq_local)
-    @inbounds for k in 1:n
-        A_tlr.ranks[cat.rank0+k] = rk_host[k]
-        A_tlr.resid[cat.rank0+k] = sqrt(max(err_host[k], 0.0))
+    @inbounds for (k, rank_idx) in enumerate(cat.rank_indices)
+        A_tlr.ranks[rank_idx] = rk_host[k]
+        A_tlr.resid[rank_idx] = sqrt(max(err_host[k], 0.0))
     end
 end
 
 # ─── Orchestration ────────────────────────────────────────────────────────────
 
-# Compress all three tile categories and scatter their results into A_tlr. On GPU
+# Compress all tile categories and scatter their results into A_tlr. On GPU
 # each category runs on its own stream (overlap) and is synced before storing; on
 # CPU they run sequentially.
 function _compress_all_categories!(
-    A_tlr::TLRDenseDiagMatrix{<:Any,T},
+    A_tlr::AbstractTLRMatrix{<:Any,T},
     A::AbstractMatrix{T},
     ws::CompressWorkspace,
     eps_sq::Float64,
     rel::Bool,
 ) where {T}
-    cats = (ws.interior, ws.right, ws.bottom)
+    cats = ws.cats
     backend = get_backend(A_tlr)
     if backend isa KernelAbstractions.CPU
         for cat in cats
@@ -775,7 +784,7 @@ capped at `maxrank`. Must match the `oversample` passed to `alloc_workspace`.
 The sketch basis is orthogonalised with two shifted Cholesky-QR passes in
 higher precision.
 """
-compress!(A_tlr::TLRDenseDiagMatrix{<:Any,T}, A::AbstractMatrix{T}; oversample::Int=0, kwargs...) where {T} =
+compress!(A_tlr::AbstractTLRMatrix{<:Any,T}, A::AbstractMatrix{T}; oversample::Int=0, kwargs...) where {T} =
     compress!(A_tlr, A, alloc_workspace(A_tlr; oversample); kwargs...)
 
 function compress!(A_tlr::TLRDenseDiagMatrix{<:Any,T}, A::AbstractMatrix{T},
@@ -789,6 +798,20 @@ function compress!(A_tlr::TLRDenseDiagMatrix{<:Any,T}, A::AbstractMatrix{T},
     tol >= 0 || throw(ArgumentError("tol must be >= 0"))
 
     _copy_diagonal_from_dense!(A_tlr, A)
+
+    eps_sq = Float64(tol)^2
+    _compress_all_categories!(A_tlr, A, ws, eps_sq, rel)
+
+    A_tlr
+end
+
+function compress!(A_tlr::TLRMatrix{<:Any,T}, A::AbstractMatrix{T},
+    ws::CompressWorkspace;
+    tol::Real=0.0, rel::Bool=false) where {T}
+
+    size(A) == (A_tlr.m, A_tlr.n) ||
+        throw(DimensionMismatch("A dimensions must match A_tlr"))
+    tol >= 0 || throw(ArgumentError("tol must be >= 0"))
 
     eps_sq = Float64(tol)^2
     _compress_all_categories!(A_tlr, A, ws, eps_sq, rel)

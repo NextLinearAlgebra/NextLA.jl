@@ -6,7 +6,7 @@ function make_rect_lowrank_tile(::Type{T}, m::Int, n::Int, r::Int; seed::Integer
     end
     qleft = Matrix(qr(randn(rng, T, m, r)).Q)
     qright = Matrix(qr(randn(rng, T, n, r)).Q)
-    sigma = collect(range(T(2), T(1), length=r))
+    sigma = r == 1 ? [T(1)] : collect(range(T(2), T(1), length=r))
     return qleft[:, 1:r] * Diagonal(sigma) * qright[:, 1:r]'
 end
 
@@ -27,6 +27,25 @@ function boundary_dense_fixture(::Type{T}) where {T}
     bot = hcat(a31, a32, d33)
     A = vcat(top, mid, bot)
     return (; A, d11, d22, d33, a12, a21, a13, a23, a31, a32)
+end
+
+function full_tlr_rectangular_fixture(::Type{T}) where {T}
+    tile_size = (3, 4)
+    m, n = 8, 11
+    maxrank = 3
+    A = zeros(T, m, n)
+    ranks = Dict{Tuple{Int,Int},Int}()
+    for tile_i in 1:cld(m, tile_size[1]), tile_j in 1:cld(n, tile_size[2])
+        p0 = (tile_i - 1) * tile_size[1] + 1
+        q0 = (tile_j - 1) * tile_size[2] + 1
+        tm = min(tile_size[1], m - p0 + 1)
+        tn = min(tile_size[2], n - q0 + 1)
+        r = min(maxrank, tm, tn, mod(tile_i + 2tile_j, maxrank) + 1)
+        tile = make_rect_lowrank_tile(T, tm, tn, r; seed=100tile_i + tile_j)
+        A[p0:(p0+tm-1), q0:(q0+tn-1)] .= tile
+        ranks[(tile_i, tile_j)] = r
+    end
+    return (; A, tile_size, maxrank, ranks)
 end
 
 @testset "TLR compress! on CPU" begin
@@ -56,6 +75,28 @@ end
     assert_tile_rank_and_error(A_panel, 2, 3, 2, boundary.a23; atol_rank=1, rtol_error=1e-6)
     assert_tile_rank_and_error(A_panel, 3, 1, 2, boundary.a31; atol_rank=1, rtol_error=1e-6)
     assert_tile_rank_and_error(A_panel, 3, 2, 2, boundary.a32; atol_rank=1, rtol_error=1e-6)
+
+    full_rect = full_tlr_rectangular_fixture(Float64)
+    A_full = NextLA.TLRMatrix(full_rect.A, full_rect.tile_size, full_rect.maxrank)
+    ws_full = NextLA.TLRmodule.alloc_workspace(A_full)
+    NextLA.compress!(A_full, full_rect.A, ws_full; tol=1e-8)
+
+    relerr_full = norm(reconstruct_tlr(A_full) - full_rect.A) / norm(full_rect.A)
+    @test relerr_full <= 1e-8
+    @test size(A_full.int_U) == (3, 3, 4)
+    @test size(A_full.right_U) == (3, 3, 2)
+    @test size(A_full.bottom_U) == (2, 3, 2)
+    @test size(A_full.corner_U) == (2, 3, 1)
+    for ((tile_i, tile_j), _) in full_rect.ranks
+        p0, q0 = NextLA.tile_origin_coords(A_full, tile_i, tile_j)
+        tm, tn = NextLA.tile_size(A_full, tile_i, tile_j)
+        tile_ref = @view full_rect.A[p0:(p0+tm-1), q0:(q0+tn-1)]
+        rank = Int(NextLA.ranks(A_full)[NextLA.TLRmodule._rank_index(A_full, tile_i, tile_j)])
+        @test rank <= full_rect.maxrank
+        U, V = NextLA.get_factors(A_full, tile_i, tile_j)
+        approx = rank == 0 ? zeros(Float64, tm, tn) : Matrix(U) * Matrix(adjoint(V))
+        @test norm(tile_ref - approx) / max(norm(tile_ref), eps(Float64)) <= 1e-8
+    end
 end
 
 @testset "TLR compress! error indicator and FAIL semantics" begin
@@ -157,8 +198,11 @@ end
                 make_lowrank_tile(T, b, r21; seed=43); rtol_error=2 * tol)
 
             # stored rank never exceeds maxr even though S = maxr + p columns sketched
-            for ob in 1:NextLA.noffdiag_tiles(A_tlr)
-                @test Int(NextLA.ranks(A_tlr)[ob]) <= maxr
+            mt, nt = NextLA.tilegrid_size(A_tlr)
+            for tile_i in 1:mt, tile_j in 1:nt
+                tile_i == tile_j && continue
+                rank_idx = NextLA.TLRmodule._rank_index(A_tlr, tile_i, tile_j)
+                @test Int(NextLA.ranks(A_tlr)[rank_idx]) <= maxr
             end
         end
     end

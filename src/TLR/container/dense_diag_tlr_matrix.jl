@@ -1,7 +1,3 @@
-const _TILE_INT = UInt8(1)      # interior:        bm × bn
-const _TILE_RIGHT = UInt8(2)    # right boundary:  bm × tail_n
-const _TILE_BOTTOM = UInt8(3)   # bottom boundary: tail_m × bn
-
 """
     TLRDenseDiagMatrix{BackendT, T, Arr3T, RankT, OrderT}
 
@@ -21,9 +17,10 @@ Storage is category-contiguous:
 | `D`        | `[bm, bn, n_full_diag]`       | full diagonal tiles |
 | `D_corner` | `[tail_m, tail_n, 1 or 0]`    | final diagonal tail tile |
 
-Ranks and residuals use the same category order: interior, right boundary,
-bottom boundary. No dense-diagonal geometry table is cached; tile `(i, j)` maps
-directly to a category and local slot.
+Ranks and residuals are tile-grid aligned, including dense diagonal tiles.
+Dense diagonal entries report `min(tile_m, tile_n)` rank and zero residual:
+these are diagnostics for the represented dense tile, not low-rank storage
+metadata.
 """
 struct TLRDenseDiagMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},RankT<:Integer,OrderT<:TileOrderStyle} <: AbstractTLRMatrix{BackendT,T,OrderT}
     backend::BackendT
@@ -116,25 +113,6 @@ slots use the requested tile order on the full-size interior grid.
 end
 
 """
-    _rank_index(A, i, j) -> Int
-
-Index into `A.ranks` / `A.resid` for off-diagonal tile `(i, j)`. The rank vector
-is laid out as `interior; right; bottom`.
-"""
-@inline _rank_index(A::TLRDenseDiagMatrix, i::Int, j::Int) =
-    _rank_index(A, _offdiag_category_slot(A, i, j)...)
-
-@inline function _rank_index(A::TLRDenseDiagMatrix, cat::UInt8, k::Int)
-    if cat == _TILE_INT
-        return k
-    elseif cat == _TILE_RIGHT
-        return size(A.int_U, 3) + k
-    else
-        return size(A.int_U, 3) + size(A.right_U, 3) + k
-    end
-end
-
-"""
     _category_coords(A, category, k) -> (tile_i, tile_j)
 
 Inverse of the dense-diagonal category mapping for category-local slot `k`.
@@ -149,6 +127,22 @@ Inverse of the dense-diagonal category mapping for category-local slot `k`.
     else
         return tilegrid_size(A)[1], k
     end
+end
+
+"""
+    _set_dense_diagonal_diagnostics!(A) -> A
+
+Initialize or refresh the diagnostic entries for dense diagonal tiles. The
+rank is recorded as the tile's full possible rank (`min(tile_m, tile_n)`) and
+the residual is zero because the dense tile is copied exactly.
+"""
+function _set_dense_diagonal_diagnostics!(A::TLRDenseDiagMatrix)
+    @inbounds for k in 1:ndiag_tiles(A)
+        idx = _rank_index(A, k, k)
+        A.ranks[idx] = min(tile_size(A, k, k)...)
+        A.resid[idx] = 0.0
+    end
+    return A
 end
 
 """
@@ -262,14 +256,15 @@ function TLRDenseDiagMatrix(
     D = zeros(backend, T, bm, bn, n_full_diag)
     D_corner = zeros(backend, T, max(corner_tm, 1), max(corner_tn, 1), has_diag_corner ? 1 : 0)
 
-    ranks = Base.zeros(rank_type, n_int + n_right + n_bottom)
-    resid = Base.zeros(Float64, n_int + n_right + n_bottom)
+    ranks = Base.zeros(rank_type, mt * nt)
+    resid = Base.zeros(Float64, mt * nt)
 
-    return TLRDenseDiagMatrix{typeof(backend),T,typeof(int_U),rank_type,typeof(order)}(
+    A_tlr = TLRDenseDiagMatrix{typeof(backend),T,typeof(int_U),rank_type,typeof(order)}(
         backend, order, m, n, tile_size, tail_size,
         int_U, int_V, right_U, right_V, bottom_U, bottom_V,
         D, D_corner, ranks, resid, maxrank,
     )
+    return _set_dense_diagonal_diagnostics!(A_tlr)
 end
 
 function TLRDenseDiagMatrix(

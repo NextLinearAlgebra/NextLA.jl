@@ -50,6 +50,20 @@ end
     return tile_linear_index(A.order, mt, nt, Int(i), Int(j))
 end
 
+@inline function _category_coords(A::TLRMatrix, cat::UInt8, k::Int)
+    mt, nt = tilegrid_size(A)
+    q_m, q_n = _full_regular_grid(A)
+    if cat == _TILE_INT
+        return inverse_tile_index(A.order, q_m, q_n, k)
+    elseif cat == _TILE_RIGHT
+        return k, nt
+    elseif cat == _TILE_BOTTOM
+        return mt, k
+    else
+        return mt, nt
+    end
+end
+
 """
     get_factors(A::TLRMatrix, i, j) -> (U, V)
 
