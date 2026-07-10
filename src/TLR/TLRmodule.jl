@@ -17,7 +17,7 @@ using ..NextLA: create_streams, with_stream, sync_stream, sync_streams_with_defa
 using ..NextLA: SUBGROUP_SIZE, unwrap
 
 export TileColMajor, TileRowMajor
-export AbstractTLRMatrix, TLRMatrix, FullTLRMatrix
+export AbstractTLRMatrix, TLRDenseDiagMatrix, TLRMatrix
 export compress!, alloc_workspace
 export uncompress!
 export get_factors
@@ -27,8 +27,8 @@ export ndiag_tiles, noffdiag_tiles, tile_origin_coords, tile_size
 
 include("container/order.jl")
 include("container/abstract.jl")
-include("container/dense_diag.jl")
-include("container/full.jl")
+include("container/dense_diag_tlr_matrix.jl")
+include("container/full_tlr_matrix.jl")
 
 include("algorithms/compress.jl")
 include("algorithms/uncompress.jl")

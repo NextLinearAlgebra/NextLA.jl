@@ -20,7 +20,7 @@ The output traversal of `C` is a function of the operand layouts (`A.order`,
 `B.order`) — not a free knob.  The only tunable is `max_workspace` (bytes), which
 sets how long a contiguous run of `C` is materialized at once (see `schedule.jl`).
 """
-function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T};
+function gemm!(C::AbstractMatrix, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T};
     alpha=true, beta=false, max_workspace::Int=DEFAULT_GEMM_BUDGET) where {BackendT,T}
     size(A, 2) == size(B, 1) ||
         throw(DimensionMismatch("size(A,2) must equal size(B,1)"))

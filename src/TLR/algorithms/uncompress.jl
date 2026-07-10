@@ -8,7 +8,7 @@ export uncompress!
     @inbounds A[p0+row-1, q0+col-1] = D[row, col, batch]
 end
 
-function _copy_diagonal_to_dense!(A::AbstractMatrix{T}, A_tlr::TLRMatrix{<:Any,T}) where {T}
+function _copy_diagonal_to_dense!(A::AbstractMatrix{T}, A_tlr::TLRDenseDiagMatrix{<:Any,T}) where {T}
     n_full_diag = _nfull_diag_tiles(A_tlr)
     bm, bn = nominal_tile_size(A_tlr)
     _copy_diag_kernel!(A_tlr.backend)(
@@ -25,7 +25,7 @@ end
 
 function _uncompress_category!(
     A::AbstractMatrix{T},
-    A_tlr::TLRMatrix{<:Any,T},
+    A_tlr::TLRDenseDiagMatrix{<:Any,T},
     cat::UInt8,
     U::AbstractArray{T,3},
     V::AbstractArray{T,3},
@@ -48,7 +48,7 @@ Write the dense matrix represented by `A_tlr` into `A` in-place.
 Diagonal tiles are copied from the packed diagonal storage and off-diagonal
 tiles are reconstructed category-by-category with batched GEMMs.
 """
-function uncompress!(A::AbstractMatrix{T}, A_tlr::TLRMatrix{<:Any,T}) where {T}
+function uncompress!(A::AbstractMatrix{T}, A_tlr::TLRDenseDiagMatrix{<:Any,T}) where {T}
     size(A, 1) == A_tlr.m && size(A, 2) == A_tlr.n ||
         throw(DimensionMismatch("A dimensions must match A_tlr"))
     A_tlr.m == A_tlr.n ||

@@ -24,11 +24,11 @@ For the left operand `A`, `Ax` is `:i` or `:k`; for the right operand `B`,
 """
 struct Stride1Axis{Ax} end
 
-@inline stride1_axis_left(::TLRMatrix{<:Any,<:Any,<:Any,<:Any,TileColMajor}) = Stride1Axis{:i}()
-@inline stride1_axis_left(::TLRMatrix{<:Any,<:Any,<:Any,<:Any,TileRowMajor}) = Stride1Axis{:k}()
+@inline stride1_axis_left(::TLRDenseDiagMatrix{<:Any,<:Any,<:Any,<:Any,TileColMajor}) = Stride1Axis{:i}()
+@inline stride1_axis_left(::TLRDenseDiagMatrix{<:Any,<:Any,<:Any,<:Any,TileRowMajor}) = Stride1Axis{:k}()
 
-@inline stride1_axis_right(::TLRMatrix{<:Any,<:Any,<:Any,<:Any,TileColMajor}) = Stride1Axis{:k}()
-@inline stride1_axis_right(::TLRMatrix{<:Any,<:Any,<:Any,<:Any,TileRowMajor}) = Stride1Axis{:j}()
+@inline stride1_axis_right(::TLRDenseDiagMatrix{<:Any,<:Any,<:Any,<:Any,TileColMajor}) = Stride1Axis{:k}()
+@inline stride1_axis_right(::TLRDenseDiagMatrix{<:Any,<:Any,<:Any,<:Any,TileRowMajor}) = Stride1Axis{:j}()
 
 """
     KAxisSchedule

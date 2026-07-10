@@ -19,7 +19,7 @@ For each output tile-row `i`, `A_int u_B[i] = Σ_j A_ij B_{j,Q+1}` reduces over 
     reduction looped and the free row axis batched, budget-split over rows.
 First writer of C_right, so it folds β.  No-op when `n_B % b == 0`.
 """
-function tlr_gemm_int_by_rpanel(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T; beta::T=one(T), budget::Int) where {T, BackendT}
+function tlr_gemm_int_by_rpanel(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T; beta::T=one(T), budget::Int) where {T, BackendT}
     Q = size(B.right_U, 3)
     Q == 0 && return C                         # no right panel (n_B % b == 0)
     Q == _interior_grid(A)[1] || return C      # non-square
@@ -89,7 +89,7 @@ Accumulate `α · u_A γ_B` into the right region of `C`.  A's right-panel tiles
   Stage 2 (batched over i):          C_{i,Q+1} += α · U_i M_i   (b×s_n)
 No-op when `n_A % b == 0`, `A.maxrank == 0`, or B has no corner.
 """
-function tlr_gemm_rpanel_by_corner(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T; beta::T=one(T)) where {T, BackendT}
+function tlr_gemm_rpanel_by_corner(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T; beta::T=one(T)) where {T, BackendT}
     Q = size(A.right_U, 3)
     Q == 0 && return C                        # no right panel (n_A % b == 0)
     rA = maxrank(A)

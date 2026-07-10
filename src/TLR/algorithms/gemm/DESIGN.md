@@ -7,7 +7,7 @@ can be read without reverse-engineering the whole pipeline.
 Entry point:
 
 ```julia
-gemm!(C::AbstractMatrix, A::TLRMatrix, B::TLRMatrix; alpha=true, beta=false, max_workspace)
+gemm!(C::AbstractMatrix, A::TLRDenseDiagMatrix, B::TLRDenseDiagMatrix; alpha=true, beta=false, max_workspace)
 ```
 
 computes `C := alpha·(A·B) + beta·C`, where `A`, `B` are tile-low-rank and `C` is
@@ -66,7 +66,7 @@ Files:
 
 | file | responsibility |
 | --- | --- |
-| `layout.jl` | pure traits: `Stride1Axis`, `KAxisSchedule`, `FreeAxisSchedule`, and the functions deriving them from `TLRMatrix` types |
+| `layout.jl` | pure traits: `Stride1Axis`, `KAxisSchedule`, `FreeAxisSchedule`, and the functions deriving them from `TLRDenseDiagMatrix` types |
 | `panel.jl` | physical `PanelView` over factor storage + tile-coordinate utilities; logical operands (`LogicalTLROperands`), `ScratchS`/`ScratchT` |
 | `schedule.jl` | budgeted `RowRun`/`ColumnRun` iterators; `allocate_workspace` and the reusable batch-view buffers |
 | `stage.jl` | `StageDescriptor` and the `execute_stage!` methods that lower each stage straight to `gemm_batched!` |
@@ -120,7 +120,7 @@ Fusing `j` (B row-major makes `W_k,:` contiguous) turns Stage 1 from many tiny
 ## 5. Physical access (`panel.jl`)
 
 `PanelView{Side,Factor,Ax,M,A3}` wraps one flat factor array `[b, maxrank, n_off]`
-plus its `TLRMatrix` and `noff = nt-1`. `Side`/`Factor` (`LeftOperand`/`VFactor`,
+plus its `TLRDenseDiagMatrix` and `noff = nt-1`. `Side`/`Factor` (`LeftOperand`/`VFactor`,
 …) document which stage quantity a view is, so stage code never spells raw
 `view(A.int_V, …)`.
 

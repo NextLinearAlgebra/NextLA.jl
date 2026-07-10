@@ -21,7 +21,7 @@
 # O_A D_B, fused Stage 1 (A stride-1 axis `:i`): column `j`'s `Q-1` off-diagonal tiles
 # are contiguous in `int_U/int_V` and share the right operand `B_jj`, so their `V`s
 # fuse into one wide GEMM per column — batch `Q` instead of `Q(Q-1)`.
-function _offdiag_diag_interior_fused_gemm!(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T, slots, U, V, scratch; beta::T=one(T)) where {T,BackendT}
+function _offdiag_diag_interior_fused_gemm!(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T, slots, U, V, scratch; beta::T=one(T)) where {T,BackendT}
     n_cat = length(slots)
     rA = maxrank(A)
     (n_cat == 0 || rA == 0) && return C
@@ -47,7 +47,7 @@ function _offdiag_diag_interior_fused_gemm!(C, A::TLRMatrix{BackendT,T}, B::TLRM
 end
 
 # O_A D_B, tilewise Stage 1 (A stride-1 axis `:k`): one r×r batched GEMM per tile.
-function _offdiag_diag_tilebatch_gemm!(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T, slots, U, V, scratch; beta::T=one(T)) where {T,BackendT}
+function _offdiag_diag_tilebatch_gemm!(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T, slots, U, V, scratch; beta::T=one(T)) where {T,BackendT}
     n_cat = length(slots)
     rA = maxrank(A)
     (n_cat == 0 || rA == 0) && return C
@@ -71,7 +71,7 @@ end
 # D_A O_B, fused Stage 1 (B stride-1 axis `:j`): row `i`'s `Q-1` off-diagonal tiles
 # are contiguous in `int_U/int_V` and share the left operand `A_ii`, so their `W`s
 # fuse into one wide GEMM per row.
-function _diag_offdiag_interior_fused_gemm!(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T, slots, U, V, scratch; beta::T=one(T)) where {T,BackendT}
+function _diag_offdiag_interior_fused_gemm!(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T, slots, U, V, scratch; beta::T=one(T)) where {T,BackendT}
     n_cat = length(slots)
     rB = maxrank(B)
     (n_cat == 0 || rB == 0) && return C
@@ -97,7 +97,7 @@ function _diag_offdiag_interior_fused_gemm!(C, A::TLRMatrix{BackendT,T}, B::TLRM
 end
 
 # D_A O_B, tilewise Stage 1 (B stride-1 axis `:k`): one b×r batched GEMM per tile.
-function _diag_offdiag_tilebatch_gemm!(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T, slots, U, V, scratch; beta::T=one(T)) where {T,BackendT}
+function _diag_offdiag_tilebatch_gemm!(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T, slots, U, V, scratch; beta::T=one(T)) where {T,BackendT}
     n_cat = length(slots)
     rB = maxrank(B)
     (n_cat == 0 || rB == 0) && return C
@@ -121,7 +121,7 @@ end
 # Component 2: O_A D_B then D_A O_B, interior category only, sharing ONE scratch.
 # `O_A D_B` is the first off-diagonal writer (folds β); `D_A O_B` then accumulates
 # with β = 1.  If A has zero off-diagonal rank, `D_A O_B` becomes the first writer.
-function _diag_times_offdiag_interior!(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T; beta::T=one(T)) where {T,BackendT}
+function _diag_times_offdiag_interior!(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T; beta::T=one(T)) where {T,BackendT}
     n_int = size(A.int_U, 3)                     # == Q(Q-1)
     rmax = max(maxrank(A), maxrank(B))
     (n_int == 0 || rmax == 0) && return C
@@ -147,7 +147,7 @@ function _diag_times_offdiag_interior!(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix
     return C
 end
 
-function _diag_diag_gemm!(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T; beta::T=one(T)) where {T,BackendT}
+function _diag_diag_gemm!(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T; beta::T=one(T)) where {T,BackendT}
     n_full_diag = min(_nfull_diag_tiles(A), _nfull_diag_tiles(B))
     n_full_diag == 0 && return C
 
@@ -165,7 +165,7 @@ Accumulate `alpha · O_A O_B` into the dense `C`.  Selects the reduction placeme
 from the operand layouts, then for each budgeted run lowers Stage 1/2/3 straight
 to `gemm_batched!` via `execute_stage!`.
 """
-function _offdiag_offdiag_gemm!(C, A::TLRMatrix{<:BackendT,T}, B::TLRMatrix{<:BackendT,T};
+function _offdiag_offdiag_gemm!(C, A::TLRDenseDiagMatrix{<:BackendT,T}, B::TLRDenseDiagMatrix{<:BackendT,T};
     alpha::T, budget) where {T,BackendT}
     _, nt = _interior_grid(A)
     (nt == 1 || maxrank(A) == 0 || maxrank(B) == 0) && return C
@@ -192,7 +192,7 @@ diag×offdiag (component 2) fold β into disjoint tile sets, then the hard term
 O_A O_B (component 3) accumulates (β = 1). Order-only dependencies — no host sync;
 the caller places this whole term on a region stream (see `gemm!`).
 """
-function tlr_gemm_int_by_int(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T, beta::T; budget::Int) where {T,BackendT}
+function tlr_gemm_int_by_int(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T, beta::T; budget::Int) where {T,BackendT}
     Q, _ = _interior_grid(A)
     b = nominal_tile_size(A, 1)
 
@@ -220,7 +220,7 @@ Accumulate `α · u_A v_Bᵀ` into the interior of the dense `C`:
 `C_int := beta·C_int + α·u_A v_Bᵀ`.  No-op when `n_A % b == 0` (no boundary column
 in `A`) or the pairing is incomplete (non-square boundary).
 """
-function tlr_gemm_rpanel_by_bpanel(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T;
+function tlr_gemm_rpanel_by_bpanel(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T;
     beta::T=one(T), budget::Int) where {T,BackendT}
     Q = size(A.right_U, 3)
     Q == 0 && return C

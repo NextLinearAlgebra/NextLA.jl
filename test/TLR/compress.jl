@@ -31,7 +31,7 @@ end
 
 @testset "TLR compress! on CPU" begin
     fixture = canonical_dense_fixture(Float64)
-    A_uniform = NextLA.TLRMatrix(fixture.A, fixture.b, 16)
+    A_uniform = NextLA.TLRDenseDiagMatrix(fixture.A, fixture.b, 16)
     ws_uniform = NextLA.TLRmodule.alloc_workspace(A_uniform)
     NextLA.compress!(A_uniform, fixture.A, ws_uniform; tol=1e-6)
 
@@ -41,7 +41,7 @@ end
     assert_tile_rank_and_error(A_uniform, 2, 1, 16, fixture.offdiag21; rtol_error=1e-6)
 
     boundary = boundary_dense_fixture(Float64)
-    A_panel = NextLA.TLRMatrix(boundary.A, 4, 3)
+    A_panel = NextLA.TLRDenseDiagMatrix(boundary.A, 4, 3)
     ws_panel = NextLA.TLRmodule.alloc_workspace(A_panel)
     NextLA.compress!(A_panel, boundary.A, ws_panel; tol=1e-6)
 
@@ -72,7 +72,7 @@ end
     A = assemble_block_matrix(
         make_dense_tile(Float64, b; seed=1), hard,
         easy, make_dense_tile(Float64, b; seed=3))
-    A_tlr = NextLA.TLRMatrix(A, b, maxr)
+    A_tlr = NextLA.TLRDenseDiagMatrix(A, b, maxr)
     NextLA.compress!(A_tlr, A; tol=1e-3)
 
     ob_hard = NextLA.TLRmodule._rank_index(A_tlr, 1, 2)
@@ -98,7 +98,7 @@ end
     At = assemble_block_matrix(
         make_dense_tile(Float64, b; seed=7), tiny12,
         tiny21, make_dense_tile(Float64, b; seed=8))
-    At_tlr = NextLA.TLRMatrix(At, b, maxr)
+    At_tlr = NextLA.TLRDenseDiagMatrix(At, b, maxr)
     NextLA.compress!(At_tlr, At; tol=1e-10)
     @test Int(NextLA.ranks(At_tlr)[NextLA.TLRmodule._rank_index(At_tlr, 1, 2)]) == 3
     @test Int(NextLA.ranks(At_tlr)[NextLA.TLRmodule._rank_index(At_tlr, 2, 1)]) == 5
@@ -108,7 +108,7 @@ end
     Az = assemble_block_matrix(
         make_dense_tile(Float64, b; seed=9), zeros(Float64, b, b),
         make_lowrank_tile(Float64, b, 2; seed=10), make_dense_tile(Float64, b; seed=11))
-    Az_tlr = NextLA.TLRMatrix(Az, b, maxr)
+    Az_tlr = NextLA.TLRDenseDiagMatrix(Az, b, maxr)
     NextLA.compress!(Az_tlr, Az; tol=0.0)
     ob_zero = NextLA.TLRmodule._rank_index(Az_tlr, 1, 2)
     @test Int(NextLA.ranks(Az_tlr)[ob_zero]) == 0
@@ -120,7 +120,7 @@ end
     Am = assemble_block_matrix(
         make_dense_tile(Float64, b; seed=13), make_lowrank_tile(Float64, b, 6; seed=14),
         small, make_dense_tile(Float64, b; seed=15))
-    Am_tlr = NextLA.TLRMatrix(Am, b, maxr)
+    Am_tlr = NextLA.TLRDenseDiagMatrix(Am, b, maxr)
     ob_small = NextLA.TLRmodule._rank_index(Am_tlr, 2, 1)
 
     NextLA.compress!(Am_tlr, Am; tol=1e-5)
@@ -147,7 +147,7 @@ end
         # Oversampling widens the sketch (S = maxr + p) but the stored rank stays
         # capped at maxr; the exact-rank tiles are recovered for every p.
         for p in (0, 4, 12)
-            A_tlr = NextLA.TLRMatrix(A, b, maxr)
+            A_tlr = NextLA.TLRDenseDiagMatrix(A, b, maxr)
             ws = NextLA.alloc_workspace(A_tlr; oversample=p)
             NextLA.compress!(A_tlr, A, ws; tol=tol, rel=true)
 
@@ -167,7 +167,7 @@ end
     A0 = assemble_block_matrix(
         make_dense_tile(Float64, b; seed=51), make_lowrank_tile(Float64, b, 7; seed=52),
         make_lowrank_tile(Float64, b, 3; seed=53), make_dense_tile(Float64, b; seed=54))
-    A0_tlr = NextLA.TLRMatrix(A0, b, maxr)
+    A0_tlr = NextLA.TLRDenseDiagMatrix(A0, b, maxr)
     NextLA.compress!(A0_tlr, A0; tol=1e-6, rel=true, oversample=8)
     @test Int(NextLA.ranks(A0_tlr)[NextLA.TLRmodule._rank_index(A0_tlr, 1, 2)]) == 7
     @test Int(NextLA.ranks(A0_tlr)[NextLA.TLRmodule._rank_index(A0_tlr, 2, 1)]) == 3
@@ -177,7 +177,7 @@ end
     for order in (NextLA.TileColMajor(), NextLA.TileRowMajor())
         @testset "$(order)" begin
             fixture = canonical_dense_fixture(Float64)
-            A_uniform = NextLA.TLRMatrix(fixture.A, fixture.b, 16; tile_order=order)
+            A_uniform = NextLA.TLRDenseDiagMatrix(fixture.A, fixture.b, 16; tile_order=order)
             ws_uniform = NextLA.TLRmodule.alloc_workspace(A_uniform)
             NextLA.compress!(A_uniform, fixture.A, ws_uniform; tol=1e-6)
 
@@ -195,7 +195,7 @@ end
             end
 
             boundary = boundary_dense_fixture(Float64)
-            A_boundary = NextLA.TLRMatrix(boundary.A, 4, 3; tile_order=order)
+            A_boundary = NextLA.TLRDenseDiagMatrix(boundary.A, 4, 3; tile_order=order)
             ws_boundary = NextLA.TLRmodule.alloc_workspace(A_boundary)
             NextLA.compress!(A_boundary, boundary.A, ws_boundary; tol=1e-6)
 
@@ -205,7 +205,7 @@ end
             @test relerr_boundary <= 1e-6
 
             small = Float64[2 1; -1 3]
-            A_small = NextLA.TLRMatrix(small, 4, 2; tile_order=order)
+            A_small = NextLA.TLRDenseDiagMatrix(small, 4, 2; tile_order=order)
             ws_small = NextLA.TLRmodule.alloc_workspace(A_small)
             NextLA.compress!(A_small, small, ws_small; tol=1e-12)
 
@@ -215,7 +215,7 @@ end
             @test size(NextLA.dense_diag(A_small), 3) == 0
             @test size(A_small.D_corner) == (2, 2, 1)
 
-            zero_rank = NextLA.TLRMatrix(boundary.A, 4, 3; tile_order=order)
+            zero_rank = NextLA.TLRDenseDiagMatrix(boundary.A, 4, 3; tile_order=order)
             for tile in 1:NextLA.ndiag_tiles(zero_rank)
                 p0, q0 = NextLA.tile_origin_coords(zero_rank, tile, tile)
                 tm, tn = NextLA.tile_size(zero_rank, tile, tile)
@@ -254,7 +254,7 @@ end
         backend_name in ("CUDA", "AMDGPU") || continue
         @testset "$backend_name" begin
             dense = ArrayType(boundary.A)
-            A_tlr = NextLA.TLRMatrix(dense, 4, 3)
+            A_tlr = NextLA.TLRDenseDiagMatrix(dense, 4, 3)
             ws = NextLA.TLRmodule.alloc_workspace(A_tlr)
             NextLA.compress!(A_tlr, dense, ws; tol=1f-4)
 
@@ -274,7 +274,7 @@ end
         @testset "$backend_name" begin
             for order in (NextLA.TileColMajor(), NextLA.TileRowMajor())
                 dense = ArrayType(boundary.A)
-                A_tlr = NextLA.TLRMatrix(dense, 4, 3; tile_order=order)
+                A_tlr = NextLA.TLRDenseDiagMatrix(dense, 4, 3; tile_order=order)
                 ws = NextLA.TLRmodule.alloc_workspace(A_tlr)
                 NextLA.compress!(A_tlr, dense, ws; tol=1f-4)
 

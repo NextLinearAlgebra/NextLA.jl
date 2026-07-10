@@ -12,7 +12,7 @@ where `U_i = A.bottom_U[i] (s×rA)`, `V_i = A.bottom_V[i] (b×rA)` are the botto
 factors and `W_ij, Z_ij` are B's interior factors.  First writer of C_bottom, folds β.
 No-op when `m_A % b == 0`.
 """
-function tlr_gemm_bpanel_by_int(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T; beta::T=one(T), budget::Int) where {T, BackendT}
+function tlr_gemm_bpanel_by_int(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T; beta::T=one(T), budget::Int) where {T, BackendT}
     Q = size(A.bottom_U, 3)                    # A bottom-panel tiles (= interior Q)
     Q == 0 && return C                         # no bottom panel (m_A % b == 0)
 
@@ -80,7 +80,7 @@ times B's bottom-panel tiles `B_{Q+1,j} = W_j Z_jᵀ` give, for each j,
   Stage 2 (batched over j):          C_{Q+1,j} += α · N_j Z_jᵀ   (s_m×b)
 No-op when `m_B % b == 0`, `B.maxrank == 0`, or A has no corner.
 """
-function tlr_gemm_corner_by_bpanel(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT, T}, alpha::T; beta::T=one(T)) where {T, BackendT}
+function tlr_gemm_corner_by_bpanel(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT, T}, alpha::T; beta::T=one(T)) where {T, BackendT}
     Q = size(B.bottom_U, 3)
     Q == 0 && return C                        # no bottom panel (m_B % b == 0)
     rB = maxrank(B)

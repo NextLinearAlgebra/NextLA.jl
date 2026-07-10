@@ -6,7 +6,7 @@ Dense corner product `C_corner := beta·C_corner + α·γ_A γ_B` (a single smal
 First corner writer, so it folds β.  No-op when there is no boundary corner
 (`m % b == 0`).
 """
-function tlr_gemm_corner_by_corner(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T; beta::T=one(T)) where {T, BackendT}
+function tlr_gemm_corner_by_corner(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T; beta::T=one(T)) where {T, BackendT}
     (size(A.D_corner, 3) != 0 && size(B.D_corner, 3) != 0) || return C
     
     tile_k = ndiag_tiles(A)
@@ -33,7 +33,7 @@ where  U_p = A.bottom_U[p] (s_m×rA),  V_p = A.bottom_V[p] (b×rA),
        W_p = B.right_U[p]  (b×rB),    Z_p = B.right_V[p]  (s_n×rB).
 No-op when `m % b == 0` or the panels are unpaired (non-square boundary).
 """
-function tlr_gemm_bpanel_by_rpanel(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T; beta::T=one(T)) where {T, BackendT}
+function tlr_gemm_bpanel_by_rpanel(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T; beta::T=one(T)) where {T, BackendT}
     Q = size(A.bottom_U, 3)
     Q == 0 && return C                        # no bottom panel (m % b == 0)
     Q == size(B.right_U, 3) || return C       # non-square boundary

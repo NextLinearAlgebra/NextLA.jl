@@ -1,4 +1,4 @@
-function fill_random_tlr!(A_tlr::NextLA.TLRMatrix, ArrayType::Type; seed::Integer)
+function fill_random_tlr!(A_tlr::NextLA.TLRDenseDiagMatrix, ArrayType::Type; seed::Integer)
     rng = MersenneTwister(seed)
     T = eltype(A_tlr)
     A_tlr.D .= ArrayType(randn(rng, T, size(A_tlr.D)))
@@ -16,8 +16,8 @@ end
 function assert_tlr_gemm_matches_dense(ArrayType::Type, T::Type, n::Int, b::Int, r::Int,
                                        orderA, orderB, synchronize; budget::Int,
                                        alpha=T(1.3), beta=T(-0.4), atol=1e-10, rtol=1e-10)
-    A_tlr = NextLA.TLRMatrix(ArrayType(zeros(T, n, n)), b, r; tile_order=orderA)
-    B_tlr = NextLA.TLRMatrix(ArrayType(zeros(T, n, n)), b, r; tile_order=orderB)
+    A_tlr = NextLA.TLRDenseDiagMatrix(ArrayType(zeros(T, n, n)), b, r; tile_order=orderA)
+    B_tlr = NextLA.TLRDenseDiagMatrix(ArrayType(zeros(T, n, n)), b, r; tile_order=orderB)
     fill_random_tlr!(A_tlr, ArrayType; seed=101)
     fill_random_tlr!(B_tlr, ArrayType; seed=202)
 

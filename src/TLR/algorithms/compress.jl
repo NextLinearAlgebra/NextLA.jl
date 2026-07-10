@@ -39,7 +39,7 @@ end
 Populate `A_tlr`'s dense diagonal storage (`A_tlr.D` and, if present,
 `A_tlr.D_corner`) from the corresponding tiles of dense matrix `A`.
 """
-function _copy_diagonal_from_dense!(A_tlr::TLRMatrix{<:Any,T}, A::AbstractMatrix{T}) where {T}
+function _copy_diagonal_from_dense!(A_tlr::TLRDenseDiagMatrix{<:Any,T}, A::AbstractMatrix{T}) where {T}
     n_full_diag = _nfull_diag_tiles(A_tlr)
     bm, bn = nominal_tile_size(A_tlr)
     _copy_diag_kernel!(A_tlr.backend)(
@@ -525,7 +525,7 @@ end
 )
 
 # prepare category's scratch at sketch width S
-function _alloc_category_workspace(A_tlr::TLRMatrix{<:Any,T}, spec, r::Int, p::Int, ::Type{Thi}) where {T,Thi}
+function _alloc_category_workspace(A_tlr::TLRDenseDiagMatrix{<:Any,T}, spec, r::Int, p::Int, ::Type{Thi}) where {T,Thi}
     backend = get_backend(A_tlr)
     rank_type = eltype(A_tlr.ranks)
     n = spec.n
@@ -571,7 +571,7 @@ category at sketch width `S = min(maxrank + oversample, tile)`; `U`/`V` alias
         compress!(A_tlr, A, ws; tol=1f-3)
     end
 """
-function alloc_workspace(A_tlr::TLRMatrix{<:Any,T}; oversample::Int=0) where {T}
+function alloc_workspace(A_tlr::TLRDenseDiagMatrix{<:Any,T}; oversample::Int=0) where {T}
     oversample >= 0 || throw(ArgumentError("oversample must be >= 0"))
     Thi = _compress_accum_type(T)
 
@@ -656,7 +656,7 @@ end
 
 Standalone [`CompressCategoryWorkspace`](@ref) for compressing an `ntiles`-batch of
 `tm×tn` tiles into output factors `U` (`tm×kout×ntiles`) and `V` (`tn×kout×ntiles`),
-not tied to a `TLRMatrix`. Allocates the two scratch arenas and carves them via
+not tied to a `TLRDenseDiagMatrix`. Allocates the two scratch arenas and carves them via
 [`carve_tile_workspace`](@ref). Pair with [`compress_tiles!`](@ref) and a source
 such as [`PackedTiles`](@ref).
 """
@@ -673,7 +673,7 @@ end
 # Compress one off-diagonal tile category from the dense matrix `A`: wrap its tiles
 # as a `DenseTiles` source and run the input-agnostic core.
 function _compress_category!(
-    A_tlr::TLRMatrix,
+    A_tlr::TLRDenseDiagMatrix,
     A::AbstractMatrix,
     cat::CompressCategoryWorkspace,
     eps_sq::Float64,
@@ -690,7 +690,7 @@ end
 
 # Scatter one category's local ranks / squared errors back into the global
 # A_tlr.ranks / A_tlr.resid (converting squared error to a Frobenius residual).
-function _store_category_results!(A_tlr::TLRMatrix, cat::CompressCategoryWorkspace)
+function _store_category_results!(A_tlr::TLRDenseDiagMatrix, cat::CompressCategoryWorkspace)
     n = size(cat.U, 3)
     n == 0 && return
     rk_host = cat.ranks_local isa Vector ? cat.ranks_local : Array(cat.ranks_local)
@@ -707,7 +707,7 @@ end
 # each category runs on its own stream (overlap) and is synced before storing; on
 # CPU they run sequentially.
 function _compress_all_categories!(
-    A_tlr::TLRMatrix{<:Any,T},
+    A_tlr::TLRDenseDiagMatrix{<:Any,T},
     A::AbstractMatrix{T},
     ws::CompressWorkspace,
     eps_sq::Float64,
@@ -775,10 +775,10 @@ capped at `maxrank`. Must match the `oversample` passed to `alloc_workspace`.
 The sketch basis is orthogonalised with two shifted Cholesky-QR passes in
 higher precision.
 """
-compress!(A_tlr::TLRMatrix{<:Any,T}, A::AbstractMatrix{T}; oversample::Int=0, kwargs...) where {T} =
+compress!(A_tlr::TLRDenseDiagMatrix{<:Any,T}, A::AbstractMatrix{T}; oversample::Int=0, kwargs...) where {T} =
     compress!(A_tlr, A, alloc_workspace(A_tlr; oversample); kwargs...)
 
-function compress!(A_tlr::TLRMatrix{<:Any,T}, A::AbstractMatrix{T},
+function compress!(A_tlr::TLRDenseDiagMatrix{<:Any,T}, A::AbstractMatrix{T},
     ws::CompressWorkspace;
     tol::Real=0.0, rel::Bool=false) where {T}
 

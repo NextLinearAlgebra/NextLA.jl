@@ -1,5 +1,5 @@
 """
-    FullTLRMatrix{BackendT, T, Arr3T, RankT, OrderT}
+    TLRMatrix{BackendT, T, Arr3T, RankT, OrderT}
 
 Fully tile-low-rank matrix. Every tile, including diagonal and boundary-corner
 tiles, is stored through low-rank factors.
@@ -20,7 +20,7 @@ Storage is split by tile geometry:
 where `q_m = fld(m, bm)` and `q_n = fld(n, bn)`. Zero-depth arrays are used for
 boundary categories that do not exist.
 """
-struct FullTLRMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},RankT<:Integer,OrderT<:TileOrderStyle} <: AbstractTLRMatrix{BackendT,T,OrderT}
+struct TLRMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},RankT<:Integer,OrderT<:TileOrderStyle} <: AbstractTLRMatrix{BackendT,T,OrderT}
     backend::BackendT
     order::OrderT
     m::Int
@@ -42,21 +42,21 @@ struct FullTLRMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},RankT<:Intege
     maxrank::Int
 end
 
-@inline _full_regular_grid(A::FullTLRMatrix) =
+@inline _full_regular_grid(A::TLRMatrix) =
     (fld(A.m, nominal_tile_size(A, 1)), fld(A.n, nominal_tile_size(A, 2)))
 
-@inline function _tile_index(A::FullTLRMatrix, i::Integer, j::Integer)
+@inline function _tile_index(A::TLRMatrix, i::Integer, j::Integer)
     mt, nt = tilegrid_size(A)
     return tile_linear_index(A.order, mt, nt, Int(i), Int(j))
 end
 
 """
-    get_factors(A::FullTLRMatrix, i, j) -> (U, V)
+    get_factors(A::TLRMatrix, i, j) -> (U, V)
 
 Return the low-rank factors for tile `(i, j)`, trimmed to the tile's effective
 rank. Unlike dense-diagonal TLR, diagonal tiles are valid low-rank tiles.
 """
-@inline function get_factors(A::FullTLRMatrix, i::Int, j::Int)
+@inline function get_factors(A::TLRMatrix, i::Int, j::Int)
     mt, nt = tilegrid_size(A)
     checkbounds_tile(mt, nt, i, j)
 
@@ -76,12 +76,12 @@ rank. Unlike dense-diagonal TLR, diagonal tiles are valid low-rank tiles.
 end
 
 """
-    FullTLRMatrix(backend, T, m, n, tile_size, maxrank; rank_type=Int32, tile_order=TileColMajor)
+    TLRMatrix(backend, T, m, n, tile_size, maxrank; rank_type=Int32, tile_order=TileColMajor)
 
 Allocate an empty fully low-rank TLR container for an `m×n` matrix with nominal
 tile size `tile_size == (bm, bn)` and maximum per-tile rank `maxrank`.
 """
-function FullTLRMatrix(
+function TLRMatrix(
     backend::Backend, ::Type{T},
     m::Int, n::Int, tile_size::NTuple{2,Int}, maxrank::Int;
     rank_type::Type{<:Integer}=Int32,
@@ -122,25 +122,25 @@ function FullTLRMatrix(
     ranks = Base.zeros(rank_type, mt * nt)
     resid = Base.zeros(Float64, mt * nt)
 
-    return FullTLRMatrix{typeof(backend),T,typeof(int_U),rank_type,typeof(order)}(
+    return TLRMatrix{typeof(backend),T,typeof(int_U),rank_type,typeof(order)}(
         backend, order, m, n, tile_size, tail_size,
         int_U, int_V, right_U, right_V, bottom_U, bottom_V, corner_U, corner_V,
         ranks, resid, maxrank,
     )
 end
 
-function FullTLRMatrix(
+function TLRMatrix(
     backend::Backend, ::Type{T},
     m::Int, n::Int, b::Int, maxrank::Int;
     kwargs...,
 ) where {T}
-    return FullTLRMatrix(backend, T, m, n, (b, b), maxrank; kwargs...)
+    return TLRMatrix(backend, T, m, n, (b, b), maxrank; kwargs...)
 end
 
-function FullTLRMatrix(A::AbstractMatrix{T}, b::Int, maxrank::Int; kwargs...) where {T}
-    return FullTLRMatrix(get_backend(A), T, size(A, 1), size(A, 2), b, maxrank; kwargs...)
+function TLRMatrix(A::AbstractMatrix{T}, b::Int, maxrank::Int; kwargs...) where {T}
+    return TLRMatrix(get_backend(A), T, size(A, 1), size(A, 2), b, maxrank; kwargs...)
 end
 
-function FullTLRMatrix(A::AbstractMatrix{T}, tile_size::NTuple{2,Int}, maxrank::Int; kwargs...) where {T}
-    return FullTLRMatrix(get_backend(A), T, size(A, 1), size(A, 2), tile_size, maxrank; kwargs...)
+function TLRMatrix(A::AbstractMatrix{T}, tile_size::NTuple{2,Int}, maxrank::Int; kwargs...) where {T}
+    return TLRMatrix(get_backend(A), T, size(A, 1), size(A, 2), tile_size, maxrank; kwargs...)
 end

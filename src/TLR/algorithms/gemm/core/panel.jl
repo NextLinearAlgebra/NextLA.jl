@@ -13,7 +13,7 @@ struct VFactor <: FactorKind end
 struct WFactor <: FactorKind end
 struct ZFactor <: FactorKind end
 
-struct PanelView{Side<:OperandSide,Factor<:FactorKind,Ax,M<:TLRMatrix,A3<:AbstractArray}
+struct PanelView{Side<:OperandSide,Factor<:FactorKind,Ax,M<:TLRDenseDiagMatrix,A3<:AbstractArray}
     matrix::M
     data::A3
     noff::Int
@@ -29,7 +29,7 @@ the `m%b` boundary row/column (which are separate terms). Equals `tilegrid_size`
 when `m%b == 0`, so the uniform path is unchanged. `int_U`/`int_V` store exactly
 this sub-grid's off-diagonal tiles in `Q×Q` enumeration order.
 """
-@inline _interior_grid(A::TLRMatrix) = (q = fld(A.m, nominal_tile_size(A, 1)); (q, q))
+@inline _interior_grid(A::TLRDenseDiagMatrix) = (q = fld(A.m, nominal_tile_size(A, 1)); (q, q))
 
 """Contiguous `[b, maxrank, noff]` view of tile-row `r`'s off-diagonal panel."""
 @inline rowpanel(p::PanelView, r::Integer) =
@@ -52,7 +52,7 @@ this sub-grid's off-diagonal tiles in `Q×Q` enumeration order.
 Wrap one uniform-core factor array as a zero-copy `PanelView`. No factor data is
 copied or packed.
 """
-function panelview(::Type{Side}, ::Type{Factor}, M::TLRMatrix{<:Any,T},
+function panelview(::Type{Side}, ::Type{Factor}, M::TLRDenseDiagMatrix{<:Any,T},
                    factors::AbstractArray{T,3}, contig::Stride1Axis{Ax}) where {Side<:OperandSide,Factor<:FactorKind,T,Ax}
     _, nt = _interior_grid(M)
     return PanelView{Side,Factor,Ax,typeof(M),typeof(factors)}(M, factors, nt - 1, contig)
@@ -92,7 +92,7 @@ end
 
 Wrap the uniform-core factor arrays of `A` and `B` as zero-copy `PanelView`s.
 """
-function logical_operands(A::TLRMatrix, B::TLRMatrix)
+function logical_operands(A::TLRDenseDiagMatrix, B::TLRDenseDiagMatrix)
     return LogicalTLROperands(
         panelview(LeftOperand, VFactor, A, A.int_V, stride1_axis_left(A)),
         panelview(RightOperand, WFactor, B, B.int_U, stride1_axis_right(B)),

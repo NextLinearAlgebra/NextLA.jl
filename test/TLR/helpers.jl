@@ -26,7 +26,7 @@ function assemble_block_matrix(tile11, tile12, tile21, tile22)
     return vcat(top, bottom)
 end
 
-function reconstruct_tlr(A_tlr::NextLA.TLRMatrix)
+function reconstruct_tlr(A_tlr::NextLA.TLRDenseDiagMatrix)
     T = eltype(A_tlr)
     A = zeros(T, size(A_tlr))
     D = Array(NextLA.dense_diag(A_tlr))
@@ -58,10 +58,10 @@ function reconstruct_tlr(A_tlr::NextLA.TLRMatrix)
     return A
 end
 
-expected_storage_slot(A_tlr::NextLA.TLRMatrix, i::Int, j::Int) = NextLA.TLRmodule._rank_index(A_tlr, i, j)
+expected_storage_slot(A_tlr::NextLA.TLRDenseDiagMatrix, i::Int, j::Int) = NextLA.TLRmodule._rank_index(A_tlr, i, j)
 
 function assert_tile_rank_and_error(
-    A_tlr::NextLA.TLRMatrix,
+    A_tlr::NextLA.TLRDenseDiagMatrix,
     tile_i::Int,
     tile_j::Int,
     expected_rank::Int,
