@@ -22,7 +22,7 @@ First writer of C_right, so it folds β.  No-op when `n_B % b == 0`.
 function tlr_gemm_int_by_rpanel(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T; beta::T=one(T), budget::Int) where {T, BackendT}
     Q = size(B.right_U, 3)
     Q == 0 && return C                         # no right panel (n_B % b == 0)
-    Q == _interior_grid(A)[1] || return C      # non-square
+    Q == _full_regular_grid(A)[1] || return C      # non-square
 
     _, nt = tilegrid_size(A)                    # boundary tile-column index (Q+1)
     b = nominal_tile_size(A, 1)

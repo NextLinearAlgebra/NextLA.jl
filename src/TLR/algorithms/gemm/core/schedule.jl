@@ -40,7 +40,7 @@ end
 # Scratch bytes attributable to one output column of a run: `S` is r_A·noff·r_B
 # and `T` is r_A·noff·b, so per column = r_A·noff·(b + r_B)·sizeof(T).
 @inline function _per_col_bytes(A::TLRDenseDiagMatrix{<:Any,T}, B::TLRDenseDiagMatrix) where {T}
-    _, nt = _interior_grid(A)
+    _, nt = _full_regular_grid(A)
     noff = nt - 1
     b = nominal_tile_size(A, 1)
     return max(maxrank(A) * noff * (b + maxrank(B)) * sizeof(T), 1)
@@ -50,7 +50,7 @@ end
 # count fits the budget — `maxJ` columns wide, `maxI` rows tall (columns filled
 # first). All tiles are independent, so the block is a pure batch.
 @inline function _row_block(A::TLRDenseDiagMatrix, B::TLRDenseDiagMatrix, budget::Int)
-    mt, nt = _interior_grid(A)
+    mt, nt = _full_regular_grid(A)
     maxtiles = clamp(div(budget, _per_col_bytes(A, B)), 1, mt * nt)
     maxJ = clamp(maxtiles, 1, nt)
     maxI = clamp(div(maxtiles, maxJ), 1, mt)
@@ -61,7 +61,7 @@ end
 # fits the budget — `maxJ` panel positions wide, `maxK` contraction tiles deep
 # (positions filled first). Stages 1/2 batch over the whole block; Stage 3 loops k.
 @inline function _column_block(A::TLRDenseDiagMatrix, B::TLRDenseDiagMatrix, budget::Int)
-    _, nt = _interior_grid(A)
+    _, nt = _full_regular_grid(A)
     noff = nt - 1
     maxslices = clamp(div(budget, _per_col_bytes(A, B)), 1, nt * noff)
     maxJ = clamp(maxslices, 1, noff)
@@ -84,7 +84,7 @@ one full `k`-column per run. Passing at least this many bytes maximises batching
 passing less still works but splits the work into smaller runs.
 """
 function gemm_workspace_bytes(A::TLRDenseDiagMatrix, B::TLRDenseDiagMatrix)
-    mt, nt = _interior_grid(A)
+    mt, nt = _full_regular_grid(A)
     placement = k_axis_schedule(stride1_axis_left(A), stride1_axis_right(B))
     return _per_col_bytes(A, B) * _full_run_tiles(placement, mt, nt)
 end
@@ -103,7 +103,7 @@ Build the budget-sized run iterator selected by the reduction placement:
 
 function Base.iterate(s::RowSchedule, state=(1, 1))
     i0, j0 = state
-    mt, nt = _interior_grid(s.matrix)
+    mt, nt = _full_regular_grid(s.matrix)
     i0 > mt && return nothing
     i1 = min(i0 + s.maxI - 1, mt)
     j1 = min(j0 + s.maxJ - 1, nt)
@@ -113,7 +113,7 @@ end
 
 function Base.iterate(s::ColumnSchedule, state=(1, 1))
     k0, jpos0 = state
-    _, nt = _interior_grid(s.matrix)
+    _, nt = _full_regular_grid(s.matrix)
     noff = nt - 1
     k0 > nt && return nothing
     k1 = min(k0 + s.maxK - 1, nt)
@@ -159,7 +159,7 @@ end
 
 function _row_batches(A, B, C, Sbuf, Tbuf, Uall, maxI::Int, maxJ::Int)
     b = nominal_tile_size(A, 1)
-    noff = _interior_grid(A)[2] - 1
+    noff = _full_regular_grid(A)[2] - 1
     rA = maxrank(A)
     rB = maxrank(B)
     ntrip = noff * maxJ * maxI          # Stage 1/2 tilewise batch over (i, k, j)
@@ -188,7 +188,7 @@ end
 
 function _column_batches(A, B, C, Sbuf, Tbuf, Vall, Uall, maxK::Int, maxJ::Int)
     b = nominal_tile_size(A, 1)
-    noff = _interior_grid(A)[1] - 1
+    noff = _full_regular_grid(A)[1] - 1
     rA = maxrank(A)
     rB = maxrank(B)
     nkj = maxK * maxJ                    # Stage 1/2 batch over (k, jpos)
@@ -220,7 +220,7 @@ to the budgeted run width for the given reduction placement.
 """
 function allocate_workspace(::KAsGemmK, A::TLRDenseDiagMatrix{<:Any,T}, B::TLRDenseDiagMatrix,
                             C::AbstractMatrix, budget::Int) where {T}
-    mt, nt = _interior_grid(A)
+    mt, nt = _full_regular_grid(A)
     b = nominal_tile_size(A, 1)
     noff = nt - 1
     rA = maxrank(A)
@@ -237,7 +237,7 @@ end
 
 function allocate_workspace(::KAsSerialLoop, A::TLRDenseDiagMatrix{<:Any,T}, B::TLRDenseDiagMatrix,
                             C::AbstractMatrix, budget::Int) where {T}
-    _, nt = _interior_grid(A)
+    _, nt = _full_regular_grid(A)
     b = nominal_tile_size(A, 1)
     noff = nt - 1
     rA = maxrank(A)

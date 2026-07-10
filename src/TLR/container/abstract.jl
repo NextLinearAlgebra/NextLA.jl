@@ -41,7 +41,7 @@ end
 
 Sub-grid of full-size regular tiles, `(⌊m/bm⌋, ⌊n/bn⌋)` — `tilegrid_size` minus
 any partial boundary row/column. Equals `tilegrid_size` when the matrix tiles
-evenly. (`gemm`'s `_interior_grid` is the same quantity for `TLRDenseDiagMatrix`.)
+evenly. This is the interior grid the gemm hard term operates over.
 """
 @inline _full_regular_grid(A::AbstractTLRMatrix) =
     (fld(A.m, nominal_tile_size(A, 1)), fld(A.n, nominal_tile_size(A, 2)))

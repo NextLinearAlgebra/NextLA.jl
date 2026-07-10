@@ -26,7 +26,7 @@ function _offdiag_diag_interior_fused_gemm!(C, A::TLRDenseDiagMatrix{BackendT,T}
     rA = maxrank(A)
     (n_cat == 0 || rA == 0) && return C
 
-    Q, _ = _interior_grid(A) # interior sub-grid is Q×Q
+    Q, _ = _full_regular_grid(A) # interior sub-grid is Q×Q
     per = Q - 1  # off-diagonal tiles per column j
     b_out = size(V, 1)
     len = rA * n_cat * b_out
@@ -76,7 +76,7 @@ function _diag_offdiag_interior_fused_gemm!(C, A::TLRDenseDiagMatrix{BackendT,T}
     rB = maxrank(B)
     (n_cat == 0 || rB == 0) && return C
 
-    Q, _ = _interior_grid(B)             # interior sub-grid is Q×Q
+    Q, _ = _full_regular_grid(B)             # interior sub-grid is Q×Q
     per = Q - 1                          # off-diagonal tiles per row (panel `i`)
     b_in = size(U, 1)
     len = b_in * rB * n_cat
@@ -167,7 +167,7 @@ to `gemm_batched!` via `execute_stage!`.
 """
 function _offdiag_offdiag_gemm!(C, A::TLRDenseDiagMatrix{<:BackendT,T}, B::TLRDenseDiagMatrix{<:BackendT,T};
     alpha::T, budget) where {T,BackendT}
-    _, nt = _interior_grid(A)
+    _, nt = _full_regular_grid(A)
     (nt == 1 || maxrank(A) == 0 || maxrank(B) == 0) && return C
 
     placement = k_axis_schedule(stride1_axis_left(A), stride1_axis_right(B))
@@ -193,7 +193,7 @@ O_A O_B (component 3) accumulates (β = 1). Order-only dependencies — no host 
 the caller places this whole term on a region stream (see `gemm!`).
 """
 function tlr_gemm_int_by_int(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T, beta::T; budget::Int) where {T,BackendT}
-    Q, _ = _interior_grid(A)
+    Q, _ = _full_regular_grid(A)
     b = nominal_tile_size(A, 1)
 
     # degenerate case: block-diagonal product

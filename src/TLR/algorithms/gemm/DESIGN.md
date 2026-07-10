@@ -247,3 +247,91 @@ Not yet done, in rough priority:
 - **TLR×TLR → TLR** — introduce an output abstraction only when a low-rank
   accumulator/recompression target exists; the panel/schedule/stage machinery
   can then be reused intentionally.
+
+## 10. Extending to `TLRMatrix` (fully low-rank, no dense diagonal)
+
+Goal: run the same four-region GEMM on `TLRMatrix` operands (every tile —
+diagonal, boundary, corner — is low-rank; the interior grid may be rectangular).
+
+### The one axis of difference
+
+The Stage 1/2/3 algebra, the layout traits, the budgeting, and the batched
+execution are **identical** for both container types. The only thing that varies
+in the hard core is **interior tile-grid enumeration**:
+
+| | `TLRDenseDiagMatrix` interior | `TLRMatrix` interior |
+| --- | --- | --- |
+| grid | square `Q×Q` | rectangular `q_m × q_n` (`_full_regular_grid`) |
+| tiles per row | `noff = nt-1` (diagonal excluded) | full `q_n` |
+| slot map | `_offdiag_index` (skips diagonal) | `tile_linear_index` (no skip) |
+| k-reduction for `(i,j)` | `k ≠ i` and `k ≠ j` | all `k ∈ 1:q_c` |
+| S-scratch column | `_offdiag_pos` (packed around the gap) | `p = jl` (contiguous) |
+
+Every `local_to_col` / `j==k && continue` / `_offdiag_pos` / `_offdiag_index`
+call is **diagonal-skip bookkeeping**. For the full grid they are identities, so
+full-LR is the *degenerate (no-gap) case* of the same core, not a second core.
+
+### `GridKind` policy
+
+The difference is absorbed by a trait, not by duplicated stage code:
+
+```julia
+abstract type GridKind end
+struct SkipDiag <: GridKind end   # dense-diag interior: diagonal excluded
+struct FullGrid <: GridKind end   # full-LR: every tile present
+```
+
+The four skip-dependent operations dispatch on it (`FullGrid` folds to no-ops,
+so the compiler regenerates today's `SkipDiag` code unchanged — the guarantee
+that unifying cannot regress the working path):
+
+```julia
+tiles_per_row(::SkipDiag, qm, qn) = qn - 1;  tiles_per_row(::FullGrid, qm, qn) = qn
+krange(::SkipDiag, i, qc) = (k for k in 1:qc if k != i); krange(::FullGrid, _, qc) = 1:qc
+col_included(::SkipDiag, k, j) = j != k;     col_included(::FullGrid, _, _) = true
+scratch_pos(::SkipDiag, j0, k, j) = _offdiag_pos(j0,k,j); scratch_pos(::FullGrid, j0, _, j) = j-j0+1
+slot(::SkipDiag, order, qm, qn, i, j) = _offdiag_index(order, qm, qn, i, j)
+slot(::FullGrid, order, qm, qn, i, j) = tile_linear_index(order, qm, qn, i, j)
+```
+
+The policy rides on the operand descriptor. `PanelView` becomes the grid-generic
+`InteriorOperand{Kind<:GridKind, Order, A3}` (this folds in the earlier
+`PanelView` slimming — drop the `matrix` back-reference, the write-only `contig`
+field, and the phantom `Side`/`Factor`/`Ax` params):
+
+```julia
+struct InteriorOperand{Kind<:GridKind, Order, A3<:AbstractArray}
+    U::A3; V::A3          # int_U / int_V factor storage
+    order::Order
+    qm::Int; qn::Int      # this operand's regular-tile grid extents
+end
+```
+
+`TLRDenseDiagMatrix → InteriorOperand{SkipDiag}` with `qm=qn=Q`;
+`TLRMatrix → InteriorOperand{FullGrid}` with `(qm,qn)=_full_regular_grid`.
+
+### What is shared vs per-type
+
+- **Shared, written once against `InteriorOperand`:** all of `stage.jl`,
+  `schedule.jl`, the layout traits, and `_offdiag_offdiag_gemm!`. The core carries
+  three extents `(q_m^A, q_c, q_n^B)` instead of one `Q`, so rectangular falls out.
+  The layout traits already need only `order` (re-dispatch on `AbstractTLRMatrix`).
+- **Per-type, thin:** region orchestration + easy/boundary terms.
+  - `tlr_gemm_int_by_int(::TLRMatrix)` = one `_offdiag_offdiag_gemm!` on the full
+    grid. Components 1 & 2 (`D_AD_B`, `O_AD_B + D_AO_B`) **vanish** — there is no
+    dense diagonal to split out.
+  - Boundary/corner for full-LR: each `_diag_tile_view` / `D_corner` / dense
+    `mul!` becomes a low-rank product. Most are already Stage 1/2/3 shapes (e.g.
+    `bpanel_by_rpanel` is a 3-stage reduction today) and reuse the primitive;
+    `corner_by_corner` goes from one dense `mul!` to a single-tile low-rank product.
+
+### Implementation sequence (each step stays test-green)
+
+1. Swap `_interior_grid → _full_regular_grid` across gemm (mechanical; identical
+   on square, unlocks rectangular geometry).
+2. Slim `PanelView` into `InteriorOperand` + `GridKind`, wiring only `SkipDiag`
+   (pure refactor).
+3. Add `FullGrid` + the `TLRMatrix` interior path; test full-LR interior-only
+   (`m%b==0`) against a dense reference.
+4. Add `TLRMatrix` boundary/corner terms, region by region, each test-guarded.
+5. Add the `gemm!(::TLRMatrix, ::TLRMatrix)` entry + rectangular tests.

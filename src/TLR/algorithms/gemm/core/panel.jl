@@ -23,14 +23,6 @@ end
 @inline blockdim(p::PanelView) = size(p.data, 1)   # b
 @inline rankdim(p::PanelView)  = size(p.data, 2)   # maxrank
 
-"""
-Interior sub-grid `(Q, Q)`, `Q = ⌊m/b⌋` — the block of full `b×b` tiles, excluding
-the `m%b` boundary row/column (which are separate terms). Equals `tilegrid_size`
-when `m%b == 0`, so the uniform path is unchanged. `int_U`/`int_V` store exactly
-this sub-grid's off-diagonal tiles in `Q×Q` enumeration order.
-"""
-@inline _interior_grid(A::TLRDenseDiagMatrix) = (q = fld(A.m, nominal_tile_size(A, 1)); (q, q))
-
 """Contiguous `[b, maxrank, noff]` view of tile-row `r`'s off-diagonal panel."""
 @inline rowpanel(p::PanelView, r::Integer) =
     view(p.data, :, :, (r - 1) * p.noff + 1 : r * p.noff)
@@ -54,7 +46,7 @@ copied or packed.
 """
 function panelview(::Type{Side}, ::Type{Factor}, M::TLRDenseDiagMatrix{<:Any,T},
                    factors::AbstractArray{T,3}, contig::Stride1Axis{Ax}) where {Side<:OperandSide,Factor<:FactorKind,T,Ax}
-    _, nt = _interior_grid(M)
+    _, nt = _full_regular_grid(M)
     return PanelView{Side,Factor,Ax,typeof(M),typeof(factors)}(M, factors, nt - 1, contig)
 end
 
