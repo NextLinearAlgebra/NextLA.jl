@@ -33,8 +33,11 @@ HAS_CUDA || error("CUDA is not available. Run with a CUDA-enabled project, for e
 
 using NextLA
 using NextLA: TLRMatrix, compress!, tile_u, tile_v, dense_diag, dense_diag_corner,
-              ranks, residuals, ndiag_tiles, noffdiag_tiles, tile_origin_coords,
-              tile_size, alloc_workspace
+              ranks, residuals, ndiag_tiles, tile_origin_coords,
+              tile_size, tilegrid_size, alloc_workspace
+
+# Off-diagonal tile count (was the library's `noffdiag_tiles`, dropped as unused API).
+_noffdiag_tiles(A) = prod(tilegrid_size(A)) - ndiag_tiles(A)
 
 gpu_sync() = CUDA.synchronize()
 
@@ -90,7 +93,7 @@ function rel_error(A_cpu::AbstractMatrix, A_tlr::TLRMatrix)
     err_sq = 0.0
     norm_sq = 0.0
 
-    for ob in 1:noffdiag_tiles(A_tlr)
+    for ob in 1:_noffdiag_tiles(A_tlr)
         i, j = NextLA.TLRmodule._offdiag_coords(A_tlr, ob)
         p0, q0 = tile_origin_coords(A_tlr, i, j)
         tm, tn = tile_size(A_tlr, i, j)
@@ -117,7 +120,7 @@ end
 function ortho_errors(A_tlr::TLRMatrix)
     rk = Array(ranks(A_tlr))
     errs = Float64[]
-    for ob in 1:noffdiag_tiles(A_tlr)
+    for ob in 1:_noffdiag_tiles(A_tlr)
         kr = Int(rk[ob])
         kr == 0 && continue
         U_ob = Array(tile_u(A_tlr, ob))
@@ -134,7 +137,7 @@ end
 
 function rank_recovery(A_tlr::TLRMatrix, true_ranks::AbstractMatrix{<:Integer})
     rk = Array(ranks(A_tlr))
-    noff = noffdiag_tiles(A_tlr)
+    noff = _noffdiag_tiles(A_tlr)
     exact = 0
     recoverable = 0
     exact_recoverable = 0

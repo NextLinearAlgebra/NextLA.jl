@@ -13,7 +13,7 @@ factors and `W_ij, Z_ij` are B's interior factors.  First writer of C_bottom, fo
 No-op when `m_A % b == 0`.
 """
 function tlr_gemm_bpanel_by_int(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T; beta::T=one(T), budget::Int) where {T, BackendT}
-    Q = size(A.bottom_U, 3)                    # A bottom-panel tiles (= interior Q)
+    Q = _bottom_panel_tiles(A)                 # A bottom-panel tiles (= interior columns)
     Q == 0 && return C                         # no bottom panel (m_A % b == 0)
 
     mt, _ = tilegrid_size(A)                    # boundary tile-row index (Q+1)
@@ -81,7 +81,7 @@ times B's bottom-panel tiles `B_{Q+1,j} = W_j Z_jᵀ` give, for each j,
 No-op when `m_B % b == 0`, `B.maxrank == 0`, or A has no corner.
 """
 function tlr_gemm_corner_by_bpanel(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT, T}, alpha::T; beta::T=one(T)) where {T, BackendT}
-    Q = size(B.bottom_U, 3)
+    Q = _bottom_panel_tiles(B)
     Q == 0 && return C                        # no bottom panel (m_B % b == 0)
     rB = maxrank(B)
     (rB == 0 || size(A.D_corner, 3) == 0) && return C

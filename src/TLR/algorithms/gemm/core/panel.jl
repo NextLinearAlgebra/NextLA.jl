@@ -22,6 +22,12 @@
 @inline _tile_slot(::SkipDiag, order, qm::Int, qn::Int, i::Int, j::Int) = _offdiag_index(order, qm, qn, i, j)
 @inline _tile_slot(::FullGrid, order, qm::Int, qn::Int, i::Int, j::Int) = tile_linear_index(order, qm, qn, i, j)
 
+@inline _right_panel_tiles(A::AbstractTLRMatrix) =
+    tail_tile_size(A, 2) == 0 ? 0 : _full_regular_grid(A)[1]
+
+@inline _bottom_panel_tiles(A::AbstractTLRMatrix) =
+    tail_tile_size(A, 1) == 0 ? 0 : _full_regular_grid(A)[2]
+
 # ─── Interior operand ─────────────────────────────────────────────────────────
 
 """
@@ -144,6 +150,22 @@ end
 """Zero-copy `b×b` view of dense output tile `(i, j)`."""
 @inline dense_tile(C::AbstractMatrix, b::Int, i::Int, j::Int) =
     view(C, (i - 1) * b + 1:i * b, (j - 1) * b + 1:j * b)
+
+"""
+    _output_tile_view(C, A, B, i, j)
+
+Zero-copy view of the `C` output tile `(i, j)`: its rows come from A's tile-row `i`
+and its columns from B's tile-col `j` (so boundary/rectangular tile sizes are taken
+from the correct operand). For square, equal-size A, B this coincides with
+`_dense_tile_view(C, A, i, j)`.
+"""
+@inline function _output_tile_view(C::AbstractMatrix, A::AbstractTLRMatrix, B::AbstractTLRMatrix, i::Int, j::Int)
+    p0 = (i - 1) * nominal_tile_size(A, 1) + 1
+    q0 = (j - 1) * nominal_tile_size(B, 2) + 1
+    tm = tile_size(A, i, 1)[1]
+    tn = tile_size(B, 1, j)[2]
+    return view(C, p0:(p0 + tm - 1), q0:(q0 + tn - 1))
+end
 
 """Zero-copy view of dense output row-block `i`, columns `j0:j1`."""
 @inline dense_rowblock(C::AbstractMatrix, b::Int, i::Int, j0::Int, j1::Int) =

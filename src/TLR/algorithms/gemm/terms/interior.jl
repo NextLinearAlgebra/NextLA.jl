@@ -205,9 +205,6 @@ function tlr_gemm_int_by_int(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDi
         return C
     end
 
-    # Components 1 and 2 write disjoint tiles (diagonal vs off-diagonal) and fold β;
-    # component 3 accumulates over all interior tiles, so it must follow both. On a
-    # single FIFO stream this ordering is automatic — no barrier needed.
     _diag_diag_gemm!(C, A, B, alpha; beta=beta)                         # component 1 (folds β)
     _diag_times_offdiag_interior!(C, A, B, alpha; beta=beta)            # component 2 (folds β)
     _offdiag_offdiag_gemm!(C, A, B; alpha=alpha, budget=budget)         # component 3 (β = 1)
@@ -221,34 +218,36 @@ Accumulate `α · u_A v_Bᵀ` into the interior of the dense `C`:
 `C_int := beta·C_int + α·u_A v_Bᵀ`.  No-op when `n_A % b == 0` (no boundary column
 in `A`) or the pairing is incomplete (non-square boundary).
 """
-function tlr_gemm_rpanel_by_bpanel(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T;
+# Pure low-rank panels (A's right column × B's bottom row): identical for both
+# container types, so it dispatches on `AbstractTLRMatrix`.
+function tlr_gemm_rpanel_by_bpanel(C, A::AbstractTLRMatrix{BackendT,T}, B::AbstractTLRMatrix{BackendT,T}, alpha::T;
     beta::T=one(T), budget::Int) where {T,BackendT}
-    Q = size(A.right_U, 3)
-    Q == 0 && return C
-    Q == size(B.bottom_U, 3) || return C
+    Qi = _right_panel_tiles(A)   # A right-panel tiles → output rows
+    Qj = _bottom_panel_tiles(B)  # B bottom-panel tiles → output cols
+    (Qi == 0 || Qj == 0) && return C
 
     rA = maxrank(A)
     rB = maxrank(B)
     (rA == 0 || rB == 0) && return C
 
-    s = size(A.right_V, 1) # tail tile size (n % b)
+    s = size(A.right_V, 1) # shared contraction tail (== size(B.bottom_U, 1))
     b = nominal_tile_size(A, 1)
 
-    Vstack = reshape(A.right_V, s, rA * Q) # [V_1 | … | V_Q]   (s × Q·rA)
-    Wstack = reshape(B.bottom_U, s, rB * Q) # [W_1 | … | W_Q]   (s × Q·rB)
+    Vstack = reshape(A.right_V, s, rA * Qi) # [V_1 | … | V_Qi]   (s × Qi·rA)
+    Wstack = reshape(B.bottom_U, s, rB * Qj) # [W_1 | … | W_Qj]  (s × Qj·rB)
 
     # column-block width fitting the budget
-    per_col = max(Q * rA * (rB + b) * sizeof(T), 1)  # S col-block (Q·rA × rB) + T (Q·rA × b).
-    maxJ = clamp(div(budget, per_col), 1, Q)
+    per_col = max(Qi * rA * (rB + b) * sizeof(T), 1)  # S col-block (Qi·rA × rB) + T (Qi·rA × b).
+    maxJ = clamp(div(budget, per_col), 1, Qj)
 
-    Sbuf = allocate(A.backend, T, Q * rA, maxJ * rB)
-    Tbuf = allocate(A.backend, T, Q * rA, b, maxJ)
+    Sbuf = allocate(A.backend, T, Qi * rA, maxJ * rB)
+    Tbuf = allocate(A.backend, T, Qi * rA, b, maxJ)
 
     s3u = Vector{typeof(view(A.right_U,:,:,1))}()
     s3t = Vector{typeof(view(Tbuf, 1:rA, :, 1))}()
-    s3c = Vector{typeof(_dense_tile_view(C, A, 1, 1))}() # (b × b) tile view of C
+    s3c = Vector{typeof(_output_tile_view(C, A, B, 1, 1))}()
 
-    @inbounds for jrange in Iterators.partition(1:Q, maxJ)
+    @inbounds for jrange in Iterators.partition(1:Qj, maxJ)
         j0 = first(jrange)
         j1 = last(jrange)
         Δ = length(jrange)
@@ -259,7 +258,7 @@ function tlr_gemm_rpanel_by_bpanel(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRD
         gemm_batched!('T', 'N', one(T), [Vstack], [Wsub], zero(T), [Ssub])
 
         # Stage 2
-        S2 = reshape(Ssub, Q * rA, rB, Δ)
+        S2 = reshape(Ssub, Qi * rA, rB, Δ)
         Z2 = view(B.bottom_V,:,:,jrange)
         T2 = view(Tbuf,:,:,(1:Δ))
         gemm_batched!('N', 'T', one(T), S2, Z2, zero(T), T2)
@@ -269,10 +268,10 @@ function tlr_gemm_rpanel_by_bpanel(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRD
         empty!(s3t);
         empty!(s3c)
         @inbounds for (jl, j) in enumerate(jrange)
-            for i in 1:Q
+            for i in 1:Qi
                 push!(s3u, view(A.right_U,:,:,i))
                 push!(s3t, view(Tbuf, ((i-1)*rA+1):(i*rA), :, jl))
-                push!(s3c, _dense_tile_view(C, A, i, j))
+                push!(s3c, _output_tile_view(C, A, B, i, j))
             end
         end
         gemm_batched!('N', 'N', alpha, s3u, s3t, beta, s3c)

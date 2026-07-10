@@ -7,6 +7,7 @@ include("terms/interior.jl")
 include("terms/corner.jl")
 include("terms/right.jl")
 include("terms/bottom.jl")
+include("terms/fulllr.jl")
 
 const DEFAULT_GEMM_BUDGET = 10^9
 
@@ -75,10 +76,14 @@ end
 """
     gemm!(C, A::TLRMatrix, B::TLRMatrix; alpha=true, beta=false, max_workspace) -> C
 
-Fully low-rank TLR × TLR → dense `C := alpha·(A·B) + beta·C`.
+Fully low-rank TLR × TLR → dense `C := alpha·(A·B) + beta·C`. Every tile is low-rank,
+so the product is the four-region block product with each region a low-rank staged
+term — no dense-diagonal / dense-corner special cases.
 
-Currently restricted to tile-aligned dimensions (`m`, `n` divisible by the tile size);
-boundary tiles are a later extension.
+`C` is pre-scaled by β once, then every term accumulates (β = 1). Tile-aligned
+dimensions run the interior term only (any rectangular grid). Boundary tiles are
+currently supported for square, equal-size `A`, `B`; rectangular boundary is a later
+extension.
 """
 function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T};
     alpha=true, beta=false, max_workspace::Int=DEFAULT_GEMM_BUDGET) where {BackendT,T}
@@ -88,12 +93,46 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backend
         throw(DimensionMismatch("C must be size(A,1) × size(B,2)"))
     nominal_tile_size(A) == nominal_tile_size(B) ||
         throw(DimensionMismatch("A and B must share the same nominal tile size"))
-    (all(iszero, tail_tile_size(A)) && all(iszero, tail_tile_size(B))) ||
-        throw(ArgumentError("gemm! on TLRMatrix currently requires tile-aligned dimensions (no boundary tiles)"))
 
     α = T(alpha)
     β = T(beta)
+    one_β = one(T)
+    W = max_workspace
+
+    # Pre-scale C once, then every term accumulates onto its (disjoint-per-region) tiles.
     _scale_output!(C, β)
-    _offdiag_offdiag_gemm!(C, A, B; alpha=α, budget=max_workspace)
+
+    interior = () -> begin                                       # C_int
+        _offdiag_offdiag_gemm!(C, A, B; alpha=α, budget=W)       #   A_int B_int
+        tlr_gemm_rpanel_by_bpanel(C, A, B, α; beta=one_β, budget=W)  # u_A v_Bᵀ
+    end
+    right = () -> begin                                          # C_right
+        tlr_gemm_int_by_rpanel(C, A, B, α; beta=one_β, budget=W)     # A_int u_B
+        tlr_gemm_rpanel_by_corner(C, A, B, α; beta=one_β)           # u_A γ_B
+    end
+    bottom = () -> begin                                         # C_bottom
+        tlr_gemm_bpanel_by_int(C, A, B, α; beta=one_β, budget=W)     # v_Aᵀ B_int
+        tlr_gemm_corner_by_bpanel(C, A, B, α; beta=one_β)          # γ_A v_Bᵀ
+    end
+    corner = () -> begin                                         # C_corner
+        tlr_gemm_corner_by_corner(C, A, B, α; beta=one_β)          # γ_A γ_B
+        tlr_gemm_bpanel_by_rpanel(C, A, B, α; beta=one_β)          # v_Aᵀ u_B
+    end
+
+    backend = A.backend
+    if backend isa KernelAbstractions.CPU
+        interior(); right(); bottom(); corner()
+    else
+        # Regions write disjoint quadrants; pre-scale must be visible first.
+        sync_streams_with_default(backend)
+        streams = create_streams(backend, 4)
+        with_stream(interior, backend, streams[1])
+        with_stream(right, backend, streams[2])
+        with_stream(bottom, backend, streams[3])
+        with_stream(corner, backend, streams[4])
+        for s in streams
+            sync_stream(backend, s)
+        end
+    end
     return C
 end

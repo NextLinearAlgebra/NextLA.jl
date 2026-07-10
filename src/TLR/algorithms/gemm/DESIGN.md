@@ -340,5 +340,15 @@ end
    `SkipDiag` interior). `gemm!(::TLRMatrix, ::TLRMatrix)` runs the full-grid staged
    product; tested (square + rectangular, all four combos, both budgets) against a
    dense reference. Restricted to tile-aligned dimensions (no boundary tiles).
-4. Add `TLRMatrix` boundary/corner terms, region by region, each test-guarded.
-5. Extend `gemm!(::TLRMatrix, ::TLRMatrix)` to boundary tiles + rectangular tails.
+4. **[done]** Add `TLRMatrix` boundary/corner terms (`terms/fulllr.jl`) + the
+   four-region `gemm!(::TLRMatrix, ::TLRMatrix)` orchestrator. The pure-panel terms
+   (`rpanel_by_bpanel`, `bpanel_by_rpanel`) are shared by relaxing their signatures
+   to `AbstractTLRMatrix`; the five dense-touching terms get full-LR versions where
+   the corner is a low-rank 3-stage product and the interior×panel reductions run
+   over all `k` (no diagonal split). `C` is pre-scaled by β once, so every term
+   accumulates. Tested (both orders, both budgets, zero rank) against a dense
+   reference. Boundary currently requires square, equal-size `A`, `B`.
+5. Extend boundary to rectangular grids (the interior already handles them): the
+   full-LR boundary terms index the output tile via `_dense_tile_view(C, A, …)`,
+   which assumes A/B/C share geometry — generalize to C-relative tile origins so
+   `m_A ≠ n_A ≠ n_B` with tails works.

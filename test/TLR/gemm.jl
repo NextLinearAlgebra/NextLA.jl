@@ -128,12 +128,35 @@ end
         end
     end
 
+    # Boundary tiles (n % b ≠ 0): square, equal-size A, B so the right/bottom/corner
+    # panels are populated. Exercises all four regions with low-rank corners.
+    @testset "boundary tiling (n % b ≠ 0)" begin
+        for orderA in orders, orderB in orders
+            for (n, b) in ((14, 4), (35, 8), (46, 12)), budget in (1, 128 * 1024 * 1024)
+                assert_fulllr_gemm_matches_dense(Array, Float64, n, n, n, b, 3,
+                                                 orderA, orderB, _ -> nothing; budget=budget, atol=1e-9, rtol=1e-9)
+            end
+        end
+    end
+
+    # Rectangular boundary: independent tails in m, k, n (A is mA×k, B is k×nB).
+    @testset "rectangular boundary" begin
+        for orderA in orders, orderB in orders
+            for (mA, k, nB, b) in ((14, 10, 18, 4), (22, 14, 10, 4), (35, 19, 27, 8)), budget in (1, 128 * 1024 * 1024)
+                assert_fulllr_gemm_matches_dense(Array, Float64, mA, k, nB, b, 3,
+                                                 orderA, orderB, _ -> nothing; budget=budget, atol=1e-9, rtol=1e-9)
+            end
+        end
+    end
+
     @testset "edge cases" begin
         # single contraction tile (q_c = 1): kept by FullGrid, unlike the dense-diag interior
         assert_fulllr_gemm_matches_dense(Array, Float64, 8, 4, 8, 4, 2,
                                          NextLA.TileRowMajor(), NextLA.TileColMajor(), _ -> nothing; budget=1)
-        # zero rank
+        # zero rank (aligned and boundary)
         assert_fulllr_gemm_matches_dense(Array, Float64, 8, 8, 8, 4, 0,
+                                         NextLA.TileColMajor(), NextLA.TileRowMajor(), _ -> nothing; budget=1)
+        assert_fulllr_gemm_matches_dense(Array, Float64, 14, 14, 14, 4, 0,
                                          NextLA.TileColMajor(), NextLA.TileRowMajor(), _ -> nothing; budget=1)
     end
 end

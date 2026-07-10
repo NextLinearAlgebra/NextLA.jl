@@ -33,16 +33,20 @@ where  U_p = A.bottom_U[p] (s_m×rA),  V_p = A.bottom_V[p] (b×rA),
        W_p = B.right_U[p]  (b×rB),    Z_p = B.right_V[p]  (s_n×rB).
 No-op when `m % b == 0` or the panels are unpaired (non-square boundary).
 """
-function tlr_gemm_bpanel_by_rpanel(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T; beta::T=one(T)) where {T, BackendT}
-    Q = size(A.bottom_U, 3)
-    Q == 0 && return C                        # no bottom panel (m % b == 0)
-    Q == size(B.right_U, 3) || return C       # non-square boundary
+# Pure low-rank panels (A's bottom row × B's right column): identical for both
+# container types, so it dispatches on `AbstractTLRMatrix`.
+function tlr_gemm_bpanel_by_rpanel(C, A::AbstractTLRMatrix{BackendT,T}, B::AbstractTLRMatrix{BackendT,T}, alpha::T; beta::T=one(T)) where {T, BackendT}
+    Q = _bottom_panel_tiles(A)
+    qB = _right_panel_tiles(B)
+    Q == 0 && return C
+    Q == qB || return C                       # contraction mismatch (q_c^A ≠ q_c^B)
 
     rA = maxrank(A)
     rB = maxrank(B)
     (rA == 0 || rB == 0) && return C
 
-    mt, nt = tilegrid_size(A)
+    mt, _ = tilegrid_size(A)                   # A boundary tile-row
+    _, ntB = tilegrid_size(B)                  # B boundary tile-col
     s_m = size(A.bottom_U, 1) # tail tile row
     s_n = size(B.right_V, 1)  # tail tile column
 
@@ -56,7 +60,7 @@ function tlr_gemm_bpanel_by_rpanel(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRD
     # Stage 3 (GEMM): Σ_p U_p T_p, K-stacked over p.  Tw is [rA, s_n, Q]
     Ustack = reshape(A.bottom_U, s_m, Q * rA)
     Tstack = reshape(permutedims(Tw, (1, 3, 2)), Q * rA, s_n) #TODO permutation is a copy, fix it
-    Ccorner = _dense_tile_view(C, A, mt, nt)
+    Ccorner = _output_tile_view(C, A, B, mt, ntB)
     gemm_batched!('N', 'N', alpha, [Ustack], [Tstack], beta, [Ccorner])
     return C
 end
