@@ -96,7 +96,7 @@ include("ttqrt.jl")
 
 include("TLR/TLRmodule.jl")
 using .TLRmodule: TileColMajor, TileRowMajor
-using .TLRmodule: TLRMatrix
+using .TLRmodule: AbstractTLRMatrix, TLRMatrix, FullTLRMatrix
 using .TLRmodule: ndiag_tiles, noffdiag_tiles, tile_origin_coords, tile_size
 using .TLRmodule: maxrank, ranks, residuals, dense_diag, dense_diag_corner, tilegrid_size, nominal_tile_size, tail_tile_size
 using .TLRmodule: compress!, uncompress!, alloc_workspace

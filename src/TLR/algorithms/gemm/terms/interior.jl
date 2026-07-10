@@ -21,8 +21,8 @@
 # O_A D_B, fused Stage 1 (A stride-1 axis `:i`): column `j`'s `Q-1` off-diagonal tiles
 # are contiguous in `int_U/int_V` and share the right operand `B_jj`, so their `V`s
 # fuse into one wide GEMM per column — batch `Q` instead of `Q(Q-1)`.
-function _offdiag_diag_interior_fused_gemm!(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T, obs, U, V, scratch; beta::T=one(T)) where {T,BackendT}
-    n_cat = length(obs)
+function _offdiag_diag_interior_fused_gemm!(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T, slots, U, V, scratch; beta::T=one(T)) where {T,BackendT}
+    n_cat = length(slots)
     rA = maxrank(A)
     (n_cat == 0 || rA == 0) && return C
 
@@ -38,7 +38,7 @@ function _offdiag_diag_interior_fused_gemm!(C, A::TLRMatrix{BackendT,T}, B::TLRM
     Mg = [view(Mws2, ((j-1)*per*rA+1):(j*per*rA), :) for j in 1:Q]
     gemm_batched!('T', 'N', one(T), Vg, Bg, zero(T), Mg)
 
-    coords = [_offdiag_coords(A, ob) for ob in obs]
+    coords = [_category_coords(A, _TILE_INT, k) for k in slots]
     Uvec = [view(U,:,:,k) for k in 1:n_cat]
     Mvec = [view(Mws,:,k,:) for k in 1:n_cat]
     Cvec = [_dense_tile_view(C, A, coords[k]...) for k in 1:n_cat]
@@ -47,12 +47,12 @@ function _offdiag_diag_interior_fused_gemm!(C, A::TLRMatrix{BackendT,T}, B::TLRM
 end
 
 # O_A D_B, tilewise Stage 1 (A stride-1 axis `:k`): one r×r batched GEMM per tile.
-function _offdiag_diag_tilebatch_gemm!(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T, obs, U, V, scratch; beta::T=one(T)) where {T,BackendT}
-    n_cat = length(obs)
+function _offdiag_diag_tilebatch_gemm!(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T, slots, U, V, scratch; beta::T=one(T)) where {T,BackendT}
+    n_cat = length(slots)
     rA = maxrank(A)
     (n_cat == 0 || rA == 0) && return C
 
-    coords = [_offdiag_coords(A, ob) for ob in obs]
+    coords = [_category_coords(A, _TILE_INT, k) for k in slots]
     b_out = size(V, 1)
     len = rA * b_out * n_cat
     Mws = reshape(view(scratch, 1:len), rA, b_out, n_cat)
@@ -71,8 +71,8 @@ end
 # D_A O_B, fused Stage 1 (B stride-1 axis `:j`): row `i`'s `Q-1` off-diagonal tiles
 # are contiguous in `int_U/int_V` and share the left operand `A_ii`, so their `W`s
 # fuse into one wide GEMM per row.
-function _diag_offdiag_interior_fused_gemm!(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T, obs, U, V, scratch; beta::T=one(T)) where {T,BackendT}
-    n_cat = length(obs)
+function _diag_offdiag_interior_fused_gemm!(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T, slots, U, V, scratch; beta::T=one(T)) where {T,BackendT}
+    n_cat = length(slots)
     rB = maxrank(B)
     (n_cat == 0 || rB == 0) && return C
 
@@ -88,7 +88,7 @@ function _diag_offdiag_interior_fused_gemm!(C, A::TLRMatrix{BackendT,T}, B::TLRM
     Ng = [view(Nws2, :, ((i-1)*per*rB+1):(i*per*rB)) for i in 1:Q]
     gemm_batched!('N', 'N', one(T), ADg, Wg, zero(T), Ng)
 
-    coords = [_offdiag_coords(B, ob) for ob in obs]
+    coords = [_category_coords(B, _TILE_INT, k) for k in slots]
     Zvec = [view(V,:,:,k) for k in 1:n_cat]
     Nvec = [view(Nws,:,:,k) for k in 1:n_cat]
     Cvec = [_dense_tile_view(C, B, coords[k]...) for k in 1:n_cat]
@@ -97,12 +97,12 @@ function _diag_offdiag_interior_fused_gemm!(C, A::TLRMatrix{BackendT,T}, B::TLRM
 end
 
 # D_A O_B, tilewise Stage 1 (B stride-1 axis `:k`): one b×r batched GEMM per tile.
-function _diag_offdiag_tilebatch_gemm!(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T, obs, U, V, scratch; beta::T=one(T)) where {T,BackendT}
-    n_cat = length(obs)
+function _diag_offdiag_tilebatch_gemm!(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T, slots, U, V, scratch; beta::T=one(T)) where {T,BackendT}
+    n_cat = length(slots)
     rB = maxrank(B)
     (n_cat == 0 || rB == 0) && return C
 
-    coords = [_offdiag_coords(B, ob) for ob in obs]
+    coords = [_category_coords(B, _TILE_INT, k) for k in slots]
     b_in = size(U, 1)
     len = b_in * rB * n_cat
     Nws = reshape(view(scratch, 1:len), b_in, rB, n_cat)
@@ -122,7 +122,7 @@ end
 # `O_A D_B` is the first off-diagonal writer (folds β); `D_A O_B` then accumulates
 # with β = 1.  If A has zero off-diagonal rank, `D_A O_B` becomes the first writer.
 function _diag_times_offdiag_interior!(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T; beta::T=one(T)) where {T,BackendT}
-    n_int = length(A.obs_int)                     # == Q(Q-1)
+    n_int = size(A.int_U, 3)                     # == Q(Q-1)
     rmax = max(maxrank(A), maxrank(B))
     (n_int == 0 || rmax == 0) && return C
     b = nominal_tile_size(A, 1)
@@ -130,18 +130,18 @@ function _diag_times_offdiag_interior!(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix
 
     if maxrank(A) > 0
         if stride1_axis_left(A) isa Stride1Axis{:i}
-            _offdiag_diag_interior_fused_gemm!(C, A, B, alpha, A.obs_int, A.int_U, A.int_V, scratch; beta=beta)
+            _offdiag_diag_interior_fused_gemm!(C, A, B, alpha, axes(A.int_U, 3), A.int_U, A.int_V, scratch; beta=beta)
         else
-            _offdiag_diag_tilebatch_gemm!(C, A, B, alpha, A.obs_int, A.int_U, A.int_V, scratch; beta=beta)
+            _offdiag_diag_tilebatch_gemm!(C, A, B, alpha, axes(A.int_U, 3), A.int_U, A.int_V, scratch; beta=beta)
         end
     end
 
     beta_B = maxrank(A) > 0 ? one(T) : beta
     if maxrank(B) > 0
         if stride1_axis_right(B) isa Stride1Axis{:j}
-            _diag_offdiag_interior_fused_gemm!(C, A, B, alpha, B.obs_int, B.int_U, B.int_V, scratch; beta=beta_B)
+            _diag_offdiag_interior_fused_gemm!(C, A, B, alpha, axes(B.int_U, 3), B.int_U, B.int_V, scratch; beta=beta_B)
         else
-            _diag_offdiag_tilebatch_gemm!(C, A, B, alpha, B.obs_int, B.int_U, B.int_V, scratch; beta=beta_B)
+            _diag_offdiag_tilebatch_gemm!(C, A, B, alpha, axes(B.int_U, 3), B.int_U, B.int_V, scratch; beta=beta_B)
         end
     end
     return C

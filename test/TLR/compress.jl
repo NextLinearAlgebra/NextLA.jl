@@ -75,8 +75,8 @@ end
     A_tlr = NextLA.TLRMatrix(A, b, maxr)
     NextLA.compress!(A_tlr, A; tol=1e-3)
 
-    ob_hard = NextLA.TLRmodule._offdiag_index(A_tlr, 1, 2)
-    ob_easy = NextLA.TLRmodule._offdiag_index(A_tlr, 2, 1)
+    ob_hard = NextLA.TLRmodule._rank_index(A_tlr, 1, 2)
+    ob_easy = NextLA.TLRmodule._rank_index(A_tlr, 2, 1)
     resid = NextLA.residuals(A_tlr)
 
     @test Int(NextLA.ranks(A_tlr)[ob_hard]) == maxr
@@ -100,8 +100,8 @@ end
         tiny21, make_dense_tile(Float64, b; seed=8))
     At_tlr = NextLA.TLRMatrix(At, b, maxr)
     NextLA.compress!(At_tlr, At; tol=1e-10)
-    @test Int(NextLA.ranks(At_tlr)[NextLA.TLRmodule._offdiag_index(At_tlr, 1, 2)]) == 3
-    @test Int(NextLA.ranks(At_tlr)[NextLA.TLRmodule._offdiag_index(At_tlr, 2, 1)]) == 5
+    @test Int(NextLA.ranks(At_tlr)[NextLA.TLRmodule._rank_index(At_tlr, 1, 2)]) == 3
+    @test Int(NextLA.ranks(At_tlr)[NextLA.TLRmodule._rank_index(At_tlr, 2, 1)]) == 5
     @test all(NextLA.residuals(At_tlr) .<= 1e-10)
 
     # (3) Zero tile: exact rank 0 with zero residual, even at tol = 0.
@@ -110,7 +110,7 @@ end
         make_lowrank_tile(Float64, b, 2; seed=10), make_dense_tile(Float64, b; seed=11))
     Az_tlr = NextLA.TLRMatrix(Az, b, maxr)
     NextLA.compress!(Az_tlr, Az; tol=0.0)
-    ob_zero = NextLA.TLRmodule._offdiag_index(Az_tlr, 1, 2)
+    ob_zero = NextLA.TLRmodule._rank_index(Az_tlr, 1, 2)
     @test Int(NextLA.ranks(Az_tlr)[ob_zero]) == 0
     @test NextLA.residuals(Az_tlr)[ob_zero] == 0.0
 
@@ -121,7 +121,7 @@ end
         make_dense_tile(Float64, b; seed=13), make_lowrank_tile(Float64, b, 6; seed=14),
         small, make_dense_tile(Float64, b; seed=15))
     Am_tlr = NextLA.TLRMatrix(Am, b, maxr)
-    ob_small = NextLA.TLRmodule._offdiag_index(Am_tlr, 2, 1)
+    ob_small = NextLA.TLRmodule._rank_index(Am_tlr, 2, 1)
 
     NextLA.compress!(Am_tlr, Am; tol=1e-5)
     @test Int(NextLA.ranks(Am_tlr)[ob_small]) == 0
@@ -169,8 +169,8 @@ end
         make_lowrank_tile(Float64, b, 3; seed=53), make_dense_tile(Float64, b; seed=54))
     A0_tlr = NextLA.TLRMatrix(A0, b, maxr)
     NextLA.compress!(A0_tlr, A0; tol=1e-6, rel=true, oversample=8)
-    @test Int(NextLA.ranks(A0_tlr)[NextLA.TLRmodule._offdiag_index(A0_tlr, 1, 2)]) == 7
-    @test Int(NextLA.ranks(A0_tlr)[NextLA.TLRmodule._offdiag_index(A0_tlr, 2, 1)]) == 3
+    @test Int(NextLA.ranks(A0_tlr)[NextLA.TLRmodule._rank_index(A0_tlr, 1, 2)]) == 7
+    @test Int(NextLA.ranks(A0_tlr)[NextLA.TLRmodule._rank_index(A0_tlr, 2, 1)]) == 3
 end
 
 @testset "TLR uncompress! on CPU" begin
@@ -261,8 +261,8 @@ end
             synchronize(A_tlr.int_U)
             relerr = norm(reconstruct_tlr(A_tlr) - boundary.A) / norm(boundary.A)
             @test relerr <= 5f-3
-            @test Int(NextLA.ranks(A_tlr)[NextLA.TLRmodule._offdiag_index(A_tlr, 1, 3)]) == 2
-            @test Int(NextLA.ranks(A_tlr)[NextLA.TLRmodule._offdiag_index(A_tlr, 3, 1)]) == 2
+            @test Int(NextLA.ranks(A_tlr)[NextLA.TLRmodule._rank_index(A_tlr, 1, 3)]) == 2
+            @test Int(NextLA.ranks(A_tlr)[NextLA.TLRmodule._rank_index(A_tlr, 3, 1)]) == 2
         end
     end
 end

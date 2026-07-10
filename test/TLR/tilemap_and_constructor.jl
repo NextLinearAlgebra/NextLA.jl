@@ -23,14 +23,14 @@ include("helpers.jl")
         end
 
         @test NextLA.tilegrid_size(A) == (3, 3)
-        @test NextLA.TLRmodule._offdiag_index(A, 2, 1) == 1
-        @test NextLA.TLRmodule._offdiag_index(A, 3, 1) == 2
-        @test NextLA.TLRmodule._offdiag_index(A, 1, 2) == 3
-        @test NextLA.TLRmodule._offdiag_index(A, 1, 3) == 5
-        @test NextLA.TLRmodule._offdiag_coords(A, 1) == (2, 1)
-        @test NextLA.TLRmodule._offdiag_coords(A, 2) == (3, 1)
-        @test NextLA.TLRmodule._offdiag_coords(A, 3) == (1, 2)
-        @test NextLA.TLRmodule._offdiag_coords(A, 5) == (1, 3)
+        @test NextLA.TLRmodule._offdiag_index(A.order, NextLA.tilegrid_size(A)..., 2, 1) == 1
+        @test NextLA.TLRmodule._offdiag_index(A.order, NextLA.tilegrid_size(A)..., 3, 1) == 2
+        @test NextLA.TLRmodule._offdiag_index(A.order, NextLA.tilegrid_size(A)..., 1, 2) == 3
+        @test NextLA.TLRmodule._offdiag_index(A.order, NextLA.tilegrid_size(A)..., 1, 3) == 5
+        @test NextLA.TLRmodule._offdiag_coords(A.order, NextLA.tilegrid_size(A)..., 1) == (2, 1)
+        @test NextLA.TLRmodule._offdiag_coords(A.order, NextLA.tilegrid_size(A)..., 2) == (3, 1)
+        @test NextLA.TLRmodule._offdiag_coords(A.order, NextLA.tilegrid_size(A)..., 3) == (1, 2)
+        @test NextLA.TLRmodule._offdiag_coords(A.order, NextLA.tilegrid_size(A)..., 5) == (1, 3)
     end
 
     @testset "row-major index table" begin
@@ -55,13 +55,13 @@ include("helpers.jl")
         end
 
         @test NextLA.tilegrid_size(A) == (3, 3)
-        @test NextLA.TLRmodule._offdiag_index(A, 1, 2) == 1
-        @test NextLA.TLRmodule._offdiag_index(A, 1, 3) == 2
-        @test NextLA.TLRmodule._offdiag_index(A, 2, 1) == 3
-        @test NextLA.TLRmodule._offdiag_index(A, 3, 1) == 5
-        @test NextLA.TLRmodule._offdiag_coords(A, 1) == (1, 2)
-        @test NextLA.TLRmodule._offdiag_coords(A, 2) == (1, 3)
-        @test NextLA.TLRmodule._offdiag_coords(A, 5) == (3, 1)
+        @test NextLA.TLRmodule._offdiag_index(A.order, NextLA.tilegrid_size(A)..., 1, 2) == 1
+        @test NextLA.TLRmodule._offdiag_index(A.order, NextLA.tilegrid_size(A)..., 1, 3) == 2
+        @test NextLA.TLRmodule._offdiag_index(A.order, NextLA.tilegrid_size(A)..., 2, 1) == 3
+        @test NextLA.TLRmodule._offdiag_index(A.order, NextLA.tilegrid_size(A)..., 3, 1) == 5
+        @test NextLA.TLRmodule._offdiag_coords(A.order, NextLA.tilegrid_size(A)..., 1) == (1, 2)
+        @test NextLA.TLRmodule._offdiag_coords(A.order, NextLA.tilegrid_size(A)..., 2) == (1, 3)
+        @test NextLA.TLRmodule._offdiag_coords(A.order, NextLA.tilegrid_size(A)..., 5) == (3, 1)
     end
 end
 
@@ -94,9 +94,9 @@ end
             @test NextLA.dense_diag_corner(A) === A.D_corner
             @test size(NextLA.ranks(A)) == (2,)
             @test all(iszero, Array(NextLA.ranks(A)))
-            @test length(A.obs_int) == 2
-            @test isempty(A.obs_right)
-            @test isempty(A.obs_bottom)
+            @test size(A.int_U, 3) == 2
+            @test size(A.right_U, 3) == 0
+            @test size(A.bottom_U, 3) == 0
             @test expected_storage_slot(A, 1, 2) == 2
             @test expected_storage_slot(A, 2, 1) == 1
 
@@ -152,7 +152,7 @@ end
         A = NextLA.TLRMatrix(zeros(Float64, 8, 8), 4, 2)
         @test_throws BoundsError  NextLA.TLRmodule.tile_linear_index(A.order, NextLA.tilegrid_size(A)..., 3, 1)
         @test_throws BoundsError  NextLA.TLRmodule.tile_linear_index(A.order, NextLA.tilegrid_size(A)..., 1, 3)
-        @test_throws ArgumentError NextLA.TLRmodule._offdiag_index(A, 1, 1)
+        @test_throws ArgumentError NextLA.TLRmodule._offdiag_category_slot(A, 1, 1)
 
         A_small = NextLA.TLRMatrix(zeros(Float64, 2, 2), 4, 2)
         @test size(NextLA.dense_diag(A_small)) == (4, 4, 0)
@@ -161,17 +161,70 @@ end
     end
 end
 
+@testset "FullTLRMatrix constructor and factor access" begin
+    A = NextLA.FullTLRMatrix(zeros(Float64, 10, 14), (4, 5), 3)
+
+    @test !ismutable(A)
+    @test size(A) == (10, 14)
+    @test NextLA.tilegrid_size(A) == (3, 3)
+    @test NextLA.nominal_tile_size(A) == (4, 5)
+    @test NextLA.tail_tile_size(A) == (2, 4)
+    @test NextLA.maxrank(A) == 3
+    @test size(NextLA.ranks(A)) == (9,)
+    @test size(NextLA.residuals(A)) == (9,)
+
+    # q_m = 2, q_n = 2. Full-size regular tiles include diagonal tiles.
+    @test size(A.int_U) == (4, 3, 4)
+    @test size(A.int_V) == (5, 3, 4)
+    @test size(A.right_U) == (4, 3, 2)
+    @test size(A.right_V) == (4, 3, 2)
+    @test size(A.bottom_U) == (2, 3, 2)
+    @test size(A.bottom_V) == (5, 3, 2)
+    @test size(A.corner_U) == (2, 3, 1)
+    @test size(A.corner_V) == (4, 3, 1)
+
+    A.ranks[NextLA.TLRmodule.tile_linear_index(A.order, NextLA.tilegrid_size(A)..., 1, 1)] = 1
+    A.ranks[NextLA.TLRmodule.tile_linear_index(A.order, NextLA.tilegrid_size(A)..., 1, 3)] = 2
+    A.ranks[NextLA.TLRmodule.tile_linear_index(A.order, NextLA.tilegrid_size(A)..., 3, 1)] = 3
+    A.ranks[NextLA.TLRmodule.tile_linear_index(A.order, NextLA.tilegrid_size(A)..., 3, 3)] = 2
+
+    U_diag, V_diag = NextLA.get_factors(A, 1, 1)
+    @test size(U_diag) == (4, 1)
+    @test size(V_diag) == (5, 1)
+
+    U_right, V_right = NextLA.get_factors(A, 1, 3)
+    @test size(U_right) == (4, 2)
+    @test size(V_right) == (4, 2)
+
+    U_bottom, V_bottom = NextLA.get_factors(A, 3, 1)
+    @test size(U_bottom) == (2, 3)
+    @test size(V_bottom) == (5, 3)
+
+    U_corner, V_corner = NextLA.get_factors(A, 3, 3)
+    @test size(U_corner) == (2, 2)
+    @test size(V_corner) == (4, 2)
+
+    B = NextLA.FullTLRMatrix(zeros(Float32, 8, 10), (4, 5), 2; tile_order=NextLA.TileRowMajor)
+    @test NextLA.tilegrid_size(B) == (2, 2)
+    @test NextLA.TLRmodule.tile_order(B) isa NextLA.TileRowMajor
+    @test size(B.int_U) == (4, 2, 4)
+    @test size(B.right_U, 3) == 0
+    @test size(B.bottom_U, 3) == 0
+    @test size(B.corner_U, 3) == 0
+
+    @test_throws ArgumentError NextLA.FullTLRMatrix(zeros(Float64, 5, 5), 0, 2)
+    @test_throws ArgumentError NextLA.FullTLRMatrix(zeros(Float64, 5, 5), (2, 0), 2)
+    @test_throws ArgumentError NextLA.FullTLRMatrix(zeros(Float64, 5, 5), 2, -1)
+    @test_throws BoundsError NextLA.get_factors(A, 4, 1)
+end
+
 @testset "TLR factor access — boundary tile categories" begin
     # 10×10 with b=4: 3×3 tile grid, tail_m=tail_n=2
     A_tlr = NextLA.TLRMatrix(zeros(Float64, 10, 10), 4, 3)
 
-    internal_slot = NextLA.TLRmodule._offdiag_index(A_tlr, 1, 2)
-    bottom_slot   = NextLA.TLRmodule._offdiag_index(A_tlr, 3, 1)
-    right_slot    = NextLA.TLRmodule._offdiag_index(A_tlr, 1, 3)
-
-    @test A_tlr.category[internal_slot] == NextLA.TLRmodule._TILE_INT
-    @test A_tlr.category[bottom_slot]   == NextLA.TLRmodule._TILE_BOTTOM
-    @test A_tlr.category[right_slot]    == NextLA.TLRmodule._TILE_RIGHT
+    internal_slot = NextLA.TLRmodule._rank_index(A_tlr, 1, 2)
+    bottom_slot   = NextLA.TLRmodule._rank_index(A_tlr, 3, 1)
+    right_slot    = NextLA.TLRmodule._rank_index(A_tlr, 1, 3)
 
     @test size(A_tlr.int_U)    == (4, 3, 2)   # 2 interior off-diag tiles: (2,1),(1,2)
     @test size(A_tlr.right_U)  == (4, 3, 2)   # 2 right-boundary tiles: (1,3),(2,3)
@@ -183,19 +236,19 @@ end
     @test size(NextLA.dense_diag_corner(A_tlr)) == (2, 2, 1)
 
     # Write data for interior tile
-    ki = A_tlr.local_index[internal_slot]
+    ki = NextLA.TLRmodule._offdiag_index(A_tlr.order, 2, 2, 1, 2)
     A_tlr.ranks[internal_slot] = 2
     A_tlr.int_U[:, 1:2, ki] .= reshape(collect(21.0:28.0), 4, 2)
     A_tlr.int_V[:, 1:2, ki] .= reshape(collect(31.0:38.0), 4, 2)
 
     # Write data for bottom boundary tile
-    kb = A_tlr.local_index[bottom_slot]
+    kb = 1
     A_tlr.ranks[bottom_slot] = 2
     A_tlr.bottom_U[1:2, 1:2, kb] .= [1.0 2.0; 3.0 4.0]
     A_tlr.bottom_V[:, 1:2, kb]   .= reshape(collect(1.0:8.0), 4, 2)
 
     # Write data for right boundary tile
-    kr_idx = A_tlr.local_index[right_slot]
+    kr_idx = 1
     A_tlr.ranks[right_slot] = 2
     A_tlr.right_U[:, 1:2, kr_idx]   .= reshape(collect(11.0:18.0), 4, 2)
     A_tlr.right_V[1:2, 1:2, kr_idx] .= [5.0 6.0; 7.0 8.0]

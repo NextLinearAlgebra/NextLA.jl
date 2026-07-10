@@ -392,10 +392,11 @@ function detect_rank!(U::AbstractArray{T,3}, V, Q_T, V_T, rk, err_sq, normA_sq,
     U
 end
 
-# scratch for one tile category (interior / right / bottom) 
-#`U`/`V` alias the A_tlr output panels (maxrank-wide); the sketch
-struct CompressCategoryWorkspace{ObsT,PanelT,ScratchT,ScratchHiT,TileVT,RankVT,F64V,I32V}
-    obs::ObsT              # global off-diagonal indices in this category
+# scratch for one tile category (interior / right / bottom)
+# `U`/`V` alias the A_tlr output panels (maxrank-wide); the sketch
+struct CompressCategoryWorkspace{PanelT,ScratchT,ScratchHiT,TileVT,RankVT,F64V,I32V}
+    cat::UInt8             # dense-diag tile category
+    rank0::Int             # index offset into A_tlr.ranks / A_tlr.resid
     S::Int                 # sketch width    = min(maxrank + oversample, tm, tn)
     R_keep::Int            # max stored rank  = min(maxrank, S)
     U::PanelT              # output left factors  (aliases A_tlr, maxrank-wide)
@@ -514,18 +515,20 @@ function compress_tiles!(src::TileSource, cat::CompressCategoryWorkspace; eps_sq
     return cat
 end
 
-# (obs, output U/V panels, tile dims) per off-diagonal category.
+# (category, output U/V panels, tile dims, rank offset) per off-diagonal category.
 @inline _category_specs(A_tlr, bm, bn, tail_m, tail_n) = (
-    (; obs=A_tlr.obs_int, U=A_tlr.int_U, V=A_tlr.int_V, tm=bm, tn=bn),
-    (; obs=A_tlr.obs_right, U=A_tlr.right_U, V=A_tlr.right_V, tm=bm, tn=tail_n),
-    (; obs=A_tlr.obs_bottom, U=A_tlr.bottom_U, V=A_tlr.bottom_V, tm=tail_m, tn=bn),
+    (; cat=_TILE_INT, n=size(A_tlr.int_U, 3), rank0=0, U=A_tlr.int_U, V=A_tlr.int_V, tm=bm, tn=bn),
+    (; cat=_TILE_RIGHT, n=size(A_tlr.right_U, 3), rank0=size(A_tlr.int_U, 3),
+        U=A_tlr.right_U, V=A_tlr.right_V, tm=bm, tn=tail_n),
+    (; cat=_TILE_BOTTOM, n=size(A_tlr.bottom_U, 3), rank0=size(A_tlr.int_U, 3) + size(A_tlr.right_U, 3),
+        U=A_tlr.bottom_U, V=A_tlr.bottom_V, tm=tail_m, tn=bn),
 )
 
 # prepare category's scratch at sketch width S
 function _alloc_category_workspace(A_tlr::TLRMatrix{<:Any,T}, spec, r::Int, p::Int, ::Type{Thi}) where {T,Thi}
     backend = get_backend(A_tlr)
     rank_type = eltype(A_tlr.ranks)
-    n = length(spec.obs)
+    n = spec.n
     S = max(min(r + p, spec.tm, spec.tn), 1)
 
     Q_T = zeros(backend, T, spec.tm, S, n)
@@ -535,8 +538,8 @@ function _alloc_category_workspace(A_tlr::TLRMatrix{<:Any,T}, spec, r::Int, p::I
     p0_host = Vector{Int32}(undef, n)
     q0_host = Vector{Int32}(undef, n)
 
-    @inbounds for (k, ob) in enumerate(spec.obs)
-        p0, q0 = tile_origin_coords(A_tlr, _offdiag_coords(A_tlr, ob)...)
+    @inbounds for k in 1:n
+        p0, q0 = tile_origin_coords(A_tlr, _category_coords(A_tlr, spec.cat, k)...)
         p0_host[k] = Int32(p0)
         q0_host[k] = Int32(q0)
     end
@@ -545,7 +548,7 @@ function _alloc_category_workspace(A_tlr::TLRMatrix{<:Any,T}, spec, r::Int, p::I
     q0s = copyto!(allocate(backend, Int32, n), q0_host)
 
     return CompressCategoryWorkspace(
-        spec.obs, S, min(r, S), spec.U, spec.V, Q_T, V_T,
+        spec.cat, spec.rank0, S, min(r, S), spec.U, spec.V, Q_T, V_T,
         _batch_views(Q_T, S), _batch_views(V_T, S), Y_hi, G_hi,
         zeros(backend, rank_type, n),
         zeros(backend, Float64, n),
@@ -638,7 +641,7 @@ function carve_tile_workspace(U::AbstractArray{T,3}, V, tm::Int, tn::Int, kout::
     G_hi, accum_off = _take(accum, accum_off, S, S, ntiles)
     empty_i32 = allocate(backend, Int32, 0)
     cat = CompressCategoryWorkspace(
-        Int[], S, min(kout, S), U, V, Q_T, V_T,
+        UInt8(0), 0, S, min(kout, S), U, V, Q_T, V_T,
         _batch_views(Q_T, S), _batch_views(V_T, S), Y_hi, G_hi,
         zeros(backend, rank_type, ntiles),
         zeros(backend, Float64, ntiles),
@@ -676,8 +679,9 @@ function _compress_category!(
     eps_sq::Float64,
     rel::Bool,
 )
-    isempty(cat.obs) && return cat
-    tiles = map(ob -> _offdiag_tile_view(A, A_tlr, ob), cat.obs)
+    n = size(cat.U, 3)
+    n == 0 && return cat
+    tiles = [_dense_tile_view(A, A_tlr, _category_coords(A_tlr, cat.cat, k)...) for k in 1:n]
     src = DenseTiles(A, tiles, cat.p0s, cat.q0s, size(cat.Q_T, 1), size(cat.V_T, 1))
     return compress_tiles!(src, cat; eps_sq, rel)
 end
@@ -687,12 +691,13 @@ end
 # Scatter one category's local ranks / squared errors back into the global
 # A_tlr.ranks / A_tlr.resid (converting squared error to a Frobenius residual).
 function _store_category_results!(A_tlr::TLRMatrix, cat::CompressCategoryWorkspace)
-    isempty(cat.obs) && return
+    n = size(cat.U, 3)
+    n == 0 && return
     rk_host = cat.ranks_local isa Vector ? cat.ranks_local : Array(cat.ranks_local)
     err_host = cat.err_sq_local isa Vector ? cat.err_sq_local : Array(cat.err_sq_local)
-    @inbounds for (k, ob) in enumerate(cat.obs)
-        A_tlr.ranks[ob] = rk_host[k]
-        A_tlr.resid[ob] = sqrt(max(err_host[k], 0.0))
+    @inbounds for k in 1:n
+        A_tlr.ranks[cat.rank0+k] = rk_host[k]
+        A_tlr.resid[cat.rank0+k] = sqrt(max(err_host[k], 0.0))
     end
 end
 

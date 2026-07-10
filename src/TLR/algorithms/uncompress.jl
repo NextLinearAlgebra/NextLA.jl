@@ -26,15 +26,16 @@ end
 function _uncompress_category!(
     A::AbstractMatrix{T},
     A_tlr::TLRMatrix{<:Any,T},
-    obs::Vector{Int},
+    cat::UInt8,
     U::AbstractArray{T,3},
     V::AbstractArray{T,3},
 ) where {T}
-    isempty(obs) && return A
+    n = size(U, 3)
+    n == 0 && return A
 
     U_tiles = _batch_views(U)
     V_tiles = _batch_views(V)
-    A_tiles = map(ob -> _offdiag_tile_view(A, A_tlr, ob), obs)
+    A_tiles = [_dense_tile_view(A, A_tlr, _category_coords(A_tlr, cat, k)...) for k in 1:n]
     gemm_batched!('N', _adjoint_blas_char(T), one(T), U_tiles, V_tiles, zero(T), A_tiles)
     return A
 end
@@ -55,9 +56,9 @@ function uncompress!(A::AbstractMatrix{T}, A_tlr::TLRMatrix{<:Any,T}) where {T}
 
     _copy_diagonal_to_dense!(A, A_tlr)
 
-    _uncompress_category!(A, A_tlr, A_tlr.obs_int, A_tlr.int_U, A_tlr.int_V)
-    _uncompress_category!(A, A_tlr, A_tlr.obs_right, A_tlr.right_U, A_tlr.right_V)
-    _uncompress_category!(A, A_tlr, A_tlr.obs_bottom, A_tlr.bottom_U, A_tlr.bottom_V)
+    _uncompress_category!(A, A_tlr, _TILE_INT, A_tlr.int_U, A_tlr.int_V)
+    _uncompress_category!(A, A_tlr, _TILE_RIGHT, A_tlr.right_U, A_tlr.right_V)
+    _uncompress_category!(A, A_tlr, _TILE_BOTTOM, A_tlr.bottom_U, A_tlr.bottom_V)
 
     return A
 end

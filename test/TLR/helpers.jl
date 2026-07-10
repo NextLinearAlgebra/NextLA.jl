@@ -46,8 +46,7 @@ function reconstruct_tlr(A_tlr::NextLA.TLRMatrix)
                 @view D_corner[1:tile_m, 1:tile_n, 1]
             end
         else
-            ob = NextLA.TLRmodule._offdiag_index(A_tlr, tile_i, tile_j)
-            r = Int(NextLA.ranks(A_tlr)[ob])
+            r = Int(NextLA.ranks(A_tlr)[NextLA.TLRmodule._rank_index(A_tlr, tile_i, tile_j)])
             U, V = NextLA.get_factors(A_tlr, tile_i, tile_j)
             r == 0 ? zeros(T, tile_m, tile_n) :
                 Matrix(U) * Matrix(adjoint(V))
@@ -59,7 +58,7 @@ function reconstruct_tlr(A_tlr::NextLA.TLRMatrix)
     return A
 end
 
-expected_storage_slot(A_tlr::NextLA.TLRMatrix, i::Int, j::Int) = NextLA.TLRmodule._offdiag_index(A_tlr, i, j)
+expected_storage_slot(A_tlr::NextLA.TLRMatrix, i::Int, j::Int) = NextLA.TLRmodule._rank_index(A_tlr, i, j)
 
 function assert_tile_rank_and_error(
     A_tlr::NextLA.TLRMatrix,
