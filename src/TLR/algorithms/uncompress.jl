@@ -1,18 +1,19 @@
 export uncompress!
 
 @kernel function _copy_diag_kernel!(A::AbstractMatrix{T},
-    D::AbstractArray{T,3}, tile_size::Int) where {T}
+    D::AbstractArray{T,3}, tile_m::Int, tile_n::Int) where {T}
     row, col, batch = @index(Global, NTuple)
-    p0 = (batch - 1) * tile_size + 1
-    @inbounds A[p0+row-1, p0+col-1] = D[row, col, batch]
+    p0 = (batch - 1) * tile_m + 1
+    q0 = (batch - 1) * tile_n + 1
+    @inbounds A[p0+row-1, q0+col-1] = D[row, col, batch]
 end
 
 function _copy_diagonal_to_dense!(A::AbstractMatrix{T}, A_tlr::TLRMatrix{<:Any,T}) where {T}
     n_full_diag = _nfull_diag_tiles(A_tlr)
-    b = A_tlr.nominal_tile_size
+    bm, bn = nominal_tile_size(A_tlr)
     _copy_diag_kernel!(A_tlr.backend)(
-        A, A_tlr.D, b;
-        ndrange=(b, b, n_full_diag),
+        A, A_tlr.D, bm, bn;
+        ndrange=(bm, bn, n_full_diag),
     )
     if size(A_tlr.D_corner, 3) != 0
         tile_k = ndiag_tiles(A_tlr)

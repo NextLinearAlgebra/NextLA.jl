@@ -20,9 +20,9 @@ export TileColMajor, TileRowMajor
 export TLRMatrix
 export compress!, alloc_workspace
 export uncompress!
-export tile_u, tile_v
+export get_factors
 export maxrank, ranks, residuals, dense_diag, dense_diag_corner, tilegrid_size
-export left_factors, right_factors
+export nominal_tile_size, tail_tile_size
 export ndiag_tiles, noffdiag_tiles, tile_origin_coords, tile_size
 
 include("container/order.jl")

@@ -29,7 +29,7 @@ the `m%b` boundary row/column (which are separate terms). Equals `tilegrid_size`
 when `m%b == 0`, so the uniform path is unchanged. `int_U`/`int_V` store exactly
 this sub-grid's off-diagonal tiles in `Q×Q` enumeration order.
 """
-@inline _interior_grid(A::TLRMatrix) = (q = fld(A.m, A.nominal_tile_size); (q, q))
+@inline _interior_grid(A::TLRMatrix) = (q = fld(A.m, nominal_tile_size(A, 1)); (q, q))
 
 """Contiguous `[b, maxrank, noff]` view of tile-row `r`'s off-diagonal panel."""
 @inline rowpanel(p::PanelView, r::Integer) =

@@ -25,7 +25,7 @@ function tlr_gemm_int_by_rpanel(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backen
     Q == _interior_grid(A)[1] || return C      # non-square
 
     _, nt = tilegrid_size(A)                    # boundary tile-column index (Q+1)
-    b = A.nominal_tile_size
+    b = nominal_tile_size(A, 1)
     rA = maxrank(A)
     rB = maxrank(B)
 

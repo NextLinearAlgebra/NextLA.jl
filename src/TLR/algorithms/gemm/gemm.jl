@@ -26,7 +26,7 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backend
         throw(DimensionMismatch("size(A,2) must equal size(B,1)"))
     (size(C, 1), size(C, 2)) == (size(A, 1), size(B, 2)) ||
         throw(DimensionMismatch("C must be size(A,1) × size(B,2)"))
-    A.nominal_tile_size == B.nominal_tile_size ||
+    nominal_tile_size(A) == nominal_tile_size(B) ||
         throw(DimensionMismatch("A and B must share the same nominal tile size"))
 
     α = T(alpha)

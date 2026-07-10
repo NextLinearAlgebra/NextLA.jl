@@ -81,14 +81,14 @@ end
 
     @test Int(NextLA.ranks(A_tlr)[ob_hard]) == maxr
     @test resid[ob_hard] > 1e-3
-    true_err = norm(hard - Matrix(NextLA.tile_u(A_tlr, ob_hard)) *
-                           Matrix(adjoint(NextLA.tile_v(A_tlr, ob_hard))))
+    U_hard, V_hard = NextLA.get_factors(A_tlr, 1, 2)
+    true_err = norm(hard - Matrix(U_hard) * Matrix(adjoint(V_hard)))
     @test isapprox(resid[ob_hard], true_err; rtol=1e-2)
 
     @test Int(NextLA.ranks(A_tlr)[ob_easy]) == 4
     @test resid[ob_easy] <= 1e-3
-    easy_err = norm(easy - Matrix(NextLA.tile_u(A_tlr, ob_easy)) *
-                           Matrix(adjoint(NextLA.tile_v(A_tlr, ob_easy))))
+    U_easy, V_easy = NextLA.get_factors(A_tlr, 2, 1)
+    easy_err = norm(easy - Matrix(U_easy) * Matrix(adjoint(V_easy)))
     @test easy_err < 1e-10
 
     # (2) Tiny-scale tiles: the relative cholqr shift keeps rank detection

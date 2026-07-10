@@ -48,9 +48,9 @@ function reconstruct_tlr(A_tlr::NextLA.TLRMatrix)
         else
             ob = NextLA.TLRmodule._offdiag_index(A_tlr, tile_i, tile_j)
             r = Int(NextLA.ranks(A_tlr)[ob])
+            U, V = NextLA.get_factors(A_tlr, tile_i, tile_j)
             r == 0 ? zeros(T, tile_m, tile_n) :
-                Matrix(NextLA.tile_u(A_tlr, ob)) *
-                Matrix(adjoint(NextLA.tile_v(A_tlr, ob)))
+                Matrix(U) * Matrix(adjoint(V))
         end
 
         A[rows, cols] .= tile
@@ -75,9 +75,9 @@ function assert_tile_rank_and_error(
     @test abs(rank - expected_rank) <= atol_rank
 
     tile_m, tile_n = size(tile_ref)
+    U, V = NextLA.get_factors(A_tlr, tile_i, tile_j)
     approx = rank == 0 ? zeros(eltype(tile_ref), tile_m, tile_n) :
-        Matrix(NextLA.tile_u(A_tlr, batch)) *
-        Matrix(adjoint(NextLA.tile_v(A_tlr, batch)))
+        Matrix(U) * Matrix(adjoint(V))
     relerr = norm(tile_ref - approx) / max(norm(tile_ref), eps(real(eltype(tile_ref))))
     @test relerr <= rtol_error
 end

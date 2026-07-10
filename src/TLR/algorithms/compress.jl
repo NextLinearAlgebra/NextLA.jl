@@ -26,10 +26,11 @@ first `r` columns. Used to build `gemm_batched!` operand vectors; shared with
 # ------- kernels --------
 
 @kernel function _copy_diag_kernel!(D::AbstractArray{T,3},
-    A::AbstractMatrix{T}, tile_size::Int) where {T}
+    A::AbstractMatrix{T}, tile_m::Int, tile_n::Int) where {T}
     row, col, batch = @index(Global, NTuple)
-    p0 = (batch - 1) * tile_size + 1
-    @inbounds D[row, col, batch] = A[p0+row-1, p0+col-1]
+    p0 = (batch - 1) * tile_m + 1
+    q0 = (batch - 1) * tile_n + 1
+    @inbounds D[row, col, batch] = A[p0+row-1, q0+col-1]
 end
 
 """
@@ -40,10 +41,10 @@ Populate `A_tlr`'s dense diagonal storage (`A_tlr.D` and, if present,
 """
 function _copy_diagonal_from_dense!(A_tlr::TLRMatrix{<:Any,T}, A::AbstractMatrix{T}) where {T}
     n_full_diag = _nfull_diag_tiles(A_tlr)
-    b = A_tlr.nominal_tile_size
+    bm, bn = nominal_tile_size(A_tlr)
     _copy_diag_kernel!(A_tlr.backend)(
-        A_tlr.D, A, b;
-        ndrange=(b, b, n_full_diag),
+        A_tlr.D, A, bm, bn;
+        ndrange=(bm, bn, n_full_diag),
     )
     if size(A_tlr.D_corner, 3) != 0
         tile_k = ndiag_tiles(A_tlr)
@@ -513,12 +514,11 @@ function compress_tiles!(src::TileSource, cat::CompressCategoryWorkspace; eps_sq
     return cat
 end
 
-# (obs, output U/V panels, tile dims) per off-diagonal category. `tail_m`/`tail_n`
-# are the boundary tile dimensions (both == b in the interior).
-@inline _category_specs(A_tlr, b, tail_m, tail_n) = (
-    (; obs=A_tlr.obs_int, U=A_tlr.int_U, V=A_tlr.int_V, tm=b, tn=b),
-    (; obs=A_tlr.obs_right, U=A_tlr.right_U, V=A_tlr.right_V, tm=b, tn=tail_n),
-    (; obs=A_tlr.obs_bottom, U=A_tlr.bottom_U, V=A_tlr.bottom_V, tm=tail_m, tn=b),
+# (obs, output U/V panels, tile dims) per off-diagonal category.
+@inline _category_specs(A_tlr, bm, bn, tail_m, tail_n) = (
+    (; obs=A_tlr.obs_int, U=A_tlr.int_U, V=A_tlr.int_V, tm=bm, tn=bn),
+    (; obs=A_tlr.obs_right, U=A_tlr.right_U, V=A_tlr.right_V, tm=bm, tn=tail_n),
+    (; obs=A_tlr.obs_bottom, U=A_tlr.bottom_U, V=A_tlr.bottom_V, tm=tail_m, tn=bn),
 )
 
 # prepare category's scratch at sketch width S
@@ -572,12 +572,11 @@ function alloc_workspace(A_tlr::TLRMatrix{<:Any,T}; oversample::Int=0) where {T}
     oversample >= 0 || throw(ArgumentError("oversample must be >= 0"))
     Thi = _compress_accum_type(T)
 
-    b = A_tlr.nominal_tile_size
-    mt, nt = tilegrid_size(A_tlr)
-    tail_m = max(A_tlr.m - (mt - 1) * b, 1)
-    tail_n = max(A_tlr.n - (nt - 1) * b, 1)
+    bm, bn = nominal_tile_size(A_tlr)
+    tail_m = max(tail_tile_size(A_tlr, 1), 1)
+    tail_n = max(tail_tile_size(A_tlr, 2), 1)
 
-    specs = _category_specs(A_tlr, b, tail_m, tail_n)
+    specs = _category_specs(A_tlr, bm, bn, tail_m, tail_n)
     cats = map(spec -> _alloc_category_workspace(A_tlr, spec, A_tlr.maxrank, oversample, Thi), specs)
 
     CompressWorkspace(cats..., create_streams(A_tlr.backend, 3))

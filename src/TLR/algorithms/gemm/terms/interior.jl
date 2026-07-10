@@ -125,7 +125,7 @@ function _diag_times_offdiag_interior!(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix
     n_int = length(A.obs_int)                     # == Q(Q-1)
     rmax = max(maxrank(A), maxrank(B))
     (n_int == 0 || rmax == 0) && return C
-    b = A.nominal_tile_size
+    b = nominal_tile_size(A, 1)
     scratch = allocate(A.backend, T, n_int * b * rmax)
 
     if maxrank(A) > 0
@@ -194,7 +194,7 @@ the caller places this whole term on a region stream (see `gemm!`).
 """
 function tlr_gemm_int_by_int(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T, beta::T; budget::Int) where {T,BackendT}
     Q, _ = _interior_grid(A)
-    b = A.nominal_tile_size
+    b = nominal_tile_size(A, 1)
 
     # degenerate case: block-diagonal product
     if maxrank(A) == 0 && maxrank(B) == 0
@@ -231,7 +231,7 @@ function tlr_gemm_rpanel_by_bpanel(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Bac
     (rA == 0 || rB == 0) && return C
 
     s = size(A.right_V, 1) # tail tile size (n % b)
-    b = A.nominal_tile_size
+    b = nominal_tile_size(A, 1)
 
     Vstack = reshape(A.right_V, s, rA * Q) # [V_1 | … | V_Q]   (s × Q·rA)
     Wstack = reshape(B.bottom_U, s, rB * Q) # [W_1 | … | W_Q]   (s × Q·rB)

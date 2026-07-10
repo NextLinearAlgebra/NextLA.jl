@@ -1,7 +1,7 @@
 # Category tags for the three off-diagonal tile categories.
-const _TILE_INT = UInt8(1)   # interior:        b × b
-const _TILE_RIGHT = UInt8(2)   # right boundary:  b × tail_n
-const _TILE_BOTTOM = UInt8(3)   # bottom boundary: tail_m × b
+const _TILE_INT = UInt8(1)      # interior:        bm × bn
+const _TILE_RIGHT = UInt8(2)    # right boundary:  bm × tail_n
+const _TILE_BOTTOM = UInt8(3)   # bottom boundary: tail_m × bn
 
 """
     TLRMatrix{BackendT, T, Arr3T, RankT, OrderT}
@@ -9,17 +9,18 @@ const _TILE_BOTTOM = UInt8(3)   # bottom boundary: tail_m × b
 Tile Low-Rank (TLR) matrix.
 
 Off-diagonal tiles are partitioned into three geometry categories —
-interior (b×b), right-boundary (b×tail_n), and bottom-boundary (tail_m×b) —
+interior (bm×bn), right-boundary (bm×tail_n), and bottom-boundary (tail_m×bn) —
 each stored as a separate contiguous 3-D factor array:
 
 | field      | shape                       | category        |
 |------------|-----------------------------|-----------------|
-| `int_U/V`  | `[b,      maxrank, n_int]`  | interior        |
-| `right_U`  | `[b,      maxrank, n_right]`| right boundary  |
+| `int_U`    | `[bm,     maxrank, n_int]`  | interior        |
+| `int_V`    | `[bn,     maxrank, n_int]`  | interior        |
+| `right_U`  | `[bm,     maxrank, n_right]`| right boundary  |
 | `right_V`  | `[tail_n, maxrank, n_right]`| right boundary  |
 | `bottom_U` | `[tail_m, maxrank, n_bot]`  | bottom boundary |
-| `bottom_V` | `[b,      maxrank, n_bot]`  | bottom boundary |
-| `D`        | `[b, b,   n_full_diag]`     | full diagonal   |
+| `bottom_V` | `[bn,     maxrank, n_bot]`  | bottom boundary |
+| `D`        | `[bm, bn, n_full_diag]`     | full diagonal   |
 | `D_corner` | `[tm, tn, 1 or 0]`          | corner diagonal |
 
 Category membership (`category`), the global→local index map (`local_index`),
@@ -35,17 +36,18 @@ mutable struct TLRMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},RankT<:In
     const order::OrderT
     const m::Int
     const n::Int
-    const nominal_tile_size::Int # b
+    const nominal_tile_size::NTuple{2,Int} # (bm, bn)
+    const tail_tile_size::NTuple{2,Int}    # (tail_m, tail_n), 0 when no tail
 
     # Off-diagonal low-rank factors (one 3-D array per panel category):
-    int_U::Arr3T        # [b,       maxrank, n_int]
-    int_V::Arr3T        # [b,       maxrank, n_int]
-    right_U::Arr3T      # [b,       maxrank, n_right]  — zero depth when n%b==0
+    int_U::Arr3T        # [bm,      maxrank, n_int]
+    int_V::Arr3T        # [bn,      maxrank, n_int]
+    right_U::Arr3T      # [bm,      maxrank, n_right]  — zero depth when n%bn==0
     right_V::Arr3T      # [tail_n,  maxrank, n_right]
-    bottom_U::Arr3T     # [tail_m,  maxrank, n_bottom] — zero depth when m%b==0
-    bottom_V::Arr3T     # [b,       maxrank, n_bottom]
+    bottom_U::Arr3T     # [tail_m,  maxrank, n_bottom] — zero depth when m%bm==0
+    bottom_V::Arr3T     # [bn,      maxrank, n_bottom]
 
-    const D::Arr3T        # [b, b, n_full_diag]  dense full diagonal tiles
+    const D::Arr3T        # [bm, bn, n_full_diag] dense full diagonal tiles
     const D_corner::Arr3T # [tm, tn, 1 or 0]     corner diagonal tile, if needed
 
     # Per-tile diagnostics — always CPU, contents written by compress!
@@ -67,6 +69,37 @@ Base.eltype(::TLRMatrix{<:Any,T}) where {T} = T
 Base.size(A::TLRMatrix) = (A.m, A.n)
 Base.size(A::TLRMatrix, d::Int) = size(A)[d]
 
+@inline function _axis_index(axis::Integer)
+    i = Int(axis)
+    1 <= i <= 2 || throw(BoundsError(1:2, i))
+    return i
+end
+
+"""
+    nominal_tile_size(A) -> (bm, bn)
+    nominal_tile_size(A, axis) -> Int
+
+Return the nominal tile dimensions, either as the full `(row, column)` tuple or
+as one axis (`1` for rows, `2` for columns).
+"""
+@inline nominal_tile_size(A::TLRMatrix) = A.nominal_tile_size
+@inline nominal_tile_size(A::TLRMatrix, axis::Integer) = A.nominal_tile_size[_axis_index(axis)]
+
+"""
+    tail_tile_size(A) -> (tail_m, tail_n)
+    tail_tile_size(A, axis) -> Int
+
+Return the partial boundary extents. An axis has tail size `0` when the
+corresponding matrix dimension is exactly divisible by the nominal tile size.
+"""
+@inline tail_tile_size(A::TLRMatrix) = A.tail_tile_size
+@inline tail_tile_size(A::TLRMatrix, axis::Integer) = A.tail_tile_size[_axis_index(axis)]
+
+@inline function _last_tile_size(A::TLRMatrix, axis::Integer)
+    tail = tail_tile_size(A, axis)
+    return iszero(tail) ? nominal_tile_size(A, axis) : tail
+end
+
 """
     ndiag_tiles(A) -> Int
 
@@ -87,7 +120,7 @@ Total number of off-diagonal tiles in the matrix.
 Return the number of tile rows (`mt`) and tile columns (`nt`)
 in the matrix tiling.
 """
-@inline tilegrid_size(A::TLRMatrix) = (cld(A.m, A.nominal_tile_size), cld(A.n, A.nominal_tile_size))
+@inline tilegrid_size(A::TLRMatrix) = (cld(A.m, nominal_tile_size(A, 1)), cld(A.n, nominal_tile_size(A, 2)))
 
 """
     tile_size(A, tile_i, tile_j) -> (m_local, n_local)
@@ -97,15 +130,15 @@ handling boundary tiles that may be smaller than the nominal tile size.
 """
 @inline function tile_size(A::TLRMatrix, tile_i::Int, tile_j::Int)
     mt, nt = tilegrid_size(A)
-    b = A.nominal_tile_size
+    bm, bn = nominal_tile_size(A)
 
     row_size = tile_i == mt ?
-        A.m - (mt - 1) * b :
-        b
+        _last_tile_size(A, 1) :
+        bm
 
     col_size = tile_j == nt ?
-        A.n - (nt - 1) * b :
-        b
+        _last_tile_size(A, 2) :
+        bn
 
     return row_size, col_size
 end
@@ -156,57 +189,30 @@ diagonal tile, this is a zero-depth array.
     return view(A.D_corner, :, :, 1)
 end
 
-"""
-Return a named tuple `(interior, right, bottom)` of the left low-rank factor
-arrays for each tile category.
-"""
-@inline left_factors(A::TLRMatrix) =
-    (interior=A.int_U, right=A.right_U, bottom=A.bottom_U)
-
-"""
-Return a named tuple `(interior, right, bottom)` of the right low-rank factor
-arrays for each tile category.
-"""
-@inline right_factors(A::TLRMatrix) =
-    (interior=A.int_V, right=A.right_V, bottom=A.bottom_V)
-
 # ─── Per-tile factor accessors ────────────────────────────────────────────────
 
 """
-    tile_u(A, ob) → AbstractMatrix
+    get_factors(A, i, j) -> (U, V)
 
-Left low-rank factor for off-diagonal tile `ob`, trimmed to its effective rank.
-The returned view aliases the underlying storage — no allocation.
+Return the low-rank factors for off-diagonal tile `(i, j)`, trimmed to the
+tile's effective rank. The tile coordinates are global tile-grid coordinates,
+and are mapped to the packed storage according to `tile_order(A)`.
+
+Diagonal tiles are stored densely, so `i == j` throws an `ArgumentError`.
+The returned views alias the underlying storage — no allocation.
 """
-@inline function tile_u(A::TLRMatrix, ob::Integer)
+@inline function get_factors(A::TLRMatrix, i::Int, j::Int)
+    i == j && throw(ArgumentError("tile ($i, $j) is diagonal and stored densely"))
+    ob = _offdiag_index(A, i, j)
     k = A.local_index[ob]
     r = Int(A.ranks[ob])
     cat = A.category[ob]
     if cat == _TILE_INT
-        return view(A.int_U, :, 1:r, k)
+        return view(A.int_U, :, 1:r, k), view(A.int_V, :, 1:r, k)
     elseif cat == _TILE_RIGHT
-        return view(A.right_U, :, 1:r, k)
+        return view(A.right_U, :, 1:r, k), view(A.right_V, :, 1:r, k)
     else
-        return view(A.bottom_U, :, 1:r, k)
-    end
-end
-
-"""
-    tile_v(A, ob) → AbstractMatrix
-
-Right low-rank factor for off-diagonal tile `ob`, trimmed to its effective rank.
-The returned view aliases the underlying storage — no allocation.
-"""
-@inline function tile_v(A::TLRMatrix, ob::Integer)
-    k = A.local_index[ob]
-    r = Int(A.ranks[ob])
-    cat = A.category[ob]
-    if cat == _TILE_INT
-        return view(A.int_V, :, 1:r, k)
-    elseif cat == _TILE_RIGHT
-        return view(A.right_V, :, 1:r, k)
-    else
-        return view(A.bottom_V, :, 1:r, k)
+        return view(A.bottom_U, :, 1:r, k), view(A.bottom_V, :, 1:r, k)
     end
 end
 
@@ -235,7 +241,7 @@ Return the global 1-based coordinates of the top-left entry
 of tile `(tile_i, tile_j)`.
 """
 @inline tile_origin_coords(A::TLRMatrix, tile_i::Int, tile_j::Int) =
-    ((tile_i - 1) * A.nominal_tile_size + 1, (tile_j - 1) * A.nominal_tile_size + 1)
+    ((tile_i - 1) * nominal_tile_size(A, 1) + 1, (tile_j - 1) * nominal_tile_size(A, 2) + 1)
 
 """
     _offdiag_coords(A, ob) -> (tile_i, tile_j)
@@ -291,10 +297,11 @@ end
 
 # ─── Internal geometry helper ─────────────────────────────────────────────────
 
-function _build_geometry(order, m::Int, n::Int, b::Int)
-    mt, nt = cld(m, b), cld(n, b)
-    has_right = n % b != 0
-    has_bottom = m % b != 0
+function _build_geometry(order, m::Int, n::Int, tile_size::NTuple{2,Int})
+    bm, bn = tile_size
+    mt, nt = cld(m, bm), cld(n, bn)
+    has_right = n % bn != 0
+    has_bottom = m % bm != 0
 
     ndiag = min(mt, nt)
     noff = mt * nt - ndiag
@@ -328,27 +335,29 @@ function _build_geometry(order, m::Int, n::Int, b::Int)
 end
 
 """
-    TLRMatrix(backend, T, m, n, b, maxrank; rank_type=Int32, tile_order=TileColMajor)
+    TLRMatrix(backend, T, m, n, tile_size, maxrank; rank_type=Int32, tile_order=TileColMajor)
 
-Allocate an empty TLR container for an `m×n` matrix with tile size `b` and
-maximum per-tile rank `maxrank`.
+Allocate an empty TLR container for an `m×n` matrix with nominal tile size
+`tile_size == (bm, bn)` and maximum per-tile rank `maxrank`.
 """
 function TLRMatrix(
     backend::Backend, ::Type{T},
-    m::Int, n::Int, b::Int, maxrank::Int;
+    m::Int, n::Int, tile_size::NTuple{2,Int}, maxrank::Int;
     rank_type::Type{<:Integer}=Int32,
     tile_order=TileColMajor,
 ) where {T}
-    m > 0 && n > 0 && b > 0 && maxrank >= 0 ||
-        throw(ArgumentError("m, n, b must be positive; maxrank must be non-negative"))
+    bm, bn = tile_size
+    m > 0 && n > 0 && bm > 0 && bn > 0 && maxrank >= 0 ||
+        throw(ArgumentError("m, n, and tile dimensions must be positive; maxrank must be non-negative"))
 
     order = _order_instance(tile_order)
-    mt, nt = cld(m, b), cld(n, b)
+    mt, nt = cld(m, bm), cld(n, bn)
 
-    tail_m = m % b   # logical height of last tile row (== b when m%b==0)
-    tail_n = n % b   # logical width  of last tile col (== b when n%b==0)
+    tail_m = m % bm
+    tail_n = n % bn
+    tail_size = (tail_m, tail_n)
 
-    obs_int, obs_right, obs_bottom, local_index, category, coords = _build_geometry(order, m, n, b)
+    obs_int, obs_right, obs_bottom, local_index, category, coords = _build_geometry(order, m, n, tile_size)
 
     n_int = length(obs_int)
     n_right = length(obs_right)
@@ -359,29 +368,39 @@ function TLRMatrix(
     tm_s = max(tail_m, 1)
     tn_s = max(tail_n, 1)
 
-    int_U = zeros(backend, T, b, maxrank, n_int)
-    int_V = zeros(backend, T, b, maxrank, n_int)
-    right_U = zeros(backend, T, b, maxrank, n_right)
+    int_U = zeros(backend, T, bm, maxrank, n_int)
+    int_V = zeros(backend, T, bn, maxrank, n_int)
+    right_U = zeros(backend, T, bm, maxrank, n_right)
     right_V = zeros(backend, T, tn_s, maxrank, n_right)
     bottom_U = zeros(backend, T, tm_s, maxrank, n_bottom)
-    bottom_V = zeros(backend, T, b, maxrank, n_bottom)
-    corner_tm = n_diag == mt ? (m - (mt - 1) * b) : b
-    corner_tn = n_diag == nt ? (n - (nt - 1) * b) : b
-    has_diag_corner = n_diag > 0 && (corner_tm != b || corner_tn != b)
+    bottom_V = zeros(backend, T, bn, maxrank, n_bottom)
+    corner_tm = n_diag == mt ? _last_dim(m, bm) : bm
+    corner_tn = n_diag == nt ? _last_dim(n, bn) : bn
+    has_diag_corner = n_diag > 0 && (corner_tm != bm || corner_tn != bn)
     n_full_diag = n_diag - Int(has_diag_corner)
 
-    D = zeros(backend, T, b, b, n_full_diag)
+    D = zeros(backend, T, bm, bn, n_full_diag)
     D_corner = zeros(backend, T, max(corner_tm, 1), max(corner_tn, 1), has_diag_corner ? 1 : 0)
 
     ranks = Base.zeros(rank_type, mt * nt - n_diag)
     resid = Base.zeros(Float64, mt * nt - n_diag)
 
     return TLRMatrix{typeof(backend),T,typeof(int_U),rank_type,typeof(order)}(
-        backend, order, m, n, b,
+        backend, order, m, n, tile_size, tail_size,
         int_U, int_V, right_U, right_V, bottom_U, bottom_V,
         D, D_corner, ranks, resid, maxrank,
         obs_int, obs_right, obs_bottom, local_index, category, coords,
     )
+end
+
+@inline _last_dim(dim::Int, nominal::Int) = (tail = dim % nominal; iszero(tail) ? nominal : tail)
+
+function TLRMatrix(
+    backend::Backend, ::Type{T},
+    m::Int, n::Int, b::Int, maxrank::Int;
+    kwargs...,
+) where {T}
+    return TLRMatrix(backend, T, m, n, (b, b), maxrank; kwargs...)
 end
 
 """
@@ -391,4 +410,8 @@ Allocate a TLR container on the same backend as dense matrix `A`.
 """
 function TLRMatrix(A::AbstractMatrix{T}, b::Int, maxrank::Int; kwargs...) where {T}
     return TLRMatrix(get_backend(A), T, size(A, 1), size(A, 2), b, maxrank; kwargs...)
+end
+
+function TLRMatrix(A::AbstractMatrix{T}, tile_size::NTuple{2,Int}, maxrank::Int; kwargs...) where {T}
+    return TLRMatrix(get_backend(A), T, size(A, 1), size(A, 2), tile_size, maxrank; kwargs...)
 end

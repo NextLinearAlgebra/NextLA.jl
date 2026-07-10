@@ -17,7 +17,7 @@ function tlr_gemm_bpanel_by_int(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backen
     Q == 0 && return C                         # no bottom panel (m_A % b == 0)
 
     mt, _ = tilegrid_size(A)                    # boundary tile-row index (Q+1)
-    b = A.nominal_tile_size
+    b = nominal_tile_size(A, 2)
     rA = maxrank(A)
     rB = maxrank(B)
     s = size(A.bottom_U, 1)                     # panel height (= m_A % b)

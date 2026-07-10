@@ -42,7 +42,8 @@ end
 @inline function _per_col_bytes(A::TLRMatrix{<:Any,T}, B::TLRMatrix) where {T}
     _, nt = _interior_grid(A)
     noff = nt - 1
-    return max(maxrank(A) * noff * (A.nominal_tile_size + maxrank(B)) * sizeof(T), 1)
+    b = nominal_tile_size(A, 1)
+    return max(maxrank(A) * noff * (b + maxrank(B)) * sizeof(T), 1)
 end
 
 # Row family: block the whole (i, j) tile grid into rectangular runs whose tile
@@ -157,7 +158,7 @@ struct ColumnWorkspace{SB,TB,VB,UB,BV}
 end
 
 function _row_batches(A, B, C, Sbuf, Tbuf, Uall, maxI::Int, maxJ::Int)
-    b = A.nominal_tile_size
+    b = nominal_tile_size(A, 1)
     noff = _interior_grid(A)[2] - 1
     rA = maxrank(A)
     rB = maxrank(B)
@@ -186,7 +187,7 @@ function _row_batches(A, B, C, Sbuf, Tbuf, Uall, maxI::Int, maxJ::Int)
 end
 
 function _column_batches(A, B, C, Sbuf, Tbuf, Vall, Uall, maxK::Int, maxJ::Int)
-    b = A.nominal_tile_size
+    b = nominal_tile_size(A, 1)
     noff = _interior_grid(A)[1] - 1
     rA = maxrank(A)
     rB = maxrank(B)
@@ -220,7 +221,7 @@ to the budgeted run width for the given reduction placement.
 function allocate_workspace(::KAsGemmK, A::TLRMatrix{<:Any,T}, B::TLRMatrix,
                             C::AbstractMatrix, budget::Int) where {T}
     mt, nt = _interior_grid(A)
-    b = A.nominal_tile_size
+    b = nominal_tile_size(A, 1)
     noff = nt - 1
     rA = maxrank(A)
     rB = maxrank(B)
@@ -237,7 +238,7 @@ end
 function allocate_workspace(::KAsSerialLoop, A::TLRMatrix{<:Any,T}, B::TLRMatrix,
                             C::AbstractMatrix, budget::Int) where {T}
     _, nt = _interior_grid(A)
-    b = A.nominal_tile_size
+    b = nominal_tile_size(A, 1)
     noff = nt - 1
     rA = maxrank(A)
     rB = B.maxrank

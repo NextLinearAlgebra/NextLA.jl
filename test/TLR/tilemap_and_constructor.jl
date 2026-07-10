@@ -75,7 +75,13 @@ end
             @test size(A) == (32, 32)
             @test NextLA.tilegrid_size(A) == (2, 2)
             @test NextLA.TLRmodule.tile_order(A) isa NextLA.TileColMajor
-            @test A.nominal_tile_size == 16
+            @test A.nominal_tile_size == (16, 16)
+            @test NextLA.nominal_tile_size(A) == (16, 16)
+            @test NextLA.nominal_tile_size(A, 1) == 16
+            @test NextLA.nominal_tile_size(A, 2) == 16
+            @test NextLA.tail_tile_size(A) == (0, 0)
+            @test NextLA.tail_tile_size(A, 1) == 0
+            @test NextLA.tail_tile_size(A, 2) == 0
             @test NextLA.maxrank(A) == 16
             @test size(A.int_U) == (16, 16, 2)
             @test size(A.int_V) == (16, 16, 2)
@@ -94,16 +100,36 @@ end
             @test expected_storage_slot(A, 1, 2) == 2
             @test expected_storage_slot(A, 2, 1) == 1
 
-            lf = NextLA.left_factors(A)
-            rf = NextLA.right_factors(A)
-            @test lf.interior === A.int_U
-            @test rf.interior === A.int_V
-
             synchronize(A.int_U)
             synchronize(A.int_V)
             synchronize(A.D)
             synchronize(A.D_corner)
         end
+    end
+
+    @testset "rectangular nominal tile geometry" begin
+        A = NextLA.TLRMatrix(zeros(Float64, 10, 11), (4, 5), 3)
+
+        @test size(A) == (10, 11)
+        @test NextLA.nominal_tile_size(A) == (4, 5)
+        @test NextLA.nominal_tile_size(A, 1) == 4
+        @test NextLA.nominal_tile_size(A, 2) == 5
+        @test NextLA.tail_tile_size(A) == (2, 1)
+        @test NextLA.tail_tile_size(A, 1) == 2
+        @test NextLA.tail_tile_size(A, 2) == 1
+        @test NextLA.tilegrid_size(A) == (3, 3)
+        @test NextLA.tile_origin_coords(A, 3, 3) == (9, 11)
+        @test NextLA.tile_size(A, 1, 1) == (4, 5)
+        @test NextLA.tile_size(A, 3, 3) == (2, 1)
+
+        @test size(A.int_U) == (4, 3, 2)
+        @test size(A.int_V) == (5, 3, 2)
+        @test size(A.right_U) == (4, 3, 2)
+        @test size(A.right_V) == (1, 3, 2)
+        @test size(A.bottom_U) == (2, 3, 2)
+        @test size(A.bottom_V) == (5, 3, 2)
+        @test size(A.D) == (4, 5, 2)
+        @test size(A.D_corner) == (2, 1, 1)
     end
 
     @testset "dispatch by order" begin
@@ -120,6 +146,7 @@ end
     @testset "constructor validation" begin
         @test_throws ArgumentError NextLA.TLRMatrix(zeros(Float64, 5, 5), -1, 2)
         @test_throws ArgumentError NextLA.TLRMatrix(zeros(Float64, 5, 5), 0, 2)
+        @test_throws ArgumentError NextLA.TLRMatrix(zeros(Float64, 5, 5), (2, 0), 2)
         @test_throws ArgumentError NextLA.TLRMatrix(zeros(Float64, 5, 5), 2, -1)
 
         A = NextLA.TLRMatrix(zeros(Float64, 8, 8), 4, 2)
@@ -173,19 +200,24 @@ end
     A_tlr.right_U[:, 1:2, kr_idx]   .= reshape(collect(11.0:18.0), 4, 2)
     A_tlr.right_V[1:2, 1:2, kr_idx] .= [5.0 6.0; 7.0 8.0]
 
-    # tile_u/tile_v return correctly shaped views
-    @test size(NextLA.tile_u(A_tlr, internal_slot)) == (4, 2)
-    @test size(NextLA.tile_v(A_tlr, internal_slot)) == (4, 2)
-    @test Matrix(NextLA.tile_u(A_tlr, internal_slot)) == reshape(collect(21.0:28.0), 4, 2)
-    @test Matrix(NextLA.tile_v(A_tlr, internal_slot)) == reshape(collect(31.0:38.0), 4, 2)
+    # get_factors maps global tile coordinates to correctly shaped factor views.
+    U_int, V_int = NextLA.get_factors(A_tlr, 1, 2)
+    @test size(U_int) == (4, 2)
+    @test size(V_int) == (4, 2)
+    @test Matrix(U_int) == reshape(collect(21.0:28.0), 4, 2)
+    @test Matrix(V_int) == reshape(collect(31.0:38.0), 4, 2)
 
-    @test size(NextLA.tile_u(A_tlr, bottom_slot)) == (2, 2)
-    @test size(NextLA.tile_v(A_tlr, bottom_slot)) == (4, 2)
-    @test Matrix(NextLA.tile_u(A_tlr, bottom_slot)) == [1.0 2.0; 3.0 4.0]
-    @test Matrix(NextLA.tile_v(A_tlr, bottom_slot)) == reshape(collect(1.0:8.0), 4, 2)
+    U_bottom, V_bottom = NextLA.get_factors(A_tlr, 3, 1)
+    @test size(U_bottom) == (2, 2)
+    @test size(V_bottom) == (4, 2)
+    @test Matrix(U_bottom) == [1.0 2.0; 3.0 4.0]
+    @test Matrix(V_bottom) == reshape(collect(1.0:8.0), 4, 2)
 
-    @test size(NextLA.tile_u(A_tlr, right_slot)) == (4, 2)
-    @test size(NextLA.tile_v(A_tlr, right_slot)) == (2, 2)
-    @test Matrix(NextLA.tile_u(A_tlr, right_slot)) == reshape(collect(11.0:18.0), 4, 2)
-    @test Matrix(NextLA.tile_v(A_tlr, right_slot)) == [5.0 6.0; 7.0 8.0]
+    U_right, V_right = NextLA.get_factors(A_tlr, 1, 3)
+    @test size(U_right) == (4, 2)
+    @test size(V_right) == (2, 2)
+    @test Matrix(U_right) == reshape(collect(11.0:18.0), 4, 2)
+    @test Matrix(V_right) == [5.0 6.0; 7.0 8.0]
+
+    @test_throws ArgumentError NextLA.get_factors(A_tlr, 1, 1)
 end
