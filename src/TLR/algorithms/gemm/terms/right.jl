@@ -20,58 +20,59 @@ For each output tile-row `i`, `A_int u_B[i] = Σ_j A_ij B_{j,Q+1}` reduces over 
 First writer of C_right, so it folds β.  No-op when `n_B % b == 0`.
 """
 function tlr_gemm_int_by_rpanel(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T; beta::T=one(T), budget::Int) where {T, BackendT}
-    Q = _right_panel_tiles(B)
-    Q == 0 && return C                         # no right panel (n_B % b == 0)
-    Q == _full_regular_grid(A)[1] || return C      # non-square
+    qkB = _right_panel_tiles(B)
+    qkB == 0 && return C                         # no right panel (n_B % b == 0)
+    qmA, _ = _full_regular_grid(A)
+    qmA == qkB || return C                       # non-square
 
     _, nt = tilegrid_size(A)                    # boundary tile-column index (Q+1)
-    b = nominal_tile_size(A, 1)
+    bm = nominal_tile_size(A, 1)
     rA = maxrank(A)
     rB = maxrank(B)
 
-    s = size(B.right_V, 1)                      # panel width (= n_B % b)
+    sn = size(B.right_V, 1)                     # panel width (= n_B % b)
 
     # diagonal j=i:  C_right[i] = β·C_right + α·(A_ii W_i) Z_iᵀ   (folds β).
-    Ndiag = allocate(A.backend, T, b, rB, Q)
+    ADWdiag = allocate(A.backend, T, bm, rB, qmA)
     gemm_batched!('N', 'N', one(T),
-        [_diag_tile_view(A, i) for i in 1:Q],
-        [view(B.right_U, :, :, i) for i in 1:Q],
-        zero(T), [view(Ndiag, :, :, i) for i in 1:Q])
+        [_diag_tile_view(A, i) for i in 1:qmA],
+        [view(B.right_U, :, :, i) for i in 1:qmA],
+        zero(T), [view(ADWdiag, :, :, i) for i in 1:qmA])
     gemm_batched!('N', 'T', alpha,
-        [view(Ndiag, :, :, i) for i in 1:Q],
-        [view(B.right_V, :, :, i) for i in 1:Q],
-        beta, [_dense_tile_view(C, A, i, nt) for i in 1:Q])
+        [view(ADWdiag, :, :, i) for i in 1:qmA],
+        [view(B.right_V, :, :, i) for i in 1:qmA],
+        beta, [_dense_tile_view(C, A, i, nt) for i in 1:qmA])
 
     # off-diagonal reduction (β = 1), budget-split over output rows.
     (rA == 0 || rB == 0) && return C
-    per = Q - 1                                 # off-diagonal tiles per row
-    per == 0 && return C
+    nk_off_per_row = qmA - 1
+    nk_off_per_row == 0 && return C
     order = tile_order(A)
-    percol = max(rA * per * (rB + s) * sizeof(T), 1)
-    maxI = clamp(div(budget, percol), 1, Q)
-    S = allocate(A.backend, T, rA, rB, per, maxI)
-    Tw = allocate(A.backend, T, rA, s, per, maxI)
+    bytes_per_i = max(rA * nk_off_per_row * (rB + sn) * sizeof(T), 1)
+    maxI = clamp(div(budget, bytes_per_i), 1, qmA)
+    Swork = allocate(A.backend, T, rA, rB, nk_off_per_row, maxI)
+    Twork = allocate(A.backend, T, rA, sn, nk_off_per_row, maxI)
 
-    @inbounds for irange in Iterators.partition(1:Q, maxI)
+    @inbounds for irange in Iterators.partition(1:qmA, maxI)
         i0 = first(irange)
-        # Stage 1:  S_{i,kk} = V_ijᵀ W_j,  batched over (row i, off-diag position kk).
+        # Stage 1:  S_{i,kpos} = V_ijᵀ W_j,  batched over row and off-diagonal k position.
         gemm_batched!('T', 'N', one(T),
-            [view(A.int_V, :, :, _offdiag_index(order, Q, Q, i, local_to_col(i, kk))) for i in irange for kk in 1:per],
-            [view(B.right_U, :, :, local_to_col(i, kk)) for i in irange for kk in 1:per],
+            [view(A.int_V, :, :, _offdiag_index(order, qmA, qmA, i, local_to_col(i, kpos))) for i in irange for kpos in 1:nk_off_per_row],
+            [view(B.right_U, :, :, local_to_col(i, kpos)) for i in irange for kpos in 1:nk_off_per_row],
             zero(T),
-            [view(S, :, :, kk, i - i0 + 1) for i in irange for kk in 1:per])
-        # Stage 2:  T_{i,kk} = S_{i,kk} Z_jᵀ,  same batch.
+            [view(Swork, :, :, kpos, i - i0 + 1) for i in irange for kpos in 1:nk_off_per_row])
+        # Stage 2:  T_{i,kpos} = S_{i,kpos} Z_jᵀ,  same batch.
         gemm_batched!('N', 'T', one(T),
-            [view(S, :, :, kk, i - i0 + 1) for i in irange for kk in 1:per],
-            [view(B.right_V, :, :, local_to_col(i, kk)) for i in irange for kk in 1:per],
+            [view(Swork, :, :, kpos, i - i0 + 1) for i in irange for kpos in 1:nk_off_per_row],
+            [view(B.right_V, :, :, local_to_col(i, kpos)) for i in irange for kpos in 1:nk_off_per_row],
             zero(T),
-            [view(Tw, :, :, kk, i - i0 + 1) for i in irange for kk in 1:per])
-        # Stage 3:  C_right[i] += α·Σ_j U_ij T_{i,kk}.  Loop the reduction (kk); each kk
+            [view(Twork, :, :, kpos, i - i0 + 1) for i in irange for kpos in 1:nk_off_per_row])
+        # Stage 3:  C_right[i] += α·Σ_j U_ij T_{i,kpos}.  Loop the reduction; each kpos
         # writes distinct rows i, so batch over i and accumulate with β = 1.
-        for kk in 1:per
+        for kpos in 1:nk_off_per_row
             gemm_batched!('N', 'N', alpha,
-                [view(A.int_U, :, :, _offdiag_index(order, Q, Q, i, local_to_col(i, kk))) for i in irange],
-                [view(Tw, :, :, kk, i - i0 + 1) for i in irange],
+                [view(A.int_U, :, :, _offdiag_index(order, qmA, qmA, i, local_to_col(i, kpos))) for i in irange],
+                [view(Twork, :, :, kpos, i - i0 + 1) for i in irange],
                 one(T),
                 [_dense_tile_view(C, A, i, nt) for i in irange])
         end
@@ -90,21 +91,21 @@ Accumulate `α · u_A γ_B` into the right region of `C`.  A's right-panel tiles
 No-op when `n_A % b == 0`, `A.maxrank == 0`, or B has no corner.
 """
 function tlr_gemm_rpanel_by_corner(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T; beta::T=one(T)) where {T, BackendT}
-    Q = _right_panel_tiles(A)
-    Q == 0 && return C                        # no right panel (n_A % b == 0)
+    qmA = _right_panel_tiles(A)
+    qmA == 0 && return C                      # no right panel (n_A % b == 0)
     rA = maxrank(A)
     (rA == 0 || size(B.D_corner, 3) == 0) && return C
     _, nt = tilegrid_size(A)                   # boundary tile-column index (Q+1)
-    s_n = size(B.D_corner, 2)                  # corner column extent (= n_B % b)
+    sn = size(B.D_corner, 2)                   # corner column extent (= n_B % b)
 
     # Stage 1:  M_i = V_iᵀ γ_B   (rA×s_n), strided over i with γ_B (batch-1) broadcast.
-    M = allocate(A.backend, T, rA, s_n, Q)
-    gemm_batched!('T', 'N', one(T), A.right_V, B.D_corner, zero(T), M)
+    Twork = allocate(A.backend, T, rA, sn, qmA)
+    gemm_batched!('T', 'N', one(T), A.right_V, B.D_corner, zero(T), Twork)
 
     # Stage 2:  C_{i,Q+1} += α · U_i M_i   (b×s_n), batched over i.
-    Uvec = [view(A.right_U, :, :, i) for i in 1:Q]
-    Mvec = [view(M, :, :, i) for i in 1:Q]
-    Cvec = [_dense_tile_view(C, A, i, nt) for i in 1:Q]
-    gemm_batched!('N', 'N', alpha, Uvec, Mvec, beta, Cvec)
+    Uvec = [view(A.right_U, :, :, i) for i in 1:qmA]
+    Tvec = [view(Twork, :, :, i) for i in 1:qmA]
+    Cvec = [_dense_tile_view(C, A, i, nt) for i in 1:qmA]
+    gemm_batched!('N', 'N', alpha, Uvec, Tvec, beta, Cvec)
     return C
 end

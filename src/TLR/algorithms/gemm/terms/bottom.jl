@@ -13,56 +13,56 @@ factors and `W_ij, Z_ij` are B's interior factors.  First writer of C_bottom, fo
 No-op when `m_A % b == 0`.
 """
 function tlr_gemm_bpanel_by_int(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T; beta::T=one(T), budget::Int) where {T, BackendT}
-    Q = _bottom_panel_tiles(A)                 # A bottom-panel tiles (= interior columns)
-    Q == 0 && return C                         # no bottom panel (m_A % b == 0)
+    qkA = _bottom_panel_tiles(A)               # A bottom-panel tiles (= interior columns)
+    qkA == 0 && return C                       # no bottom panel (m_A % b == 0)
 
     mt, _ = tilegrid_size(A)                    # boundary tile-row index (Q+1)
-    b = nominal_tile_size(A, 2)
+    bn = nominal_tile_size(B, 2)
     rA = maxrank(A)
     rB = maxrank(B)
-    s = size(A.bottom_U, 1)                     # panel height (= m_A % b)
+    sm = size(A.bottom_U, 1)                    # panel height (= m_A % b)
 
     # Diagonal i=j:  C_bottom[j] = β·C_bottom + α·U_j (V_jᵀ B_jj)   (first writer, folds β).
-    Ndiag = allocate(A.backend, T, rA, b, Q)
+    VDBdiag = allocate(A.backend, T, rA, bn, qkA)
     gemm_batched!('T', 'N', one(T),
-        [view(A.bottom_V,:,:,j) for j in 1:Q],
-        [_diag_tile_view(B, j) for j in 1:Q],
-        zero(T), [view(Ndiag,:,:,j) for j in 1:Q])
+        [view(A.bottom_V, :, :, j) for j in 1:qkA],
+        [_diag_tile_view(B, j) for j in 1:qkA],
+        zero(T), [view(VDBdiag, :, :, j) for j in 1:qkA])
     gemm_batched!('N', 'N', alpha,
-        [view(A.bottom_U,:,:,j) for j in 1:Q],
-        [view(Ndiag,:,:,j) for j in 1:Q],
-        beta, [_dense_tile_view(C, A, mt, j) for j in 1:Q])
+        [view(A.bottom_U, :, :, j) for j in 1:qkA],
+        [view(VDBdiag, :, :, j) for j in 1:qkA],
+        beta, [_dense_tile_view(C, A, mt, j) for j in 1:qkA])
 
     # Off-diagonal reduction (β = 1), budget-split over output columns.
     (rA == 0 || rB == 0) && return C
-    per = Q - 1                                 # off-diagonal tiles per column
-    per == 0 && return C
+    nk_off_per_col = qkA - 1
+    nk_off_per_col == 0 && return C
     order = tile_order(B)
-    percol = max(rA * per * (rB + b) * sizeof(T), 1)
-    maxJ = clamp(div(budget, percol), 1, Q)
-    S = allocate(A.backend, T, rA, rB, per, maxJ)
-    Tw = allocate(A.backend, T, rA, b, per, maxJ)
+    bytes_per_j = max(rA * nk_off_per_col * (rB + bn) * sizeof(T), 1)
+    maxJ = clamp(div(budget, bytes_per_j), 1, qkA)
+    Swork = allocate(A.backend, T, rA, rB, nk_off_per_col, maxJ)
+    Twork = allocate(A.backend, T, rA, bn, nk_off_per_col, maxJ)
 
-    @inbounds for jrange in Iterators.partition(1:Q, maxJ)
+    @inbounds for jrange in Iterators.partition(1:qkA, maxJ)
         j0 = first(jrange)
-        # Stage 1:  S_{j,kk} = V_iᵀ W_ij,  batched over (column j, off-diag position kk).
+        # Stage 1:  S_{j,kpos} = V_iᵀ W_ij,  batched over column and off-diagonal k position.
         gemm_batched!('T', 'N', one(T),
-            [view(A.bottom_V,:,:,local_to_col(j, kk)) for j in jrange for kk in 1:per],
-            [view(B.int_U,:,:,_offdiag_index(order, Q, Q, local_to_col(j, kk), j)) for j in jrange for kk in 1:per],
+            [view(A.bottom_V, :, :, local_to_col(j, kpos)) for j in jrange for kpos in 1:nk_off_per_col],
+            [view(B.int_U, :, :, _offdiag_index(order, qkA, qkA, local_to_col(j, kpos), j)) for j in jrange for kpos in 1:nk_off_per_col],
             zero(T),
-            [view(S,:,:,kk,(j-j0+1)) for j in jrange for kk in 1:per])
-        # Stage 2:  T_{j,kk} = S_{j,kk} Z_ijᵀ,  same batch.
+            [view(Swork, :, :, kpos, (j - j0 + 1)) for j in jrange for kpos in 1:nk_off_per_col])
+        # Stage 2:  T_{j,kpos} = S_{j,kpos} Z_ijᵀ,  same batch.
         gemm_batched!('N', 'T', one(T),
-            [view(S,:,:,kk,(j-j0+1)) for j in jrange for kk in 1:per],
-            [view(B.int_V,:,:,_offdiag_index(order, Q, Q, local_to_col(j, kk), j)) for j in jrange for kk in 1:per],
+            [view(Swork, :, :, kpos, (j - j0 + 1)) for j in jrange for kpos in 1:nk_off_per_col],
+            [view(B.int_V, :, :, _offdiag_index(order, qkA, qkA, local_to_col(j, kpos), j)) for j in jrange for kpos in 1:nk_off_per_col],
             zero(T),
-            [view(Tw,:,:,kk,(j-j0+1)) for j in jrange for kk in 1:per])
-        # Stage 3:  C_bottom[j] += α·Σ_i U_i T_{j,kk}.  Loop the reduction (kk); each kk
+            [view(Twork, :, :, kpos, (j - j0 + 1)) for j in jrange for kpos in 1:nk_off_per_col])
+        # Stage 3:  C_bottom[j] += α·Σ_i U_i T_{j,kpos}.  Loop the reduction; each kpos
         # writes distinct columns j, so batch over j and accumulate with β = 1.
-        for kk in 1:per
+        for kpos in 1:nk_off_per_col
             gemm_batched!('N', 'N', alpha,
-                [view(A.bottom_U,:,:,local_to_col(j, kk)) for j in jrange],
-                [view(Tw,:,:,kk,(j-j0+1)) for j in jrange],
+                [view(A.bottom_U, :, :, local_to_col(j, kpos)) for j in jrange],
+                [view(Twork, :, :, kpos, (j - j0 + 1)) for j in jrange],
                 one(T),
                 [_dense_tile_view(C, A, mt, j) for j in jrange])
         end
@@ -81,21 +81,21 @@ times B's bottom-panel tiles `B_{Q+1,j} = W_j Z_jᵀ` give, for each j,
 No-op when `m_B % b == 0`, `B.maxrank == 0`, or A has no corner.
 """
 function tlr_gemm_corner_by_bpanel(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT, T}, alpha::T; beta::T=one(T)) where {T, BackendT}
-    Q = _bottom_panel_tiles(B)
-    Q == 0 && return C                        # no bottom panel (m_B % b == 0)
+    qnB = _bottom_panel_tiles(B)
+    qnB == 0 && return C                      # no bottom panel (m_B % b == 0)
     rB = maxrank(B)
     (rB == 0 || size(A.D_corner, 3) == 0) && return C
     mt, _ = tilegrid_size(A)                   # boundary tile-row index (Q+1)
-    s_m = size(A.D_corner, 1)                  # corner row extent (= m_A % b)
+    sm = size(A.D_corner, 1)                   # corner row extent (= m_A % b)
 
     # Stage 1:  N_j = γ_A W_j   (s_m×rB), strided over j with γ_A (batch-1) broadcast.
-    N = allocate(A.backend, T, s_m, rB, Q)
-    gemm_batched!('N', 'N', one(T), A.D_corner, B.bottom_U, zero(T), N)
+    Swork = allocate(A.backend, T, sm, rB, qnB)
+    gemm_batched!('N', 'N', one(T), A.D_corner, B.bottom_U, zero(T), Swork)
 
     # Stage 2:  C_{Q+1,j} += α · N_j Z_jᵀ   (s_m×b), batched over j.
-    Nvec = [view(N,:,:,j) for j in 1:Q]
-    Zvec = [view(B.bottom_V,:,:,j) for j in 1:Q]
-    Cvec = [_dense_tile_view(C, A, mt, j) for j in 1:Q]
-    gemm_batched!('N', 'T', alpha, Nvec, Zvec, beta, Cvec)
+    Svec = [view(Swork, :, :, j) for j in 1:qnB]
+    Zvec = [view(B.bottom_V, :, :, j) for j in 1:qnB]
+    Cvec = [_dense_tile_view(C, A, mt, j) for j in 1:qnB]
+    gemm_batched!('N', 'T', alpha, Svec, Zvec, beta, Cvec)
     return C
 end
