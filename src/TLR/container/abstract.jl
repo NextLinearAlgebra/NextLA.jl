@@ -36,6 +36,16 @@ end
 
 @inline tilegrid_size(A::AbstractTLRMatrix) = (cld(A.m, nominal_tile_size(A, 1)), cld(A.n, nominal_tile_size(A, 2)))
 
+"""
+    _full_regular_grid(A) -> (q_m, q_n)
+
+Sub-grid of full-size regular tiles, `(⌊m/bm⌋, ⌊n/bn⌋)` — `tilegrid_size` minus
+any partial boundary row/column. Equals `tilegrid_size` when the matrix tiles
+evenly. (`gemm`'s `_interior_grid` is the same quantity for `TLRDenseDiagMatrix`.)
+"""
+@inline _full_regular_grid(A::AbstractTLRMatrix) =
+    (fld(A.m, nominal_tile_size(A, 1)), fld(A.n, nominal_tile_size(A, 2)))
+
 @inline function tile_size(A::AbstractTLRMatrix, tile_i::Int, tile_j::Int)
     mt, nt = tilegrid_size(A)
     bm, bn = nominal_tile_size(A)

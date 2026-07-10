@@ -23,7 +23,7 @@ export uncompress!
 export get_factors
 export maxrank, ranks, residuals, dense_diag, dense_diag_corner, tilegrid_size
 export nominal_tile_size, tail_tile_size
-export ndiag_tiles, noffdiag_tiles, tile_origin_coords, tile_size
+export ndiag_tiles, tile_origin_coords, tile_size
 
 include("container/order.jl")
 include("container/abstract.jl")

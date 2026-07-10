@@ -49,7 +49,6 @@ struct TLRDenseDiagMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},RankT<:I
 end
 
 @inline ndiag_tiles(A::TLRDenseDiagMatrix) = min(tilegrid_size(A)...)
-@inline noffdiag_tiles(A::TLRDenseDiagMatrix) = prod(tilegrid_size(A)) - ndiag_tiles(A)
 @inline dense_diag(A::TLRDenseDiagMatrix) = A.D
 @inline dense_diag_corner(A::TLRDenseDiagMatrix) = A.D_corner
 @inline _nfull_diag_tiles(A::TLRDenseDiagMatrix) = size(A.D, 3)

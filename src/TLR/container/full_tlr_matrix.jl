@@ -42,9 +42,6 @@ struct TLRMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},RankT<:Integer,Or
     maxrank::Int
 end
 
-@inline _full_regular_grid(A::TLRMatrix) =
-    (fld(A.m, nominal_tile_size(A, 1)), fld(A.n, nominal_tile_size(A, 2)))
-
 @inline function _tile_index(A::TLRMatrix, i::Integer, j::Integer)
     mt, nt = tilegrid_size(A)
     return tile_linear_index(A.order, mt, nt, Int(i), Int(j))
