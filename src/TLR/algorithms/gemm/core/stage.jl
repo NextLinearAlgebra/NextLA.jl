@@ -136,17 +136,18 @@ function execute_stage!(::Stage3, ::KAsGemmK, ::Any, d::StageDescriptor)
     T = _ws_eltype(d.workspace)
     run = d.run
     ws = d.workspace
-    b = size(ws.Ustacked, 1)                 # nominal tile size (interior tiles are b×b)
+    bm = size(ws.Ustacked, 1)                # C row-tile height (from A's U factor)
+    bn = size(ws.T.data, 3)                  # C col-tile width  (T's spatial extent)
     noff = size(ws.T.data, 2)
     rA = size(ws.T.data, 1)
     Jw = run_width(run)
     vb = ws.batches
     _clear_batches!(vb.s3u, vb.s3t, vb.s3c)
     @inbounds for (il, i) in enumerate(run.i0:run.i1)
-        Tstack = reshape(view(ws.T.data, :, :, :, 1:Jw, il), noff * rA, Jw * b)
+        Tstack = reshape(view(ws.T.data, :, :, :, 1:Jw, il), noff * rA, Jw * bn)
         push!(vb.s3u, view(ws.Ustacked, :, :, i))
         push!(vb.s3t, Tstack)
-        push!(vb.s3c, dense_rowblock(d.C, b, i, run.j0, run.j1))
+        push!(vb.s3c, dense_rowblock(d.C, bm, bn, i, run.j0, run.j1))
     end
     return gemm_batched!('N', 'N', T(d.alpha), vb.s3u, vb.s3t, T(d.beta), vb.s3c)
 end
@@ -221,7 +222,8 @@ function execute_stage!(::Stage3, ::KAsSerialLoop, ::Any, d::StageDescriptor)
     run = d.run
     ops = d.ops
     ws = d.workspace
-    b = size(ws.Ufactored, 1)                # nominal tile size (interior tiles are b×b)
+    bm = size(ws.Ufactored, 1)               # C row-tile height (from A's U factor)
+    bn = size(ws.T.data, 3)                  # C col-tile width  (T's spatial extent)
     vb = ws.batches
     noff = size(ws.Ufactored, 3)
     # `k` is the reduction axis: loop it (one accumulate GEMM per k), batching the
@@ -235,7 +237,7 @@ function execute_stage!(::Stage3, ::KAsSerialLoop, ::Any, d::StageDescriptor)
                 j = panel_col(ops.bw, k, jpos)
                 push!(vb.s3u, view(ws.Ufactored, :, :, li, k))
                 push!(vb.s3t, view(ws.T.data, :, li, :, jx, kx))
-                push!(vb.s3c, dense_tile(d.C, b, i, j))
+                push!(vb.s3c, dense_tile(d.C, bm, bn, i, j))
             end
         end
         gemm_batched!('N', 'N', T(d.alpha), vb.s3u, vb.s3t, T(d.beta), vb.s3c)

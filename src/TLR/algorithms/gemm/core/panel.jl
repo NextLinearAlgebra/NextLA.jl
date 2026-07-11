@@ -147,9 +147,10 @@ function logical_operands(A::TLRMatrix, B::TLRMatrix)
     )
 end
 
-"""Zero-copy `b×b` view of dense output tile `(i, j)`."""
-@inline dense_tile(C::AbstractMatrix, b::Int, i::Int, j::Int) =
-    view(C, (i - 1) * b + 1:i * b, (j - 1) * b + 1:j * b)
+"""Zero-copy view of dense output tile `(i, j)`: rows step by `bm`, columns by `bn`
+(equal for square tiles)."""
+@inline dense_tile(C::AbstractMatrix, bm::Int, bn::Int, i::Int, j::Int) =
+    view(C, (i - 1) * bm + 1:i * bm, (j - 1) * bn + 1:j * bn)
 
 """
     _output_tile_view(C, A, B, i, j)
@@ -167,9 +168,10 @@ from the correct operand). For square, equal-size A, B this coincides with
     return view(C, p0:(p0 + tm - 1), q0:(q0 + tn - 1))
 end
 
-"""Zero-copy view of dense output row-block `i`, columns `j0:j1`."""
-@inline dense_rowblock(C::AbstractMatrix, b::Int, i::Int, j0::Int, j1::Int) =
-    view(C, (i - 1) * b + 1:i * b, (j0 - 1) * b + 1:j1 * b)
+"""Zero-copy view of dense output row-block `i` (height `bm`), columns `j0:j1`
+(width `bn` each)."""
+@inline dense_rowblock(C::AbstractMatrix, bm::Int, bn::Int, i::Int, j0::Int, j1::Int) =
+    view(C, (i - 1) * bm + 1:i * bm, (j0 - 1) * bn + 1:j1 * bn)
 
 # Interior factor views for a fully low-rank tile (i, j) (stored in `tile_linear_index`
 # order); used by the `TLRMatrix` boundary terms, which read `int_U`/`int_V` directly.

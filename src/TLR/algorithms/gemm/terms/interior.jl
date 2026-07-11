@@ -176,8 +176,9 @@ function _offdiag_offdiag_gemm!(C, A::AbstractTLRMatrix{<:Any,T}, B::AbstractTLR
     ops = logical_operands(A, B)
     qm = ops.av.qm
     qn = ops.bw.qn
-    b = blockdim(ops.au)
-    region = view(C, 1:(qm * b), 1:(qn * b))   # the interior block O_A O_B writes
+    bm = blockdim(ops.au)                       # C row-tile height (from A's U)
+    bn = blockdim(ops.bz)                       # C col-tile width  (from B's Z)
+    region = view(C, 1:(qm * bm), 1:(qn * bn))  # the interior block O_A O_B writes
 
     # tiles_per_row(ops.av) == 0 covers both `nt == 1` (SkipDiag: only the diagonal)
     # and an empty grid; zero rank on either side leaves nothing to contract. The
@@ -243,17 +244,17 @@ function tlr_gemm_rpanel_by_bpanel(C, A::AbstractTLRMatrix{BackendT,T}, B::Abstr
     (rA == 0 || rB == 0) && return C
 
     sk = size(A.right_V, 1) # shared contraction tail (== size(B.bottom_U, 1))
-    bm = nominal_tile_size(A, 1)
+    bn = nominal_tile_size(B, 2)  # output tile width (T = S Zᵀ column extent)
 
     Vstack = reshape(A.right_V, sk, rA * qmA) # [V_1 | … | V_qmA]   (sk × qmA·rA)
     Wstack = reshape(B.bottom_U, sk, rB * qnB) # [W_1 | … | W_qnB]  (sk × qnB·rB)
 
     # column-block width fitting the budget
-    bytes_per_j = max(qmA * rA * (rB + bm) * sizeof(T), 1)  # S col-block (qmA·rA × rB) + T (qmA·rA × bm).
+    bytes_per_j = max(qmA * rA * (rB + bn) * sizeof(T), 1)  # S col-block (qmA·rA × rB) + T (qmA·rA × bn).
     maxJ = clamp(div(budget, bytes_per_j), 1, qnB)
 
     Swork = allocate(A.backend, T, qmA * rA, maxJ * rB)
-    Twork = allocate(A.backend, T, qmA * rA, bm, maxJ)
+    Twork = allocate(A.backend, T, qmA * rA, bn, maxJ)
 
     s3u = Vector{typeof(view(A.right_U, :, :, 1))}()
     s3t = Vector{typeof(view(Twork, 1:rA, :, 1))}()

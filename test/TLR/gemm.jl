@@ -113,6 +113,29 @@ function assert_fulllr_gemm_matches_dense(ArrayType::Type, T::Type, mA::Int, k::
     @test isapprox(Array(C), C_ref; atol=atol, rtol=rtol)
 end
 
+# Rectangular *tiles* (bm ≠ bn): `A` uses tile size `(bm, bk)`, `B` uses `(bk, bn)`, so
+# the contraction tiling `bk` aligns but the output tile is `bm × bn`. Only the buffer
+# sizes change vs. square tiles; the result must still match the dense product.
+function assert_fulllr_gemm_rect_tiles(ArrayType::Type, T::Type, mA::Int, k::Int, nB::Int,
+                                       bm::Int, bk::Int, bn::Int, r::Int, orderA, orderB, synchronize;
+                                       budget::Int, alpha=T(1.3), beta=T(-0.4), atol=1e-9, rtol=1e-9)
+    A_tlr = NextLA.TLRMatrix(ArrayType(zeros(T, mA, k)), (bm, bk), r; tile_order=orderA)
+    B_tlr = NextLA.TLRMatrix(ArrayType(zeros(T, k, nB)), (bk, bn), r; tile_order=orderB)
+    fill_random_tlr!(A_tlr, ArrayType; seed=101)
+    fill_random_tlr!(B_tlr, ArrayType; seed=202)
+
+    rng = MersenneTwister(303)
+    C0_cpu = randn(rng, T, mA, nB)
+    C = ArrayType(C0_cpu)
+    NextLA.TLRmodule.gemm!(C, A_tlr, B_tlr; alpha=alpha, beta=beta, max_workspace=budget)
+    synchronize(C)
+
+    A_dense = reconstruct_tlr(A_tlr)
+    B_dense = reconstruct_tlr(B_tlr)
+    C_ref = alpha * A_dense * B_dense + beta * C0_cpu
+    @test isapprox(Array(C), C_ref; atol=atol, rtol=rtol)
+end
+
 @testset "full-LR TLR gemm! to dense on CPU" begin
     orders = (NextLA.TileRowMajor(), NextLA.TileColMajor())
     for orderA in orders, orderB in orders
@@ -146,6 +169,21 @@ end
                 assert_fulllr_gemm_matches_dense(Array, Float64, mA, k, nB, b, 3,
                                                  orderA, orderB, _ -> nothing; budget=budget, atol=1e-9, rtol=1e-9)
             end
+        end
+    end
+
+    # Rectangular tiles (bm ≠ bk ≠ bn): only the intermediate buffer sizes differ.
+    @testset "rectangular tiles (bm ≠ bn)" begin
+        for orderA in orders, orderB in orders, budget in (1, 128 * 1024 * 1024)
+            # aligned grid, no boundary: mA=12(3), k=9(3), nB=10(2); tiles A=(4,3), B=(3,5)
+            assert_fulllr_gemm_rect_tiles(Array, Float64, 12, 9, 10, 4, 3, 5, 3,
+                                          orderA, orderB, _ -> nothing; budget=budget)
+            # with tails in m, k and n: mA=14(tail2), k=11(tail2), nB=13(tail3)
+            assert_fulllr_gemm_rect_tiles(Array, Float64, 14, 11, 13, 4, 3, 5, 3,
+                                          orderA, orderB, _ -> nothing; budget=budget)
+            # tall output tile (bm > bn) and single contraction tile
+            assert_fulllr_gemm_rect_tiles(Array, Float64, 15, 6, 8, 5, 6, 2, 2,
+                                          orderA, orderB, _ -> nothing; budget=budget)
         end
     end
 

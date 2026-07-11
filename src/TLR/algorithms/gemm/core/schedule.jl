@@ -41,9 +41,12 @@ struct ColumnSchedule
     maxJ::Int
 end
 
-# Interior-product geometry from the logical operands. Extents may be rectangular;
-# for a square dense-diagonal interior all of `q_m/q_c/q_n` coincide and every
-# `per*` reduces to `nt-1`.
+# Interior-product geometry from the logical operands. Tiles may be rectangular, so
+# three distinct block sizes are carried: `bm` (A row / C row height, from `U`), `bk`
+# (contraction tile size, from `V`/`W`), and `bn` (B col / C col width, from `Z`, also
+# the T scratch's spatial extent). For a square interior all three coincide, and for a
+# square dense-diagonal interior `q_m/q_c/q_n` coincide too and every `per*` reduces to
+# `nt-1`.
 @inline function _interior_geom(ops)
     return (
         q_m = ops.av.qm,                  # A output-row tiles           (== ops.au.qm)
@@ -51,23 +54,25 @@ end
         q_n = ops.bw.qn,                  # B output-col tiles           (== ops.bz.qn)
         rA  = rankdim(ops.av),            # A rank
         rB  = rankdim(ops.bw),            # B rank
-        b   = blockdim(ops.au),           # square tile size
+        bm  = blockdim(ops.au),           # A row / C row tile height
+        bk  = blockdim(ops.av),           # contraction tile size (== blockdim(ops.bw))
+        bn  = blockdim(ops.bz),           # B col / C col tile width (T spatial extent)
         perA_row = tiles_per_row(ops.av), # A contraction tiles per output row (row family K-stack)
         perA_col = tiles_per_col(ops.av), # A tiles per contraction column     (column family stacking)
         perB_row = tiles_per_row(ops.bw), # B output-col tiles per contraction row (column jpos width)
     )
 end
 
-# Scratch bytes for one batched slice: `S` is r_A·per·r_B and `T` is r_A·per·b,
-# so per slice = r_A·per·(b + r_B)·sizeof(T). `per` is the family's stacking depth.
-@inline _slice_bytes(rA::Int, per::Int, rB::Int, b::Int, ::Type{T}) where {T} =
-    max(rA * per * (b + rB) * sizeof(T), 1)
+# Scratch bytes for one batched slice: `S` is r_A·per·r_B and `T` is r_A·per·b_n,
+# so per slice = r_A·per·(b_n + r_B)·sizeof(T). `per` is the family's stacking depth.
+@inline _slice_bytes(rA::Int, per::Int, rB::Int, bn::Int, ::Type{T}) where {T} =
+    max(rA * per * (bn + rB) * sizeof(T), 1)
 
 # Row family: block the `q_m × q_n` output grid into rectangular runs whose tile
 # count fits the budget — `maxJ` columns wide, `maxI` rows tall (columns filled
 # first). All tiles are independent, so the block is a pure batch.
 @inline function _row_block(geom, ::Type{T}, budget::Int) where {T}
-    per_col = _slice_bytes(geom.rA, geom.perA_row, geom.rB, geom.b, T)
+    per_col = _slice_bytes(geom.rA, geom.perA_row, geom.rB, geom.bn, T)
     maxtiles = clamp(div(budget, per_col), 1, geom.q_m * geom.q_n)
     maxJ = clamp(maxtiles, 1, geom.q_n)
     maxI = clamp(div(maxtiles, maxJ), 1, geom.q_m)
@@ -78,7 +83,7 @@ end
 # the budget — `maxJ` panel positions wide, `maxK` contraction tiles deep (positions
 # filled first). Stages 1/2 batch over the whole block; Stage 3 loops `k`.
 @inline function _column_block(geom, ::Type{T}, budget::Int) where {T}
-    per_slice = _slice_bytes(geom.rA, geom.perA_col, geom.rB, geom.b, T)
+    per_slice = _slice_bytes(geom.rA, geom.perA_col, geom.rB, geom.bn, T)
     maxslices = clamp(div(budget, per_slice), 1, geom.q_c * geom.perB_row)
     maxJ = clamp(maxslices, 1, geom.perB_row)
     maxK = clamp(div(maxslices, maxJ), 1, geom.q_c)
@@ -104,7 +109,7 @@ function gemm_workspace_bytes(A::AbstractTLRMatrix, B::AbstractTLRMatrix)
     geom = _interior_geom(ops)
     placement = k_axis_schedule(stride1_axis_left(A), stride1_axis_right(B))
     per = placement isa KAsGemmK ? geom.perA_row : geom.perA_col
-    return _slice_bytes(geom.rA, per, geom.rB, geom.b, eltype(ops.av.data)) *
+    return _slice_bytes(geom.rA, per, geom.rB, geom.bn, eltype(ops.av.data)) *
            _full_run_tiles(placement, geom)
 end
 
@@ -180,7 +185,7 @@ struct ColumnWorkspace{SB,TB,VB,UB,BV}
 end
 
 function _row_batches(ops, C, Sbuf, Tbuf, Uall, geom, maxI::Int, maxJ::Int)
-    b = geom.b
+    bm = geom.bm; bk = geom.bk; bn = geom.bn
     noff = geom.perA_row
     rA = geom.rA
     rB = geom.rB
@@ -188,10 +193,10 @@ function _row_batches(ops, C, Sbuf, Tbuf, Uall, geom, maxI::Int, maxJ::Int)
     Ssample = view(Sbuf, :, :, 1, 1, 1)               # S[:,:,p,kk,il]
     Tsample = view(Tbuf, :, 1, :, 1, 1)
     Sfused = reshape(view(Sbuf, :, :, 1:maxJ, 1, 1), rA, maxJ * rB)
-    Wfused = reshape(view(ops.bw.data, :, :, 1:maxJ), b, maxJ * rB)
+    Wfused = reshape(view(ops.bw.data, :, :, 1:maxJ), bk, maxJ * rB)
     Ustack = view(Uall, :, :, 1)
-    Tstack = reshape(view(Tbuf, :, :, :, 1:maxJ, 1), noff * rA, maxJ * b)
-    Cblock = view(C, 1:b, 1:maxJ * b)
+    Tstack = reshape(view(Tbuf, :, :, :, 1:maxJ, 1), noff * rA, maxJ * bn)
+    Cblock = view(C, 1:bm, 1:maxJ * bn)
     return (
         s1v = _batchvec(view(ops.av.data, :, :, 1), ntrip),
         s1w = _batchvec(view(ops.bw.data, :, :, 1), ntrip),
@@ -209,14 +214,14 @@ function _row_batches(ops, C, Sbuf, Tbuf, Uall, geom, maxI::Int, maxJ::Int)
 end
 
 function _column_batches(ops, C, Sbuf, Tbuf, Vall, Uall, geom, maxK::Int, maxJ::Int)
-    b = geom.b
+    bm = geom.bm; bk = geom.bk; bn = geom.bn
     noff = geom.perA_col
     rA = geom.rA
     rB = geom.rB
     nkj = maxK * maxJ                    # Stage 1/2 batch over (k, jpos)
     n3 = noff * maxJ                     # Stage 3 batch over (i, jpos) per k
     Vpanel = view(Vall, :, :, 1)
-    Wfused = reshape(view(ops.bw.data, :, :, 1:maxJ), b, maxJ * rB)
+    Wfused = reshape(view(ops.bw.data, :, :, 1:maxJ), bk, maxJ * rB)
     Sfused = reshape(view(Sbuf, :, :, 1:maxJ, 1), rA * noff, maxJ * rB)
     return (
         s1v = _batchvec(Vpanel, nkj),
@@ -227,10 +232,10 @@ function _column_batches(ops, C, Sbuf, Tbuf, Vall, Uall, geom, maxK::Int, maxJ::
         s1js = _batchvec(Sfused, maxK),
         s2s = _batchvec(view(Sbuf, :, :, 1, 1), nkj),
         s2z = _batchvec(view(ops.bz.data, :, :, 1), nkj),
-        s2t = _batchvec(reshape(view(Tbuf, :, :, :, 1, 1), rA * noff, b), nkj),
+        s2t = _batchvec(reshape(view(Tbuf, :, :, :, 1, 1), rA * noff, bn), nkj),
         s3u = _batchvec(view(Uall, :, :, 1, 1), n3),
         s3t = _batchvec(view(Tbuf, :, 1, :, 1, 1), n3),
-        s3c = _batchvec(view(C, 1:b, 1:b), n3),
+        s3c = _batchvec(view(C, 1:bm, 1:bn), n3),
     )
 end
 
@@ -245,16 +250,16 @@ function allocate_workspace(placement::KAsGemmK, ops, C::AbstractMatrix, budget:
     geom = _interior_geom(ops)
     T = eltype(ops.av.data)
     backend = get_backend(ops.av.data)
-    b = geom.b
+    bm = geom.bm; bn = geom.bn
     noff = geom.perA_row
     rA = geom.rA
     rB = geom.rB
     maxI, maxJ = _row_block(geom, T, budget)
-    Uall = reshape(ops.au.data, b, rA * noff, geom.q_m)
+    Uall = reshape(ops.au.data, bm, rA * noff, geom.q_m)
     # S[:,:,p,kk,il]: p = position within the run's column block, laid out so a fused
     # per-(i,k) Stage-1 GEMM writes a contiguous [rA, len·rB] slice.
     Sbuf = allocate(backend, T, rA, rB, maxJ, noff, maxI)
-    Tbuf = allocate(backend, T, rA, noff, b, maxJ, maxI)
+    Tbuf = allocate(backend, T, rA, noff, bn, maxJ, maxI)
     return RowWorkspace(ScratchS(Sbuf), ScratchT(Tbuf), Uall,
                         _row_batches(ops, C, Sbuf, Tbuf, Uall, geom, maxI, maxJ))
 end
@@ -263,15 +268,15 @@ function allocate_workspace(placement::KAsSerialLoop, ops, C::AbstractMatrix, bu
     geom = _interior_geom(ops)
     T = eltype(ops.av.data)
     backend = get_backend(ops.av.data)
-    b = geom.b
+    bm = geom.bm; bk = geom.bk; bn = geom.bn
     noff = geom.perA_col
     rA = geom.rA
     rB = geom.rB
     maxK, maxJ = _column_block(geom, T, budget)
-    Vall = reshape(ops.av.data, b, rA * noff, geom.q_c)
-    Uall = reshape(ops.au.data, b, rA, noff, geom.q_c)
+    Vall = reshape(ops.av.data, bk, rA * noff, geom.q_c)
+    Uall = reshape(ops.au.data, bm, rA, noff, geom.q_c)
     Sbuf = allocate(backend, T, rA * noff, rB, maxJ, maxK)
-    Tbuf = allocate(backend, T, rA, noff, b, maxJ, maxK)
+    Tbuf = allocate(backend, T, rA, noff, bn, maxJ, maxK)
     return ColumnWorkspace(ScratchS(Sbuf), ScratchT(Tbuf), Vall, Uall,
                            _column_batches(ops, C, Sbuf, Tbuf, Vall, Uall, geom, maxK, maxJ))
 end

@@ -42,9 +42,11 @@ fact drives the whole traversal choice (§4).
 
 ## 2. Scope and invariants
 
-The hard term operates on the **uniform core** only (interior `b×b` off-diagonal
-tiles, `int_U`/`int_V`), where `b` is the shared nominal tile size; constant
-`maxrank` with zero-padded
+The hard term operates on the **uniform core** only (interior off-diagonal tiles,
+`int_U`/`int_V`). Tiles may be rectangular: `bm × bk` for A and `bk × bn` for B, so
+the output tile is `bm × bn` and only the contraction size `bk` must be shared
+(`nominal_tile_size(A,2) == nominal_tile_size(B,1)`; the `TLRDenseDiagMatrix` path is
+square with `bm = bk = bn`). Constant `maxrank` with zero-padded
 inactive rank columns. It does not pack factors or materialise padded tensors —
 every stage operand is a zero-copy strided view, and both CPU and CUDA execute
 through `gemm_batched!`. Boundary panels (`right`/`bottom`) and the corner are
@@ -137,13 +139,14 @@ Accessors, all zero-copy (each dispatches on the operand's `Kind`):
 `logical_operands(A, B)` bundles the operands as
 `LogicalTLROperands(av=V, bw=W, bz=Z, au=U)` — `au` (A's `U`) is carried for the
 column family's tilewise Stage 3; the row family stacks `U` in workspace. The dense
-output is passed as `C` directly; `dense_tile(C, ...)` / `dense_rowblock(C, ...)` cut
-zero-copy `b×b` or row-block views of it.
+output is passed as `C` directly; `dense_tile(C, bm, bn, ...)` /
+`dense_rowblock(C, bm, bn, ...)` cut zero-copy `bm × bn` tile or row-block views of it.
 
 ## 6. Scheduling and workspace (`schedule.jl`)
 
 The workspace budget (bytes) is the only runtime knob. It caps the run width; the
-T-workspace dominates (`≈ r_A · noff · b · run_width`).
+T-workspace dominates (`≈ r_A · noff · bn · run_width`, where `bn` is the output-tile
+width = T's spatial extent).
 
 - **Row family** (`KAsGemmK`): `RowRun(i0, i1, j0, j1)` — a rectangular block of
   output tiles (rows `i0:i1` × columns `j0:j1`). Rows are independent (no

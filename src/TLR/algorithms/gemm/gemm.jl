@@ -86,8 +86,11 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backend
         throw(DimensionMismatch("size(A,2) must equal size(B,1)"))
     (size(C, 1), size(C, 2)) == (size(A, 1), size(B, 2)) ||
         throw(DimensionMismatch("C must be size(A,1) × size(B,2)"))
-    nominal_tile_size(A) == nominal_tile_size(B) ||
-        throw(DimensionMismatch("A and B must share the same nominal tile size"))
+    # Only the contraction tiling must align: A's column tile size == B's row tile size.
+    # Tiles may otherwise be rectangular (bm ≠ bn), which only resizes the intermediate
+    # buffers. The row/column tails then match automatically since size(A,2) == size(B,1).
+    nominal_tile_size(A, 2) == nominal_tile_size(B, 1) ||
+        throw(DimensionMismatch("A's column tile size must equal B's row tile size (contraction tiling)"))
 
     α = T(alpha)
     β = T(beta)
