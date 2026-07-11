@@ -64,3 +64,25 @@ function tlr_gemm_bpanel_by_rpanel(C, A::AbstractTLRMatrix{BackendT,T}, B::Abstr
     gemm_batched!('N', 'N', alpha, [Ustack], [Tstack], beta, [Ccorner])
     return C
 end
+
+# ── Fully low-rank variant (TLRMatrix) ───────────────────────────────────────
+
+# γ_A γ_B: low-rank corner × low-rank corner, a single 3-stage product (vs. the dense
+# `mul!` of the dense-diagonal container).
+function tlr_gemm_corner_by_corner(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T;
+    beta::T=one(T)) where {T,BackendT}
+    (size(A.corner_U, 3) != 0 && size(B.corner_U, 3) != 0) || return C
+    mt, _ = tilegrid_size(A)                      # A boundary tile-row
+    _, ntB = tilegrid_size(B)                     # B boundary tile-col
+    Cc = _output_tile_view(C, A, B, mt, ntB)
+    rA = maxrank(A); rB = maxrank(B)
+    (rA == 0 || rB == 0) && (_scale_output!(Cc, beta); return C)  # γ contributes 0; still fold β
+    sn = size(B.corner_V, 1)
+
+    Swork = allocate(A.backend, T, rA, rB, 1)    # S = Vc^A' Wc^B
+    gemm_batched!('T', 'N', one(T), A.corner_V, B.corner_U, zero(T), Swork)
+    Twork = allocate(A.backend, T, rA, sn, 1)    # T = S Zc^B'
+    gemm_batched!('N', 'T', one(T), Swork, B.corner_V, zero(T), Twork)
+    mul!(Cc, view(A.corner_U, :, :, 1), view(Twork, :, :, 1), alpha, beta)   # C += α Uc^A T
+    return C
+end

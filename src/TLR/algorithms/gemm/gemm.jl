@@ -7,7 +7,6 @@ include("terms/interior.jl")
 include("terms/corner.jl")
 include("terms/right.jl")
 include("terms/bottom.jl")
-include("terms/fulllr.jl")
 
 const DEFAULT_GEMM_BUDGET = 10^9
 

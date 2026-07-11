@@ -340,8 +340,9 @@ end
    `SkipDiag` interior). `gemm!(::TLRMatrix, ::TLRMatrix)` runs the full-grid staged
    product; tested (square + rectangular, all four combos, both budgets) against a
    dense reference. Restricted to tile-aligned dimensions (no boundary tiles).
-4. **[done]** Add `TLRMatrix` boundary/corner terms (`terms/fulllr.jl`) + the
-   four-region `gemm!(::TLRMatrix, ::TLRMatrix)` orchestrator. The pure-panel terms
+4. **[done]** Add `TLRMatrix` boundary/corner terms (as `TLRMatrix` methods in each
+   region file, next to their dense-diagonal counterparts) + the four-region
+   `gemm!(::TLRMatrix, ::TLRMatrix)` orchestrator. The pure-panel terms
    (`rpanel_by_bpanel`, `bpanel_by_rpanel`) are shared by relaxing their signatures
    to `AbstractTLRMatrix`; the five dense-touching terms get full-LR versions where
    the corner is a low-rank 3-stage product and the interior×panel reductions run

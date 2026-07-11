@@ -170,3 +170,8 @@ end
 """Zero-copy view of dense output row-block `i`, columns `j0:j1`."""
 @inline dense_rowblock(C::AbstractMatrix, b::Int, i::Int, j0::Int, j1::Int) =
     view(C, (i - 1) * b + 1:i * b, (j0 - 1) * b + 1:j1 * b)
+
+# Interior factor views for a fully low-rank tile (i, j) (stored in `tile_linear_index`
+# order); used by the `TLRMatrix` boundary terms, which read `int_U`/`int_V` directly.
+@inline _int_Uview(A, ord, qm, qn, i, j) = view(A.int_U, :, :, tile_linear_index(ord, qm, qn, i, j))
+@inline _int_Vview(A, ord, qm, qn, i, j) = view(A.int_V, :, :, tile_linear_index(ord, qm, qn, i, j))

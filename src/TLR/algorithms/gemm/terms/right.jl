@@ -109,3 +109,75 @@ function tlr_gemm_rpanel_by_corner(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRD
     gemm_batched!('N', 'N', alpha, Uvec, Tvec, beta, Cvec)
     return C
 end
+
+# ── Fully low-rank variants (TLRMatrix) ──────────────────────────────────────
+#
+# Every tile is low-rank, so there is no dense diagonal to split out: `A_int u_B`
+# reduces over ALL contraction tiles `k`, and `u_A γ_B` uses a low-rank corner `γ_B`.
+
+# A_int u_B:  C_right[i] = Σ_{k=1:q_c} A_ik B_{k,bnd},  i = 1:q_m^A.  Batched Stages 1/2
+# over (i, k); Stage 3 loops the reduction `k` (batched over i), first `k` folds β.
+function tlr_gemm_int_by_rpanel(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T;
+    beta::T=one(T), budget::Int) where {T,BackendT}
+    qkB = _right_panel_tiles(B)                  # one per interior row k
+    qkB == 0 && return C
+    qmA, qkA = _full_regular_grid(A)
+
+    rA = maxrank(A); rB = maxrank(B)
+    (rA == 0 || rB == 0) && return C
+    _, ntB = tilegrid_size(B)                    # B boundary tile-col index
+    sn = size(B.right_V, 1)                      # tail width (n_B % b)
+    ord = tile_order(A)
+
+    Swork = allocate(A.backend, T, rA, rB, qkB, qmA)
+    Twork = allocate(A.backend, T, rA, sn, qkB, qmA)
+    # Stage 1:  S_{i,k} = V_ik' W_k
+    gemm_batched!('T', 'N', one(T),
+        [_int_Vview(A, ord, qmA, qkA, i, k) for i in 1:qmA for k in 1:qkB],
+        [view(B.right_U, :, :, k) for i in 1:qmA for k in 1:qkB],
+        zero(T), [view(Swork, :, :, k, i) for i in 1:qmA for k in 1:qkB])
+    # Stage 2:  T_{i,k} = S_{i,k} Z_k'
+    gemm_batched!('N', 'T', one(T),
+        [view(Swork, :, :, k, i) for i in 1:qmA for k in 1:qkB],
+        [view(B.right_V, :, :, k) for i in 1:qmA for k in 1:qkB],
+        zero(T), [view(Twork, :, :, k, i) for i in 1:qmA for k in 1:qkB])
+    # Stage 3:  C_right[i] += α Σ_k U_ik T_{i,k}   (loop the reduction, batch i)
+    @inbounds for k in 1:qkB
+        bb = k == 1 ? beta : one(T)
+        gemm_batched!('N', 'N', alpha,
+            [_int_Uview(A, ord, qmA, qkA, i, k) for i in 1:qmA],
+            [view(Twork, :, :, k, i) for i in 1:qmA],
+            bb, [_output_tile_view(C, A, B, i, ntB) for i in 1:qmA])
+    end
+    return C
+end
+
+# u_A γ_B:  C_right[i] += A_{i,bnd} γ_B,  i = 1:q_m^A.  Single contraction (the corner),
+# batched over i.  A_{i,bnd} = U^r_i V^r_i',  γ_B = Wc Zc'.
+function tlr_gemm_rpanel_by_corner(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T}, alpha::T;
+    beta::T=one(T)) where {T,BackendT}
+    qmA = _right_panel_tiles(A)                  # A right-panel tiles = q_m^A
+    qmA == 0 && return C
+
+    size(B.corner_U, 3) == 0 && return C
+    rA = maxrank(A); rB = maxrank(B)
+    (rA == 0 || rB == 0) && return C
+    _, ntB = tilegrid_size(B)
+    sn = size(B.corner_V, 1)                     # corner col extent (n_B % b)
+
+    Swork = allocate(A.backend, T, rA, rB, qmA)  # S_i = V^r_i' Wc
+    gemm_batched!('T', 'N', one(T),
+        [view(A.right_V, :, :, i) for i in 1:qmA],
+        [view(B.corner_U, :, :, 1) for _ in 1:qmA],
+        zero(T), [view(Swork, :, :, i) for i in 1:qmA])
+    Twork = allocate(A.backend, T, rA, sn, qmA)  # T_i = S_i Zc'
+    gemm_batched!('N', 'T', one(T),
+        [view(Swork, :, :, i) for i in 1:qmA],
+        [view(B.corner_V, :, :, 1) for _ in 1:qmA],
+        zero(T), [view(Twork, :, :, i) for i in 1:qmA])
+    gemm_batched!('N', 'N', alpha,             # C_right[i] += α U^r_i T_i
+        [view(A.right_U, :, :, i) for i in 1:qmA],
+        [view(Twork, :, :, i) for i in 1:qmA],
+        beta, [_output_tile_view(C, A, B, i, ntB) for i in 1:qmA])
+    return C
+end
