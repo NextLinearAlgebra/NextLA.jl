@@ -34,11 +34,6 @@ function gemm!(C::AbstractMatrix, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDense
     one_β = one(T)
     W = max_workspace
 
-    # The four output regions write DISJOINT quadrants of C, so they run on four
-    # independent streams. Within a region the first-writer term folds β·C and the
-    # second accumulates onto the SAME tiles — FIFO ordering on the region's stream
-    # enforces that dependency, so no per-region barrier is needed; one host sync at
-    # the end. All boundary regions are no-ops on the square, m%b==0 path.
     interior = () -> begin                                        # C_int
         tlr_gemm_int_by_int(C, A, B, α, β; budget=W)             #   A_int B_int  (folds β)
         tlr_gemm_rpanel_by_bpanel(C, A, B, α; beta=one_β, budget=W)  # u_A v_Bᵀ  (accumulate)
@@ -99,8 +94,6 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backend
     one_β = one(T)
     W = max_workspace
 
-    # Rank 0 ⇒ the whole product is 0, so every region's first writer would no-op and
-    # β would not be folded. Handle it once here.
     if maxrank(A) == 0 || maxrank(B) == 0
         _scale_output!(C, β)
         return C

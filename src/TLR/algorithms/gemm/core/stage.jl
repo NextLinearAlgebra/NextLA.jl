@@ -40,7 +40,16 @@ end
 @inline prepare_run!(::KAsSerialLoop, ::ColumnRun, ::ColumnWorkspace) = nothing
 
 
-function execute_stage!(d::StageDescriptor{Stage1,<:KAsGemmK,<:Any,<:Any,<:Any,<:Any,<:Any,<:Any,FreeAsBatch})
+# Dispatch on the descriptor's stored singletons (`stage`, reduction `placement`,
+# and Stage-1 `free_axis_schedule`) rather than on positional type-parameter slots.
+# All three are `StageDescriptor` type parameters, so this forward is resolved at
+# compile time — no runtime cost — while keeping the method signatures readable and
+# robust to adding further descriptor fields. Stage 2/3 carry `free_axis == nothing`
+# and ignore that third argument.
+@inline execute_stage!(d::StageDescriptor) =
+    execute_stage!(d.stage, d.placement, d.free_axis_schedule, d)
+
+function execute_stage!(::Stage1, ::KAsGemmK, ::FreeAsBatch, d::StageDescriptor)
     T = _ws_eltype(d.workspace)
     run = d.run
     ops = d.ops
@@ -67,7 +76,7 @@ end
 # Fused Stage 1 for `(k,j)`: B stride-1 `:j` makes `rowpanel(k)` contiguous over
 # `j`, so the block's off-diagonal columns form a single wide right operand and
 # `j` folds into N — one GEMM per `(i,k)` instead of one per `(i,k,j)`.
-function execute_stage!(d::StageDescriptor{Stage1,<:KAsGemmK,<:Any,<:Any,<:Any,<:Any,<:Any,<:Any,JAsGemmN})
+function execute_stage!(::Stage1, ::KAsGemmK, ::JAsGemmN, d::StageDescriptor)
     T = _ws_eltype(d.workspace)
     run = d.run
     ops = d.ops
@@ -98,7 +107,7 @@ function execute_stage!(d::StageDescriptor{Stage1,<:KAsGemmK,<:Any,<:Any,<:Any,<
     return gemm_batched!('T', 'N', one(T), vb.s1jv, vb.s1jw, zero(T), vb.s1js)
 end
 
-function execute_stage!(d::StageDescriptor{Stage2,<:KAsGemmK})
+function execute_stage!(::Stage2, ::KAsGemmK, ::Any, d::StageDescriptor)
     T = _ws_eltype(d.workspace)
     run = d.run
     ops = d.ops
@@ -123,7 +132,7 @@ function execute_stage!(d::StageDescriptor{Stage2,<:KAsGemmK})
     return gemm_batched!('N', 'T', one(T), vb.s2s, vb.s2z, zero(T), vb.s2t)
 end
 
-function execute_stage!(d::StageDescriptor{Stage3,<:KAsGemmK})
+function execute_stage!(::Stage3, ::KAsGemmK, ::Any, d::StageDescriptor)
     T = _ws_eltype(d.workspace)
     run = d.run
     ws = d.workspace
@@ -142,7 +151,7 @@ function execute_stage!(d::StageDescriptor{Stage3,<:KAsGemmK})
     return gemm_batched!('N', 'N', T(d.alpha), vb.s3u, vb.s3t, T(d.beta), vb.s3c)
 end
 
-function execute_stage!(d::StageDescriptor{Stage1,<:KAsSerialLoop,<:Any,<:Any,<:Any,<:Any,<:Any,<:Any,IAsGemmM})
+function execute_stage!(::Stage1, ::KAsSerialLoop, ::IAsGemmM, d::StageDescriptor)
     T = _ws_eltype(d.workspace)
     run = d.run
     ops = d.ops
@@ -162,7 +171,7 @@ function execute_stage!(d::StageDescriptor{Stage1,<:KAsSerialLoop,<:Any,<:Any,<:
     return gemm_batched!('T', 'N', one(T), vb.s1v, vb.s1w, zero(T), vb.s1s)
 end
 
-function execute_stage!(d::StageDescriptor{Stage1,<:KAsSerialLoop,<:Any,<:Any,<:Any,<:Any,<:Any,<:Any,IJAsGemmMN})
+function execute_stage!(::Stage1, ::KAsSerialLoop, ::IJAsGemmMN, d::StageDescriptor)
     T = _ws_eltype(d.workspace)
     run = d.run
     ops = d.ops
@@ -186,7 +195,7 @@ function execute_stage!(d::StageDescriptor{Stage1,<:KAsSerialLoop,<:Any,<:Any,<:
     return gemm_batched!('T', 'N', one(T), vb.s1jv, vb.s1jw, zero(T), vb.s1js)
 end
 
-function execute_stage!(d::StageDescriptor{Stage2,<:KAsSerialLoop})
+function execute_stage!(::Stage2, ::KAsSerialLoop, ::Any, d::StageDescriptor)
     T = _ws_eltype(d.workspace)
     run = d.run
     ops = d.ops
@@ -207,7 +216,7 @@ function execute_stage!(d::StageDescriptor{Stage2,<:KAsSerialLoop})
     return gemm_batched!('N', 'T', one(T), vb.s2s, vb.s2z, zero(T), vb.s2t)
 end
 
-function execute_stage!(d::StageDescriptor{Stage3,<:KAsSerialLoop})
+function execute_stage!(::Stage3, ::KAsSerialLoop, ::Any, d::StageDescriptor)
     T = _ws_eltype(d.workspace)
     run = d.run
     ops = d.ops
