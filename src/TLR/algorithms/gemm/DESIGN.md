@@ -345,10 +345,25 @@ end
    (`rpanel_by_bpanel`, `bpanel_by_rpanel`) are shared by relaxing their signatures
    to `AbstractTLRMatrix`; the five dense-touching terms get full-LR versions where
    the corner is a low-rank 3-stage product and the interior×panel reductions run
-   over all `k` (no diagonal split). `C` is pre-scaled by β once, so every term
-   accumulates. Tested (both orders, both budgets, zero rank) against a dense
-   reference. Boundary currently requires square, equal-size `A`, `B`.
-5. Extend boundary to rectangular grids (the interior already handles them): the
-   full-LR boundary terms index the output tile via `_dense_tile_view(C, A, …)`,
-   which assumes A/B/C share geometry — generalize to C-relative tile origins so
-   `m_A ≠ n_A ≠ n_B` with tails works.
+   over all `k` (no diagonal split). Tested (both orders, both budgets, zero rank)
+   against a dense reference.
+5. **[done]** Rectangular boundary. Output tiles now index via
+   `_output_tile_view(C, A, B, i, j)` (rows from A's tile-row `i`, cols from B's
+   tile-col `j`), and `rpanel_by_bpanel` takes independent row/col counts
+   (`Qi = q_m^A`, `Qj = q_n^B`). Tested with independent tails in `m`, `k`, `n`.
+
+### β folding (both structures, no branching)
+
+`O_A O_B` touches *every* interior tile, so it — not the diagonal terms — is the
+region's first writer and folds β. `tlr_gemm_int_by_int` (dense-diag) now runs
+`_offdiag_offdiag_gemm!` *first* (folding β), then the three diagonal components with
+β = 1; the `TLRMatrix` interior, being *only* `O_A O_B`, uses the identical path.
+Every region's first term folds β and the second accumulates (β = 1), so both
+`gemm!` orchestrators share one β-folding structure — no per-container branching.
+
+How β is folded is layout-dependent and lives in the staged core (`schedule.jl` /
+`stage.jl`): the **row family** writes each output tile exactly once, so Stage 3
+applies β directly (threaded through `StageDescriptor.beta`); the **column family**
+loops the reduction across runs, so `_offdiag_offdiag_gemm!` pre-scales the interior
+region once and Stage 3 then accumulates with β = 1. The rank-0 case (identically
+zero product) is a single up-front `_scale_output!`.

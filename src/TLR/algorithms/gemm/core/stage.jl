@@ -1,6 +1,6 @@
 # Stage descriptors
 
-struct StageDescriptor{StageT<:GemmStage,PlacementT<:KAxisSchedule,RunT,OpsT,WST,CT,AlphaT,BlockingT}
+struct StageDescriptor{StageT<:GemmStage,PlacementT<:KAxisSchedule,RunT,OpsT,WST,CT,AlphaT,BetaT,BlockingT}
     stage::StageT
     placement::PlacementT
     run::RunT
@@ -8,17 +8,21 @@ struct StageDescriptor{StageT<:GemmStage,PlacementT<:KAxisSchedule,RunT,OpsT,WST
     workspace::WST
     C::CT
     alpha::AlphaT
+    beta::BetaT
     free_axis_schedule::BlockingT
 end
 
 @inline stage1(placement::KAxisSchedule, run, ops, ws) =
-    StageDescriptor(Stage1(), placement, run, ops, ws, nothing, nothing, free_axis_schedule(placement))
+    StageDescriptor(Stage1(), placement, run, ops, ws, nothing, nothing, nothing, free_axis_schedule(placement))
 
 @inline stage2(placement::KAxisSchedule, run, ops, ws) =
-    StageDescriptor(Stage2(), placement, run, ops, ws, nothing, nothing, nothing)
+    StageDescriptor(Stage2(), placement, run, ops, ws, nothing, nothing, nothing, nothing)
 
-@inline stage3(placement::KAxisSchedule, run, ops, ws, C::AbstractMatrix, alpha) =
-    StageDescriptor(Stage3(), placement, run, ops, ws, C, alpha, nothing)
+# `beta` is applied by Stage 3 on the (single) write of each output tile. The row
+# family is write-once so it passes β directly; the column family loops the reduction,
+# so `_offdiag_offdiag_gemm!` pre-scales the region and passes β = 1 here.
+@inline stage3(placement::KAxisSchedule, run, ops, ws, C::AbstractMatrix, alpha, beta) =
+    StageDescriptor(Stage3(), placement, run, ops, ws, C, alpha, beta, nothing)
 
 @inline _ws_eltype(ws) = eltype(ws.S.data)
 
@@ -36,7 +40,7 @@ end
 @inline prepare_run!(::KAsSerialLoop, ::ColumnRun, ::ColumnWorkspace) = nothing
 
 
-function execute_stage!(d::StageDescriptor{Stage1,<:KAsGemmK,<:Any,<:Any,<:Any,<:Any,<:Any,FreeAsBatch})
+function execute_stage!(d::StageDescriptor{Stage1,<:KAsGemmK,<:Any,<:Any,<:Any,<:Any,<:Any,<:Any,FreeAsBatch})
     T = _ws_eltype(d.workspace)
     run = d.run
     ops = d.ops
@@ -63,7 +67,7 @@ end
 # Fused Stage 1 for `(k,j)`: B stride-1 `:j` makes `rowpanel(k)` contiguous over
 # `j`, so the block's off-diagonal columns form a single wide right operand and
 # `j` folds into N — one GEMM per `(i,k)` instead of one per `(i,k,j)`.
-function execute_stage!(d::StageDescriptor{Stage1,<:KAsGemmK,<:Any,<:Any,<:Any,<:Any,<:Any,JAsGemmN})
+function execute_stage!(d::StageDescriptor{Stage1,<:KAsGemmK,<:Any,<:Any,<:Any,<:Any,<:Any,<:Any,JAsGemmN})
     T = _ws_eltype(d.workspace)
     run = d.run
     ops = d.ops
@@ -135,10 +139,10 @@ function execute_stage!(d::StageDescriptor{Stage3,<:KAsGemmK})
         push!(vb.s3t, Tstack)
         push!(vb.s3c, dense_rowblock(d.C, b, i, run.j0, run.j1))
     end
-    return gemm_batched!('N', 'N', T(d.alpha), vb.s3u, vb.s3t, one(T), vb.s3c)
+    return gemm_batched!('N', 'N', T(d.alpha), vb.s3u, vb.s3t, T(d.beta), vb.s3c)
 end
 
-function execute_stage!(d::StageDescriptor{Stage1,<:KAsSerialLoop,<:Any,<:Any,<:Any,<:Any,<:Any,IAsGemmM})
+function execute_stage!(d::StageDescriptor{Stage1,<:KAsSerialLoop,<:Any,<:Any,<:Any,<:Any,<:Any,<:Any,IAsGemmM})
     T = _ws_eltype(d.workspace)
     run = d.run
     ops = d.ops
@@ -158,7 +162,7 @@ function execute_stage!(d::StageDescriptor{Stage1,<:KAsSerialLoop,<:Any,<:Any,<:
     return gemm_batched!('T', 'N', one(T), vb.s1v, vb.s1w, zero(T), vb.s1s)
 end
 
-function execute_stage!(d::StageDescriptor{Stage1,<:KAsSerialLoop,<:Any,<:Any,<:Any,<:Any,<:Any,IJAsGemmMN})
+function execute_stage!(d::StageDescriptor{Stage1,<:KAsSerialLoop,<:Any,<:Any,<:Any,<:Any,<:Any,<:Any,IJAsGemmMN})
     T = _ws_eltype(d.workspace)
     run = d.run
     ops = d.ops
@@ -225,7 +229,7 @@ function execute_stage!(d::StageDescriptor{Stage3,<:KAsSerialLoop})
                 push!(vb.s3c, dense_tile(d.C, b, i, j))
             end
         end
-        gemm_batched!('N', 'N', T(d.alpha), vb.s3u, vb.s3t, one(T), vb.s3c)
+        gemm_batched!('N', 'N', T(d.alpha), vb.s3u, vb.s3t, T(d.beta), vb.s3c)
     end
     return nothing
 end

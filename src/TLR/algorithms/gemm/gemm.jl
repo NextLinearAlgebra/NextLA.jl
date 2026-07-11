@@ -80,10 +80,11 @@ Fully low-rank TLR × TLR → dense `C := alpha·(A·B) + beta·C`. Every tile i
 so the product is the four-region block product with each region a low-rank staged
 term — no dense-diagonal / dense-corner special cases.
 
-`C` is pre-scaled by β once, then every term accumulates (β = 1). Tile-aligned
-dimensions run the interior term only (any rectangular grid). Boundary tiles are
-currently supported for square, equal-size `A`, `B`; rectangular boundary is a later
-extension.
+Like the dense-diagonal path, each region's first writer folds β and the second
+accumulates (β = 1); the interior's first writer is `O_A O_B`, which folds β through
+the same layout-aware mechanism (`_offdiag_offdiag_gemm!`). Any rectangular grid and
+boundary tiling is supported. When either operand has rank 0 the product is
+identically zero, so `C` is just scaled by β.
 """
 function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T};
     alpha=true, beta=false, max_workspace::Int=DEFAULT_GEMM_BUDGET) where {BackendT,T}
@@ -99,23 +100,27 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backend
     one_β = one(T)
     W = max_workspace
 
-    # Pre-scale C once, then every term accumulates onto its (disjoint-per-region) tiles.
-    _scale_output!(C, β)
+    # Rank 0 ⇒ the whole product is 0, so every region's first writer would no-op and
+    # β would not be folded. Handle it once here.
+    if maxrank(A) == 0 || maxrank(B) == 0
+        _scale_output!(C, β)
+        return C
+    end
 
     interior = () -> begin                                       # C_int
-        _offdiag_offdiag_gemm!(C, A, B; alpha=α, budget=W)       #   A_int B_int
+        _offdiag_offdiag_gemm!(C, A, B; alpha=α, beta=β, budget=W)   # A_int B_int (folds β)
         tlr_gemm_rpanel_by_bpanel(C, A, B, α; beta=one_β, budget=W)  # u_A v_Bᵀ
     end
     right = () -> begin                                          # C_right
-        tlr_gemm_int_by_rpanel(C, A, B, α; beta=one_β, budget=W)     # A_int u_B
+        tlr_gemm_int_by_rpanel(C, A, B, α; beta=β, budget=W)         # A_int u_B (folds β)
         tlr_gemm_rpanel_by_corner(C, A, B, α; beta=one_β)           # u_A γ_B
     end
     bottom = () -> begin                                         # C_bottom
-        tlr_gemm_bpanel_by_int(C, A, B, α; beta=one_β, budget=W)     # v_Aᵀ B_int
+        tlr_gemm_bpanel_by_int(C, A, B, α; beta=β, budget=W)         # v_Aᵀ B_int (folds β)
         tlr_gemm_corner_by_bpanel(C, A, B, α; beta=one_β)          # γ_A v_Bᵀ
     end
     corner = () -> begin                                         # C_corner
-        tlr_gemm_corner_by_corner(C, A, B, α; beta=one_β)          # γ_A γ_B
+        tlr_gemm_corner_by_corner(C, A, B, α; beta=β)               # γ_A γ_B (folds β)
         tlr_gemm_bpanel_by_rpanel(C, A, B, α; beta=one_β)          # v_Aᵀ u_B
     end
 
@@ -123,8 +128,7 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backend
     if backend isa KernelAbstractions.CPU
         interior(); right(); bottom(); corner()
     else
-        # Regions write disjoint quadrants; pre-scale must be visible first.
-        sync_streams_with_default(backend)
+        # Regions write disjoint quadrants → independent streams, one host sync at end.
         streams = create_streams(backend, 4)
         with_stream(interior, backend, streams[1])
         with_stream(right, backend, streams[2])

@@ -160,7 +160,7 @@ function tlr_gemm_corner_by_corner(C, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Bac
     _, ntB = tilegrid_size(B)                     # B boundary tile-col
     Cc = _output_tile_view(C, A, B, mt, ntB)
     rA = maxrank(A); rB = maxrank(B)
-    (rA == 0 || rB == 0) && return C             # γ contributes 0; C already β-scaled
+    (rA == 0 || rB == 0) && (_scale_output!(Cc, beta); return C)  # γ contributes 0; still fold β
     sn = size(B.corner_V, 1)
 
     Swork = allocate(A.backend, T, rA, rB, 1)    # S = Vc^A' Wc^B

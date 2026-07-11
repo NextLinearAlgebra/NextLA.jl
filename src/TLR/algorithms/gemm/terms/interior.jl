@@ -159,27 +159,47 @@ function _diag_diag_gemm!(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagM
 end
 
 """
-    _offdiag_offdiag_gemm!(C, A, B; alpha, budget) -> C
+    _offdiag_offdiag_gemm!(C, A, B; alpha, beta=1, budget) -> C
 
-Accumulate `alpha · O_A O_B` into the dense `C`.  Selects the reduction placement
-from the operand layouts, then for each budgeted run lowers Stage 1/2/3 straight
+`C_int := β·C_int + α·O_A O_B` over the interior tile grid. Selects the reduction
+placement from the operand layouts, then for each budgeted run lowers Stage 1/2/3
 to `gemm_batched!` via `execute_stage!`.
+
+`O_A O_B` touches *every* interior tile, so it is the natural place to fold β. How β
+is folded depends on the layout (see `schedule.jl`): the **row family** writes each
+tile exactly once, so Stage 3 applies β directly; the **column family** loops the
+reduction across runs, so the interior region is pre-scaled once and Stage 3 then
+accumulates with β = 1.
 """
 function _offdiag_offdiag_gemm!(C, A::AbstractTLRMatrix{<:Any,T}, B::AbstractTLRMatrix{<:Any,T};
-    alpha::T, budget) where {T}
+    alpha::T, beta::T=one(T), budget) where {T}
     ops = logical_operands(A, B)
+    qm = ops.av.qm
+    qn = ops.bw.qn
+    b = blockdim(ops.au)
+    region = view(C, 1:(qm * b), 1:(qn * b))   # the interior block O_A O_B writes
+
     # tiles_per_row(ops.av) == 0 covers both `nt == 1` (SkipDiag: only the diagonal)
-    # and an empty grid; zero rank on either side leaves nothing to contract.
-    (tiles_per_row(ops.av) == 0 || rankdim(ops.av) == 0 || rankdim(ops.bw) == 0) && return C
+    # and an empty grid; zero rank on either side leaves nothing to contract. The
+    # product is empty but β must still be folded for the region.
+    if tiles_per_row(ops.av) == 0 || rankdim(ops.av) == 0 || rankdim(ops.bw) == 0
+        isone(beta) || _scale_output!(region, beta)
+        return C
+    end
 
     placement = k_axis_schedule(stride1_axis_left(A), stride1_axis_right(B))
-    ws = allocate_workspace(placement, ops, C, budget)
+    beta_stage = beta
+    if placement isa KAsSerialLoop
+        isone(beta) || _scale_output!(region, beta)   # column family: pre-scale, then accumulate
+        beta_stage = one(T)
+    end
 
+    ws = allocate_workspace(placement, ops, C, budget)
     @inbounds for run in runs(placement, ops, budget)
         prepare_run!(placement, run, ws)
         execute_stage!(stage1(placement, run, ops, ws))
         execute_stage!(stage2(placement, run, ops, ws))
-        execute_stage!(stage3(placement, run, ops, ws, C, alpha))
+        execute_stage!(stage3(placement, run, ops, ws, C, alpha, beta_stage))
     end
     return C
 end
@@ -187,27 +207,19 @@ end
 """
     tlr_gemm_int_by_int(C, A, B, alpha, beta; budget) -> C
 
-Compute `C_int := β·C_int + α·A_int B_int` over the interior tile grid, as three
-components issued in order on the current stream: diag×diag (component 1) and
-diag×offdiag (component 2) fold β into disjoint tile sets, then the hard term
-O_A O_B (component 3) accumulates (β = 1). Order-only dependencies — no host sync;
-the caller places this whole term on a region stream (see `gemm!`).
+Compute `C_int := β·C_int + α·A_int B_int` over the interior tile grid. `A_int B_int`
+splits as `D_A D_B + O_A D_B + D_A O_B + O_A O_B`; the hard term `O_A O_B` touches
+*every* interior tile, so it runs first and folds β (write-once row family, or
+region pre-scale in the column family — see `_offdiag_offdiag_gemm!`), and the three
+diagonal components then accumulate with β = 1. This inversion (β folded in `O_A O_B`
+rather than the diagonal terms) is what lets the `TLRMatrix` interior — which has
+*only* `O_A O_B` — share the same β-folding path. Order-only dependencies — no host
+sync; the caller places this whole term on a region stream (see `gemm!`).
 """
 function tlr_gemm_int_by_int(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T, beta::T; budget::Int) where {T,BackendT}
-    qmA, _ = _full_regular_grid(A)
-    bm = nominal_tile_size(A, 1)
-
-    # degenerate case: block-diagonal product
-    if maxrank(A) == 0 && maxrank(B) == 0
-        # scale the interior block explicitly, then add the diagonal (accumulate, β = 1).
-        _scale_output!(view(C, 1:(qmA * bm), 1:(qmA * bm)), beta)
-        _diag_diag_gemm!(C, A, B, alpha)
-        return C
-    end
-
-    _diag_diag_gemm!(C, A, B, alpha; beta=beta)                         # component 1 (folds β)
-    _diag_times_offdiag_interior!(C, A, B, alpha; beta=beta)            # component 2 (folds β)
-    _offdiag_offdiag_gemm!(C, A, B; alpha=alpha, budget=budget)         # component 3 (β = 1)
+    _offdiag_offdiag_gemm!(C, A, B; alpha=alpha, beta=beta, budget=budget)  # O_A O_B (folds β)
+    _diag_diag_gemm!(C, A, B, alpha; beta=one(T))                           # D_A D_B
+    _diag_times_offdiag_interior!(C, A, B, alpha; beta=one(T))              # O_A D_B + D_A O_B
     return C
 end
 
