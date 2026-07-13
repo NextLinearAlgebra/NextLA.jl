@@ -48,6 +48,14 @@ struct TLRDenseDiagMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},RankT<:I
 
 end
 
+@inline outer_factors(A::TLRDenseDiagMatrix, ::InteriorRegion) = A.int_U
+@inline inner_factors(A::TLRDenseDiagMatrix, ::InteriorRegion) = A.int_V
+@inline outer_factors(A::TLRDenseDiagMatrix, ::RightRegion) = A.right_U
+@inline inner_factors(A::TLRDenseDiagMatrix, ::RightRegion) = A.right_V
+@inline outer_factors(A::TLRDenseDiagMatrix, ::BottomRegion) = A.bottom_U
+@inline inner_factors(A::TLRDenseDiagMatrix, ::BottomRegion) = A.bottom_V
+@inline lowrank_regions(::TLRDenseDiagMatrix) = (_INTERIOR, _RIGHT, _BOTTOM)
+
 @inline ndiag_tiles(A::TLRDenseDiagMatrix) = min(tilegrid_size(A)...)
 @inline dense_diag(A::TLRDenseDiagMatrix) = A.D
 @inline dense_diag_corner(A::TLRDenseDiagMatrix) = A.D_corner
@@ -78,54 +86,42 @@ The returned views alias the underlying storage.
 """
 @inline function get_factors(A::TLRDenseDiagMatrix, i::Int, j::Int)
     i == j && throw(ArgumentError("tile ($i, $j) is diagonal and stored densely"))
-    cat, k = _offdiag_category_slot(A, i, j)
-    r = Int(A.ranks[_rank_index(A, cat, k)])
-    if cat == _TILE_INT
-        return view(A.int_U, :, 1:r, k), view(A.int_V, :, 1:r, k)
-    elseif cat == _TILE_RIGHT
-        return view(A.right_U, :, 1:r, k), view(A.right_V, :, 1:r, k)
-    else
-        return view(A.bottom_U, :, 1:r, k), view(A.bottom_V, :, 1:r, k)
-    end
+    region, k = region_slot(A, i, j)
+    r = Int(A.ranks[_rank_index(A, region, k)])
+    U = outer_factors(A, region)
+    V = inner_factors(A, region)
+    return view(U, :, 1:r, k), view(V, :, 1:r, k)
 end
 
 """
-    _offdiag_category_slot(A, i, j) -> (category, local_slot)
+    region_slot(A, i, j) -> (region, local_slot)
 
 Map global tile coordinates to dense-diagonal storage. Right boundary slots are
 indexed by row `i`, bottom boundary slots by column `j`, and regular interior
 slots use the requested tile order on the full-size interior grid.
 """
-@inline function _offdiag_category_slot(A::TLRDenseDiagMatrix, i::Int, j::Int)
+@inline function region_slot(A::TLRDenseDiagMatrix, i::Int, j::Int)
     mt, nt = tilegrid_size(A)
     checkbounds_tile(mt, nt, i, j)
     i == j && throw(ArgumentError("tile ($i, $j) is diagonal and stored densely"))
     if tail_tile_size(A, 2) != 0 && j == nt
-        return _TILE_RIGHT, i
+        return _RIGHT, i
     elseif tail_tile_size(A, 1) != 0 && i == mt
-        return _TILE_BOTTOM, j
+        return _BOTTOM, j
     else
-        q_m = fld(A.m, nominal_tile_size(A, 1))
-        q_n = fld(A.n, nominal_tile_size(A, 2))
-        return _TILE_INT, _offdiag_index(A.order, q_m, q_n, i, j)
+        q_m, q_n = regular_tilegrid_size(A)
+        return _INTERIOR, _offdiag_index(A.order, q_m, q_n, i, j)
     end
 end
 
 """
-    _category_coords(A, category, k) -> (tile_i, tile_j)
+    region_tile_coords(A, region, k) -> (tile_i, tile_j)
 
-Inverse of the dense-diagonal category mapping for category-local slot `k`.
+Inverse of the dense-diagonal region mapping for region-local slot `k`.
 """
-@inline function _category_coords(A::TLRDenseDiagMatrix, cat::UInt8, k::Int)
-    if cat == _TILE_INT
-        q_m = fld(A.m, nominal_tile_size(A, 1))
-        q_n = fld(A.n, nominal_tile_size(A, 2))
-        return _offdiag_coords(A.order, q_m, q_n, k)
-    elseif cat == _TILE_RIGHT
-        return k, tilegrid_size(A)[2]
-    else
-        return tilegrid_size(A)[1], k
-    end
+@inline function region_tile_coords(A::TLRDenseDiagMatrix, ::InteriorRegion, k::Int)
+    q_m, q_n = regular_tilegrid_size(A)
+    return _offdiag_coords(A.order, q_m, q_n, k)
 end
 
 """

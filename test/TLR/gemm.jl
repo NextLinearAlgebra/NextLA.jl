@@ -250,26 +250,61 @@ end
 # effective-order axis inference — the executors are unchanged. Verify all four
 # op-combinations against the dense `op(A)·op(B)`.
 function assert_transpose_matches_dense(m, k, n, tsA, tsB, oA, oB, transA, transB;
-                                        alpha=1.3, beta=-0.4, atol=1e-9, rtol=1e-9)
+                                        alpha=1.3, beta=-0.4, budget=128 * 1024 * 1024,
+                                        ArrayType=Array, synchronize=_ -> nothing,
+                                        atol=1e-9, rtol=1e-9)
     bm, bk = tsA
     bk2, bn = tsB
     @assert bk == bk2
     # tsA/tsB are the *op* tile sizes; the stored matrix/tiles flip on transpose.
     storedA, tileA = transA == 'T' ? ((k, m), (bk, bm)) : ((m, k), (bm, bk))
     storedB, tileB = transB == 'T' ? ((n, k), (bn, bk)) : ((k, n), (bk, bn))
-    A = NextLA.TLRMatrix(zeros(Float64, storedA...), tileA, 3; tile_order=oA)
-    B = NextLA.TLRMatrix(zeros(Float64, storedB...), tileB, 3; tile_order=oB)
-    fill_random_tlr!(A, Array; seed=1)
-    fill_random_tlr!(B, Array; seed=2)
+    A = NextLA.TLRMatrix(ArrayType(zeros(Float64, storedA...)), tileA, 3; tile_order=oA)
+    B = NextLA.TLRMatrix(ArrayType(zeros(Float64, storedB...)), tileB, 3; tile_order=oB)
+    fill_random_tlr!(A, ArrayType; seed=1)
+    fill_random_tlr!(B, ArrayType; seed=2)
     C0 = randn(MersenneTwister(7), Float64, m, n)
-    C = copy(C0)
-    NextLA.TLRmodule.gemm!(C, A, B; alpha=alpha, beta=beta, transA=transA, transB=transB)
+    C = ArrayType(C0)
+    NextLA.TLRmodule.gemm!(C, A, B; alpha=alpha, beta=beta, transA=transA,
+                           transB=transB, max_workspace=budget)
+    synchronize(C)
     opd(D, t) = t == 'T' ? permutedims(D) : D
     ref = alpha .* (opd(reconstruct_tlr(A), transA) * opd(reconstruct_tlr(B), transB)) .+ beta .* C0
-    @test isapprox(C, ref; atol=atol, rtol=rtol)
+    @test isapprox(Array(C), ref; atol=atol, rtol=rtol)
 end
 
-@testset "transpose flags on aligned FullGrid" begin
+@testset "whole-matrix logical N/T operands" begin
+    RM = NextLA.TileRowMajor(); CM = NextLA.TileColMajor()
+    A = NextLA.TLRMatrix(zeros(Float64, 11, 14), (4, 3), 2; tile_order=RM)
+    At = NextLA.TLRmodule.logical_operand(A, 'T')
+    @test size(At) == (14, 11)
+    @test NextLA.TLRmodule.nominal_tile_size(At) == (3, 4)
+    @test NextLA.TLRmodule.tail_tile_size(At) == (2, 3)
+    @test NextLA.TLRmodule.tilegrid_size(At) == reverse(NextLA.tilegrid_size(A))
+    @test NextLA.TLRmodule.tile_order(At) isa typeof(CM)
+    interior = NextLA.TLRmodule.InteriorRegion()
+    right = NextLA.TLRmodule.RightRegion()
+    bottom = NextLA.TLRmodule.BottomRegion()
+    corner = NextLA.TLRmodule.CornerRegion()
+    @test NextLA.TLRmodule.outer_factors(At, interior) === A.int_V
+    @test NextLA.TLRmodule.inner_factors(At, interior) === A.int_U
+    @test NextLA.TLRmodule.outer_factors(At, right) === A.bottom_V
+    @test NextLA.TLRmodule.inner_factors(At, right) === A.bottom_U
+    @test NextLA.TLRmodule.outer_factors(At, bottom) === A.right_V
+    @test NextLA.TLRmodule.inner_factors(At, bottom) === A.right_U
+    @test NextLA.TLRmodule.outer_factors(At, corner) === A.corner_V
+    @test NextLA.TLRmodule.inner_factors(At, corner) === A.corner_U
+
+    D = NextLA.TLRDenseDiagMatrix(zeros(Float64, 14, 14), 4, 2; tile_order=CM)
+    Dt = NextLA.TLRmodule.logical_operand(D, 't')
+    @test NextLA.TLRmodule.outer_factors(Dt, right) === D.bottom_V
+    @test NextLA.TLRmodule.outer_factors(Dt, bottom) === D.right_V
+    dref = NextLA.TLRmodule._diag_tile_ref(Dt, 1)
+    @test parent(NextLA.TLRmodule._dense_data(dref)) === D.D
+    @test NextLA.TLRmodule._dense_op(dref) == 'T'
+end
+
+@testset "transpose flags on complete FullGrid operands" begin
     RM = NextLA.TileRowMajor(); CM = NextLA.TileColMajor()
     @testset "op(A)·op(B), all four combos × layouts" begin
         for tA in ('N', 'T'), tB in ('N', 'T'), oA in (RM, CM), oB in (RM, CM)
@@ -278,12 +313,60 @@ end
         end
     end
 
-    @testset "guard: transpose requires boundary-free operands" begin
-        A = NextLA.TLRMatrix(zeros(Float64, 8, 14), (4, 4), 3)   # 14 % 4 ≠ 0 → column tail
-        B = NextLA.TLRMatrix(zeros(Float64, 8, 8), (4, 4), 3)
-        C = zeros(Float64, 14, 8)                                 # = size(op(A)=Aᵀ, 1) × size(B, 2)
-        @test_throws ArgumentError NextLA.TLRmodule.gemm!(C, A, B; transA='T')
+    @testset "independent boundary tails × layouts × budgets" begin
+        for tA in ('N', 'T'), tB in ('N', 'T'), oA in (RM, CM), oB in (RM, CM),
+            budget in (1, 128 * 1024 * 1024)
+            # Effective A is 14×11 with tiles 4×3; effective B is 11×13 with
+            # tiles 3×5. All three dimensions have independent boundary tails.
+            assert_transpose_matches_dense(14, 11, 13, (4, 3), (3, 5), oA, oB, tA, tB;
+                                             budget)
+        end
     end
+
+    @testset "flag and effective-geometry validation" begin
+        A = NextLA.TLRMatrix(zeros(Float64, 8, 8), 4, 2)
+        B = NextLA.TLRMatrix(zeros(Float64, 8, 8), 4, 2)
+        @test_throws ArgumentError NextLA.TLRmodule.gemm!(zeros(8, 8), A, B; transA='X')
+        Cn = zeros(8, 8); Ct = zeros(8, 8)
+        NextLA.TLRmodule.gemm!(Cn, A, B; transA='n', transB='n')
+        NextLA.TLRmodule.gemm!(Ct, A, B; transA='N', transB='N')
+        @test Cn == Ct
+        @test_throws DimensionMismatch NextLA.TLRmodule.gemm!(zeros(7, 8), A, B)
+
+        Bt = NextLA.TLRMatrix(zeros(Float64, 8, 8), (2, 4), 2)
+        @test_throws DimensionMismatch NextLA.TLRmodule.gemm!(zeros(8, 8), A, Bt)
+    end
+end
+
+function assert_dense_diag_transpose_matches(n, b, r, oA, oB, transA, transB;
+                                             budget, alpha=1.3, beta=-0.4,
+                                             ArrayType=Array, synchronize=_ -> nothing,
+                                             atol=1e-9, rtol=1e-9)
+    A = NextLA.TLRDenseDiagMatrix(ArrayType(zeros(Float64, n, n)), b, r; tile_order=oA)
+    B = NextLA.TLRDenseDiagMatrix(ArrayType(zeros(Float64, n, n)), b, r; tile_order=oB)
+    fill_random_tlr!(A, ArrayType; seed=11)
+    fill_random_tlr!(B, ArrayType; seed=22)
+    C0 = randn(MersenneTwister(33), Float64, n, n)
+    C = ArrayType(C0)
+    NextLA.TLRmodule.gemm!(C, A, B; alpha, beta, transA, transB, max_workspace=budget)
+    synchronize(C)
+    opd(X, t) = uppercase(t) == 'T' ? transpose(X) : X
+    ref = alpha .* (opd(reconstruct_tlr(A), transA) * opd(reconstruct_tlr(B), transB)) .+ beta .* C0
+    @test isapprox(Array(C), ref; atol, rtol)
+end
+
+@testset "dense-diagonal boundary transpose" begin
+    orders = (NextLA.TileRowMajor(), NextLA.TileColMajor())
+    for tA in ('N', 'T'), tB in ('N', 'T'), oA in orders, oB in orders,
+        budget in (1, 128 * 1024 * 1024)
+        assert_dense_diag_transpose_matches(14, 4, 3, oA, oB, tA, tB; budget)
+    end
+    # Dense diagonal remains meaningful when every low-rank tile has rank zero.
+    assert_dense_diag_transpose_matches(14, 4, 0, orders...,'T', 'T'; budget=1)
+
+    Arect = NextLA.TLRDenseDiagMatrix(zeros(Float64, 8, 12), 4, 2)
+    Brect = NextLA.TLRDenseDiagMatrix(zeros(Float64, 8, 8), 4, 2)
+    @test_throws ArgumentError NextLA.TLRmodule.gemm!(zeros(12, 8), Arect, Brect; transA='T')
 end
 
 @testset "TLR gemm! to dense on CUDA" begin
@@ -296,6 +379,14 @@ end
                                               budget=1, alpha=Float32(1.2), beta=Float32(0.25),
                                               atol=5f-3, rtol=5f-3)
             end
+            # Representative complete-operand transpose checks: independently
+            # tailed full-LR geometry and a dense-diagonal boundary corner.
+            assert_transpose_matches_dense(14, 11, 13, (4, 3), (3, 5), orders...,'T', 'N';
+                                             budget=1, ArrayType, synchronize,
+                                             atol=1e-8, rtol=1e-8)
+            assert_dense_diag_transpose_matches(14, 4, 3, orders...,'T', 'T';
+                                                budget=1, ArrayType, synchronize,
+                                                atol=1e-8, rtol=1e-8)
         end
     end
 end

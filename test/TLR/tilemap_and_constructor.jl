@@ -156,7 +156,7 @@ end
         A = NextLA.TLRDenseDiagMatrix(zeros(Float64, 8, 8), 4, 2)
         @test_throws BoundsError  NextLA.TLRmodule.tile_linear_index(A.order, NextLA.tilegrid_size(A)..., 3, 1)
         @test_throws BoundsError  NextLA.TLRmodule.tile_linear_index(A.order, NextLA.tilegrid_size(A)..., 1, 3)
-        @test_throws ArgumentError NextLA.TLRmodule._offdiag_category_slot(A, 1, 1)
+        @test_throws ArgumentError NextLA.TLRmodule.region_slot(A, 1, 1)
 
         A_small = NextLA.TLRDenseDiagMatrix(zeros(Float64, 2, 2), 4, 2)
         @test size(NextLA.dense_diag(A_small)) == (4, 4, 0)

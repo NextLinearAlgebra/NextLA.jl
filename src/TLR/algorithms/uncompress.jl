@@ -23,19 +23,19 @@ function _copy_diagonal_to_dense!(A::AbstractMatrix{T}, A_tlr::TLRDenseDiagMatri
     return A
 end
 
-function _uncompress_category!(
+function _uncompress_region!(
     A::AbstractMatrix{T},
     A_tlr::TLRDenseDiagMatrix{<:Any,T},
-    cat::UInt8,
-    U::AbstractArray{T,3},
-    V::AbstractArray{T,3},
+    region::TLRRegion,
 ) where {T}
+    U = outer_factors(A_tlr, region)
+    V = inner_factors(A_tlr, region)
     n = size(U, 3)
     n == 0 && return A
 
     U_tiles = _batch_views(U)
     V_tiles = _batch_views(V)
-    A_tiles = [_dense_tile_view(A, A_tlr, _category_coords(A_tlr, cat, k)...) for k in 1:n]
+    A_tiles = [_dense_tile_view(A, A_tlr, region_tile_coords(A_tlr, region, k)...) for k in 1:n]
     gemm_batched!('N', _adjoint_blas_char(T), one(T), U_tiles, V_tiles, zero(T), A_tiles)
     return A
 end
@@ -46,7 +46,7 @@ end
 Write the dense matrix represented by `A_tlr` into `A` in-place.
 
 Diagonal tiles are copied from the packed diagonal storage and off-diagonal
-tiles are reconstructed category-by-category with batched GEMMs.
+tiles are reconstructed region-by-region with batched GEMMs.
 """
 function uncompress!(A::AbstractMatrix{T}, A_tlr::TLRDenseDiagMatrix{<:Any,T}) where {T}
     size(A, 1) == A_tlr.m && size(A, 2) == A_tlr.n ||
@@ -56,9 +56,9 @@ function uncompress!(A::AbstractMatrix{T}, A_tlr::TLRDenseDiagMatrix{<:Any,T}) w
 
     _copy_diagonal_to_dense!(A, A_tlr)
 
-    _uncompress_category!(A, A_tlr, _TILE_INT, A_tlr.int_U, A_tlr.int_V)
-    _uncompress_category!(A, A_tlr, _TILE_RIGHT, A_tlr.right_U, A_tlr.right_V)
-    _uncompress_category!(A, A_tlr, _TILE_BOTTOM, A_tlr.bottom_U, A_tlr.bottom_V)
+    @inbounds foreach(lowrank_regions(A_tlr)) do region
+        _uncompress_region!(A, A_tlr, region)
+    end
 
     return A
 end

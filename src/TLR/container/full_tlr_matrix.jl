@@ -47,18 +47,23 @@ end
     return tile_linear_index(A.order, mt, nt, Int(i), Int(j))
 end
 
-@inline function _category_coords(A::TLRMatrix, cat::UInt8, k::Int)
+@inline function region_tile_coords(A::TLRMatrix, ::InteriorRegion, k::Int)
+    q_m, q_n = regular_tilegrid_size(A)
+    return inverse_tile_index(A.order, q_m, q_n, k)
+end
+
+@inline function region_slot(A::TLRMatrix, i::Int, j::Int)
     mt, nt = tilegrid_size(A)
-    q_m, q_n = _full_regular_grid(A)
-    if cat == _TILE_INT
-        return inverse_tile_index(A.order, q_m, q_n, k)
-    elseif cat == _TILE_RIGHT
-        return k, nt
-    elseif cat == _TILE_BOTTOM
-        return mt, k
-    else
-        return mt, nt
+    checkbounds_tile(mt, nt, i, j)
+    q_m, q_n = regular_tilegrid_size(A)
+    if i <= q_m && j <= q_n
+        return _INTERIOR, tile_linear_index(A.order, q_m, q_n, i, j)
+    elseif j == nt && tail_tile_size(A, 2) != 0 && i <= q_m
+        return _RIGHT, i
+    elseif i == mt && tail_tile_size(A, 1) != 0 && j <= q_n
+        return _BOTTOM, j
     end
+    return _CORNER, 1
 end
 
 """
@@ -68,23 +73,22 @@ Return the low-rank factors for tile `(i, j)`, trimmed to the tile's effective
 rank. Unlike dense-diagonal TLR, diagonal tiles are valid low-rank tiles.
 """
 @inline function get_factors(A::TLRMatrix, i::Int, j::Int)
-    mt, nt = tilegrid_size(A)
-    checkbounds_tile(mt, nt, i, j)
-
-    q_m, q_n = _full_regular_grid(A)
+    region, k = region_slot(A, i, j)
     r = Int(A.ranks[_tile_index(A, i, j)])
-
-    if i <= q_m && j <= q_n
-        k = tile_linear_index(A.order, q_m, q_n, i, j)
-        return view(A.int_U, :, 1:r, k), view(A.int_V, :, 1:r, k)
-    elseif j == nt && tail_tile_size(A, 2) != 0 && i <= q_m
-        return view(A.right_U, :, 1:r, i), view(A.right_V, :, 1:r, i)
-    elseif i == mt && tail_tile_size(A, 1) != 0 && j <= q_n
-        return view(A.bottom_U, :, 1:r, j), view(A.bottom_V, :, 1:r, j)
-    else
-        return view(A.corner_U, :, 1:r, 1), view(A.corner_V, :, 1:r, 1)
-    end
+    U = outer_factors(A, region)
+    V = inner_factors(A, region)
+    return view(U, :, 1:r, k), view(V, :, 1:r, k)
 end
+
+@inline outer_factors(A::TLRMatrix, ::InteriorRegion) = A.int_U
+@inline inner_factors(A::TLRMatrix, ::InteriorRegion) = A.int_V
+@inline outer_factors(A::TLRMatrix, ::RightRegion) = A.right_U
+@inline inner_factors(A::TLRMatrix, ::RightRegion) = A.right_V
+@inline outer_factors(A::TLRMatrix, ::BottomRegion) = A.bottom_U
+@inline inner_factors(A::TLRMatrix, ::BottomRegion) = A.bottom_V
+@inline outer_factors(A::TLRMatrix, ::CornerRegion) = A.corner_U
+@inline inner_factors(A::TLRMatrix, ::CornerRegion) = A.corner_V
+@inline lowrank_regions(::TLRMatrix) = (_INTERIOR, _RIGHT, _BOTTOM, _CORNER)
 
 """
     TLRMatrix(backend, T, m, n, tile_size, maxrank; rank_type=Int32, tile_order=TileColMajor)

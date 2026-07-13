@@ -32,8 +32,8 @@ struct Stride1Axis{Ax} end
 @inline stride1_axis_right(::TileColMajor) = Stride1Axis{:k}()
 @inline stride1_axis_right(::TileRowMajor) = Stride1Axis{:j}()
 
-@inline stride1_axis_left(A::AbstractTLRMatrix) = stride1_axis_left(tile_order(A))
-@inline stride1_axis_right(A::AbstractTLRMatrix) = stride1_axis_right(tile_order(A))
+@inline stride1_axis_left(A) = stride1_axis_left(tile_order(A))
+@inline stride1_axis_right(A) = stride1_axis_right(tile_order(A))
 
 """
     KAxisSchedule

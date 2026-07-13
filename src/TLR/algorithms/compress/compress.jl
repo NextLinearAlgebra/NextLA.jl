@@ -15,7 +15,7 @@ function _compress_category!(
 )
     n = size(cat.U, 3)
     n == 0 && return cat
-    tiles = [_dense_tile_view(A, A_tlr, _category_coords(A_tlr, cat.cat, k)...) for k in 1:n]
+    tiles = [_dense_tile_view(A, A_tlr, region_tile_coords(A_tlr, cat.region, k)...) for k in 1:n]
     src = DenseTiles(A, tiles, cat.p0s, cat.q0s, size(cat.Q_T, 1), size(cat.V_T, 1))
     return compress_tiles!(src, cat; eps_sq, rel)
 end

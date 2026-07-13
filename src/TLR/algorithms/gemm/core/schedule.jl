@@ -107,7 +107,7 @@ regardless). When both op(A) `TileRowMajor` and op(B) `TileColMajor` give write-
 the smaller intermediate breaks the tie (`bm·rB` vs `rA·bn`); otherwise `FoldRight`.
 """
 @inline function choose_fold(ops)
-    _kind(ops.av) isa FullGrid || return FoldRight()
+    ops.av isa InteriorOperand{FullGrid} || return FoldRight()
     ops.bz.order isa TileColMajor || return FoldRight()   # only op(B)-col gives FoldLeft write-once
     ops.au.order isa TileRowMajor || return FoldLeft()    # only FoldLeft is write-once
     geom = _interior_geom(ops)                            # both write-once → smaller intermediate

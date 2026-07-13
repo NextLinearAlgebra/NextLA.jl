@@ -1,7 +1,7 @@
 # scratch for one tile category
 # `U`/`V` alias the A_tlr output panels (maxrank-wide); the sketch
-struct CompressCategoryWorkspace{PanelT,ScratchT,ScratchHiT,TileVT,RankVT,F64V,ShiftV,I32V,RankIndexT}
-    cat::UInt8             # tile category
+struct CompressCategoryWorkspace{RegionT,PanelT,ScratchT,ScratchHiT,TileVT,RankVT,F64V,ShiftV,I32V,RankIndexT}
+    region::RegionT        # TLR region, or `nothing` for a standalone tile batch
     rank_indices::RankIndexT # category-local tile slot -> A_tlr.ranks / A_tlr.resid slot
     S::Int                 # sketch width    = min(maxrank + oversample, tm, tn)
     R_keep::Int            # max stored rank  = min(maxrank, S)
@@ -27,24 +27,15 @@ struct CompressWorkspace{CatsT,StreamV}
     streams::StreamV # one execution stream for each category on gpu
 end
 
-# (category, output U/V panels, tile dims) per low-rank category.
-@inline _category_specs(A_tlr::TLRDenseDiagMatrix, bm, bn, tail_m, tail_n) = (
-    (; cat=_TILE_INT, n=size(A_tlr.int_U, 3), U=A_tlr.int_U, V=A_tlr.int_V, tm=bm, tn=bn),
-    (; cat=_TILE_RIGHT, n=size(A_tlr.right_U, 3),
-        U=A_tlr.right_U, V=A_tlr.right_V, tm=bm, tn=tail_n),
-    (; cat=_TILE_BOTTOM, n=size(A_tlr.bottom_U, 3),
-        U=A_tlr.bottom_U, V=A_tlr.bottom_V, tm=tail_m, tn=bn),
-)
-
-@inline _category_specs(A_tlr::TLRMatrix, bm, bn, tail_m, tail_n) = (
-    (; cat=_TILE_INT, n=size(A_tlr.int_U, 3), U=A_tlr.int_U, V=A_tlr.int_V, tm=bm, tn=bn),
-    (; cat=_TILE_RIGHT, n=size(A_tlr.right_U, 3),
-        U=A_tlr.right_U, V=A_tlr.right_V, tm=bm, tn=tail_n),
-    (; cat=_TILE_BOTTOM, n=size(A_tlr.bottom_U, 3),
-        U=A_tlr.bottom_U, V=A_tlr.bottom_V, tm=tail_m, tn=bn),
-    (; cat=_TILE_CORNER, n=size(A_tlr.corner_U, 3),
-        U=A_tlr.corner_U, V=A_tlr.corner_V, tm=tail_m, tn=tail_n),
-)
+# Region, output factor panels, and tile dimensions for every low-rank region.
+@inline function _region_specs(A_tlr::AbstractTLRMatrix)
+    map(lowrank_regions(A_tlr)) do region
+        U = outer_factors(A_tlr, region)
+        V = inner_factors(A_tlr, region)
+        (; region, n=region_tile_count(A_tlr, region), U, V,
+            tm=size(U, 1), tn=size(V, 1))
+    end
+end
 
 # prepare category's scratch at sketch width S
 function _alloc_category_workspace(A_tlr::AbstractTLRMatrix{<:Any,T}, spec, r::Int, p::Int, ::Type{Thi}) where {T,Thi}
@@ -62,17 +53,17 @@ function _alloc_category_workspace(A_tlr::AbstractTLRMatrix{<:Any,T}, spec, r::I
     rank_indices = Vector{Int}(undef, n)
 
     @inbounds for k in 1:n
-        p0, q0 = tile_origin_coords(A_tlr, _category_coords(A_tlr, spec.cat, k)...)
+        p0, q0 = tile_origin_coords(A_tlr, region_tile_coords(A_tlr, spec.region, k)...)
         p0_host[k] = Int32(p0)
         q0_host[k] = Int32(q0)
-        rank_indices[k] = _rank_index(A_tlr, spec.cat, k)
+        rank_indices[k] = _rank_index(A_tlr, spec.region, k)
     end
 
     p0s = copyto!(allocate(backend, Int32, n), p0_host)
     q0s = copyto!(allocate(backend, Int32, n), q0_host)
 
     return CompressCategoryWorkspace(
-        spec.cat, rank_indices, S, min(r, S), spec.U, spec.V, Q_T, V_T,
+        spec.region, rank_indices, S, min(r, S), spec.U, spec.V, Q_T, V_T,
         _batch_views(Q_T, S), _batch_views(V_T, S), Y_hi, G_hi,
         zeros(backend, rank_type, n),
         zeros(backend, Float64, n),
@@ -100,11 +91,7 @@ function alloc_workspace(A_tlr::AbstractTLRMatrix{<:Any,T}; oversample::Int=0) w
     oversample >= 0 || throw(ArgumentError("oversample must be >= 0"))
     Thi = _compress_accum_type(T)
 
-    bm, bn = nominal_tile_size(A_tlr)
-    tail_m = max(tail_tile_size(A_tlr, 1), 1)
-    tail_n = max(tail_tile_size(A_tlr, 2), 1)
-
-    specs = _category_specs(A_tlr, bm, bn, tail_m, tail_n)
+    specs = _region_specs(A_tlr)
     cats = map(spec -> _alloc_category_workspace(A_tlr, spec, A_tlr.maxrank, oversample, Thi), specs)
 
     CompressWorkspace(cats, create_streams(A_tlr.backend, length(cats)))
@@ -166,7 +153,7 @@ function carve_tile_workspace(U::AbstractArray{T,3}, V, tm::Int, tn::Int, kout::
     G_hi, accum_off = _take(accum, accum_off, S, S, ntiles)
     empty_i32 = allocate(backend, Int32, 0)
     cat = CompressCategoryWorkspace(
-        UInt8(0), Int[], S, min(kout, S), U, V, Q_T, V_T,
+        nothing, Int[], S, min(kout, S), U, V, Q_T, V_T,
         _batch_views(Q_T, S), _batch_views(V_T, S), Y_hi, G_hi,
         zeros(backend, rank_type, ntiles),
         zeros(backend, Float64, ntiles),
@@ -195,4 +182,3 @@ function alloc_tile_workspace(U::AbstractArray{T,3}, V, tm::Int, tn::Int,
     cat, _, _ = carve_tile_workspace(U, V, tm, tn, kout, ntiles, work, accum; oversample, rank_type)
     return cat
 end
-

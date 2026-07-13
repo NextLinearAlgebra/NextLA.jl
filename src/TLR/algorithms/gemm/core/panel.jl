@@ -1,32 +1,86 @@
 """Tile-column of `SkipDiag` local panel position `pos` within row `r` (skips `r`)."""
 @inline local_to_col(r::Integer, pos::Integer) = pos < r ? pos : pos + 1
-# `SkipDiag` scratch column of output column `j` within block `[j0:j1]` for contraction
-# `k`: the diagonal column `j=k` is removed, so columns past `k` shift down by one.
-@inline _offdiag_pos(j0::Int, k::Int, j::Int) = (j - j0 + 1) - ((j0 <= k) & (k < j) ? 1 : 0)
-# `SkipDiag` panel-local index (in `rowpanel(k)`) of absolute column `j ≠ k`.
-@inline _panel_local(k::Int, j::Int) = j < k ? j : j - 1
 
-@inline _tiles_per_row(::SkipDiag, qn::Int) = qn - 1
-@inline _tiles_per_row(::FullGrid, qn::Int) = qn
-@inline _panel_col(::SkipDiag, r::Int, pos::Int) = local_to_col(r, pos)
-@inline _panel_col(::FullGrid, ::Int, pos::Int) = pos
-# scratch column, or 0 to signal "skip this (diagonal) column".
-@inline _col_scratch_pos(::SkipDiag, j0::Int, k::Int, j::Int) = j == k ? 0 : _offdiag_pos(j0, k, j)
-@inline _col_scratch_pos(::FullGrid, j0::Int, ::Int, j::Int) = j - j0 + 1
-@inline _first_offdiag_col(::SkipDiag, j0::Int, k::Int) = j0 == k ? j0 + 1 : j0
-@inline _first_offdiag_col(::FullGrid, j0::Int, ::Int) = j0
-@inline _last_offdiag_col(::SkipDiag, j1::Int, k::Int) = j1 == k ? j1 - 1 : j1
-@inline _last_offdiag_col(::FullGrid, j1::Int, ::Int) = j1
-@inline _panel_local_pos(::SkipDiag, k::Int, j::Int) = _panel_local(k, j)
-@inline _panel_local_pos(::FullGrid, ::Int, j::Int) = j
-@inline _tile_slot(::SkipDiag, order, qm::Int, qn::Int, i::Int, j::Int) = _offdiag_index(order, qm, qn, i, j)
-@inline _tile_slot(::FullGrid, order, qm::Int, qn::Int, i::Int, j::Int) = tile_linear_index(order, qm, qn, i, j)
+"""
+    LogicalTLROperand{Op}(parent)
 
-@inline _right_panel_tiles(A::AbstractTLRMatrix) =
-    tail_tile_size(A, 2) == 0 ? 0 : _full_regular_grid(A)[1]
+Zero-copy logical view of `op(parent)`, where `Op` is `:N` or `:T`.  The view
+canonicalises the complete TLR partition, not only the regular interior: a
+transpose swaps matrix geometry, tile order, right/bottom panels, and the two
+low-rank factors.  Consequently every exposed low-rank tile is still written
+as `outer * inner'`, independent of the requested operation.
+"""
+struct LogicalTLROperand{Op,A<:AbstractTLRMatrix}
+    parent::A
+end
 
-@inline _bottom_panel_tiles(A::AbstractTLRMatrix) =
-    tail_tile_size(A, 1) == 0 ? 0 : _full_regular_grid(A)[2]
+@inline function _normalize_tlr_op(op::Char)
+    c = uppercase(op)
+    c in ('N', 'T') || throw(ArgumentError("TLR GEMM operation must be 'N' or 'T', got '$op'"))
+    return c
+end
+
+@inline logical_operand(A::AbstractTLRMatrix, op::Char='N') =
+    _logical_operand(A, Val(_normalize_tlr_op(op)))
+@inline _logical_operand(A, ::Val{'N'}) = LogicalTLROperand{:N,typeof(A)}(A)
+@inline _logical_operand(A, ::Val{'T'}) = LogicalTLROperand{:T,typeof(A)}(A)
+
+@inline physical(A::LogicalTLROperand) = getfield(A, :parent)
+@inline _opchar(::LogicalTLROperand{:N}) = 'N'
+@inline _opchar(::LogicalTLROperand{:T}) = 'T'
+@inline _istrans(::LogicalTLROperand{:N}) = false
+@inline _istrans(::LogicalTLROperand{:T}) = true
+@inline _orient_axes(::LogicalTLROperand{:N}, axes) = axes
+@inline _orient_axes(::LogicalTLROperand{:T}, axes) = reverse(axes)
+
+@inline outer_factors(A::LogicalTLROperand{:N}, region::TLRRegion) =
+    outer_factors(physical(A), region)
+@inline inner_factors(A::LogicalTLROperand{:N}, region::TLRRegion) =
+    inner_factors(physical(A), region)
+@inline outer_factors(A::LogicalTLROperand{:T}, region::TLRRegion) =
+    inner_factors(physical(A), transpose_region(region))
+@inline inner_factors(A::LogicalTLROperand{:T}, region::TLRRegion) =
+    outer_factors(physical(A), transpose_region(region))
+
+Base.eltype(::Type{<:LogicalTLROperand{<:Any,A}}) where {A} = eltype(A)
+Base.eltype(A::LogicalTLROperand) = eltype(physical(A))
+Base.size(A::LogicalTLROperand) = _orient_axes(A, size(physical(A)))
+Base.size(A::LogicalTLROperand, d::Int) = size(A)[d]
+
+@inline nominal_tile_size(A::LogicalTLROperand) =
+    _orient_axes(A, nominal_tile_size(physical(A)))
+@inline nominal_tile_size(A::LogicalTLROperand, d::Integer) = nominal_tile_size(A)[Int(d)]
+@inline tail_tile_size(A::LogicalTLROperand) =
+    _orient_axes(A, tail_tile_size(physical(A)))
+@inline tail_tile_size(A::LogicalTLROperand, d::Integer) = tail_tile_size(A)[Int(d)]
+@inline tilegrid_size(A::LogicalTLROperand) =
+    _orient_axes(A, tilegrid_size(physical(A)))
+@inline regular_tilegrid_size(A::LogicalTLROperand) =
+    _orient_axes(A, regular_tilegrid_size(physical(A)))
+@inline tile_order(A::LogicalTLROperand{:N}) = tile_order(physical(A))
+@inline tile_order(A::LogicalTLROperand{:T}) = _transpose_order(tile_order(physical(A)))
+@inline maxrank(A::LogicalTLROperand) = maxrank(physical(A))
+@inline KernelAbstractions.get_backend(A::LogicalTLROperand) = get_backend(physical(A))
+
+"""Logical tile coordinates for a region-local physical storage slot."""
+@inline region_tile_coords(A::LogicalTLROperand{:N}, region::TLRRegion, k::Int) =
+    region_tile_coords(physical(A), region, k)
+@inline region_tile_coords(A::LogicalTLROperand{:T}, region::TLRRegion, k::Int) =
+    reverse(region_tile_coords(physical(A), transpose_region(region), k))
+
+"""A physical dense tile together with the operation needed to make it logical."""
+struct LogicalDenseTile{Op,A<:AbstractMatrix}
+    data::A
+end
+@inline _dense_data(A::LogicalDenseTile) = A.data
+@inline _dense_op(::LogicalDenseTile{:N}) = 'N'
+@inline _dense_op(::LogicalDenseTile{:T}) = 'T'
+
+@inline function _diag_tile_ref(A::LogicalTLROperand{Op,<:TLRDenseDiagMatrix}, k::Int) where {Op}
+    LogicalDenseTile{Op,typeof(_diag_tile_view(physical(A), k))}(_diag_tile_view(physical(A), k))
+end
+@inline ndiag_tiles(A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}) = ndiag_tiles(physical(A))
+@inline _nfull_diag_tiles(A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}) = _nfull_diag_tiles(physical(A))
 
 # ─── Interior operand ─────────────────────────────────────────────────────────
 
@@ -45,24 +99,33 @@ struct InteriorOperand{Kind<:GridKind,OrderT<:TileOrderStyle,A3<:AbstractArray}
     qn::Int
 end
 
-@inline _kind(::InteriorOperand{Kind}) where {Kind} = Kind()
-
 @inline blockdim(p::InteriorOperand) = size(p.data, 1)   # b
 @inline rankdim(p::InteriorOperand)  = size(p.data, 2)   # maxrank
 
 """Tiles per row of this operand's grid (excludes the diagonal for `SkipDiag`)."""
-@inline tiles_per_row(p::InteriorOperand) = _tiles_per_row(_kind(p), p.qn)
+@inline tiles_per_row(p::InteriorOperand{SkipDiag}) = p.qn - 1
+@inline tiles_per_row(p::InteriorOperand{FullGrid}) = p.qn
 """Tiles per column of this operand's grid (excludes the diagonal for `SkipDiag`)."""
-@inline tiles_per_col(p::InteriorOperand) = _tiles_per_row(_kind(p), p.qm)
+@inline tiles_per_col(p::InteriorOperand{SkipDiag}) = p.qm - 1
+@inline tiles_per_col(p::InteriorOperand{FullGrid}) = p.qm
 """Actual tile-column of local panel position `pos` within row `r`."""
-@inline panel_col(p::InteriorOperand, r::Integer, pos::Integer) = _panel_col(_kind(p), Int(r), Int(pos))
+@inline panel_col(::InteriorOperand{SkipDiag}, r::Integer, pos::Integer) = local_to_col(r, pos)
+@inline panel_col(::InteriorOperand{FullGrid}, ::Integer, pos::Integer) = Int(pos)
 """Scratch column of output column `j` in block `[j0:_]` for contraction `k`, or 0 to skip it."""
-@inline col_scratch_pos(p::InteriorOperand, j0::Integer, k::Integer, j::Integer) = _col_scratch_pos(_kind(p), Int(j0), Int(k), Int(j))
+@inline function col_scratch_pos(::InteriorOperand{SkipDiag}, j0::Integer, k::Integer, j::Integer)
+    j == k && return 0
+    return Int(j - j0 + 1 - ((j0 <= k) & (k < j) ? 1 : 0))
+end
+@inline col_scratch_pos(::InteriorOperand{FullGrid}, j0::Integer, ::Integer, j::Integer) =
+    Int(j - j0 + 1)
 """First / last included output column of block `[j0:j1]` for contraction `k`."""
-@inline first_offdiag_col(p::InteriorOperand, j0::Integer, k::Integer) = _first_offdiag_col(_kind(p), Int(j0), Int(k))
-@inline last_offdiag_col(p::InteriorOperand, j1::Integer, k::Integer) = _last_offdiag_col(_kind(p), Int(j1), Int(k))
+@inline first_offdiag_col(::InteriorOperand{SkipDiag}, j0::Integer, k::Integer) = Int(j0 == k ? j0 + 1 : j0)
+@inline first_offdiag_col(::InteriorOperand{FullGrid}, j0::Integer, ::Integer) = Int(j0)
+@inline last_offdiag_col(::InteriorOperand{SkipDiag}, j1::Integer, k::Integer) = Int(j1 == k ? j1 - 1 : j1)
+@inline last_offdiag_col(::InteriorOperand{FullGrid}, j1::Integer, ::Integer) = Int(j1)
 """Panel-local index (in `rowpanel(k)`) of absolute column `j`."""
-@inline panel_local(p::InteriorOperand, k::Integer, j::Integer) = _panel_local_pos(_kind(p), Int(k), Int(j))
+@inline panel_local(::InteriorOperand{SkipDiag}, k::Integer, j::Integer) = Int(j < k ? j : j - 1)
+@inline panel_local(::InteriorOperand{FullGrid}, ::Integer, j::Integer) = Int(j)
 
 """Contiguous `[b, maxrank, tiles_per_row]` view of tile-row `r`'s panel."""
 @inline function rowpanel(p::InteriorOperand, r::Integer)
@@ -71,18 +134,15 @@ end
 end
 
 """Zero-copy factor view for logical interior tile `(i,j)`."""
-@inline tilefactor(p::InteriorOperand, i::Integer, j::Integer) =
-    view(p.data, :, :, _tile_slot(_kind(p), p.order, p.qm, p.qn, Int(i), Int(j)))
+@inline tilefactor(p::InteriorOperand{SkipDiag}, i::Integer, j::Integer) =
+    view(p.data, :, :, _offdiag_index(p.order, p.qm, p.qn, Int(i), Int(j)))
+@inline tilefactor(p::InteriorOperand{FullGrid}, i::Integer, j::Integer) =
+    view(p.data, :, :, tile_linear_index(p.order, p.qm, p.qn, Int(i), Int(j)))
 
 """Wrap one interior factor array with its grid geometry and enumeration policy."""
 @inline function interior_operand(kind::GridKind, data::AbstractArray, order::TileOrderStyle, qm::Int, qn::Int)
     return InteriorOperand{typeof(kind),typeof(order),typeof(data)}(data, order, qm, qn)
 end
-
-# ─── Logical operands ───────────────────────────────────────────────────────────
-#
-# Thin typed wrappers so stage builders can name operands ("use V' · W") instead
-# of spelling raw `view(A.int_V, …)` / `view(B.int_U, …)`.
 
 """
     LogicalTLROperands(av, bw, bz, au)
@@ -109,62 +169,49 @@ struct ScratchT{A}
     data::A
 end
 
-@inline _istrans(c::Char) = c != 'N'
 @inline _transpose_order(::TileColMajor) = TileRowMajor()
 @inline _transpose_order(::TileRowMajor) = TileColMajor()
 
-"""Boundary-free operand: no row or column tail tiles (whole matrix is the uniform core)."""
-@inline _is_aligned(A::AbstractTLRMatrix) = tail_tile_size(A, 1) == 0 && tail_tile_size(A, 2) == 0
-
 """
-    logical_operands(A, [transA,] B, [transB]) -> LogicalTLROperands
+    logical_operands(A, B) -> LogicalTLROperands
 
-Wrap the interior factor arrays of `op(A)` and `op(B)` as zero-copy `InteriorOperand`s
-(`op(X) = Xᵀ` when the corresponding flag ≠ `'N'`, else `X`). Dense-diagonal operands
-use `SkipDiag`; fully low-rank use `FullGrid` (rectangular grids allowed).
+Wrap the canonical interior factor arrays of logical `op(A)` and `op(B)` as zero-copy
+`InteriorOperand`s. Dense-diagonal operands use `SkipDiag`; fully low-rank operands
+use `FullGrid` (rectangular grids allowed).
 
-A transpose is a pure relabeling of the *stored* factors — no data movement. Since
-`(U Vᵀ)ᵀ = V Uᵀ`, `op(A)`'s row factor is the stored `V` and its contraction factor is
-the stored `U`; the grid extents swap and the tile order flips. Fetching logical tile
-`(i,k)` of `op(A)` with these swaps lands on stored tile `(k,i)` (verified against
-`tile_linear_index`), and because the effective order drives the placement, the
-Stage-3 K-stack / fused Stage-1 reshapes group the physically-contiguous panels
-correctly — the executors need no transpose awareness.
+The whole-matrix `LogicalTLROperand` has already swapped factors, grid extents, and
+tile order for `T`. Because effective order drives placement, Stage-3 K-stacks and
+fused Stage-1 reshapes still group physically contiguous panels; executors need no
+transpose awareness.
 """
-logical_operands(A::AbstractTLRMatrix, B::AbstractTLRMatrix) = logical_operands(A, 'N', B, 'N')
+logical_operands(A::AbstractTLRMatrix, B::AbstractTLRMatrix) =
+    logical_operands(logical_operand(A), logical_operand(B))
 
-function logical_operands(A::TLRMatrix, transA::Char, B::TLRMatrix, transB::Char)
-    qAm, qAn = _full_regular_grid(A)
-    qBm, qBn = _full_regular_grid(B)
+function logical_operands(A::LogicalTLROperand{<:Any,<:TLRMatrix},
+                          B::LogicalTLROperand{<:Any,<:TLRMatrix})
+    qAm, qAn = regular_tilegrid_size(A)
+    qBm, qBn = regular_tilegrid_size(B)
     ordA = tile_order(A)
     ordB = tile_order(B)
-    # (au, av, order, qm, qn) for op(A) / op(B); transpose swaps factors + grid + order.
-    auD, avD, ordAe, aqm, aqn = _istrans(transA) ?
-        (A.int_V, A.int_U, _transpose_order(ordA), qAn, qAm) :
-        (A.int_U, A.int_V, ordA, qAm, qAn)
-    bwD, bzD, ordBe, bqm, bqn = _istrans(transB) ?
-        (B.int_V, B.int_U, _transpose_order(ordB), qBn, qBm) :
-        (B.int_U, B.int_V, ordB, qBm, qBn)
     return LogicalTLROperands(
-        interior_operand(FullGrid(), avD, ordAe, aqm, aqn),   # av = op(A) contraction factor
-        interior_operand(FullGrid(), bwD, ordBe, bqm, bqn),   # bw = op(B) contraction factor
-        interior_operand(FullGrid(), bzD, ordBe, bqm, bqn),   # bz = op(B) col factor
-        interior_operand(FullGrid(), auD, ordAe, aqm, aqn),   # au = op(A) row factor
+        interior_operand(FullGrid(), inner_factors(A, _INTERIOR), ordA, qAm, qAn), # av
+        interior_operand(FullGrid(), outer_factors(B, _INTERIOR), ordB, qBm, qBn), # bw
+        interior_operand(FullGrid(), inner_factors(B, _INTERIOR), ordB, qBm, qBn), # bz
+        interior_operand(FullGrid(), outer_factors(A, _INTERIOR), ordA, qAm, qAn), # au
     )
 end
 
-function logical_operands(A::TLRDenseDiagMatrix, transA::Char, B::TLRDenseDiagMatrix, transB::Char)
-    (transA == 'N' && transB == 'N') ||
-        throw(ArgumentError("transpose is not yet supported for dense-diagonal TLR (phase 1: fully low-rank only)"))
-    qAm, qAn = _full_regular_grid(A)
-    qBm, qBn = _full_regular_grid(B)
+function logical_operands(A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix},
+                          B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix})
+    qAm, qAn = regular_tilegrid_size(A)
+    qBm, qBn = regular_tilegrid_size(B)
     ordA = tile_order(A)
     ordB = tile_order(B)
     return LogicalTLROperands(
-        interior_operand(SkipDiag(), A.int_V, ordA, qAm, qAn),   # av = V (A)
-        interior_operand(SkipDiag(), B.int_U, ordB, qBm, qBn),   # bw = W (B)
-        interior_operand(SkipDiag(), B.int_V, ordB, qBm, qBn),   # bz = Z (B)
-        interior_operand(SkipDiag(), A.int_U, ordA, qAm, qAn),   # au = U (A)
+        interior_operand(SkipDiag(), inner_factors(A, _INTERIOR), ordA, qAm, qAn),
+        interior_operand(SkipDiag(), outer_factors(B, _INTERIOR), ordB, qBm, qBn),
+        interior_operand(SkipDiag(), inner_factors(B, _INTERIOR), ordB, qBm, qBn),
+        interior_operand(SkipDiag(), outer_factors(A, _INTERIOR), ordA, qAm, qAn),
     )
 end
 
@@ -181,7 +228,7 @@ and its columns from B's tile-col `j` (so boundary/rectangular tile sizes are ta
 from the correct operand). For square, equal-size A, B this coincides with
 `_dense_tile_view(C, A, i, j)`.
 """
-@inline function _output_tile_view(C::AbstractMatrix, A::AbstractTLRMatrix, B::AbstractTLRMatrix, i::Int, j::Int)
+@inline function _output_tile_view(C::AbstractMatrix, A, B, i::Int, j::Int)
     p0 = (i - 1) * nominal_tile_size(A, 1) + 1
     q0 = (j - 1) * nominal_tile_size(B, 2) + 1
     tm = tile_size(A, i, 1)[1]
@@ -193,8 +240,3 @@ end
 (width `bn` each)."""
 @inline dense_rowblock(C::AbstractMatrix, bm::Int, bn::Int, i::Int, j0::Int, j1::Int) =
     view(C, (i - 1) * bm + 1:i * bm, (j0 - 1) * bn + 1:j1 * bn)
-
-# Interior factor views for a fully low-rank tile (i, j) (stored in `tile_linear_index`
-# order); used by the `TLRMatrix` boundary terms, which read `int_U`/`int_V` directly.
-@inline _int_Uview(A, ord, qm, qn, i, j) = view(A.int_U, :, :, tile_linear_index(ord, qm, qn, i, j))
-@inline _int_Vview(A, ord, qm, qn, i, j) = view(A.int_V, :, :, tile_linear_index(ord, qm, qn, i, j))

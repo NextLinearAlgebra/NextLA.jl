@@ -21,12 +21,12 @@
 # O_A D_B, fused Stage 1 (A stride-1 axis `:i`): column `j`'s off-diagonal tiles
 # are contiguous in `int_U/int_V` and share the right operand `B_jj`, so their `V`s
 # fuse into one wide GEMM per column.
-function _offdiag_diag_interior_fused_gemm!(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T, slots, U, V, scratch; beta::T=one(T)) where {T,BackendT}
+function _offdiag_diag_interior_fused_gemm!(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha::T, slots, U, V, scratch; beta::T=one(T)) where {T}
     n_cat = length(slots)
     rA = maxrank(A)
     (n_cat == 0 || rA == 0) && return C
 
-    _, qkA = _full_regular_grid(A)
+    _, qkA = regular_tilegrid_size(A)
     nk_off_per_col = qkA - 1
     bn = nominal_tile_size(B, 2)
     len = rA * n_cat * bn
@@ -34,36 +34,36 @@ function _offdiag_diag_interior_fused_gemm!(C, A::TLRDenseDiagMatrix{BackendT,T}
     Twork_fused = reshape(view(scratch, 1:len), rA * n_cat, bn)
 
     Vg = [reshape(view(V, :, :, (((j - 1) * nk_off_per_col + 1):(j * nk_off_per_col))), bn, nk_off_per_col * rA) for j in 1:qkA]
-    Bg = [_diag_tile_view(B, j) for j in 1:qkA]
+    Bg = [_dense_data(_diag_tile_ref(B, j)) for j in 1:qkA]
     Tg = [view(Twork_fused, ((j - 1) * nk_off_per_col * rA + 1):(j * nk_off_per_col * rA), :) for j in 1:qkA]
-    gemm_batched!('T', 'N', one(T), Vg, Bg, zero(T), Tg)
+    gemm_batched!('T', _opchar(B), one(T), Vg, Bg, zero(T), Tg)
 
-    coords = [_category_coords(A, _TILE_INT, k) for k in slots]
+    coords = [region_tile_coords(A, _INTERIOR, k) for k in slots]
     Uvec = [view(U, :, :, k) for k in 1:n_cat]
     Tvec = [view(Twork, :, k, :) for k in 1:n_cat]
-    Cvec = [_dense_tile_view(C, A, coords[k]...) for k in 1:n_cat]
+    Cvec = [_output_tile_view(C, A, B, coords[k]...) for k in 1:n_cat]
     gemm_batched!('N', 'N', alpha, Uvec, Tvec, beta, Cvec)
     return C
 end
 
 # O_A D_B, tilewise Stage 1 (A stride-1 axis `:k`): one r×r batched GEMM per tile.
-function _offdiag_diag_tilebatch_gemm!(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T, slots, U, V, scratch; beta::T=one(T)) where {T,BackendT}
+function _offdiag_diag_tilebatch_gemm!(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha::T, slots, U, V, scratch; beta::T=one(T)) where {T}
     n_cat = length(slots)
     rA = maxrank(A)
     (n_cat == 0 || rA == 0) && return C
 
-    coords = [_category_coords(A, _TILE_INT, k) for k in slots]
+    coords = [region_tile_coords(A, _INTERIOR, k) for k in slots]
     bn = nominal_tile_size(B, 2)
     len = rA * bn * n_cat
     Twork = reshape(view(scratch, 1:len), rA, bn, n_cat)
 
     Vvec = [view(V, :, :, k) for k in 1:n_cat]
-    BDvec = [_diag_tile_view(B, coords[k][2]) for k in 1:n_cat]
+    BDvec = [_dense_data(_diag_tile_ref(B, coords[k][2])) for k in 1:n_cat]
     Tvec = [view(Twork, :, :, k) for k in 1:n_cat]
-    gemm_batched!('T', 'N', one(T), Vvec, BDvec, zero(T), Tvec)
+    gemm_batched!('T', _opchar(B), one(T), Vvec, BDvec, zero(T), Tvec)
 
     Uvec = [view(U, :, :, k) for k in 1:n_cat]
-    Cvec = [_dense_tile_view(C, A, coords[k]...) for k in 1:n_cat]
+    Cvec = [_output_tile_view(C, A, B, coords[k]...) for k in 1:n_cat]
     gemm_batched!('N', 'N', alpha, Uvec, Tvec, beta, Cvec)
     return C
 end
@@ -71,49 +71,49 @@ end
 # D_A O_B, fused Stage 1 (B stride-1 axis `:j`): row `i`'s off-diagonal tiles
 # are contiguous in `int_U/int_V` and share the left operand `A_ii`, so their `W`s
 # fuse into one wide GEMM per row.
-function _diag_offdiag_interior_fused_gemm!(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T, slots, U, V, scratch; beta::T=one(T)) where {T,BackendT}
+function _diag_offdiag_interior_fused_gemm!(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha::T, slots, U, V, scratch; beta::T=one(T)) where {T}
     n_cat = length(slots)
     rB = maxrank(B)
     (n_cat == 0 || rB == 0) && return C
 
-    qkB, _ = _full_regular_grid(B)
+    qkB, _ = regular_tilegrid_size(B)
     nk_off_per_row = qkB - 1
     bm = nominal_tile_size(A, 1)
     len = bm * rB * n_cat
     Swork = reshape(view(scratch, 1:len), bm, rB, n_cat)
     Swork_fused = reshape(view(scratch, 1:len), bm, rB * n_cat)
 
-    ADg = [_diag_tile_view(A, i) for i in 1:qkB]
+    ADg = [_dense_data(_diag_tile_ref(A, i)) for i in 1:qkB]
     Wg = [reshape(view(U, :, :, (((i - 1) * nk_off_per_row + 1):(i * nk_off_per_row))), bm, nk_off_per_row * rB) for i in 1:qkB]
     Sg = [view(Swork_fused, :, ((i - 1) * nk_off_per_row * rB + 1):(i * nk_off_per_row * rB)) for i in 1:qkB]
-    gemm_batched!('N', 'N', one(T), ADg, Wg, zero(T), Sg)
+    gemm_batched!(_opchar(A), 'N', one(T), ADg, Wg, zero(T), Sg)
 
-    coords = [_category_coords(B, _TILE_INT, k) for k in slots]
+    coords = [region_tile_coords(B, _INTERIOR, k) for k in slots]
     Zvec = [view(V, :, :, k) for k in 1:n_cat]
     Svec = [view(Swork, :, :, k) for k in 1:n_cat]
-    Cvec = [_dense_tile_view(C, B, coords[k]...) for k in 1:n_cat]
+    Cvec = [_output_tile_view(C, A, B, coords[k]...) for k in 1:n_cat]
     gemm_batched!('N', 'T', alpha, Svec, Zvec, beta, Cvec)
     return C
 end
 
 # D_A O_B, tilewise Stage 1 (B stride-1 axis `:k`): one b×r batched GEMM per tile.
-function _diag_offdiag_tilebatch_gemm!(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T, slots, U, V, scratch; beta::T=one(T)) where {T,BackendT}
+function _diag_offdiag_tilebatch_gemm!(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha::T, slots, U, V, scratch; beta::T=one(T)) where {T}
     n_cat = length(slots)
     rB = maxrank(B)
     (n_cat == 0 || rB == 0) && return C
 
-    coords = [_category_coords(B, _TILE_INT, k) for k in slots]
+    coords = [region_tile_coords(B, _INTERIOR, k) for k in slots]
     bm = nominal_tile_size(A, 1)
     len = bm * rB * n_cat
     Swork = reshape(view(scratch, 1:len), bm, rB, n_cat)
 
-    ADvec = [_diag_tile_view(A, coords[k][1]) for k in 1:n_cat]
+    ADvec = [_dense_data(_diag_tile_ref(A, coords[k][1])) for k in 1:n_cat]
     Wvec = [view(U, :, :, k) for k in 1:n_cat]
     Svec = [view(Swork, :, :, k) for k in 1:n_cat]
-    gemm_batched!('N', 'N', one(T), ADvec, Wvec, zero(T), Svec)
+    gemm_batched!(_opchar(A), 'N', one(T), ADvec, Wvec, zero(T), Svec)
 
     Zvec = [view(V, :, :, k) for k in 1:n_cat]
-    Cvec = [_dense_tile_view(C, B, coords[k]...) for k in 1:n_cat]
+    Cvec = [_output_tile_view(C, A, B, coords[k]...) for k in 1:n_cat]
     gemm_batched!('N', 'T', alpha, Svec, Zvec, beta, Cvec)
     return C
 end
@@ -121,40 +121,44 @@ end
 # Component 2: O_A D_B then D_A O_B, interior category only, sharing ONE scratch.
 # `O_A D_B` is the first off-diagonal writer (folds β); `D_A O_B` then accumulates
 # with β = 1.  If A has zero off-diagonal rank, `D_A O_B` becomes the first writer.
-function _diag_times_offdiag_interior!(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T; beta::T=one(T)) where {T,BackendT}
-    n_int = size(A.int_U, 3)                     # == Q(Q-1)
+function _diag_times_offdiag_interior!(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha::T; beta::T=one(T)) where {T}
+    AU = outer_factors(A, _INTERIOR)
+    AV = inner_factors(A, _INTERIOR)
+    BU = outer_factors(B, _INTERIOR)
+    BV = inner_factors(B, _INTERIOR)
+    n_int = size(AU, 3)                          # == Q(Q-1)
     rmax = max(maxrank(A), maxrank(B))
     (n_int == 0 || rmax == 0) && return C
     bm = nominal_tile_size(A, 1)
-    scratch = allocate(A.backend, T, n_int * bm * rmax)
+    scratch = allocate(get_backend(A), T, n_int * bm * rmax)
 
     if maxrank(A) > 0
         if stride1_axis_left(A) isa Stride1Axis{:i}
-            _offdiag_diag_interior_fused_gemm!(C, A, B, alpha, axes(A.int_U, 3), A.int_U, A.int_V, scratch; beta=beta)
+            _offdiag_diag_interior_fused_gemm!(C, A, B, alpha, axes(AU, 3), AU, AV, scratch; beta=beta)
         else
-            _offdiag_diag_tilebatch_gemm!(C, A, B, alpha, axes(A.int_U, 3), A.int_U, A.int_V, scratch; beta=beta)
+            _offdiag_diag_tilebatch_gemm!(C, A, B, alpha, axes(AU, 3), AU, AV, scratch; beta=beta)
         end
     end
 
     beta_B = maxrank(A) > 0 ? one(T) : beta
     if maxrank(B) > 0
         if stride1_axis_right(B) isa Stride1Axis{:j}
-            _diag_offdiag_interior_fused_gemm!(C, A, B, alpha, axes(B.int_U, 3), B.int_U, B.int_V, scratch; beta=beta_B)
+            _diag_offdiag_interior_fused_gemm!(C, A, B, alpha, axes(BU, 3), BU, BV, scratch; beta=beta_B)
         else
-            _diag_offdiag_tilebatch_gemm!(C, A, B, alpha, axes(B.int_U, 3), B.int_U, B.int_V, scratch; beta=beta_B)
+            _diag_offdiag_tilebatch_gemm!(C, A, B, alpha, axes(BU, 3), BU, BV, scratch; beta=beta_B)
         end
     end
     return C
 end
 
-function _diag_diag_gemm!(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T; beta::T=one(T)) where {T,BackendT}
+function _diag_diag_gemm!(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha::T; beta::T=one(T)) where {T}
     n_full_diag = min(_nfull_diag_tiles(A), _nfull_diag_tiles(B))
     n_full_diag == 0 && return C
 
-    Avec = [view(A.D,:,:,i) for i in 1:n_full_diag]
-    Bvec = [view(B.D,:,:,i) for i in 1:n_full_diag]
-    Cvec = [_dense_tile_view(C, A, i, i) for i in 1:n_full_diag]
-    gemm_batched!('N', 'N', alpha, Avec, Bvec, beta, Cvec)
+    Avec = [_dense_data(_diag_tile_ref(A, i)) for i in 1:n_full_diag]
+    Bvec = [_dense_data(_diag_tile_ref(B, i)) for i in 1:n_full_diag]
+    Cvec = [_output_tile_view(C, A, B, i, i) for i in 1:n_full_diag]
+    gemm_batched!(_opchar(A), _opchar(B), alpha, Avec, Bvec, beta, Cvec)
     return C
 end
 
@@ -171,10 +175,9 @@ tile exactly once, so Stage 3 applies β directly; the **column family** loops t
 reduction across runs, so the interior region is pre-scaled once and Stage 3 then
 accumulates with β = 1.
 """
-function _offdiag_offdiag_gemm!(C, A::AbstractTLRMatrix{<:Any,T}, B::AbstractTLRMatrix{<:Any,T};
-    alpha::T, beta::T=one(T), budget, fold::Union{Nothing,FoldSide}=nothing,
-    transA::Char='N', transB::Char='N') where {T}
-    ops = logical_operands(A, transA, B, transB)
+function _offdiag_offdiag_gemm!(C, A::LogicalTLROperand, B::LogicalTLROperand;
+    alpha::T, beta::T=one(T), budget, fold::Union{Nothing,FoldSide}=nothing) where {T}
+    ops = logical_operands(A, B)
     qm = ops.av.qm
     qn = ops.bw.qn
     bm = blockdim(ops.au)                       # C row-tile height (from op(A)'s U)
@@ -210,6 +213,13 @@ function _offdiag_offdiag_gemm!(C, A::AbstractTLRMatrix{<:Any,T}, B::AbstractTLR
     return C
 end
 
+function _offdiag_offdiag_gemm!(C, A::AbstractTLRMatrix{<:Any,T}, B::AbstractTLRMatrix{<:Any,T};
+    alpha::T, beta::T=one(T), budget, fold::Union{Nothing,FoldSide}=nothing,
+    transA::Char='N', transB::Char='N') where {T}
+    return _offdiag_offdiag_gemm!(C, logical_operand(A, transA), logical_operand(B, transB);
+                                  alpha, beta, budget, fold)
+end
+
 """
     tlr_gemm_int_by_int(C, A, B, alpha, beta; budget) -> C
 
@@ -222,7 +232,7 @@ rather than the diagonal terms) is what lets the `TLRMatrix` interior — which 
 *only* `O_A O_B` — share the same β-folding path. Order-only dependencies — no host
 sync; the caller places this whole term on a region stream (see `gemm!`).
 """
-function tlr_gemm_int_by_int(C, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T}, alpha::T, beta::T; budget::Int) where {T,BackendT}
+function tlr_gemm_int_by_int(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha::T, beta::T; budget::Int) where {T}
     _offdiag_offdiag_gemm!(C, A, B; alpha=alpha, beta=beta, budget=budget)  # O_A O_B (folds β)
     _diag_diag_gemm!(C, A, B, alpha; beta=one(T))                           # D_A D_B
     _diag_times_offdiag_interior!(C, A, B, alpha; beta=one(T))              # O_A D_B + D_A O_B
@@ -238,30 +248,34 @@ in `A`) or the pairing is incomplete (non-square boundary).
 """
 # Pure low-rank panels (A's right column × B's bottom row): identical for both
 # container types, so it dispatches on `AbstractTLRMatrix`.
-function tlr_gemm_rpanel_by_bpanel(C, A::AbstractTLRMatrix{BackendT,T}, B::AbstractTLRMatrix{BackendT,T}, alpha::T;
-    beta::T=one(T), budget::Int) where {T,BackendT}
-    qmA = _right_panel_tiles(A)   # A right-panel tiles → output rows
-    qnB = _bottom_panel_tiles(B)  # B bottom-panel tiles → output cols
+function tlr_gemm_rpanel_by_bpanel(C, A::LogicalTLROperand, B::LogicalTLROperand, alpha::T;
+    beta::T=one(T), budget::Int) where {T}
+    qmA = region_tile_count(A, _RIGHT)   # A right-panel tiles → output rows
+    qnB = region_tile_count(B, _BOTTOM)  # B bottom-panel tiles → output cols
     (qmA == 0 || qnB == 0) && return C
 
     rA = maxrank(A)
     rB = maxrank(B)
     (rA == 0 || rB == 0) && return C
 
-    sk = size(A.right_V, 1) # shared contraction tail (== size(B.bottom_U, 1))
+    AU = outer_factors(A, _RIGHT)
+    AV = inner_factors(A, _RIGHT)
+    BU = outer_factors(B, _BOTTOM)
+    BV = inner_factors(B, _BOTTOM)
+    sk = size(AV, 1) # shared contraction tail (== size(BU, 1))
     bn = nominal_tile_size(B, 2)  # output tile width (T = S Zᵀ column extent)
 
-    Vstack = reshape(A.right_V, sk, rA * qmA) # [V_1 | … | V_qmA]   (sk × qmA·rA)
-    Wstack = reshape(B.bottom_U, sk, rB * qnB) # [W_1 | … | W_qnB]  (sk × qnB·rB)
+    Vstack = reshape(AV, sk, rA * qmA) # [V_1 | … | V_qmA]   (sk × qmA·rA)
+    Wstack = reshape(BU, sk, rB * qnB) # [W_1 | … | W_qnB]  (sk × qnB·rB)
 
     # column-block width fitting the budget
     bytes_per_j = max(qmA * rA * (rB + bn) * sizeof(T), 1)  # S col-block (qmA·rA × rB) + T (qmA·rA × bn).
     maxJ = clamp(div(budget, bytes_per_j), 1, qnB)
 
-    Swork = allocate(A.backend, T, qmA * rA, maxJ * rB)
-    Twork = allocate(A.backend, T, qmA * rA, bn, maxJ)
+    Swork = allocate(get_backend(A), T, qmA * rA, maxJ * rB)
+    Twork = allocate(get_backend(A), T, qmA * rA, bn, maxJ)
 
-    s3u = Vector{typeof(view(A.right_U, :, :, 1))}()
+    s3u = Vector{typeof(view(AU, :, :, 1))}()
     s3t = Vector{typeof(view(Twork, 1:rA, :, 1))}()
     s3c = Vector{typeof(_output_tile_view(C, A, B, 1, 1))}()
 
@@ -277,7 +291,7 @@ function tlr_gemm_rpanel_by_bpanel(C, A::AbstractTLRMatrix{BackendT,T}, B::Abstr
 
         # Stage 2
         S2 = reshape(Ssub, qmA * rA, rB, nj)
-        Z2 = view(B.bottom_V, :, :, jrange)
+        Z2 = view(BV, :, :, jrange)
         T2 = view(Twork, :, :, (1:nj))
         gemm_batched!('N', 'T', one(T), S2, Z2, zero(T), T2)
 
@@ -287,7 +301,7 @@ function tlr_gemm_rpanel_by_bpanel(C, A::AbstractTLRMatrix{BackendT,T}, B::Abstr
         empty!(s3c)
         @inbounds for (jl, j) in enumerate(jrange)
             for i in 1:qmA
-                push!(s3u, view(A.right_U, :, :, i))
+                push!(s3u, view(AU, :, :, i))
                 push!(s3t, view(Twork, ((i - 1) * rA + 1):(i * rA), :, jl))
                 push!(s3c, _output_tile_view(C, A, B, i, j))
             end
