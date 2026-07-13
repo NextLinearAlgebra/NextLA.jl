@@ -96,6 +96,31 @@ end
 @inline _full_run_tiles(::KAsSerialLoop, geom) = geom.q_c * geom.perB_row
 
 """
+    choose_fold(A, B, ops) -> FoldSide
+
+Pick the Stage-2/3 association from storage layout so the reduction becomes a
+write-once fused Stage 3 without transposing either operand (see `FoldSide`).
+`FoldLeft` stacks B's `Z` and is write-once iff B is `TileColMajor`; it is only used on
+a `FullGrid` interior (`SkipDiag`'s excluded diagonal breaks the contiguous Z-stack, and
+it is square regardless). When both A `TileRowMajor` and B `TileColMajor` give
+write-once, the smaller intermediate breaks the tie (`bm·rB` vs `rA·bn`); otherwise
+`FoldRight`.
+"""
+@inline function choose_fold(A::AbstractTLRMatrix, B::AbstractTLRMatrix, ops)
+    _kind(ops.av) isa FullGrid || return FoldRight()
+    tile_order(B) isa TileColMajor || return FoldRight()   # only B-col gives FoldLeft write-once
+    tile_order(A) isa TileRowMajor || return FoldLeft()    # only FoldLeft is write-once
+    geom = _interior_geom(ops)                             # both write-once → smaller intermediate
+    return geom.bm * geom.rB < geom.rA * geom.bn ? FoldLeft() : FoldRight()
+end
+
+# Reduction → hardware-axis placement. `FoldRight` keys on A's layout (stacks A's `U`).
+# `FoldLeft` is only ever chosen when B is `TileColMajor`, which makes B's `Z` k-stack
+# contiguous — always the write-once row family with tilewise (`FreeAsBatch`) Stage 1.
+@inline placement_for_fold(::FoldRight, A, B) = k_axis_schedule(stride1_axis_left(A), stride1_axis_right(B))
+@inline placement_for_fold(::FoldLeft, A, B) = KAsGemmK{:k}()
+
+"""
     gemm_workspace_bytes(A, B) -> Int
 
 Minimum `max_workspace` (bytes) at which `gemm!(C, A, B; max_workspace=…)` runs the
@@ -239,14 +264,43 @@ function _column_batches(ops, C, Sbuf, Tbuf, Vall, Uall, geom, maxK::Int, maxJ::
     )
 end
 
+# FoldLeft (row family, FullGrid): T' = U·S is [bm, rB, noff]; Stage 3 stacks B's Z
+# (`Zall = reshape(bz.data, bn, rB·noff, q_n)` — contiguous per output column iff B is
+# TileColMajor, which `choose_fold` guarantees). Stored in the `Ustacked` field, which
+# generically holds "the fold's stacked operand".
+function _row_batches_left(ops, C, Sbuf, Tbuf, Zall, geom, maxI::Int, maxJ::Int)
+    bm = geom.bm
+    noff = geom.perA_row
+    rA = geom.rA
+    rB = geom.rB
+    ntrip = noff * maxJ * maxI          # Stage 2 tilewise batch over (i, k, j)
+    Usample = view(ops.au.data, :, :, 1)               # U_ik  [bm, rA]
+    Ssample = view(Sbuf, :, :, 1, 1, 1)                # S[:,:,p,kk,il]  [rA, rB]
+    Tsample = view(Tbuf, :, :, 1, 1, 1)                # T'[:,:,kk,jl,il] [bm, rB]
+    Tstack = reshape(view(Tbuf, :, :, :, 1, 1), bm, rB * noff)
+    Zstack = view(Zall, :, :, 1)                       # [bn, rB·noff]
+    Cblock = view(C, 1:bm, 1:geom.bn)
+    return (
+        s1v = _batchvec(view(ops.av.data, :, :, 1), ntrip),
+        s1w = _batchvec(view(ops.bw.data, :, :, 1), ntrip),
+        s1s = _batchvec(Ssample, ntrip),
+        s2u = _batchvec(Usample, ntrip),
+        s2s = _batchvec(Ssample, ntrip),
+        s2t = _batchvec(Tsample, ntrip),
+        s3t = _batchvec(Tstack, maxJ * maxI),   # Stage 3 batches over (i, j)
+        s3z = _batchvec(Zstack, maxJ * maxI),
+        s3c = _batchvec(Cblock, maxJ * maxI),
+    )
+end
+
 """
-    allocate_workspace(placement, ops, C, budget) -> RowWorkspace | ColumnWorkspace
+    allocate_workspace(placement, ops, C, budget, fold) -> RowWorkspace | ColumnWorkspace
 
 Allocate S/T scratch and reusable batch buffers once per hard-term call, sized
-to the budgeted run width for the given reduction placement. Geometry comes from
-the operands, so this serves both `SkipDiag` and `FullGrid` interiors.
+to the budgeted run width for the given reduction placement and `fold`. Geometry comes
+from the operands, so this serves both `SkipDiag` and `FullGrid` interiors.
 """
-function allocate_workspace(placement::KAsGemmK, ops, C::AbstractMatrix, budget::Int)
+function allocate_workspace(placement::KAsGemmK, ops, C::AbstractMatrix, budget::Int, ::FoldRight)
     geom = _interior_geom(ops)
     T = eltype(ops.av.data)
     backend = get_backend(ops.av.data)
@@ -264,7 +318,24 @@ function allocate_workspace(placement::KAsGemmK, ops, C::AbstractMatrix, budget:
                         _row_batches(ops, C, Sbuf, Tbuf, Uall, geom, maxI, maxJ))
 end
 
-function allocate_workspace(placement::KAsSerialLoop, ops, C::AbstractMatrix, budget::Int)
+function allocate_workspace(placement::KAsGemmK, ops, C::AbstractMatrix, budget::Int, ::FoldLeft)
+    geom = _interior_geom(ops)
+    T = eltype(ops.av.data)
+    backend = get_backend(ops.av.data)
+    bm = geom.bm; bn = geom.bn
+    noff = geom.perA_row                 # = q_c (FullGrid: every contraction tile)
+    rA = geom.rA
+    rB = geom.rB
+    maxI, maxJ = _row_block(geom, T, budget)
+    # Z-stack: for fixed output column j, all k contiguous ⟺ B TileColMajor.
+    Zall = reshape(ops.bz.data, bn, rB * noff, geom.q_n)
+    Sbuf = allocate(backend, T, rA, rB, maxJ, noff, maxI)
+    Tbuf = allocate(backend, T, bm, rB, noff, maxJ, maxI)   # T' = U·S is bm×rB
+    return RowWorkspace(ScratchS(Sbuf), ScratchT(Tbuf), Zall,
+                        _row_batches_left(ops, C, Sbuf, Tbuf, Zall, geom, maxI, maxJ))
+end
+
+function allocate_workspace(placement::KAsSerialLoop, ops, C::AbstractMatrix, budget::Int, ::FoldSide)
     geom = _interior_geom(ops)
     T = eltype(ops.av.data)
     backend = get_backend(ops.av.data)

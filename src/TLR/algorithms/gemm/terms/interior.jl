@@ -172,7 +172,7 @@ reduction across runs, so the interior region is pre-scaled once and Stage 3 the
 accumulates with β = 1.
 """
 function _offdiag_offdiag_gemm!(C, A::AbstractTLRMatrix{<:Any,T}, B::AbstractTLRMatrix{<:Any,T};
-    alpha::T, beta::T=one(T), budget) where {T}
+    alpha::T, beta::T=one(T), budget, fold::Union{Nothing,FoldSide}=nothing) where {T}
     ops = logical_operands(A, B)
     qm = ops.av.qm
     qn = ops.bw.qn
@@ -188,19 +188,22 @@ function _offdiag_offdiag_gemm!(C, A::AbstractTLRMatrix{<:Any,T}, B::AbstractTLR
         return C
     end
 
-    placement = k_axis_schedule(stride1_axis_left(A), stride1_axis_right(B))
+    # Storage layout dictates the fold (`FoldLeft` iff B TileColMajor on a FullGrid);
+    # the placement follows the fold's stacked operand. `fold` may be forced for tests.
+    f = fold === nothing ? choose_fold(A, B, ops) : fold
+    placement = placement_for_fold(f, A, B)
     beta_stage = beta
     if placement isa KAsSerialLoop
         isone(beta) || _scale_output!(region, beta)   # column family: pre-scale, then accumulate
         beta_stage = one(T)
     end
 
-    ws = allocate_workspace(placement, ops, C, budget)
+    ws = allocate_workspace(placement, ops, C, budget, f)
     @inbounds for run in runs(placement, ops, budget)
         prepare_run!(placement, run, ws)
-        execute_stage!(stage1(placement, run, ops, ws))
-        execute_stage!(stage2(placement, run, ops, ws))
-        execute_stage!(stage3(placement, run, ops, ws, C, alpha, beta_stage))
+        execute_stage!(stage1(placement, run, ops, ws, f))
+        execute_stage!(stage2(placement, run, ops, ws, f))
+        execute_stage!(stage3(placement, run, ops, ws, C, alpha, beta_stage, f))
     end
     return C
 end

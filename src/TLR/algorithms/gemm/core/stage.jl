@@ -1,6 +1,6 @@
 # Stage descriptors
 
-struct StageDescriptor{StageT<:GemmStage,PlacementT<:KAxisSchedule,RunT,OpsT,WST,CT,AlphaT,BetaT,BlockingT}
+struct StageDescriptor{StageT<:GemmStage,PlacementT<:KAxisSchedule,RunT,OpsT,WST,CT,AlphaT,BetaT,FoldT,BlockingT}
     stage::StageT
     placement::PlacementT
     run::RunT
@@ -9,20 +9,22 @@ struct StageDescriptor{StageT<:GemmStage,PlacementT<:KAxisSchedule,RunT,OpsT,WST
     C::CT
     alpha::AlphaT
     beta::BetaT
+    fold::FoldT
     free_axis_schedule::BlockingT
 end
 
-@inline stage1(placement::KAxisSchedule, run, ops, ws) =
-    StageDescriptor(Stage1(), placement, run, ops, ws, nothing, nothing, nothing, free_axis_schedule(placement))
+@inline stage1(placement::KAxisSchedule, run, ops, ws, fold::FoldSide) =
+    StageDescriptor(Stage1(), placement, run, ops, ws, nothing, nothing, nothing, fold, free_axis_schedule(placement))
 
-@inline stage2(placement::KAxisSchedule, run, ops, ws) =
-    StageDescriptor(Stage2(), placement, run, ops, ws, nothing, nothing, nothing, nothing)
+@inline stage2(placement::KAxisSchedule, run, ops, ws, fold::FoldSide) =
+    StageDescriptor(Stage2(), placement, run, ops, ws, nothing, nothing, nothing, fold, nothing)
 
 # `beta` is applied by Stage 3 on the (single) write of each output tile. The row
 # family is write-once so it passes β directly; the column family loops the reduction,
-# so `_offdiag_offdiag_gemm!` pre-scales the region and passes β = 1 here.
-@inline stage3(placement::KAxisSchedule, run, ops, ws, C::AbstractMatrix, alpha, beta) =
-    StageDescriptor(Stage3(), placement, run, ops, ws, C, alpha, beta, nothing)
+# so `_offdiag_offdiag_gemm!` pre-scales the region and passes β = 1 here. `FoldLeft` is
+# only ever paired with the row family, so it too folds β in its single write.
+@inline stage3(placement::KAxisSchedule, run, ops, ws, C::AbstractMatrix, alpha, beta, fold::FoldSide) =
+    StageDescriptor(Stage3(), placement, run, ops, ws, C, alpha, beta, fold, nothing)
 
 @inline _ws_eltype(ws) = eltype(ws.S.data)
 
@@ -41,15 +43,15 @@ end
 
 
 # Dispatch on the descriptor's stored singletons (`stage`, reduction `placement`,
-# and Stage-1 `free_axis_schedule`) rather than on positional type-parameter slots.
-# All three are `StageDescriptor` type parameters, so this forward is resolved at
+# `fold`, and Stage-1 `free_axis_schedule`) rather than on positional type-parameter
+# slots. All four are `StageDescriptor` type parameters, so this forward is resolved at
 # compile time — no runtime cost — while keeping the method signatures readable and
-# robust to adding further descriptor fields. Stage 2/3 carry `free_axis == nothing`
-# and ignore that third argument.
+# robust to adding further descriptor fields. Stage 1 is fold-independent (ignores the
+# fold argument); Stage 2/3 carry `free_axis == nothing` and ignore that last argument.
 @inline execute_stage!(d::StageDescriptor) =
-    execute_stage!(d.stage, d.placement, d.free_axis_schedule, d)
+    execute_stage!(d.stage, d.placement, d.fold, d.free_axis_schedule, d)
 
-function execute_stage!(::Stage1, ::KAsGemmK, ::FreeAsBatch, d::StageDescriptor)
+function execute_stage!(::Stage1, ::KAsGemmK, ::Any, ::FreeAsBatch, d::StageDescriptor)
     T = _ws_eltype(d.workspace)
     run = d.run
     ops = d.ops
@@ -76,7 +78,7 @@ end
 # Fused Stage 1 for `(k,j)`: B stride-1 `:j` makes `rowpanel(k)` contiguous over
 # `j`, so the block's off-diagonal columns form a single wide right operand and
 # `j` folds into N — one GEMM per `(i,k)` instead of one per `(i,k,j)`.
-function execute_stage!(::Stage1, ::KAsGemmK, ::JAsGemmN, d::StageDescriptor)
+function execute_stage!(::Stage1, ::KAsGemmK, ::Any, ::JAsGemmN, d::StageDescriptor)
     T = _ws_eltype(d.workspace)
     run = d.run
     ops = d.ops
@@ -107,7 +109,7 @@ function execute_stage!(::Stage1, ::KAsGemmK, ::JAsGemmN, d::StageDescriptor)
     return gemm_batched!('T', 'N', one(T), vb.s1jv, vb.s1jw, zero(T), vb.s1js)
 end
 
-function execute_stage!(::Stage2, ::KAsGemmK, ::Any, d::StageDescriptor)
+function execute_stage!(::Stage2, ::KAsGemmK, ::FoldRight, ::Any, d::StageDescriptor)
     T = _ws_eltype(d.workspace)
     run = d.run
     ops = d.ops
@@ -132,7 +134,7 @@ function execute_stage!(::Stage2, ::KAsGemmK, ::Any, d::StageDescriptor)
     return gemm_batched!('N', 'T', one(T), vb.s2s, vb.s2z, zero(T), vb.s2t)
 end
 
-function execute_stage!(::Stage3, ::KAsGemmK, ::Any, d::StageDescriptor)
+function execute_stage!(::Stage3, ::KAsGemmK, ::FoldRight, ::Any, d::StageDescriptor)
     T = _ws_eltype(d.workspace)
     run = d.run
     ws = d.workspace
@@ -152,7 +154,67 @@ function execute_stage!(::Stage3, ::KAsGemmK, ::Any, d::StageDescriptor)
     return gemm_batched!('N', 'N', T(d.alpha), vb.s3u, vb.s3t, T(d.beta), vb.s3c)
 end
 
-function execute_stage!(::Stage1, ::KAsSerialLoop, ::IAsGemmM, d::StageDescriptor)
+# ── FoldLeft (row family, FullGrid) ──────────────────────────────────────────
+# The mirror of the FoldRight row family: fold A's `U` into Stage 2 (`T' = U·S`,
+# `bm×rB`) and stack B's `Z` in the write-once Stage 3. Chosen only when B is
+# TileColMajor (so the Z-stack is contiguous) on a FullGrid interior (no diagonal
+# skip). Stage 1 is shared with FoldRight (the `FreeAsBatch` executor writes `S`).
+
+# Stage 2: T'_ikj = U_ik · S_ikj  (bm×rB), tilewise over (i, k, j).
+function execute_stage!(::Stage2, ::KAsGemmK, ::FoldLeft, ::Any, d::StageDescriptor)
+    T = _ws_eltype(d.workspace)
+    run = d.run
+    ops = d.ops
+    ws = d.workspace
+    vb = ws.batches
+    _clear_batches!(vb.s2u, vb.s2s, vb.s2t)
+
+    @inbounds for (il, i) in enumerate(run.i0:run.i1)
+        for kk in 1:tiles_per_row(ops.av)
+            k = panel_col(ops.av, i, kk)
+            for j in run.j0:run.j1
+                p = col_scratch_pos(ops.bw, run.j0, k, j)
+                p == 0 && continue
+                jl = j - run.j0 + 1
+                push!(vb.s2u, tilefactor(ops.au, i, k))          # U_ik  [bm, rA]
+                push!(vb.s2s, view(ws.S.data, :, :, p, kk, il))  # S_ikj [rA, rB]
+                push!(vb.s2t, view(ws.T.data, :, :, kk, jl, il)) # T'    [bm, rB]
+            end
+        end
+    end
+    isempty(vb.s2u) && return nothing
+    return gemm_batched!('N', 'N', one(T), vb.s2u, vb.s2s, zero(T), vb.s2t)
+end
+
+# Stage 3 (write-once): C_ij = β·C_ij + α·Σ_k T'_ikj Z_kj'. Stack over k: the left
+# `T'stack_ij` (bm × noff·rB) is a contiguous reshape of our own T' buffer; the right
+# `Zstack_j` (bn × noff·rB) is a per-column view of `reshape(bz.data, bn, rB·noff, q_n)`
+# (contiguous ⟺ B TileColMajor). `'N','T'` gives `T'stack · Zstack'` = [bm, bn]; the
+# (rB fast, k slow) column order matches on both sides. Batched over (i, j); β folded.
+function execute_stage!(::Stage3, ::KAsGemmK, ::FoldLeft, ::Any, d::StageDescriptor)
+    T = _ws_eltype(d.workspace)
+    run = d.run
+    ops = d.ops
+    ws = d.workspace
+    bm = blockdim(ops.au)                    # C row-tile height
+    bn = blockdim(ops.bz)                    # C col-tile width
+    rB = size(ws.T.data, 2)
+    noff = size(ws.T.data, 3)
+    Zall = ws.Ustacked                       # [bn, rB·noff, q_n] — stacked B's Z
+    vb = ws.batches
+    _clear_batches!(vb.s3t, vb.s3z, vb.s3c)
+    @inbounds for (il, i) in enumerate(run.i0:run.i1)
+        for (jl, j) in enumerate(run.j0:run.j1)
+            Tstack = reshape(view(ws.T.data, :, :, :, jl, il), bm, rB * noff)
+            push!(vb.s3t, Tstack)
+            push!(vb.s3z, view(Zall, :, :, j))
+            push!(vb.s3c, dense_tile(d.C, bm, bn, i, j))
+        end
+    end
+    return gemm_batched!('N', 'T', T(d.alpha), vb.s3t, vb.s3z, T(d.beta), vb.s3c)
+end
+
+function execute_stage!(::Stage1, ::KAsSerialLoop, ::Any, ::IAsGemmM, d::StageDescriptor)
     T = _ws_eltype(d.workspace)
     run = d.run
     ops = d.ops
@@ -172,7 +234,7 @@ function execute_stage!(::Stage1, ::KAsSerialLoop, ::IAsGemmM, d::StageDescripto
     return gemm_batched!('T', 'N', one(T), vb.s1v, vb.s1w, zero(T), vb.s1s)
 end
 
-function execute_stage!(::Stage1, ::KAsSerialLoop, ::IJAsGemmMN, d::StageDescriptor)
+function execute_stage!(::Stage1, ::KAsSerialLoop, ::Any, ::IJAsGemmMN, d::StageDescriptor)
     T = _ws_eltype(d.workspace)
     run = d.run
     ops = d.ops
@@ -196,7 +258,7 @@ function execute_stage!(::Stage1, ::KAsSerialLoop, ::IJAsGemmMN, d::StageDescrip
     return gemm_batched!('T', 'N', one(T), vb.s1jv, vb.s1jw, zero(T), vb.s1js)
 end
 
-function execute_stage!(::Stage2, ::KAsSerialLoop, ::Any, d::StageDescriptor)
+function execute_stage!(::Stage2, ::KAsSerialLoop, ::FoldRight, ::Any, d::StageDescriptor)
     T = _ws_eltype(d.workspace)
     run = d.run
     ops = d.ops
@@ -217,7 +279,7 @@ function execute_stage!(::Stage2, ::KAsSerialLoop, ::Any, d::StageDescriptor)
     return gemm_batched!('N', 'T', one(T), vb.s2s, vb.s2z, zero(T), vb.s2t)
 end
 
-function execute_stage!(::Stage3, ::KAsSerialLoop, ::Any, d::StageDescriptor)
+function execute_stage!(::Stage3, ::KAsSerialLoop, ::FoldRight, ::Any, d::StageDescriptor)
     T = _ws_eltype(d.workspace)
     run = d.run
     ops = d.ops

@@ -92,3 +92,24 @@ fold to identities. See `panel.jl` for the policy bodies.
 abstract type GridKind end
 struct SkipDiag <: GridKind end   # dense-diag interior: diagonal excluded
 struct FullGrid <: GridKind end   # fully low-rank: every tile present
+
+"""
+    FoldSide
+
+Which outer low-rank factor is folded *last* (stacked in Stage 3) when lowering a
+contraction term `A_ik B_kj = U_ik (V_ik' W_kj) Z_kj'` to the three staged GEMMs.
+
+`FoldRight` (the default) forms `T = S Z'` in Stage 2 and stacks A's `U` in Stage 3
+(`C += Σ_k U_ik T_ikj`, one write-once GEMM when A's k-axis is stride-1, i.e. A is
+`TileRowMajor`). `FoldLeft` forms `T' = U S` in Stage 2 and stacks B's `Z` in Stage 3
+(`C += Σ_k T'_ikj Z_kj'`, write-once when B's k-axis is stride-1, i.e. B is
+`TileColMajor`).
+
+The choice is dictated by storage layout — it is made so the reduction becomes a
+write-once fused GEMM without transposing either operand; the resulting change in
+intermediate size (`T` is `r_A×b_n`, `T'` is `b_m×r_B`) is a documented consequence,
+used only to break ties when both or neither layout yields write-once.
+"""
+abstract type FoldSide end
+struct FoldRight <: FoldSide end   # stack A's U (write-once ⟺ A TileRowMajor)
+struct FoldLeft  <: FoldSide end   # stack B's Z (write-once ⟺ B TileColMajor)

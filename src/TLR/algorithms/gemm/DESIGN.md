@@ -371,3 +371,29 @@ applies β directly (threaded through `StageDescriptor.beta`); the **column fami
 loops the reduction across runs, so `_offdiag_offdiag_gemm!` pre-scales the interior
 region once and Stage 3 then accumulates with β = 1. The rank-0 case (identically
 zero product) is a single up-front `_scale_output!`.
+
+## 11. Fold selection (`FoldSide`) — layout-driven Stage-2/3 association
+
+A contraction term `A_ik B_kj = U_ik (V_ik' W_kj) Z_kj' = U_ik S_ikj Z_kj'` can be
+lowered two ways after Stage 1 (`S = V'W`, association-independent):
+
+- **`FoldRight`** (default): Stage 2 forms `T = S Z'` (`r_A×b_n`); Stage 3 stacks A's
+  `U` over `k` — one write-once GEMM `C += Σ_k U_ik T_ikj` iff A's k-axis is stride-1
+  (A `TileRowMajor`).
+- **`FoldLeft`**: Stage 2 forms `T' = U S` (`b_m×r_B`); Stage 3 stacks B's `Z` over `k`
+  — one write-once GEMM `C += Σ_k T'_ikj Z_kj'` (`'N','T'`, output `[b_m×b_n]`) iff B's
+  k-axis is stride-1 (B `TileColMajor`).
+
+The reduction "inverts": FoldRight's write-once needs `A TileRowMajor`, FoldLeft's needs
+`B TileColMajor`. **Storage layout dictates the fold** (`choose_fold`), so a plain `A·B`
+gets a write-once fused Stage 3 across more layout combos with *no operand transpose*
+(notably A ColMajor · B ColMajor, previously a serial loop). The change in intermediate
+size (`r_A·b_n` vs `b_m·r_B`) is a documented consequence, used only to break ties when
+both (`A Row, B Col`) or neither (`A Col, B Row`) layout yields write-once.
+
+Scope: FoldLeft is used only on a **`FullGrid`** interior (no diagonal skip ⇒ the Z-stack
+is a clean `reshape(bz.data, b_n, r_B·q_c, q_n)`) and, being chosen only when B is
+`TileColMajor`, is always the write-once row family — so it needs no serial-loop variant
+and folds β directly in its single write. `SkipDiag` (dense-diagonal) stays `FoldRight`.
+`FoldSide` is a `StageDescriptor` field dispatched alongside `stage`/`placement`, so the
+FoldLeft Stage 2/3 executors sit beside their FoldRight mirrors; Stage 1 is shared.

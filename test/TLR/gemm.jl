@@ -199,6 +199,52 @@ end
     end
 end
 
+# The interior off-diagonal product `O_A O_B` picks its Stage-2/3 association (fold)
+# from storage layout so the reduction is a write-once fused Stage 3 without any
+# transpose: FoldLeft (stack B's Z) iff B is TileColMajor on a FullGrid, else FoldRight.
+@testset "FoldLeft layout-driven fold selection" begin
+    RM = NextLA.TileRowMajor(); CM = NextLA.TileColMajor()
+    FL = NextLA.TLRmodule.FoldLeft; FR = NextLA.TLRmodule.FoldRight
+
+    @testset "choose_fold truth table (FullGrid)" begin
+        for (oa, ob, expect) in ((RM, CM, FL), (CM, CM, FL), (CM, RM, FR), (RM, RM, FR))
+            A = NextLA.TLRMatrix(zeros(Float64, 12, 9), (4, 3), 3; tile_order=oa)
+            B = NextLA.TLRMatrix(zeros(Float64, 9, 10), (3, 5), 3; tile_order=ob)
+            ops = NextLA.TLRmodule.logical_operands(A, B)
+            @test NextLA.TLRmodule.choose_fold(A, B, ops) isa expect
+        end
+        # dense-diagonal (SkipDiag) always FoldRight, even with a TileColMajor B
+        Ad = NextLA.TLRDenseDiagMatrix(zeros(Float64, 16, 16), 4, 3; tile_order=CM)
+        Bd = NextLA.TLRDenseDiagMatrix(zeros(Float64, 16, 16), 4, 3; tile_order=CM)
+        ops = NextLA.TLRmodule.logical_operands(Ad, Bd)
+        @test NextLA.TLRmodule.choose_fold(Ad, Bd, ops) isa FR
+    end
+
+    # Forced fold reproduces the dense interior product `O_A O_B` (= full A·B on an
+    # aligned FullGrid). FoldLeft is valid only for B TileColMajor; FoldRight always.
+    function assert_fold_matches(oa, ob, mA, k, nB, tsA, tsB, r, fold, budget)
+        A = NextLA.TLRMatrix(zeros(Float64, mA, k), tsA, r; tile_order=oa)
+        B = NextLA.TLRMatrix(zeros(Float64, k, nB), tsB, r; tile_order=ob)
+        fill_random_tlr!(A, Array; seed=1)
+        fill_random_tlr!(B, Array; seed=2)
+        C = zeros(Float64, mA, nB)
+        NextLA.TLRmodule._offdiag_offdiag_gemm!(C, A, B; alpha=1.0, beta=0.0, budget=budget, fold=fold)
+        ref = reconstruct_tlr(A) * reconstruct_tlr(B)
+        @test isapprox(C, ref; atol=1e-9, rtol=1e-9)
+    end
+
+    @testset "forced fold matches dense" begin
+        for budget in (1, 128 * 1024 * 1024)
+            for oa in (RM, CM)                        # B TileColMajor ⇒ FoldLeft valid
+                assert_fold_matches(oa, CM, 12, 12, 12, (4, 4), (4, 4), 3, FL(), budget)  # square
+                assert_fold_matches(oa, CM, 12, 9, 10, (4, 3), (3, 5), 3, FL(), budget)   # rect tiles
+                assert_fold_matches(oa, CM, 12, 9, 10, (4, 3), (3, 5), 2, FR(), budget)   # FoldRight sanity
+            end
+            assert_fold_matches(RM, CM, 15, 6, 8, (5, 6), (6, 2), 2, FL(), budget)        # tall output tile
+        end
+    end
+end
+
 @testset "TLR gemm! to dense on CUDA" begin
     for (backend_name, ArrayType, synchronize) in available_backends()
         backend_name == "CUDA" || continue
