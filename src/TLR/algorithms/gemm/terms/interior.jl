@@ -172,12 +172,13 @@ reduction across runs, so the interior region is pre-scaled once and Stage 3 the
 accumulates with β = 1.
 """
 function _offdiag_offdiag_gemm!(C, A::AbstractTLRMatrix{<:Any,T}, B::AbstractTLRMatrix{<:Any,T};
-    alpha::T, beta::T=one(T), budget, fold::Union{Nothing,FoldSide}=nothing) where {T}
-    ops = logical_operands(A, B)
+    alpha::T, beta::T=one(T), budget, fold::Union{Nothing,FoldSide}=nothing,
+    transA::Char='N', transB::Char='N') where {T}
+    ops = logical_operands(A, transA, B, transB)
     qm = ops.av.qm
     qn = ops.bw.qn
-    bm = blockdim(ops.au)                       # C row-tile height (from A's U)
-    bn = blockdim(ops.bz)                       # C col-tile width  (from B's Z)
+    bm = blockdim(ops.au)                       # C row-tile height (from op(A)'s U)
+    bn = blockdim(ops.bz)                       # C col-tile width  (from op(B)'s Z)
     region = view(C, 1:(qm * bm), 1:(qn * bn))  # the interior block O_A O_B writes
 
     # tiles_per_row(ops.av) == 0 covers both `nt == 1` (SkipDiag: only the diagonal)
@@ -188,10 +189,11 @@ function _offdiag_offdiag_gemm!(C, A::AbstractTLRMatrix{<:Any,T}, B::AbstractTLR
         return C
     end
 
-    # Storage layout dictates the fold (`FoldLeft` iff B TileColMajor on a FullGrid);
-    # the placement follows the fold's stacked operand. `fold` may be forced for tests.
-    f = fold === nothing ? choose_fold(A, B, ops) : fold
-    placement = placement_for_fold(f, A, B)
+    # Effective (transpose-folded) layout dictates the fold (`FoldLeft` iff op(B)
+    # TileColMajor on a FullGrid); the placement follows the fold's stacked operand.
+    # `fold` may be forced for tests.
+    f = fold === nothing ? choose_fold(ops) : fold
+    placement = placement_for_fold(f, ops)
     beta_stage = beta
     if placement isa KAsSerialLoop
         isone(beta) || _scale_output!(region, beta)   # column family: pre-scale, then accumulate

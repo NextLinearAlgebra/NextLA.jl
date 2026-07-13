@@ -109,13 +109,53 @@ struct ScratchT{A}
     data::A
 end
 
-"""
-    logical_operands(A, B) -> LogicalTLROperands
+@inline _istrans(c::Char) = c != 'N'
+@inline _transpose_order(::TileColMajor) = TileRowMajor()
+@inline _transpose_order(::TileRowMajor) = TileColMajor()
 
-Wrap the interior factor arrays of `A` and `B` as zero-copy `InteriorOperand`s.
-Dense-diagonal operands use the `SkipDiag` enumeration policy.
+"""Boundary-free operand: no row or column tail tiles (whole matrix is the uniform core)."""
+@inline _is_aligned(A::AbstractTLRMatrix) = tail_tile_size(A, 1) == 0 && tail_tile_size(A, 2) == 0
+
 """
-function logical_operands(A::TLRDenseDiagMatrix, B::TLRDenseDiagMatrix)
+    logical_operands(A, [transA,] B, [transB]) -> LogicalTLROperands
+
+Wrap the interior factor arrays of `op(A)` and `op(B)` as zero-copy `InteriorOperand`s
+(`op(X) = Xᵀ` when the corresponding flag ≠ `'N'`, else `X`). Dense-diagonal operands
+use `SkipDiag`; fully low-rank use `FullGrid` (rectangular grids allowed).
+
+A transpose is a pure relabeling of the *stored* factors — no data movement. Since
+`(U Vᵀ)ᵀ = V Uᵀ`, `op(A)`'s row factor is the stored `V` and its contraction factor is
+the stored `U`; the grid extents swap and the tile order flips. Fetching logical tile
+`(i,k)` of `op(A)` with these swaps lands on stored tile `(k,i)` (verified against
+`tile_linear_index`), and because the effective order drives the placement, the
+Stage-3 K-stack / fused Stage-1 reshapes group the physically-contiguous panels
+correctly — the executors need no transpose awareness.
+"""
+logical_operands(A::AbstractTLRMatrix, B::AbstractTLRMatrix) = logical_operands(A, 'N', B, 'N')
+
+function logical_operands(A::TLRMatrix, transA::Char, B::TLRMatrix, transB::Char)
+    qAm, qAn = _full_regular_grid(A)
+    qBm, qBn = _full_regular_grid(B)
+    ordA = tile_order(A)
+    ordB = tile_order(B)
+    # (au, av, order, qm, qn) for op(A) / op(B); transpose swaps factors + grid + order.
+    auD, avD, ordAe, aqm, aqn = _istrans(transA) ?
+        (A.int_V, A.int_U, _transpose_order(ordA), qAn, qAm) :
+        (A.int_U, A.int_V, ordA, qAm, qAn)
+    bwD, bzD, ordBe, bqm, bqn = _istrans(transB) ?
+        (B.int_V, B.int_U, _transpose_order(ordB), qBn, qBm) :
+        (B.int_U, B.int_V, ordB, qBm, qBn)
+    return LogicalTLROperands(
+        interior_operand(FullGrid(), avD, ordAe, aqm, aqn),   # av = op(A) contraction factor
+        interior_operand(FullGrid(), bwD, ordBe, bqm, bqn),   # bw = op(B) contraction factor
+        interior_operand(FullGrid(), bzD, ordBe, bqm, bqn),   # bz = op(B) col factor
+        interior_operand(FullGrid(), auD, ordAe, aqm, aqn),   # au = op(A) row factor
+    )
+end
+
+function logical_operands(A::TLRDenseDiagMatrix, transA::Char, B::TLRDenseDiagMatrix, transB::Char)
+    (transA == 'N' && transB == 'N') ||
+        throw(ArgumentError("transpose is not yet supported for dense-diagonal TLR (phase 1: fully low-rank only)"))
     qAm, qAn = _full_regular_grid(A)
     qBm, qBn = _full_regular_grid(B)
     ordA = tile_order(A)
@@ -125,25 +165,6 @@ function logical_operands(A::TLRDenseDiagMatrix, B::TLRDenseDiagMatrix)
         interior_operand(SkipDiag(), B.int_U, ordB, qBm, qBn),   # bw = W (B)
         interior_operand(SkipDiag(), B.int_V, ordB, qBm, qBn),   # bz = Z (B)
         interior_operand(SkipDiag(), A.int_U, ordA, qAm, qAn),   # au = U (A)
-    )
-end
-
-"""
-    logical_operands(A::TLRMatrix, B::TLRMatrix) -> LogicalTLROperands
-
-Fully low-rank operands: every interior tile is present, so the `FullGrid`
-enumeration policy is used (no diagonal skip). Grid extents may be rectangular.
-"""
-function logical_operands(A::TLRMatrix, B::TLRMatrix)
-    qAm, qAn = _full_regular_grid(A)
-    qBm, qBn = _full_regular_grid(B)
-    ordA = tile_order(A)
-    ordB = tile_order(B)
-    return LogicalTLROperands(
-        interior_operand(FullGrid(), A.int_V, ordA, qAm, qAn),   # av = V (A)
-        interior_operand(FullGrid(), B.int_U, ordB, qBm, qBn),   # bw = W (B)
-        interior_operand(FullGrid(), B.int_V, ordB, qBm, qBn),   # bz = Z (B)
-        interior_operand(FullGrid(), A.int_U, ordA, qAm, qAn),   # au = U (A)
     )
 end
 

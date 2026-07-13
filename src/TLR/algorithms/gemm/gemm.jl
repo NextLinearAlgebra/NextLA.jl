@@ -81,16 +81,30 @@ boundary tiling is supported. When either operand has rank 0 the product is
 identically zero, so `C` is just scaled by β.
 """
 function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T};
-    alpha=true, beta=false, max_workspace::Int=DEFAULT_GEMM_BUDGET) where {BackendT,T}
-    size(A, 2) == size(B, 1) ||
-        throw(DimensionMismatch("size(A,2) must equal size(B,1)"))
-    (size(C, 1), size(C, 2)) == (size(A, 1), size(B, 2)) ||
-        throw(DimensionMismatch("C must be size(A,1) × size(B,2)"))
-    # Only the contraction tiling must align: A's column tile size == B's row tile size.
-    # Tiles may otherwise be rectangular (bm ≠ bn), which only resizes the intermediate
-    # buffers. The row/column tails then match automatically since size(A,2) == size(B,1).
-    nominal_tile_size(A, 2) == nominal_tile_size(B, 1) ||
-        throw(DimensionMismatch("A's column tile size must equal B's row tile size (contraction tiling)"))
+    alpha=true, beta=false, max_workspace::Int=DEFAULT_GEMM_BUDGET,
+    transA::Char='N', transB::Char='N') where {BackendT,T}
+    tA = _istrans(transA)
+    tB = _istrans(transB)
+    # Effective (op-applied) dimensions and contraction tile sizes.
+    mA, kA = tA ? (size(A, 2), size(A, 1)) : (size(A, 1), size(A, 2))
+    kB, nB = tB ? (size(B, 2), size(B, 1)) : (size(B, 1), size(B, 2))
+    kA == kB ||
+        throw(DimensionMismatch("inner dimensions must match: size(op(A),2) == size(op(B),1)"))
+    (size(C, 1), size(C, 2)) == (mA, nB) ||
+        throw(DimensionMismatch("C must be size(op(A),1) × size(op(B),2)"))
+    # Only the contraction tiling must align: op(A)'s column tile size == op(B)'s row
+    # tile size. Tiles may otherwise be rectangular (bm ≠ bn), which only resizes the
+    # intermediate buffers. Row/column tails then match automatically since kA == kB.
+    tcA = tA ? nominal_tile_size(A, 1) : nominal_tile_size(A, 2)
+    trB = tB ? nominal_tile_size(B, 2) : nominal_tile_size(B, 1)
+    tcA == trB ||
+        throw(DimensionMismatch("op(A)'s column tile size must equal op(B)'s row tile size (contraction tiling)"))
+    # Phase 1: transpose is handled only in the interior term, so it requires
+    # boundary-free (aligned) operands (the panel/corner terms are not yet op-aware).
+    if tA || tB
+        (_is_aligned(A) && _is_aligned(B)) ||
+            throw(ArgumentError("transA/transB ≠ 'N' currently requires boundary-free (aligned) TLR matrices"))
+    end
 
     α = T(alpha)
     β = T(beta)
@@ -103,8 +117,8 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backend
     end
 
     interior = () -> begin                                       # C_int
-        _offdiag_offdiag_gemm!(C, A, B; alpha=α, beta=β, budget=W)   # A_int B_int (folds β)
-        tlr_gemm_rpanel_by_bpanel(C, A, B, α; beta=one_β, budget=W)  # u_A v_Bᵀ
+        _offdiag_offdiag_gemm!(C, A, B; alpha=α, beta=β, budget=W, transA=transA, transB=transB)  # op(A)ᵢ op(B)ᵢ (folds β)
+        tlr_gemm_rpanel_by_bpanel(C, A, B, α; beta=one_β, budget=W)  # u_A v_Bᵀ (no-op when aligned)
     end
     right = () -> begin                                          # C_right
         tlr_gemm_int_by_rpanel(C, A, B, α; beta=β, budget=W)         # A_int u_B (folds β)

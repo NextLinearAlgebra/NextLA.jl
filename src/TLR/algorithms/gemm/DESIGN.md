@@ -397,3 +397,26 @@ is a clean `reshape(bz.data, b_n, r_B·q_c, q_n)`) and, being chosen only when B
 and folds β directly in its single write. `SkipDiag` (dense-diagonal) stays `FoldRight`.
 `FoldSide` is a `StageDescriptor` field dispatched alongside `stage`/`placement`, so the
 FoldLeft Stage 2/3 executors sit beside their FoldRight mirrors; Stage 1 is shared.
+
+## 12. Transpose flags (`transA` / `transB`) — Phase 1
+
+`gemm!(C, A, B; transA, transB)` computes `C = α·op(A)·op(B) + β·C` with
+`op(X) = Xᵀ` when the flag ≠ `'N'`, following the BLAS convention. A transpose is a
+pure **relabeling of the stored factors** — no data movement: since `(U Vᵀ)ᵀ = V Uᵀ`,
+`op(A)`'s row factor is the stored `V` and its contraction factor the stored `U`, the
+grid extents swap, and the tile order flips. All of this lives in
+`logical_operands(A, transA, B, transB)`; the axis/fold/placement inference then reads
+the operands' *effective* order (`stride1_axis_*(order)`, `choose_fold(ops)`,
+`placement_for_fold(fold, ops)`).
+
+The executors, schedule, and Stage-3 K-stack / fused Stage-1 reshapes are **unchanged**.
+This works because the placement is chosen from the effective order, and `KAsGemmK` is
+selected exactly when the effective order is stride-1 in the stacked axis — which for a
+transposed operand means the *physical* storage is the opposite order, so the
+physically-contiguous panels the reshape groups are precisely the logical op-panels
+(verified against `tile_linear_index` and end-to-end for all four op-combos × layouts,
+square and rectangular tiles).
+
+**Phase 1 scope:** the aligned (boundary-free) `FullGrid` interior. A transpose flag
+with boundary tiles, or on a dense-diagonal operand, throws — the panel/corner and
+dense-diagonal terms are not yet op-aware (Phase 2).

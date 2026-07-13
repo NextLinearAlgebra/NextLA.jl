@@ -24,12 +24,16 @@ For the left operand `A`, `Ax` is `:i` or `:k`; for the right operand `B`,
 """
 struct Stride1Axis{Ax} end
 
-# Order is the 3rd parameter of `AbstractTLRMatrix`, so these cover both container types.
-@inline stride1_axis_left(::AbstractTLRMatrix{<:Any,<:Any,TileColMajor}) = Stride1Axis{:i}()
-@inline stride1_axis_left(::AbstractTLRMatrix{<:Any,<:Any,TileRowMajor}) = Stride1Axis{:k}()
+# The stride-1 axis follows the operand's *effective* tile order (a transpose flag
+# flips it — see `logical_operands`), so the primitives dispatch on the order style;
+# the matrix forms below just read `tile_order`.
+@inline stride1_axis_left(::TileColMajor) = Stride1Axis{:i}()
+@inline stride1_axis_left(::TileRowMajor) = Stride1Axis{:k}()
+@inline stride1_axis_right(::TileColMajor) = Stride1Axis{:k}()
+@inline stride1_axis_right(::TileRowMajor) = Stride1Axis{:j}()
 
-@inline stride1_axis_right(::AbstractTLRMatrix{<:Any,<:Any,TileColMajor}) = Stride1Axis{:k}()
-@inline stride1_axis_right(::AbstractTLRMatrix{<:Any,<:Any,TileRowMajor}) = Stride1Axis{:j}()
+@inline stride1_axis_left(A::AbstractTLRMatrix) = stride1_axis_left(tile_order(A))
+@inline stride1_axis_right(A::AbstractTLRMatrix) = stride1_axis_right(tile_order(A))
 
 """
     KAxisSchedule

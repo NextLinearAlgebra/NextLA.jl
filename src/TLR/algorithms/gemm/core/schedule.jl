@@ -96,29 +96,30 @@ end
 @inline _full_run_tiles(::KAsSerialLoop, geom) = geom.q_c * geom.perB_row
 
 """
-    choose_fold(A, B, ops) -> FoldSide
+    choose_fold(ops) -> FoldSide
 
-Pick the Stage-2/3 association from storage layout so the reduction becomes a
-write-once fused Stage 3 without transposing either operand (see `FoldSide`).
-`FoldLeft` stacks B's `Z` and is write-once iff B is `TileColMajor`; it is only used on
-a `FullGrid` interior (`SkipDiag`'s excluded diagonal breaks the contiguous Z-stack, and
-it is square regardless). When both A `TileRowMajor` and B `TileColMajor` give
-write-once, the smaller intermediate breaks the tie (`bm·rB` vs `rA·bn`); otherwise
-`FoldRight`.
+Pick the Stage-2/3 association from the operands' *effective* layout (which already
+folds in any transpose flag) so the reduction becomes a write-once fused Stage 3
+without transposing either operand (see `FoldSide`). `FoldLeft` stacks B's `Z` and is
+write-once iff op(B) is `TileColMajor`; it is only used on a `FullGrid` interior
+(`SkipDiag`'s excluded diagonal breaks the contiguous Z-stack, and it is square
+regardless). When both op(A) `TileRowMajor` and op(B) `TileColMajor` give write-once,
+the smaller intermediate breaks the tie (`bm·rB` vs `rA·bn`); otherwise `FoldRight`.
 """
-@inline function choose_fold(A::AbstractTLRMatrix, B::AbstractTLRMatrix, ops)
+@inline function choose_fold(ops)
     _kind(ops.av) isa FullGrid || return FoldRight()
-    tile_order(B) isa TileColMajor || return FoldRight()   # only B-col gives FoldLeft write-once
-    tile_order(A) isa TileRowMajor || return FoldLeft()    # only FoldLeft is write-once
-    geom = _interior_geom(ops)                             # both write-once → smaller intermediate
+    ops.bz.order isa TileColMajor || return FoldRight()   # only op(B)-col gives FoldLeft write-once
+    ops.au.order isa TileRowMajor || return FoldLeft()    # only FoldLeft is write-once
+    geom = _interior_geom(ops)                            # both write-once → smaller intermediate
     return geom.bm * geom.rB < geom.rA * geom.bn ? FoldLeft() : FoldRight()
 end
 
-# Reduction → hardware-axis placement. `FoldRight` keys on A's layout (stacks A's `U`).
-# `FoldLeft` is only ever chosen when B is `TileColMajor`, which makes B's `Z` k-stack
-# contiguous — always the write-once row family with tilewise (`FreeAsBatch`) Stage 1.
-@inline placement_for_fold(::FoldRight, A, B) = k_axis_schedule(stride1_axis_left(A), stride1_axis_right(B))
-@inline placement_for_fold(::FoldLeft, A, B) = KAsGemmK{:k}()
+# Reduction → hardware-axis placement, from the operands' effective tile orders.
+# `FoldRight` keys on op(A) (stacks op(A)'s `U`). `FoldLeft` is only ever chosen when
+# op(B) is `TileColMajor`, which makes op(B)'s `Z` k-stack contiguous — always the
+# write-once row family with tilewise (`FreeAsBatch`) Stage 1.
+@inline placement_for_fold(::FoldRight, ops) = k_axis_schedule(stride1_axis_left(ops.au.order), stride1_axis_right(ops.bz.order))
+@inline placement_for_fold(::FoldLeft, ops) = KAsGemmK{:k}()
 
 """
     gemm_workspace_bytes(A, B) -> Int

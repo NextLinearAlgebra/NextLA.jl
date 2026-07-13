@@ -211,13 +211,13 @@ end
             A = NextLA.TLRMatrix(zeros(Float64, 12, 9), (4, 3), 3; tile_order=oa)
             B = NextLA.TLRMatrix(zeros(Float64, 9, 10), (3, 5), 3; tile_order=ob)
             ops = NextLA.TLRmodule.logical_operands(A, B)
-            @test NextLA.TLRmodule.choose_fold(A, B, ops) isa expect
+            @test NextLA.TLRmodule.choose_fold(ops) isa expect
         end
         # dense-diagonal (SkipDiag) always FoldRight, even with a TileColMajor B
         Ad = NextLA.TLRDenseDiagMatrix(zeros(Float64, 16, 16), 4, 3; tile_order=CM)
         Bd = NextLA.TLRDenseDiagMatrix(zeros(Float64, 16, 16), 4, 3; tile_order=CM)
         ops = NextLA.TLRmodule.logical_operands(Ad, Bd)
-        @test NextLA.TLRmodule.choose_fold(Ad, Bd, ops) isa FR
+        @test NextLA.TLRmodule.choose_fold(ops) isa FR
     end
 
     # Forced fold reproduces the dense interior product `O_A O_B` (= full A·B on an
@@ -242,6 +242,47 @@ end
             end
             assert_fold_matches(RM, CM, 15, 6, 8, (5, 6), (6, 2), 2, FL(), budget)        # tall output tile
         end
+    end
+end
+
+# Phase 1: transpose flags (`op(X) = Xᵀ` when the flag ≠ 'N') on the aligned FullGrid
+# interior. A transpose is a relabeling of stored factors (`logical_operands`) plus
+# effective-order axis inference — the executors are unchanged. Verify all four
+# op-combinations against the dense `op(A)·op(B)`.
+function assert_transpose_matches_dense(m, k, n, tsA, tsB, oA, oB, transA, transB;
+                                        alpha=1.3, beta=-0.4, atol=1e-9, rtol=1e-9)
+    bm, bk = tsA
+    bk2, bn = tsB
+    @assert bk == bk2
+    # tsA/tsB are the *op* tile sizes; the stored matrix/tiles flip on transpose.
+    storedA, tileA = transA == 'T' ? ((k, m), (bk, bm)) : ((m, k), (bm, bk))
+    storedB, tileB = transB == 'T' ? ((n, k), (bn, bk)) : ((k, n), (bk, bn))
+    A = NextLA.TLRMatrix(zeros(Float64, storedA...), tileA, 3; tile_order=oA)
+    B = NextLA.TLRMatrix(zeros(Float64, storedB...), tileB, 3; tile_order=oB)
+    fill_random_tlr!(A, Array; seed=1)
+    fill_random_tlr!(B, Array; seed=2)
+    C0 = randn(MersenneTwister(7), Float64, m, n)
+    C = copy(C0)
+    NextLA.TLRmodule.gemm!(C, A, B; alpha=alpha, beta=beta, transA=transA, transB=transB)
+    opd(D, t) = t == 'T' ? permutedims(D) : D
+    ref = alpha .* (opd(reconstruct_tlr(A), transA) * opd(reconstruct_tlr(B), transB)) .+ beta .* C0
+    @test isapprox(C, ref; atol=atol, rtol=rtol)
+end
+
+@testset "transpose flags on aligned FullGrid" begin
+    RM = NextLA.TileRowMajor(); CM = NextLA.TileColMajor()
+    @testset "op(A)·op(B), all four combos × layouts" begin
+        for tA in ('N', 'T'), tB in ('N', 'T'), oA in (RM, CM), oB in (RM, CM)
+            assert_transpose_matches_dense(12, 8, 16, (4, 4), (4, 4), oA, oB, tA, tB)   # square tiles
+            assert_transpose_matches_dense(12, 9, 10, (4, 3), (3, 5), oA, oB, tA, tB)   # rectangular tiles
+        end
+    end
+
+    @testset "guard: transpose requires boundary-free operands" begin
+        A = NextLA.TLRMatrix(zeros(Float64, 8, 14), (4, 4), 3)   # 14 % 4 ≠ 0 → column tail
+        B = NextLA.TLRMatrix(zeros(Float64, 8, 8), (4, 4), 3)
+        C = zeros(Float64, 14, 8)                                 # = size(op(A)=Aᵀ, 1) × size(B, 2)
+        @test_throws ArgumentError NextLA.TLRmodule.gemm!(C, A, B; transA='T')
     end
 end
 
