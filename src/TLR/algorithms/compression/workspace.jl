@@ -1,5 +1,3 @@
-# scratch for one tile category
-# `U`/`V` alias the A_tlr output panels (maxrank-wide); the sketch
 struct CompressCategoryWorkspace{RegionT,PanelT,ScratchT,ScratchHiT,TileVT,RankVT,F64V,ShiftV,I32V,RankIndexT}
     region::RegionT        # TLR region, or `nothing` for a standalone tile batch
     rank_indices::RankIndexT # category-local tile slot -> A_tlr.ranks / A_tlr.resid slot

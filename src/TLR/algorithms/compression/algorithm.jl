@@ -8,6 +8,7 @@ factorisation is attempted.
 function cholqr2!(Y_hi::AbstractArray{Thi,3}, G_hi, multipliers) where {Thi}
     count = size(Y_hi, 3)
     count == 0 && return Y_hi
+
     backend = get_backend(Y_hi)
     m, r = size(Y_hi, 1), size(Y_hi, 2)
     RT = real(Thi)
@@ -83,7 +84,7 @@ abstract type TileSource end
 @inline _ntiles(src::TileSource) = length(src.tiles)
 
 # Off-diagonal tiles carved from a dense matrix (today's `compress!` path).
-struct DenseTiles{AT<:AbstractMatrix,TV<:AbstractVector,CV} <: TileSource
+struct DenseTiles{T, AT<:AbstractMatrix{T},TV<:AbstractVector,CV} <: TileSource
     A::AT           # dense source matrix
     tiles::TV       # per-tile views into A (gemm operands)
     p0s::CV         # per-tile row origin (device Int32) — for the norm kernel
@@ -102,7 +103,7 @@ function _tile_norms_sq!(out, src::DenseTiles; R::Int)
 end
 
 # A packed [tm, tn, ntiles] batch of dense tiles (e.g. gemm intermediates).
-struct PackedTiles{PT<:AbstractArray,TV<:AbstractVector} <: TileSource
+struct PackedTiles{T, PT<:AbstractArray{T,3}, TV<:AbstractVector} <: TileSource
     data::PT        # [tm, tn, ntiles]
     tiles::TV       # per-slab views (gemm operands)
 end
@@ -118,9 +119,9 @@ function _tile_norms_sq!(out, src::PackedTiles; R::Int)
 end
 
 # Q = A·Ω and V = Aᴴ·Q, batched over tiles
-@inline _sketch!(Q_tiles, src::TileSource, Ω_tiles, ::Type{T}) where {T} =
+@inline _sketch!(Q_tiles, src::TileSource{T}, Ω_tiles) where {T} =
     gemm_batched!('N', 'N', one(T), src.tiles, Ω_tiles, zero(T), Q_tiles)
-@inline _cosketch!(V_tiles, src::TileSource, Q_tiles, ::Type{T}) where {T} =
+@inline _cosketch!(V_tiles, src::TileSource{T}, Q_tiles) where {T} =
     gemm_batched!(_adjoint_blas_char(T), 'N', one(T), src.tiles, Q_tiles, zero(T), V_tiles)
 
 """
@@ -131,10 +132,9 @@ into the workspace `cat`: writes the retained factors into `cat.U`/`cat.V` and t
 per-tile rank / squared error into `cat.ranks_local` / `cat.err_sq_local`. Input-
 agnostic — see [`TileSource`](@ref). Degenerates to rank 0 when `cat.R_keep == 0`.
 """
-function compress_tiles!(src::TileSource, cat::CompressCategoryWorkspace; eps_sq::Float64, rel::Bool)
+function compress_tiles!(src::TileSource{T}, cat::CompressCategoryWorkspace; eps_sq::Float64, rel::Bool) where {T}
     _ntiles(src) == 0 && return cat
-    T = eltype(cat.Q_T)
-
+    
     # Step 0: per-tile ‖A‖²_F — reference term for the error indicator (step 4).
     _tile_norms_sq!(cat.normA_sq, src; R=max(cat.S, 1))
 
@@ -146,7 +146,7 @@ function compress_tiles!(src::TileSource, cat::CompressCategoryWorkspace; eps_sq
 
     # Step 1: range sampling  Q = A·Ω  (Ω drawn into V_T; step 3 overwrites it)
     Random.randn!(cat.V_T)
-    _sketch!(cat.Q_tiles, src, cat.V_tiles, T)
+    _sketch!(cat.Q_tiles, src, cat.V_tiles)
 
     # Step 2: orthogonalise Q (in higher precision)
     cat.Y_hi .= cat.Q_T
@@ -154,7 +154,7 @@ function compress_tiles!(src::TileSource, cat::CompressCategoryWorkspace; eps_sq
     cat.Q_T .= cat.Y_hi
 
     # Step 3: co-range  V = Aᴴ·Q  (overwrites the Ω we no longer need)
-    _cosketch!(cat.V_tiles, src, cat.Q_tiles, T)
+    _cosketch!(cat.V_tiles, src, cat.Q_tiles)
 
     # Step 4: rank detection + truncation (fused SMEM kernel, EI-corrected budget)
     delta_floor = Float64(_cholqr_shift_coeff(eltype(cat.G_hi), size(cat.Y_hi, 1), cat.S))
