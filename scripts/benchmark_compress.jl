@@ -6,11 +6,13 @@
 using LinearAlgebra, Printf, Random, Statistics
 
 # User parameters --------------------------------------------------------------
-n = [2048, 4096, 8192]
-b = [128, 256, 512]
-maxrank = [64, 128]
-warmup_runs = 1
-iterations = 3
+parse_int_list(name, default) = parse.(Int, split(get(ENV, name, default), ','))
+
+n = parse_int_list("NEXTLA_COMPRESS_N", "2048,4096,8192")
+b = parse_int_list("NEXTLA_COMPRESS_B", "128,256,512")
+maxrank = parse_int_list("NEXTLA_COMPRESS_MAXRANK", "64,128")
+warmup_runs = parse(Int, get(ENV, "NEXTLA_COMPRESS_WARMUP", "1"))
+iterations = parse(Int, get(ENV, "NEXTLA_COMPRESS_ITERS", "3"))
 
 tol = 1.0f-5
 rel = true
@@ -32,7 +34,7 @@ end
 HAS_CUDA || error("CUDA is not available. Run with a CUDA-enabled project, for example: julia --project=../gpuenv benchmark_compress.jl")
 
 using NextLA
-using NextLA: TLRMatrix, compress!, tile_u, tile_v, dense_diag, dense_diag_corner,
+using NextLA: TLRDenseDiagMatrix, compress!, get_factors, dense_diag, dense_diag_corner,
               ranks, residuals, ndiag_tiles, tile_origin_coords,
               tile_size, tilegrid_size, alloc_workspace
 
@@ -56,7 +58,18 @@ function sample_left_skewed_rank(rng::AbstractRNG)
 end
 
 function case_seed(base_seed::Integer, n::Int, b::Int, maxrank::Int)
-    return Int(base_seed + 1_000_003n + 10_007b)
+    return Int(base_seed + 1_000_003n + 10_007b + 101maxrank)
+end
+
+function workspace_bytes(ws)
+    total = 0
+    for cat in ws.cats
+        for x in (cat.Q_T, cat.V_T, cat.Y_hi, cat.G_hi, cat.ranks_local,
+                  cat.err_sq_local, cat.normA_sq, cat.shift_mult, cat.p0s, cat.q0s)
+            total += length(x) * sizeof(eltype(x))
+        end
+    end
+    return total
 end
 
 # Generate a dense matrix whose off-diagonal tiles have exact rank in
@@ -87,19 +100,21 @@ end
 
 # Tile-by-tile relative Frobenius error, preserving the previous benchmark's
 # reconstruction metric.
-function rel_error(A_cpu::AbstractMatrix, A_tlr::TLRMatrix)
+function rel_error(A_cpu::AbstractMatrix, A_tlr::TLRDenseDiagMatrix)
     D = Array(dense_diag(A_tlr))
     D_corner = Array(dense_diag_corner(A_tlr))
     err_sq = 0.0
     norm_sq = 0.0
 
-    for ob in 1:_noffdiag_tiles(A_tlr)
-        i, j = NextLA.TLRmodule._offdiag_coords(A_tlr, ob)
+    mt, nt = tilegrid_size(A_tlr)
+    for j in 1:nt, i in 1:mt
+        i == j && continue
         p0, q0 = tile_origin_coords(A_tlr, i, j)
         tm, tn = tile_size(A_tlr, i, j)
         tile = view(A_cpu, p0:p0 + tm - 1, q0:q0 + tn - 1)
-        U_ob = Array(tile_u(A_tlr, ob))
-        V_ob = Array(tile_v(A_tlr, ob))
+        U_ob, V_ob = get_factors(A_tlr, i, j)
+        U_ob = Array(U_ob)
+        V_ob = Array(V_ob)
         recon = U_ob * V_ob'
         err_sq += sum(abs2, tile - recon)
         norm_sq += sum(abs2, tile)
@@ -117,13 +132,17 @@ function rel_error(A_cpu::AbstractMatrix, A_tlr::TLRMatrix)
     return sqrt(err_sq / norm_sq)
 end
 
-function ortho_errors(A_tlr::TLRMatrix)
+function ortho_errors(A_tlr::TLRDenseDiagMatrix)
     rk = Array(ranks(A_tlr))
     errs = Float64[]
-    for ob in 1:_noffdiag_tiles(A_tlr)
-        kr = Int(rk[ob])
+    mt, nt = tilegrid_size(A_tlr)
+    for j in 1:nt, i in 1:mt
+        i == j && continue
+        rank_idx = NextLA.TLRmodule._rank_index(A_tlr, i, j)
+        kr = Int(rk[rank_idx])
         kr == 0 && continue
-        U_ob = Array(tile_u(A_tlr, ob))
+        U_ob, _ = get_factors(A_tlr, i, j)
+        U_ob = Array(U_ob)
         I_kr = Matrix{eltype(U_ob)}(I, kr, kr)
         push!(errs, norm(U_ob' * U_ob - I_kr))
     end
@@ -135,17 +154,18 @@ function summary_stats(xs)
     return (minimum(xs), median(xs), maximum(xs))
 end
 
-function rank_recovery(A_tlr::TLRMatrix, true_ranks::AbstractMatrix{<:Integer})
+function rank_recovery(A_tlr::TLRDenseDiagMatrix, true_ranks::AbstractMatrix{<:Integer})
     rk = Array(ranks(A_tlr))
     noff = _noffdiag_tiles(A_tlr)
     exact = 0
     recoverable = 0
     exact_recoverable = 0
 
-    for ob in 1:noff
-        i, j = NextLA.TLRmodule._offdiag_coords(A_tlr, ob)
+    mt, nt = tilegrid_size(A_tlr)
+    for j in 1:nt, i in 1:mt
+        i == j && continue
         truth = Int(true_ranks[i, j])
-        got = Int(rk[ob])
+        got = Int(rk[NextLA.TLRmodule._rank_index(A_tlr, i, j)])
         exact += got == truth
         if truth <= A_tlr.maxrank
             recoverable += 1
@@ -156,14 +176,29 @@ function rank_recovery(A_tlr::TLRMatrix, true_ranks::AbstractMatrix{<:Integer})
     return exact, noff, exact_recoverable, recoverable
 end
 
-function finite_factors(A_tlr::TLRMatrix)
+function offdiag_diagnostics(A_tlr::TLRDenseDiagMatrix)
+    rk_all = Array(ranks(A_tlr))
+    resid_all = Array(residuals(A_tlr))
+    rk = eltype(rk_all)[]
+    resid = eltype(resid_all)[]
+    mt, nt = tilegrid_size(A_tlr)
+    for j in 1:nt, i in 1:mt
+        i == j && continue
+        idx = NextLA.TLRmodule._rank_index(A_tlr, i, j)
+        push!(rk, rk_all[idx])
+        push!(resid, resid_all[idx])
+    end
+    return rk, resid
+end
+
+function finite_factors(A_tlr::TLRDenseDiagMatrix)
     arrays = (A_tlr.int_U, A_tlr.int_V, A_tlr.right_U, A_tlr.right_V,
               A_tlr.bottom_U, A_tlr.bottom_V)
     return all(A -> !any(isnan, A), arrays)
 end
 
 function run_algorithm(A_gpu, A_cpu, true_ranks, b::Int, maxrank::Int)
-    A_tlr = TLRMatrix(A_gpu, b, maxrank)
+    A_tlr = TLRDenseDiagMatrix(A_gpu, b, maxrank)
     ws = alloc_workspace(A_tlr)
 
     for _ in 1:warmup_runs
@@ -171,17 +206,18 @@ function run_algorithm(A_gpu, A_cpu, true_ranks, b::Int, maxrank::Int)
         gpu_sync()
     end
 
-    best_time = Inf
+    times = Float64[]
+    sizehint!(times, iterations)
     for _ in 1:iterations
+        gpu_sync()
         t_run = @elapsed begin
             compress!(A_tlr, A_gpu, ws; tol=tol, rel=rel)
             gpu_sync()
         end
-        best_time = min(best_time, t_run)
+        push!(times, t_run)
     end
 
-    rk = Array(ranks(A_tlr))
-    resid = Array(residuals(A_tlr))
+    rk, resid = offdiag_diagnostics(A_tlr)
     ortho = ortho_errors(A_tlr)
     exact, total, exact_rec, total_rec = rank_recovery(A_tlr, true_ranks)
     rmin, rmed, rmax = summary_stats(rk)
@@ -190,7 +226,9 @@ function run_algorithm(A_gpu, A_cpu, true_ranks, b::Int, maxrank::Int)
 
     return (;
         status="ok",
-        time=best_time,
+        time=minimum(times),
+        median_time=median(times),
+        workspace_bytes=workspace_bytes(ws),
         relerr=rel_error(A_cpu, A_tlr),
         resid_min=emin,
         resid_med=emed,
@@ -215,6 +253,8 @@ function failed_result(err)
     return (;
         status="fail",
         time=NaN,
+        median_time=NaN,
+        workspace_bytes=0,
         relerr=NaN,
         resid_min=NaN,
         resid_med=NaN,
@@ -246,10 +286,11 @@ function print_header()
     println("  algorithm = cholqr2")
     println("  rank_distribution = left-skewed power(shape=$rank_left_skew_shape) on $rank_min:$rank_max")
     println("  GPU = ", CUDA.name(CUDA.device()))
+    println("  revision = ", readchomp(`git rev-parse --short HEAD`))
     println()
 
-    @printf("%6s %5s %7s %10s %10s %10s %10s %9s %7s %7s %7s %13s %13s %10s %10s %10s %-5s %s\n",
-            "n", "b", "maxrank", "best_s", "rel_err",
+    @printf("%6s %5s %7s %10s %10s %10s %10s %10s %10s %9s %7s %7s %7s %13s %13s %10s %10s %10s %-5s %s\n",
+            "n", "b", "maxrank", "best_s", "median_s", "work_MiB", "rel_err",
             "res_min", "res_med", "res_max", "rk_min", "rk_med", "rk_max",
             "recov", "recov<=mr", "u_min", "u_med", "u_max", "ok", "note")
     println(repeat("-", 190))
@@ -258,8 +299,8 @@ end
 function print_row(n::Int, b::Int, maxrank::Int, r)
     recov = r.total == 0 ? "-" : string(r.exact, "/", r.total)
     recov_cap = r.total_recoverable == 0 ? "-" : string(r.exact_recoverable, "/", r.total_recoverable)
-    @printf("%6d %5d %7d %10.4f %10.2e %10.2e %10.2e %9.2e %7.0f %7.1f %7.0f %13s %13s %10.2e %10.2e %10.2e %-5s %s\n",
-            n, b, maxrank, r.time, r.relerr,
+    @printf("%6d %5d %7d %10.4f %10.4f %10.1f %10.2e %10.2e %10.2e %9.2e %7.0f %7.1f %7.0f %13s %13s %10.2e %10.2e %10.2e %-5s %s\n",
+            n, b, maxrank, r.time, r.median_time, r.workspace_bytes / 2.0^20, r.relerr,
             r.resid_min, r.resid_med, r.resid_max,
             r.rank_min, r.rank_med, r.rank_max,
             recov, recov_cap,

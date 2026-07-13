@@ -30,7 +30,7 @@ include("container/abstract.jl")
 include("container/dense_diag_tlr_matrix.jl")
 include("container/full_tlr_matrix.jl")
 
-include("algorithms/compress.jl")
+include("algorithms/compress/compress.jl")
 include("algorithms/uncompress.jl")
 include("algorithms/gemm/gemm.jl")
 

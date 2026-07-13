@@ -10,6 +10,46 @@ function make_rect_lowrank_tile(::Type{T}, m::Int, n::Int, r::Int; seed::Integer
     return qleft[:, 1:r] * Diagonal(sigma) * qright[:, 1:r]'
 end
 
+@testset "shifted CholQR2 policy" begin
+    M = NextLA.TLRmodule
+    for Tgram in (Float64, ComplexF64)
+        m, s = 37, 9
+        expected = 11 * (m * s + s * (s + 1)) * (eps(Float64) / 2)
+        @test M._cholqr_shift_coeff(Tgram, m, s) == expected
+    end
+
+    rng = MersenneTwister(901)
+    for Thi in (Float64, ComplexF64)
+        m, s, batch = 48, 8, 3
+        Y = randn(rng, Thi, m, s, batch)
+        G = zeros(Thi, s, s, batch)
+        multipliers = ones(Float64, batch)
+        M.cholqr2!(Y, G, multipliers)
+        floor = M._cholqr_shift_coeff(Thi, m, s)
+        for k in 1:batch
+            @test norm(Y[:, :, k]' * Y[:, :, k] - I, Inf) <= 2floor
+        end
+
+        Z = zeros(Thi, m, s, 1)
+        Gz = zeros(Thi, s, s, 1)
+        M.cholqr2!(Z, Gz, ones(Float64, 1))
+        @test all(iszero, Z)
+        @test all(isfinite, Gz)
+    end
+
+    # Rank-deficient inputs must remain finite; dependent directions are damped
+    # and subsequently removed by energy pruning.
+    Y = zeros(Float64, 32, 6, 1)
+    Y[:, 1:3, 1] .= randn(rng, 32, 3)
+    Y[:, 4:6, 1] .= Y[:, 1:3, 1]
+    G = zeros(Float64, 6, 6, 1)
+    M.cholqr2!(Y, G, ones(Float64, 1))
+    @test all(isfinite, Y)
+    singular_values = svdvals(Y[:, :, 1])
+    @test singular_values[3] > 0.99
+    @test singular_values[4] < 1e-3
+end
+
 function boundary_dense_fixture(::Type{T}) where {T}
     d11 = make_dense_tile(T, 4; seed=11)
     d22 = make_dense_tile(T, 4; seed=22)
@@ -56,7 +96,9 @@ end
 
     relerr = norm(reconstruct_tlr(A_uniform) - fixture.A) / norm(fixture.A)
     @test relerr <= 1e-6
-    assert_tile_rank_and_error(A_uniform, 1, 2, 10, fixture.offdiag12; atol_rank=4, rtol_error=1e-6)
+    # The all-shifted policy deliberately keeps weak dependent directions when
+    # the requested tolerance is at its orthogonality floor.
+    assert_tile_rank_and_error(A_uniform, 1, 2, 10, fixture.offdiag12; atol_rank=6, rtol_error=1e-6)
     assert_tile_rank_and_error(A_uniform, 2, 1, 16, fixture.offdiag21; rtol_error=1e-6)
 
     boundary = boundary_dense_fixture(Float64)
@@ -190,6 +232,9 @@ end
         for p in (0, 4, 12)
             A_tlr = NextLA.TLRDenseDiagMatrix(A, b, maxr)
             ws = NextLA.alloc_workspace(A_tlr; oversample=p)
+            # Seed 2 previously put the Float64 p=0 residual a few ulps above
+            # the nominal CholQR floor and exposed flaky full-rank retention.
+            Random.seed!(T == Float64 && p == 0 ? 2 : 1000 + p + sizeof(T))
             NextLA.compress!(A_tlr, A, ws; tol=tol, rel=true)
 
             assert_tile_rank_and_error(A_tlr, 1, 2, r12,
