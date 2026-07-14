@@ -28,10 +28,10 @@ function _store_category_results!(A_tlr::AbstractTLRMatrix, cat::CompressCategor
     n = size(cat.U, 3)
     n == 0 && return
     rk_host = cat.ranks_local isa Vector ? cat.ranks_local : Array(cat.ranks_local)
-    err_host = cat.err_sq_local isa Vector ? cat.err_sq_local : Array(cat.err_sq_local)
+    err_host = cat.norm_err_sq isa Vector ? cat.norm_err_sq : Array(cat.norm_err_sq)
     @inbounds for (k, rank_idx) in enumerate(cat.rank_indices)
         A_tlr.ranks[rank_idx] = rk_host[k]
-        A_tlr.resid[rank_idx] = sqrt(max(err_host[k], 0.0))
+        A_tlr.resid[rank_idx] = sqrt(max(Float64(real(err_host[k])), 0.0))
     end
 end
 
@@ -99,15 +99,14 @@ floored at the orthogonality floor of the shifted high-precision CholQR basis.
 `rel` — when `true`, the budget for each tile is `tol * ‖A_tile‖_F` instead of
 the absolute `tol`.
 
-`oversample` — extra sketch columns `p` beyond `maxrank` for better range
-capture; the sketch width is `S = min(maxrank + p, tile)` and the stored rank is
-capped at `maxrank`. Must match the `oversample` passed to `alloc_workspace`.
+`maxrank` is both the output capacity and the sketch capacity. Reserve any
+desired randomized-range buffer in `maxrank` itself.
 
 The sketch basis is orthogonalised with two shifted Cholesky-QR passes in
 higher precision.
 """
-compress!(A_tlr::AbstractTLRMatrix{<:Any,T}, A::AbstractMatrix{T}; oversample::Int=0, kwargs...) where {T} =
-    compress!(A_tlr, A, alloc_workspace(A_tlr; oversample); kwargs...)
+compress!(A_tlr::AbstractTLRMatrix{<:Any,T}, A::AbstractMatrix{T}; kwargs...) where {T} =
+    compress!(A_tlr, A, alloc_workspace(A_tlr); kwargs...)
 
 function compress!(A_tlr::TLRDenseDiagMatrix{<:Any,T}, A::AbstractMatrix{T},
     ws::CompressWorkspace;

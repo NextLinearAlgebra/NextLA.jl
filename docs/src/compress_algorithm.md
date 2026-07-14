@@ -53,13 +53,9 @@ compress_category!(A_tlr, A, cat, eps_sq, rel):
     if cat has no tiles: return
     r_eff ← cat.r_eff
     if r_eff == 0:                       # maxrank == 0 → every tile is rank 0
-        cat.normA_sq ← ‖A_tile‖²_F for each tile
+        cat.norm_err_sq ← ‖A_tile‖²_F for each tile
         cat.ranks    ← 0
-        cat.resid_sq ← cat.normA_sq
         return
-
-    # ── Step 0: reference term for the error indicator ──────────────
-    cat.normA_sq[t] ← Σ |A_tile[t]|²   (accumulated in Float64)   for each tile t
 
     # ── Step 1: range sketch  Y = A · Ω ─────────────────────────────
     Ω ← randn!(...)                      # drawn into the V buffer
@@ -72,9 +68,12 @@ compress_category!(A_tlr, A, cat, eps_sq, rel):
     # ── Step 3: co-range  V = Aᴴ · U  (overwrites Ω) ─────────────────
     V ← A_tileᴴ · U                      # batched GEMM, V is n_tile × r_eff
 
-    # ── Step 4: rank detection + truncation ─────────────────────────
-    truncate!(U, V, cat.ranks, cat.resid_sq, cat.normA_sq, eps_sq, rel)
-    zero the padding columns r_eff+1 … r of V
+    # ── Step 4: reference term, reusing the now-dead Gram storage ────
+    cat.norm_err_sq[t] ← Σ |A_tile[t]|²   (Float64, stored in G[1,1,t])
+
+    # ── Step 5: rank detection + truncation ─────────────────────────
+    truncate!(U, V, cat.ranks, cat.norm_err_sq, eps_sq, rel)
+    zero the padding columns rank+1 … maxrank of U and V
     return
 ```
 
@@ -86,20 +85,19 @@ is what Step 2 guarantees.
 
 Cholesky-QR orthogonalizes via the Gram matrix `G = UᴴU = RᴴR`, then
 `U ← U R⁻¹`. A diagonal shift keeps `G` positive-definite when the sketch is
-rank-deficient (the common oversampled case, `r > numerical rank`).
+rank-deficient (the common buffered-sketch case, `r > numerical rank`).
 
 ```text
-cholqr_pass!(U; rescue):
-    G ← Uᴴ U                                    # batched, precision Thi
-    for each tile (slab) b:
-        tr  ← trace(G_b);   mx ← max diag(G_b)
-        if rescue:  shift ← √eps(Thi) · tr / r  # survives rank deficiency
-        else:       shift ← eps(Thi) · r · mx   # eps-level; restores the norms
-                                                #   the rescue shift deflated
-        if shift == 0 (zero tile): shift ← 1    # keep potrf PD, U stays 0
-        G_b += shift · I
-    R ← chol(G)   (upper, batched potrf)
-    U ← U · R⁻¹   (batched trsm)
+coeff ← 11 · (m·r + r·(r+1)) · eps(Thi)/2
+for pass = 1:2:
+    U_hi ← Thi.(U)
+    G ← U_hiᴴ U_hi                              # batched, precision Thi
+    shift ← coeff · max(diag(G))
+    if shift == 0: shift ← eps(real(Thi))       # zero tile remains zero
+    G += shift · I
+    on pass 1 only: double failed slabs' shifts and retry (at most 40 times)
+    R ← Twork.(chol(G).U)                       # stored in expired V/Ω slots
+    U ← U · R⁻¹                                 # work-precision batched TRSM
 ```
 
 ## Truncation (rank detection)
@@ -118,12 +116,12 @@ per column. The reconstruction error of keeping the top-`k` columns decomposes
 so the greedy drop spends only the budget left after accounting for `resid`.
 
 ```text
-truncate!(U, V, ranks, resid_sq, normA_sq, eps_sq, rel):
+truncate!(U, V, ranks, norm_err_sq, eps_sq, rel):
   for each tile (one workgroup):
     norms[j] ← ‖V[:, j]‖²                       (Float64 accumulation)
     sort columns by norms descending            (parallel rank sort, O(R))
 
-    nA_sq ← normA_sq[tile]
+    nA_sq ← norm_err_sq[tile]
     resid ← max(nA_sq − Σ norms, 0)
 
     # ── numerical-safety floor #1: resid cancellation ──────────────
@@ -132,12 +130,9 @@ truncate!(U, V, ranks, resid_sq, normA_sq, eps_sq, rel):
     # range-capture error → treat the range as captured.
     if resid < size(U,1) · eps(T) · nA_sq:  resid ← 0
 
-    # ── budget, with safety floor #2: √eps(T) accuracy floor ───────
-    # a precision-T sketch cannot resolve relative error below √eps(T),
-    # so a tol below that floor would keep the sketch's noise columns
-    # and inflate the rank; floor the budget at eps(T)·‖A‖².
+    # ── budget, with the realized CholQR orthogonality floor ───────
     target ← rel ? eps_sq · nA_sq : eps_sq
-    budget ← max(target, eps(T) · nA_sq) − resid
+    budget ← max(target, 2·coeff·nA_sq) − resid
 
     # ── greedy drop from the smallest column upward ────────────────
     k ← R;  dropped ← 0
@@ -146,9 +141,9 @@ truncate!(U, V, ranks, resid_sq, normA_sq, eps_sq, rel):
             if norms[j] > budget: break
             budget −= norms[j];  dropped += norms[j];  k −= 1
 
-    ranks[tile]    ← k
-    resid_sq[tile] ← resid + dropped            # reported Frobenius² error
-    gather the k retained columns of U, V; zero-pad the rest
+    ranks[tile]       ← k
+    norm_err_sq[tile] ← resid + dropped          # reported Frobenius² error
+    compact retained columns in place; zero-pad the rest
 ```
 
 ## FAIL semantics
@@ -168,12 +163,11 @@ higher-rank second pass — nothing is recomputed on the tiles that succeeded.
 
 ## Precision notes (fp32)
 
-- The characteristic noise scale of the fp32 sketch is `√eps(Float32) ≈ 3.4e-4`;
-  columns below it are numerical noise, real singular directions sit above it.
-- `tol ≥ √eps(T)`: exact rank recovery *and* `rel_err ≤ tol`, no drama.
-- `tol < √eps(T)`: below the sketch noise floor. The budget floor recovers the
-  **exact rank** at the best accuracy fp32 gives (`rel_err ≈ 2e-5`, the fp32
-  ceiling), rather than retaining 1–2 noise columns to chase an unreachable
-  target. A hard `rel_err ≤ tol` at such a `tol` requires fp64.
-- The error *indicator* `√(‖A‖²−‖V‖²)` is cancellation-limited to `~√(b·eps)`;
-  the *direct* reconstruction error `‖A−UVᴴ‖` is not, and reaches `~eps·√b`.
+- The sketch GEMMs and triangular solves stay in `Twork`; only the copied basis,
+  Gram formation, and Cholesky factorization use `Thi` (`Float64` for fp32).
+- Tile energies, residual accounting, and factor-column energies are accumulated
+  in `Float64`.
+- The cancellation guard treats `‖A‖²−‖V‖² < m·eps(Twork)·‖A‖²` as zero.
+- The truncation target is floored at twice the realized shifted-CholQR
+  orthogonality coefficient. Accuracy materially below the fp32 GEMM floor still
+  requires a higher-precision throughput path.

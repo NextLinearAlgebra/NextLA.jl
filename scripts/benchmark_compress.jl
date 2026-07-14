@@ -43,6 +43,13 @@ _noffdiag_tiles(A) = prod(tilegrid_size(A)) - ndiag_tiles(A)
 
 gpu_sync() = CUDA.synchronize()
 
+function seed_sketch!(seed::Integer)
+    Random.seed!(seed)
+    CUDA.seed!(seed)
+    gpu_sync()
+    return nothing
+end
+
 function reclaim_gpu!()
     gpu_sync()
     GC.gc(true)
@@ -64,10 +71,12 @@ end
 function workspace_bytes(ws)
     total = 0
     for cat in ws.cats
-        for x in (cat.Q_T, cat.V_T, cat.Y_hi, cat.G_hi, cat.ranks_local,
-                  cat.err_sq_local, cat.normA_sq, cat.shift_mult, cat.p0s, cat.q0s)
+        # Q_T/V_T are views of the output panels and therefore are not
+        # compression workspace.
+        for x in (cat.Y_hi, cat.G_hi, cat.ranks_local, cat.p0s, cat.q0s)
             total += length(x) * sizeof(eltype(x))
         end
+        cat.S == 0 && (total += length(cat.norm_err_sq) * sizeof(eltype(cat.norm_err_sq)))
     end
     return total
 end
@@ -197,11 +206,12 @@ function finite_factors(A_tlr::TLRDenseDiagMatrix)
     return all(A -> !any(isnan, A), arrays)
 end
 
-function run_algorithm(A_gpu, A_cpu, true_ranks, b::Int, maxrank::Int)
+function run_algorithm(A_gpu, A_cpu, true_ranks, b::Int, maxrank::Int, sketch_seed::Int)
     A_tlr = TLRDenseDiagMatrix(A_gpu, b, maxrank)
     ws = alloc_workspace(A_tlr)
 
     for _ in 1:warmup_runs
+        seed_sketch!(sketch_seed)
         compress!(A_tlr, A_gpu, ws; tol=tol, rel=rel)
         gpu_sync()
     end
@@ -209,6 +219,7 @@ function run_algorithm(A_gpu, A_cpu, true_ranks, b::Int, maxrank::Int)
     times = Float64[]
     sizehint!(times, iterations)
     for _ in 1:iterations
+        seed_sketch!(sketch_seed)
         gpu_sync()
         t_run = @elapsed begin
             compress!(A_tlr, A_gpu, ws; tol=tol, rel=rel)
@@ -286,7 +297,9 @@ function print_header()
     println("  algorithm = cholqr2")
     println("  rank_distribution = left-skewed power(shape=$rank_left_skew_shape) on $rank_min:$rank_max")
     println("  GPU = ", CUDA.name(CUDA.device()))
-    println("  revision = ", readchomp(`git rev-parse --short HEAD`))
+    revision = readchomp(`git rev-parse --short HEAD`)
+    dirty = isempty(readchomp(`git status --porcelain`)) ? "" : " (dirty)"
+    println("  revision = ", revision, dirty)
     println()
 
     @printf("%6s %5s %7s %10s %10s %10s %10s %10s %10s %9s %7s %7s %7s %13s %13s %10s %10s %10s %-5s %s\n",
@@ -310,12 +323,13 @@ end
 
 function run_case(n::Int, b::Int, maxrank::Int)
     reclaim_gpu!()
-    A_cpu, true_ranks = generate_tiled_lowrank(n, b, T; seed=case_seed(seed, n, b, maxrank))
+    cseed = case_seed(seed, n, b, maxrank)
+    A_cpu, true_ranks = generate_tiled_lowrank(n, b, T; seed=cseed)
     A_gpu = CuArray(A_cpu)
     gpu_sync()
 
     result = try
-        run_algorithm(A_gpu, A_cpu, true_ranks, b, maxrank)
+        run_algorithm(A_gpu, A_cpu, true_ranks, b, maxrank, cseed)
     catch err
         failed_result(err)
     finally

@@ -22,19 +22,38 @@ end
     for Thi in (Float64, ComplexF64)
         m, s, batch = 48, 8, 3
         Y = randn(rng, Thi, m, s, batch)
+        Q = copy(Y)
         G = zeros(Thi, s, s, batch)
+        R = zeros(Thi, s, s, batch)
         multipliers = ones(Float64, batch)
-        M.cholqr2!(Y, G, multipliers)
+        M.cholqr2!(Q, Y, G, R, M._batch_views(R), M._batch_views(Q), multipliers)
         floor = M._cholqr_shift_coeff(Thi, m, s)
         for k in 1:batch
-            @test norm(Y[:, :, k]' * Y[:, :, k] - I, Inf) <= 2floor
+            @test norm(Q[:, :, k]' * Q[:, :, k] - I, Inf) <= 2floor
         end
 
         Z = zeros(Thi, m, s, 1)
+        Qz = copy(Z)
         Gz = zeros(Thi, s, s, 1)
-        M.cholqr2!(Z, Gz, ones(Float64, 1))
-        @test all(iszero, Z)
+        Rz = zeros(Thi, s, s, 1)
+        M.cholqr2!(Qz, Z, Gz, Rz, M._batch_views(Rz), M._batch_views(Qz),
+            ones(Float64, 1))
+        @test all(iszero, Qz)
         @test all(isfinite, Gz)
+    end
+
+    # Throughput path: Gram/POTRF are Float64 while both triangular solves and
+    # the stored basis remain Float32.
+    Q32 = randn(rng, Float32, 48, 8, 2)
+    Y64 = zeros(Float64, 48, 8, 2)
+    G64 = zeros(Float64, 8, 8, 2)
+    R32 = zeros(Float32, 8, 8, 2)
+    M.cholqr2!(Q32, Y64, G64, R32, M._batch_views(R32), M._batch_views(Q32),
+        ones(Float64, 2))
+    @test eltype(Q32) == Float32
+    @test all(isfinite, Q32)
+    for k in axes(Q32, 3)
+        @test norm(Q32[:, :, k]' * Q32[:, :, k] - I, Inf) <= 20eps(Float32)
     end
 
     # Rank-deficient inputs must remain finite; dependent directions are damped
@@ -42,10 +61,12 @@ end
     Y = zeros(Float64, 32, 6, 1)
     Y[:, 1:3, 1] .= randn(rng, 32, 3)
     Y[:, 4:6, 1] .= Y[:, 1:3, 1]
+    Q = copy(Y)
     G = zeros(Float64, 6, 6, 1)
-    M.cholqr2!(Y, G, ones(Float64, 1))
-    @test all(isfinite, Y)
-    singular_values = svdvals(Y[:, :, 1])
+    R = zeros(Float64, 6, 6, 1)
+    M.cholqr2!(Q, Y, G, R, M._batch_views(R), M._batch_views(Q), ones(Float64, 1))
+    @test all(isfinite, Q)
+    singular_values = svdvals(Q[:, :, 1])
     @test singular_values[3] > 0.99
     @test singular_values[4] < 1e-3
 end
@@ -215,9 +236,8 @@ end
     @test NextLA.residuals(Am_tlr)[ob_small] <= 1e-5 * norm(small)
 end
 
-@testset "TLR compress! oversampling" begin
+@testset "TLR compress! sketch capacity" begin
     b = 64
-    maxr = 20
     r12 = 5
     r21 = 11
 
@@ -227,14 +247,14 @@ end
             make_dense_tile(T, b; seed=41), make_lowrank_tile(T, b, r12; seed=42),
             make_lowrank_tile(T, b, r21; seed=43), make_dense_tile(T, b; seed=44))
 
-        # Oversampling widens the sketch (S = maxr + p) but the stored rank stays
-        # capped at maxr; the exact-rank tiles are recovered for every p.
-        for p in (0, 4, 12)
+        # maxrank includes any desired randomized-range buffer and is both the
+        # sketch width and output-panel capacity.
+        for maxr in (12, 20, 32)
             A_tlr = NextLA.TLRDenseDiagMatrix(A, b, maxr)
-            ws = NextLA.alloc_workspace(A_tlr; oversample=p)
-            # Seed 2 previously put the Float64 p=0 residual a few ulps above
+            ws = NextLA.alloc_workspace(A_tlr)
+            # Seed 2 previously put the Float64 residual a few ulps above
             # the nominal CholQR floor and exposed flaky full-rank retention.
-            Random.seed!(T == Float64 && p == 0 ? 2 : 1000 + p + sizeof(T))
+            Random.seed!(T == Float64 && maxr == 12 ? 2 : 1000 + maxr + sizeof(T))
             NextLA.compress!(A_tlr, A, ws; tol=tol, rel=true)
 
             assert_tile_rank_and_error(A_tlr, 1, 2, r12,
@@ -242,7 +262,7 @@ end
             assert_tile_rank_and_error(A_tlr, 2, 1, r21,
                 make_lowrank_tile(T, b, r21; seed=43); rtol_error=2 * tol)
 
-            # stored rank never exceeds maxr even though S = maxr + p columns sketched
+            # Stored rank never exceeds the shared sketch/output capacity.
             mt, nt = NextLA.tilegrid_size(A_tlr)
             for tile_i in 1:mt, tile_j in 1:nt
                 tile_i == tile_j && continue
@@ -252,14 +272,6 @@ end
         end
     end
 
-    # oversample keyword flows through the argument-less form too.
-    A0 = assemble_block_matrix(
-        make_dense_tile(Float64, b; seed=51), make_lowrank_tile(Float64, b, 7; seed=52),
-        make_lowrank_tile(Float64, b, 3; seed=53), make_dense_tile(Float64, b; seed=54))
-    A0_tlr = NextLA.TLRDenseDiagMatrix(A0, b, maxr)
-    NextLA.compress!(A0_tlr, A0; tol=1e-6, rel=true, oversample=8)
-    @test Int(NextLA.ranks(A0_tlr)[NextLA.TLRmodule._rank_index(A0_tlr, 1, 2)]) == 7
-    @test Int(NextLA.ranks(A0_tlr)[NextLA.TLRmodule._rank_index(A0_tlr, 2, 1)]) == 3
 end
 
 @testset "TLR uncompress! on CPU" begin
@@ -395,7 +407,11 @@ end
 
     U = zeros(Float64, b, kout, n)
     V = zeros(Float64, b, kout, n)
-    ws = M.alloc_tile_workspace(U, V, b, b, kout, n; oversample=4)
+    ws = M.alloc_tile_workspace(U, V, b, b, kout, n)
+    @test parent(ws.Q_T) === U
+    @test parent(ws.V_T) === V
+    @test parent(ws.norm_err_sq) === ws.G_hi
+    @test parent(ws.shift_mult) === parent(ws.V_T)
     M.compress_tiles!(M.PackedTiles(P), ws; eps_sq=1e-12, rel=false)
 
     ranks = Array(ws.ranks_local)
@@ -405,4 +421,48 @@ end
         recon = U[:, 1:r, k] * V[:, 1:r, k]'
         @test norm(recon - refs[k]) / norm(refs[k]) <= 1e-6
     end
+end
+
+@testset "in-place fused truncation and compaction" begin
+    M = NextLA.TLRmodule
+
+    # Hard-cap pruning keeps columns 1, 3, and 5. The minimum-move map fills
+    # hole 2 from source 5, so the compact deterministic order is [1, 5, 3].
+    energies = [9.0, 0.01, 4.0, 0.04, 1.0, 0.09]
+    S = length(energies)
+    U = zeros(Float64, S, S, 1)
+    V = zeros(Float64, S, S, 1)
+    for j in 1:S
+        U[j, j, 1] = j
+        V[j, j, 1] = sqrt(energies[j])
+    end
+    rk = zeros(Int32, 1)
+    norm_err_sq = [sum(energies)]
+
+    M.prune_ranks!(U, V, rk, norm_err_sq, S, 3, 0.0, false, 0.0)
+
+    @test rk == Int32[3]
+    @test [findfirst(!iszero, U[:, j, 1]) for j in 1:3] == [1, 5, 3]
+    @test all(iszero, view(U, :, 4:S, 1))
+    @test all(iszero, view(V, :, 4:S, 1))
+    @test norm_err_sq[1] ≈ sum(energies[[2, 4, 6]])
+
+    # Equal energies are ordered by source index during pruning. Dropping 1 and
+    # 2 leaves sources 3 and 4, compacted reproducibly as [4, 3].
+    U .= 0
+    V .= 0
+    for j in 1:4
+        U[j, j, 1] = j
+        V[j, j, 1] = 1
+    end
+    fill!(rk, 0)
+    norm_err_sq[1] = 4
+    M.prune_ranks!(U, V, rk, norm_err_sq, 4, 2, 0.0, false, 0.0)
+    @test rk == Int32[2]
+    @test [findfirst(!iszero, U[:, j, 1]) for j in 1:2] == [4, 3]
+    @test all(iszero, view(U, :, 3:S, 1))
+
+    arena = M.compress_arena_elems(32, 24, 12, 7)
+    @test arena.S == 12
+    @test arena.accum == (32 * 12 + 12 * 12) * 7
 end
