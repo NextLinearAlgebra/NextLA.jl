@@ -1,4 +1,5 @@
 # imports
+include("precision.jl")
 include("core/layout.jl")
 include("core/panel.jl")
 include("core/schedule.jl")
@@ -22,7 +23,7 @@ end
 
 """
     gemm!(C, A, B; alpha=true, beta=false, max_workspace=DEFAULT_GEMM_BUDGET,
-          transA='N', transB='N') -> C
+          transA='N', transB='N', compute=nothing) -> C
 
 Compute `C := alpha·(op(A)·op(B)) + beta·C` for dense-diagonal TLR matrices `A`,
 `B` into the dense column-major matrix `C`. `transA` and `transB` accept
@@ -30,15 +31,21 @@ case-insensitive `N/T`. Transposed operands currently require square matrices wi
 equal square tiling.
 
 The output traversal of `C` is a function of the operand layouts (`A.order`,
-`B.order`) — not a free knob.  The only tunable is `max_workspace` (bytes), which
-sets how long a contiguous run of `C` is materialized at once (see `schedule.jl`).
+`B.order`) — not a free knob. `max_workspace` (bytes) sets how long a contiguous
+run of `C` is materialized at once (see `schedule.jl`).
+`compute` selects the accumulation mode; when omitted it defaults to `Float32` for
+`Float16` operands and otherwise to the operand type. `alpha` and `beta` are
+converted to that compute type.
 """
 function gemm!(C::AbstractMatrix, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T};
     alpha=true, beta=false, max_workspace::Int=DEFAULT_GEMM_BUDGET,
-    transA::Char=('N'), transB::Char=('N')) where {BackendT,T}
+    transA::Char=('N'), transB::Char=('N'), compute=nothing) where {BackendT,T}
     LA = logical_operand(A, transA)
     LB = logical_operand(B, transB)
     _validate_logical_gemm(C, LA, LB)
+    mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
+    backend = get_backend(A)
+    validate_tlr_gemm_precision(backend, T, eltype(C), mode)
     if _istrans(LA) || _istrans(LB)
         dense_diag_square = size(A, 1) == size(A, 2) && size(B, 1) == size(B, 2)
         square_tiles = nominal_tile_size(A, 1) == nominal_tile_size(A, 2) &&
@@ -50,29 +57,29 @@ function gemm!(C::AbstractMatrix, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDense
             throw(DimensionMismatch("A and B must share the same nominal tile size"))
     end
 
-    α = T(alpha)
-    β = T(beta)
-    one_β = one(T)
+    ScalarT = gemm_compute_type(mode)
+    α = ScalarT(alpha)
+    β = ScalarT(beta)
+    one_β = one(ScalarT)
     W = max_workspace
 
     interior = () -> begin                                        # C_int
-        tlr_gemm_int_by_int(C, LA, LB, α, β; budget=W)             #   A_int B_int  (folds β)
-        tlr_gemm_rpanel_by_bpanel(C, LA, LB, α; beta=one_β, budget=W)  # u_A v_Bᵀ  (accumulate)
+        tlr_gemm_int_by_int(C, LA, LB, α, β; budget=W, compute=mode)             #   A_int B_int  (folds β)
+        tlr_gemm_rpanel_by_bpanel(C, LA, LB, α; beta=one_β, budget=W, compute=mode)  # u_A v_Bᵀ  (accumulate)
     end
     right = () -> begin                                          # C_right
-        tlr_gemm_int_by_rpanel(C, LA, LB, α; beta=β, budget=W)     #   A_int u_B    (folds β)
-        tlr_gemm_rpanel_by_corner(C, LA, LB, α; beta=one_β)        #   u_A γ_B      (accumulate)
+        tlr_gemm_int_by_rpanel(C, LA, LB, α; beta=β, budget=W, compute=mode)     #   A_int u_B    (folds β)
+        tlr_gemm_rpanel_by_corner(C, LA, LB, α; beta=one_β, compute=mode)        #   u_A γ_B      (accumulate)
     end
     bottom = () -> begin                                         # C_bottom
-        tlr_gemm_bpanel_by_int(C, LA, LB, α; beta=β, budget=W)     #   v_Aᵀ B_int   (folds β)
-        tlr_gemm_corner_by_bpanel(C, LA, LB, α; beta=one_β)        #   γ_A v_Bᵀ     (accumulate)
+        tlr_gemm_bpanel_by_int(C, LA, LB, α; beta=β, budget=W, compute=mode)     #   v_Aᵀ B_int   (folds β)
+        tlr_gemm_corner_by_bpanel(C, LA, LB, α; beta=one_β, compute=mode)        #   γ_A v_Bᵀ     (accumulate)
     end
     corner = () -> begin                                         # C_corner
-        tlr_gemm_corner_by_corner(C, LA, LB, α; beta=β)            #   γ_A γ_B       (folds β)
-        tlr_gemm_bpanel_by_rpanel(C, LA, LB, α; beta=one_β)        #   v_Aᵀ u_B     (accumulate)
+        tlr_gemm_corner_by_corner(C, LA, LB, α; beta=β, compute=mode)            #   γ_A γ_B       (folds β)
+        tlr_gemm_bpanel_by_rpanel(C, LA, LB, α; beta=one_β, compute=mode)        #   v_Aᵀ u_B     (accumulate)
     end
 
-    backend = get_backend(A)
     if backend isa KernelAbstractions.CPU
         interior();
         right();
@@ -103,17 +110,25 @@ accumulates (β = 1); the interior's first writer is `O_A O_B`, which folds β t
 the same layout-aware mechanism (`_offdiag_offdiag_gemm!`). Any rectangular grid and
 boundary tiling is supported. When either operand has rank 0 the product is
 identically zero, so `C` is just scaled by β.
+
+Operand storage is inferred from `A` and `B`, output storage from `C`, and `compute`
+selects the accumulation mode. Intermediate factors always retain operand storage;
+`alpha` and `beta` use compute precision.
 """
 function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T};
     alpha=true, beta=false, max_workspace::Int=DEFAULT_GEMM_BUDGET,
-    transA::Char=('N'), transB::Char=('N')) where {BackendT,T}
+    transA::Char=('N'), transB::Char=('N'), compute=nothing) where {BackendT,T}
     LA = logical_operand(A, transA)
     LB = logical_operand(B, transB)
     _validate_logical_gemm(C, LA, LB)
+    mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
+    backend = get_backend(A)
+    validate_tlr_gemm_precision(backend, T, eltype(C), mode)
 
-    α = T(alpha)
-    β = T(beta)
-    one_β = one(T)
+    ScalarT = gemm_compute_type(mode)
+    α = ScalarT(alpha)
+    β = ScalarT(beta)
+    one_β = one(ScalarT)
     W = max_workspace
 
     if maxrank(A) == 0 || maxrank(B) == 0
@@ -122,23 +137,22 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backend
     end
 
     interior = () -> begin                                       # C_int
-        _offdiag_offdiag_gemm!(C, LA, LB; alpha=α, beta=β, budget=W)  # op(A)ᵢ op(B)ᵢ (folds β)
-        tlr_gemm_rpanel_by_bpanel(C, LA, LB, α; beta=one_β, budget=W)  # u_A v_Bᵀ (no-op when aligned)
+        _offdiag_offdiag_gemm!(C, LA, LB; alpha=α, beta=β, budget=W, compute=mode)  # op(A)ᵢ op(B)ᵢ (folds β)
+        tlr_gemm_rpanel_by_bpanel(C, LA, LB, α; beta=one_β, budget=W, compute=mode)  # u_A v_Bᵀ (no-op when aligned)
     end
     right = () -> begin                                          # C_right
-        tlr_gemm_int_by_rpanel(C, LA, LB, α; beta=β, budget=W)         # A_int u_B (folds β)
-        tlr_gemm_rpanel_by_corner(C, LA, LB, α; beta=one_β)           # u_A γ_B
+        tlr_gemm_int_by_rpanel(C, LA, LB, α; beta=β, budget=W, compute=mode)         # A_int u_B (folds β)
+        tlr_gemm_rpanel_by_corner(C, LA, LB, α; beta=one_β, compute=mode)           # u_A γ_B
     end
     bottom = () -> begin                                         # C_bottom
-        tlr_gemm_bpanel_by_int(C, LA, LB, α; beta=β, budget=W)         # v_Aᵀ B_int (folds β)
-        tlr_gemm_corner_by_bpanel(C, LA, LB, α; beta=one_β)          # γ_A v_Bᵀ
+        tlr_gemm_bpanel_by_int(C, LA, LB, α; beta=β, budget=W, compute=mode)         # v_Aᵀ B_int (folds β)
+        tlr_gemm_corner_by_bpanel(C, LA, LB, α; beta=one_β, compute=mode)          # γ_A v_Bᵀ
     end
     corner = () -> begin                                         # C_corner
-        tlr_gemm_corner_by_corner(C, LA, LB, α; beta=β)               # γ_A γ_B (folds β)
-        tlr_gemm_bpanel_by_rpanel(C, LA, LB, α; beta=one_β)          # v_Aᵀ u_B
+        tlr_gemm_corner_by_corner(C, LA, LB, α; beta=β, compute=mode)               # γ_A γ_B (folds β)
+        tlr_gemm_bpanel_by_rpanel(C, LA, LB, α; beta=one_β, compute=mode)          # v_Aᵀ u_B
     end
 
-    backend = get_backend(A)
     if backend isa KernelAbstractions.CPU
         interior();
         right();

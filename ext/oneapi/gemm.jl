@@ -4,7 +4,8 @@ function NextLA.gemmEx!(transA::Char,
                         A::oneAPI.oneArray{<:Any, 2},
                         B::oneAPI.oneArray{<:Any, 2},
                         beta,
-                        C::oneAPI.oneArray{<:Any, 2})
+                        C::oneAPI.oneArray{<:Any, 2};
+                        compute_type::Type = NextLA.default_compute_type(alpha, A, B, beta, C))
     throw(ArgumentError("NextLA.gemmEx! is not supported on oneAPI"))
 end
 
@@ -15,7 +16,7 @@ function NextLA.gemm_batched!(transA::Char,
                               B::AbstractVector{<:oneAPI.oneArray{<:Any,2}},
                               beta,
                               C::AbstractVector{<:oneAPI.oneArray{<:Any,2}})
-    length(A) == length(B) == length(C) || throw(DimensionMismatch("gemm_batched!: matrix batches must have matching lengths"))
+    NextLA._check_batch_lengths(A, B, C)
     oneMKL.gemm_batched!(transA, transB, alpha, A, B, beta, C)
     return C
 end
@@ -39,10 +40,8 @@ function NextLA.gemmEx_batched!(transA::Char,
                                 beta,
                                 C::AbstractVector{<:oneAPI.oneArray{<:Any, 2}};
                                 compute_type::Type = NextLA.default_compute_type(alpha, A, B, beta, C))
-    if eltype(A) == eltype(B) == eltype(C) &&
-       compute_type == NextLA.default_compute_type(alpha, A, B, beta, C)
-        return NextLA.gemm_batched!(transA, transB, alpha, A, B, beta, C)
-    end
+    r = NextLA._try_same_type_batched!(transA, transB, alpha, A, B, beta, C, compute_type)
+    r === nothing || return r
     throw(ArgumentError("NextLA.gemmEx_batched! mixed-type batched GEMM is not supported on oneAPI"))
 end
 
@@ -54,10 +53,8 @@ function NextLA.gemmEx_batched!(transA::Char,
                                 beta,
                                 C::oneAPI.oneStridedArray{<:Any, 3};
                                 compute_type::Type = NextLA.default_compute_type(alpha, A, B, beta, C))
-    if eltype(A) == eltype(B) == eltype(C) &&
-       compute_type == NextLA.default_compute_type(alpha, A, B, beta, C)
-        return NextLA.gemm_batched!(transA, transB, alpha, A, B, beta, C)
-    end
+    r = NextLA._try_same_type_batched!(transA, transB, alpha, A, B, beta, C, compute_type)
+    r === nothing || return r
     throw(ArgumentError("NextLA.gemmEx_batched! mixed-type batched GEMM is not supported on oneAPI"))
 end
 

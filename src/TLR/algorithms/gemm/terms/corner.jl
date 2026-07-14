@@ -6,15 +6,15 @@ Dense corner product `C_corner := beta·C_corner + α·γ_A γ_B` (a single smal
 First corner writer, so it folds β.  No-op when there is no boundary corner
 (`m % b == 0`).
 """
-function tlr_gemm_corner_by_corner(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha::T; beta::T=one(T)) where {T}
+function tlr_gemm_corner_by_corner(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha; beta=one(alpha), compute=default_gemm_compute_mode(T)) where {T}
     (size(physical(A).D_corner, 3) != 0 && size(physical(B).D_corner, 3) != 0) || return C
 
     tile_k = ndiag_tiles(A)
     Atile = _diag_tile_ref(A, tile_k)
     Btile = _diag_tile_ref(B, tile_k)
     Ctile = _output_tile_view(C, A, B, tile_k, tile_k)
-    gemm_batched!(_dense_op(Atile), _dense_op(Btile), alpha,
-                  [_dense_data(Atile)], [_dense_data(Btile)], beta, [Ctile])
+    precision_gemm_batched!(_dense_op(Atile), _dense_op(Btile), alpha,
+                            [_dense_data(Atile)], [_dense_data(Btile)], beta, [Ctile], compute)
     return C
 end
 
@@ -38,7 +38,7 @@ No-op when `m % b == 0` or the panels are unpaired (non-square boundary).
 """
 # Pure low-rank panels (A's bottom row × B's right column): identical for both
 # container types, so it dispatches on `AbstractTLRMatrix`.
-function tlr_gemm_bpanel_by_rpanel(C, A::LogicalTLROperand, B::LogicalTLROperand, alpha::T; beta::T=one(T)) where {T}
+function tlr_gemm_bpanel_by_rpanel(C, A::LogicalTLROperand{<:Any,<:AbstractTLRMatrix{<:Any,T}}, B::LogicalTLROperand, alpha; beta=one(alpha), compute=default_gemm_compute_mode(T)) where {T}
     qkA = region_tile_count(A, _BOTTOM)
     qkB = region_tile_count(B, _RIGHT)
     qkA == 0 && return C
@@ -62,14 +62,14 @@ function tlr_gemm_bpanel_by_rpanel(C, A::LogicalTLROperand, B::LogicalTLROperand
     Twork = allocate(get_backend(A), T, rA, sn, qkA)
 
     # Stage 1 (strided):  S_p = V_pᵀ W_p
-    gemm_batched!('T', 'N', one(T), AV, BU, zero(T), Swork)
+    precision_gemm_batched!('T', 'N', one(T), AV, BU, zero(T), Swork, compute)
     # Stage 2 (strided):  T_p = S_p Z_pᵀᵀ
-    gemm_batched!('N', 'T', one(T), Swork, BV, zero(T), Twork)
+    precision_gemm_batched!('N', 'T', one(T), Swork, BV, zero(T), Twork, compute)
     # Stage 3 (GEMM): Σ_p U_p T_p, K-stacked over p.  Twork is [rA, sn, qkA]
     Ustack = reshape(AU, sm, qkA * rA)
     Tstack = reshape(permutedims(Twork, (1, 3, 2)), qkA * rA, sn) #TODO permutation is a copy, fix it
     Ccorner = _output_tile_view(C, A, B, mt, ntB)
-    gemm_batched!('N', 'N', alpha, [Ustack], [Tstack], beta, [Ccorner])
+    precision_gemm_batched!('N', 'N', alpha, [Ustack], [Tstack], beta, [Ccorner], compute)
     return C
 end
 
@@ -77,8 +77,8 @@ end
 
 # γ_A γ_B: low-rank corner × low-rank corner, a single 3-stage product (vs. the dense
 # `mul!` of the dense-diagonal container).
-function tlr_gemm_corner_by_corner(C, A::LogicalTLROperand{<:Any,<:TLRMatrix}, B::LogicalTLROperand{<:Any,<:TLRMatrix}, alpha::T;
-    beta::T=one(T)) where {T}
+function tlr_gemm_corner_by_corner(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRMatrix}, alpha;
+    beta=one(alpha), compute=default_gemm_compute_mode(T)) where {T}
     AU = outer_factors(A, _CORNER)
     AV = inner_factors(A, _CORNER)
     BU = outer_factors(B, _CORNER)
@@ -92,9 +92,10 @@ function tlr_gemm_corner_by_corner(C, A::LogicalTLROperand{<:Any,<:TLRMatrix}, B
     sn = size(BV, 1)
 
     Swork = allocate(get_backend(A), T, rA, rB, 1)    # S = Vc^A' Wc^B
-    gemm_batched!('T', 'N', one(T), AV, BU, zero(T), Swork)
+    precision_gemm_batched!('T', 'N', one(T), AV, BU, zero(T), Swork, compute)
     Twork = allocate(get_backend(A), T, rA, sn, 1)    # T = S Zc^B'
-    gemm_batched!('N', 'T', one(T), Swork, BV, zero(T), Twork)
-    mul!(Cc, view(AU, :, :, 1), view(Twork, :, :, 1), alpha, beta)   # C += α Uc^A T
+    precision_gemm_batched!('N', 'T', one(T), Swork, BV, zero(T), Twork, compute)
+    precision_gemm_batched!('N', 'N', alpha, [view(AU, :, :, 1)],
+                            [view(Twork, :, :, 1)], beta, [Cc], compute)
     return C
 end

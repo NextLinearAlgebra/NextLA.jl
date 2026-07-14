@@ -20,7 +20,7 @@ const gemm! = LinearAlgebra.mul!
 end
 
 """
-    gemmEx!(transA, transB, alpha, A, B, beta, C)
+    gemmEx!(transA, transB, alpha, A, B, beta, C; compute_type=...)
 
 Compute the matrix product
 
@@ -38,8 +38,9 @@ as `NextLA.gemmEx!` and is not part of the primary exported surface.
 - `'C'`: adjoint
 
 ## Notes
-- The accumulation / compute type is inferred from `alpha`, `beta`, and the
-  operand/result element types using [`default_compute_type`](@ref).
+- The accumulation type can be selected explicitly with `compute_type`; by
+  default it is inferred from `alpha`, `beta`, and the operand/result element
+  types using [`default_compute_type`](@ref).
 - `gemmEx!` is currently implemented only for `CUDA` and `AMDGPU` backends.
 - If a backend does not support a requested storage and compute type
   combination, backend-specific errors may be raised.
@@ -52,6 +53,8 @@ function gemmEx!(transA::Char,
                  A::AbstractMatrix,
                  B::AbstractMatrix,
                  beta,
-                 C::AbstractMatrix)
+                 C::AbstractMatrix;
+                 compute_type::Type = default_compute_type(alpha, A, B, beta, C))
+    _check_compute_type(compute_type)
     throw(ArgumentError("NextLA.gemmEx! is supported only on CUDA and AMDGPU"))
 end

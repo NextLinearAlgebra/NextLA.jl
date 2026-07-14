@@ -1,5 +1,72 @@
 export gemm_batched!
 
+# --- shared batched-GEMM validation helpers ---------------------------------
+#
+# These are used by the CPU fallbacks below and by every GPU backend extension
+# to avoid re-implementing the same batch-shape checks in each wrapper.
+
+"""
+    _check_batch_lengths(A, B, C) -> length(C)
+
+Assert that vector-of-matrices batches `A`, `B`, `C` have matching lengths.
+"""
+@inline function _check_batch_lengths(A, B, C)
+    length(A) == length(B) == length(C) ||
+        throw(DimensionMismatch("gemm_batched!: matrix batches must have matching lengths"))
+    return length(C)
+end
+
+"""
+    _check_batch_dims(A, B, C) -> (batchA, batchB, batchC)
+
+Assert that strided 3-D batches broadcast consistently against `C`: each of `A`
+and `B` must either match `C`'s batch count or have a batch count of 1.
+"""
+@inline function _check_batch_dims(A, B, C)
+    batchA, batchB, batchC = size(A, 3), size(B, 3), size(C, 3)
+    (batchA == batchC || batchA == 1) ||
+        throw(DimensionMismatch("gemm_batched!: A and C batch sizes are incompatible"))
+    (batchB == batchC || batchB == 1) ||
+        throw(DimensionMismatch("gemm_batched!: B and C batch sizes are incompatible"))
+    return batchA, batchB, batchC
+end
+
+"""
+    _strided_batch_layout(transA, transB, A, B, C)
+        -> (m, n, k, lda, ldb, ldc, strideA, strideB, strideC, batchC)
+
+Validate batch shapes and compute the shared GEMM dimensions, leading
+dimensions, and batch strides for a strided-batched call. A broadcast operand
+(batch count 1) is given a batch stride of 0.
+"""
+@inline function _strided_batch_layout(transA::Char, transB::Char, A, B, C)
+    batchA, batchB, batchC = _check_batch_dims(A, B, C)
+    m, n, k, lda, ldb, ldc = _gemm_dims(
+        transA, transB, @view(A[:, :, 1]), @view(B[:, :, 1]), @view(C[:, :, 1]),
+    )
+    strideA = batchA == 1 ? 0 : stride(A, 3)
+    strideB = batchB == 1 ? 0 : stride(B, 3)
+    strideC = stride(C, 3)
+    return m, n, k, lda, ldb, ldc, strideA, strideB, strideC, batchC
+end
+
+"""
+    _try_same_type_batched!(transA, transB, alpha, A, B, beta, C, compute_type) -> C or nothing
+
+If the operands share an element type and `compute_type` is the inferred default,
+dispatch to the plain `gemm_batched!` and return `C`. Otherwise return `nothing`,
+letting the caller raise a backend-specific "mixed-type unsupported" error. Used
+by backends without a native mixed-type batched GEMM primitive.
+"""
+@inline function _try_same_type_batched!(transA::Char, transB::Char, alpha, A, B, beta, C,
+                                         compute_type::Type)
+    if _batch_eltype(A) == _batch_eltype(B) == _batch_eltype(C) &&
+       compute_type == default_compute_type(alpha, A, B, beta, C)
+        return gemm_batched!(transA, transB, alpha, A, B, beta, C)
+    end
+    return nothing
+end
+
 """
     gemm_batched!(transA, transB, alpha, A, B, beta, C)
 
@@ -28,11 +95,7 @@ function gemm_batched!(transA::Char,
                        B::AbstractArray{<:Any, 3},
                        beta,
                        C::AbstractArray{<:Any, 3})
-    batchA = size(A, 3)
-    batchB = size(B, 3)
-    batchC = size(C, 3)
-    (batchA == batchC || batchA == 1) || throw(DimensionMismatch("gemm_batched!: A and C batch sizes are incompatible"))
-    (batchB == batchC || batchB == 1) || throw(DimensionMismatch("gemm_batched!: B and C batch sizes are incompatible"))
+    batchA, batchB, batchC = _check_batch_dims(A, B, C)
 
     for i in 1:batchC
         Ai = @view A[:, :, batchA == 1 ? 1 : i]
@@ -111,7 +174,7 @@ function gemm_batched!(transA::Char,
                        B::AbstractVector{<:AbstractArray{<:Any, 2}},
                        beta,
                        C::AbstractVector{<:AbstractArray{<:Any, 2}})
-    length(A) == length(B) == length(C) || throw(DimensionMismatch("gemm_batched!: matrix batches must have matching lengths"))
+    _check_batch_lengths(A, B, C)
     for i in eachindex(A, B, C)
         BLAS.gemm!(transA, transB, eltype(C[i])(alpha), A[i], B[i], eltype(C[i])(beta), C[i])
     end
@@ -119,7 +182,7 @@ function gemm_batched!(transA::Char,
 end
 
 """
-    gemmEx_batched!(transA, transB, alpha, A, B, beta, C)
+    gemmEx_batched!(transA, transB, alpha, A, B, beta, C; compute_type=...)
 
 Compute a mixed-type batched matrix product.
 
@@ -134,8 +197,9 @@ is available as `NextLA.gemmEx_batched!` and is not part of the primary
 exported surface.
 
 ## Notes
-- The accumulation / compute type is inferred from `alpha`, `beta`, and the
-  operand/result element types using [`default_compute_type`](@ref).
+- The accumulation type can be selected explicitly with `compute_type`; by
+  default it is inferred from `alpha`, `beta`, and the operand/result element
+  types using [`default_compute_type`](@ref).
 - Same-type batched calls may fall back to `gemm_batched!` on backends that do
   not expose a mixed-type batched GEMM primitive.
 - Mixed-type batched GEMM is currently implemented for CUDA and AMDGPU.
@@ -153,10 +217,8 @@ function gemmEx_batched!(transA::Char,
                          C::AbstractArray{<:Any, 3};
                          compute_type::Type = default_compute_type(alpha, A, B, beta, C))
     _check_compute_type(compute_type)
-    if eltype(A) == eltype(B) == eltype(C) &&
-       compute_type == default_compute_type(alpha, A, B, beta, C)
-        return gemm_batched!(transA, transB, alpha, A, B, beta, C)
-    end
+    r = _try_same_type_batched!(transA, transB, alpha, A, B, beta, C, compute_type)
+    r === nothing || return r
     throw(ArgumentError("NextLA.gemmEx_batched! is supported only on CUDA and AMDGPU for mixed-type batched GEMM"))
 end
 
@@ -169,10 +231,8 @@ function gemmEx_batched!(transA::Char,
                          C::AbstractVector{<:AbstractArray{<:Any, 2}};
                          compute_type::Type = default_compute_type(alpha, A, B, beta, C))
     _check_compute_type(compute_type)
-    if eltype(A) == eltype(B) == eltype(C) &&
-       compute_type == default_compute_type(alpha, A, B, beta, C)
-        return gemm_batched!(transA, transB, alpha, A, B, beta, C)
-    end
+    r = _try_same_type_batched!(transA, transB, alpha, A, B, beta, C, compute_type)
+    r === nothing || return r
     throw(ArgumentError("NextLA.gemmEx_batched! is supported only on CUDA and AMDGPU for mixed-type batched GEMM"))
 end
 

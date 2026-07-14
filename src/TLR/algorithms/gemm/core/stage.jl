@@ -1,6 +1,6 @@
 # Stage descriptors
 
-struct StageDescriptor{StageT<:GemmStage,PlacementT<:KAxisSchedule,RunT,OpsT,WST,CT,AlphaT,BetaT,FoldT,BlockingT}
+struct StageDescriptor{StageT<:GemmStage,PlacementT<:KAxisSchedule,RunT,OpsT,WST,CT,AlphaT,BetaT,FoldT,BlockingT,ComputeT}
     stage::StageT
     placement::PlacementT
     run::RunT
@@ -11,20 +11,21 @@ struct StageDescriptor{StageT<:GemmStage,PlacementT<:KAxisSchedule,RunT,OpsT,WST
     beta::BetaT
     fold::FoldT
     free_axis_schedule::BlockingT
+    compute::ComputeT
 end
 
-@inline stage1(placement::KAxisSchedule, run, ops, ws, fold::FoldSide) =
-    StageDescriptor(Stage1(), placement, run, ops, ws, nothing, nothing, nothing, fold, free_axis_schedule(placement))
+@inline stage1(placement::KAxisSchedule, run, ops, ws, fold::FoldSide, compute) =
+    StageDescriptor(Stage1(), placement, run, ops, ws, nothing, nothing, nothing, fold, free_axis_schedule(placement), compute)
 
-@inline stage2(placement::KAxisSchedule, run, ops, ws, fold::FoldSide) =
-    StageDescriptor(Stage2(), placement, run, ops, ws, nothing, nothing, nothing, fold, nothing)
+@inline stage2(placement::KAxisSchedule, run, ops, ws, fold::FoldSide, compute) =
+    StageDescriptor(Stage2(), placement, run, ops, ws, nothing, nothing, nothing, fold, nothing, compute)
 
 # `beta` is applied by Stage 3 on the (single) write of each output tile. The row
 # family is write-once so it passes β directly; the column family loops the reduction,
 # so `_offdiag_offdiag_gemm!` pre-scales the region and passes β = 1 here. `FoldLeft` is
 # only ever paired with the row family, so it too folds β in its single write.
-@inline stage3(placement::KAxisSchedule, run, ops, ws, C::AbstractMatrix, alpha, beta, fold::FoldSide) =
-    StageDescriptor(Stage3(), placement, run, ops, ws, C, alpha, beta, fold, nothing)
+@inline stage3(placement::KAxisSchedule, run, ops, ws, C::AbstractMatrix, alpha, beta, fold::FoldSide, compute) =
+    StageDescriptor(Stage3(), placement, run, ops, ws, C, alpha, beta, fold, nothing, compute)
 
 @inline _ws_eltype(ws) = eltype(ws.S.data)
 
@@ -72,7 +73,7 @@ function execute_stage!(::Stage1, ::KAsGemmK, ::Any, ::FreeAsBatch, d::StageDesc
         end
     end
     isempty(vb.s1v) && return nothing
-    return gemm_batched!('T', 'N', one(T), vb.s1v, vb.s1w, zero(T), vb.s1s)
+    return precision_gemm_batched!('T', 'N', one(T), vb.s1v, vb.s1w, zero(T), vb.s1s, d.compute)
 end
 
 # Fused Stage 1 for `(k,j)`: B stride-1 `:j` makes `rowpanel(k)` contiguous over
@@ -106,7 +107,7 @@ function execute_stage!(::Stage1, ::KAsGemmK, ::Any, ::JAsGemmN, d::StageDescrip
         end
     end
     isempty(vb.s1jv) && return nothing
-    return gemm_batched!('T', 'N', one(T), vb.s1jv, vb.s1jw, zero(T), vb.s1js)
+    return precision_gemm_batched!('T', 'N', one(T), vb.s1jv, vb.s1jw, zero(T), vb.s1js, d.compute)
 end
 
 function execute_stage!(::Stage2, ::KAsGemmK, ::FoldRight, ::Any, d::StageDescriptor)
@@ -131,7 +132,7 @@ function execute_stage!(::Stage2, ::KAsGemmK, ::FoldRight, ::Any, d::StageDescri
         end
     end
     isempty(vb.s2s) && return nothing
-    return gemm_batched!('N', 'T', one(T), vb.s2s, vb.s2z, zero(T), vb.s2t)
+    return precision_gemm_batched!('N', 'T', one(T), vb.s2s, vb.s2z, zero(T), vb.s2t, d.compute)
 end
 
 function execute_stage!(::Stage3, ::KAsGemmK, ::FoldRight, ::Any, d::StageDescriptor)
@@ -151,7 +152,7 @@ function execute_stage!(::Stage3, ::KAsGemmK, ::FoldRight, ::Any, d::StageDescri
         push!(vb.s3t, Tstack)
         push!(vb.s3c, dense_rowblock(d.C, bm, bn, i, run.j0, run.j1))
     end
-    return gemm_batched!('N', 'N', T(d.alpha), vb.s3u, vb.s3t, T(d.beta), vb.s3c)
+    return precision_gemm_batched!('N', 'N', d.alpha, vb.s3u, vb.s3t, d.beta, vb.s3c, d.compute)
 end
 
 # ── FoldLeft (row family, FullGrid) ──────────────────────────────────────────
@@ -183,7 +184,7 @@ function execute_stage!(::Stage2, ::KAsGemmK, ::FoldLeft, ::Any, d::StageDescrip
         end
     end
     isempty(vb.s2u) && return nothing
-    return gemm_batched!('N', 'N', one(T), vb.s2u, vb.s2s, zero(T), vb.s2t)
+    return precision_gemm_batched!('N', 'N', one(T), vb.s2u, vb.s2s, zero(T), vb.s2t, d.compute)
 end
 
 # Stage 3 (write-once): C_ij = β·C_ij + α·Σ_k T'_ikj Z_kj'. Stack over k: the left
@@ -211,7 +212,7 @@ function execute_stage!(::Stage3, ::KAsGemmK, ::FoldLeft, ::Any, d::StageDescrip
             push!(vb.s3c, dense_tile(d.C, bm, bn, i, j))
         end
     end
-    return gemm_batched!('N', 'T', T(d.alpha), vb.s3t, vb.s3z, T(d.beta), vb.s3c)
+    return precision_gemm_batched!('N', 'T', d.alpha, vb.s3t, vb.s3z, d.beta, vb.s3c, d.compute)
 end
 
 function execute_stage!(::Stage1, ::KAsSerialLoop, ::Any, ::IAsGemmM, d::StageDescriptor)
@@ -231,7 +232,7 @@ function execute_stage!(::Stage1, ::KAsSerialLoop, ::Any, ::IAsGemmM, d::StageDe
             push!(vb.s1s, view(ws.S.data, :, :, jx, kx))
         end
     end
-    return gemm_batched!('T', 'N', one(T), vb.s1v, vb.s1w, zero(T), vb.s1s)
+    return precision_gemm_batched!('T', 'N', one(T), vb.s1v, vb.s1w, zero(T), vb.s1s, d.compute)
 end
 
 function execute_stage!(::Stage1, ::KAsSerialLoop, ::Any, ::IJAsGemmMN, d::StageDescriptor)
@@ -255,7 +256,7 @@ function execute_stage!(::Stage1, ::KAsSerialLoop, ::Any, ::IJAsGemmMN, d::Stage
         push!(vb.s1jw, Wsub)
         push!(vb.s1js, Ssub)
     end
-    return gemm_batched!('T', 'N', one(T), vb.s1jv, vb.s1jw, zero(T), vb.s1js)
+    return precision_gemm_batched!('T', 'N', one(T), vb.s1jv, vb.s1jw, zero(T), vb.s1js, d.compute)
 end
 
 function execute_stage!(::Stage2, ::KAsSerialLoop, ::FoldRight, ::Any, d::StageDescriptor)
@@ -276,7 +277,7 @@ function execute_stage!(::Stage2, ::KAsSerialLoop, ::FoldRight, ::Any, d::StageD
             push!(vb.s2t, reshape(view(ws.T.data, :, :, :, jx, kx), rA_noff, b))
         end
     end
-    return gemm_batched!('N', 'T', one(T), vb.s2s, vb.s2z, zero(T), vb.s2t)
+    return precision_gemm_batched!('N', 'T', one(T), vb.s2s, vb.s2z, zero(T), vb.s2t, d.compute)
 end
 
 function execute_stage!(::Stage3, ::KAsSerialLoop, ::FoldRight, ::Any, d::StageDescriptor)
@@ -302,7 +303,7 @@ function execute_stage!(::Stage3, ::KAsSerialLoop, ::FoldRight, ::Any, d::StageD
                 push!(vb.s3c, dense_tile(d.C, bm, bn, i, j))
             end
         end
-        gemm_batched!('N', 'N', T(d.alpha), vb.s3u, vb.s3t, T(d.beta), vb.s3c)
+        precision_gemm_batched!('N', 'N', d.alpha, vb.s3u, vb.s3t, d.beta, vb.s3c, d.compute)
     end
     return nothing
 end

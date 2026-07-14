@@ -10,7 +10,7 @@ Status: `[x]` done, `[>]` active, `[ ]` planned.
 | status | milestone | deliverable | depends on | acceptance gate |
 | --- | --- | --- | --- | --- |
 | `[x]` | 1. Canonical operands | One zero-copy, whole-matrix logical operand for `N/T`, including panels, corners, dense diagonal tiles, effective geometry, and output targeting. | Current interior operand and staged GEMM. | Both TLR containers match dense references for supported boundary transpose cases on CPU and representative GPU cases. |
-| `[>]` | 2. Precision policy | Central GEMM/GEMMEx dispatch plus explicit storage, workspace, compute, output, and compression types. | Canonical operands. | Supported mixed-precision combinations have typed workspace accounting and backend capability tests. |
+| `[x]` | 2. Precision policy | Central GEMM/GEMMEx dispatch that infers operand/output storage, keeps intermediate factors operand-typed, and accepts an explicit compute mode. | Canonical operands. | Supported mixed-precision combinations have backend capability tests, and every lowering preserves the intermediate-type invariant. |
 | `[ ]` | 3. Contraction IR | Dense/low-rank leaves, orientation domains, contraction descriptors, and dense/low-rank update production. | Canonical operands and precision policy. | Existing dense-output terms lower through the IR without performance or correctness regressions. |
 | `[ ]` | 4. Output sinks | A shared update stream targeting either dense materialization or TLR factor accumulation. | Contraction IR. | One contraction can be lowered unchanged to dense and TLR outputs. |
 | `[ ]` | 5. Bounded TLR accumulation | Streaming merge/recompression whose live contraction, factor, and compression scratch fits one workspace budget. | TLR output sink and tile-source compression. | The first TLR-output product respects rank, approximation, and memory limits. |
@@ -28,6 +28,12 @@ Status: `[x]` done, `[>]` active, `[ ]` planned.
   output factors, and concurrency.
 - Mixed precision distinguishes input storage, intermediate storage, GEMM compute,
   output storage, and compression/orthogonalisation precision.
+
+Milestone 2 covers real `Float16`/`Float32`/`Float64` operands, the valid
+same- and mixed-output combinations, and CUDA TF32. Operand storage comes from `A`
+and `B`, output storage comes from `C`, and only the compute mode is selected by the
+caller. GEMM scalars use compute precision, while intermediate factors retain operand
+precision. Compression precision remains part of the later TLR-output milestones.
 
 ## Container-level lazy transpose proposal
 
@@ -58,5 +64,5 @@ or kernel benefit.
 ## Progress rule
 
 A milestone becomes `[x]` only when its acceptance gate is covered by tests and its
-implemented behavior is reflected in `DESIGN.md`. Exactly one milestone should be
+implemented behavior is reflected in `DESIGN.md`. At most one milestone should be
 `[>]` while implementation is active.

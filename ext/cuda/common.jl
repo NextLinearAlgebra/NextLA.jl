@@ -1,6 +1,5 @@
 const CUBLAS = CUDA.CUBLAS
 const CUSOLVER = CUDA.CUSOLVER
-const NATIVE_GEMM_TYPES = Union{Float16, Float32, Float64, ComplexF32, ComplexF64}
 
 @inline NextLA.SUBGROUP_SIZE(::Type{<:CUDA.CUDABackend}) = Val(32)
 @inline NextLA.supports_pointer_batched(::Type{<:CUDA.CUDABackend}) = true
@@ -19,8 +18,15 @@ const NATIVE_GEMM_TYPES = Union{Float16, Float32, Float64, ComplexF32, ComplexF6
 @inline _cublas_scalar_type(::Type{ComplexF64}) = ComplexF64
 @inline _cublas_scalar_type(::Type{Int32}) = Int32
 
-@inline _supports_native_gemm(::Type{T}, ::Type{T}, ::Type{T}) where {T<:NATIVE_GEMM_TYPES} = true
-@inline _supports_native_gemm(::Type, ::Type, ::Type) = false
+function NextLA.gemm_signature_supported(::CUDA.CUDABackend,
+                                         ::Type{TA}, ::Type{TB}, ::Type{TC},
+                                         ::NextLA.GEMMCompute{T}) where {TA,TB,TC,T}
+    return NextLA._tensor_core_gemm_supported(TA, TB, TC, T)
+end
+
+@inline NextLA.gemm_signature_supported(::CUDA.CUDABackend,
+                                        ::Type{Float32}, ::Type{Float32}, ::Type{Float32},
+                                        ::NextLA.TF32) = true
 
 @inline function _unsafe_batch_strided(batch::AbstractVector{<:CUDA.StridedCuMatrix{T}}) where {T}
     return CUDA.CuArray(pointer.(batch))

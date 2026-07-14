@@ -335,6 +335,12 @@ end
 
         Bt = NextLA.TLRMatrix(zeros(Float64, 8, 8), (2, 4), 2)
         @test_throws DimensionMismatch NextLA.TLRmodule.gemm!(zeros(8, 8), A, Bt)
+
+        Af = NextLA.TLRMatrix(zeros(Float32, 8, 8), 4, 2)
+        Bf = NextLA.TLRMatrix(zeros(Float32, 8, 8), 4, 2)
+        @test_throws ArgumentError NextLA.TLRmodule.gemm!(zeros(Float64, 8, 8), Af, Bf)
+        @test_throws ArgumentError NextLA.TLRmodule.gemm!(zeros(Float32, 8, 8), Af, Bf; compute=Float64)
+        @test_throws ArgumentError NextLA.TLRmodule.gemm!(zeros(Float32, 8, 8), Af, Bf; compute=NextLA.TF32())
     end
 end
 
@@ -387,6 +393,73 @@ end
             assert_dense_diag_transpose_matches(14, 4, 3, orders...,'T', 'T';
                                                 budget=1, ArrayType, synchronize,
                                                 atol=1e-8, rtol=1e-8)
+
+            @testset "precision policy" begin
+                A16 = NextLA.TLRMatrix(ArrayType(zeros(Float16, 10, 10)), 4, 2;
+                                       tile_order=orders[1])
+                B16 = NextLA.TLRMatrix(ArrayType(zeros(Float16, 10, 10)), 4, 2;
+                                       tile_order=orders[2])
+                fill_random_tlr!(A16, ArrayType; seed=501)
+                fill_random_tlr!(B16, ArrayType; seed=502)
+                ref16 = Float32.(reconstruct_tlr(A16)) * Float32.(reconstruct_tlr(B16))
+
+                C16 = ArrayType(zeros(Float16, 10, 10))
+                NextLA.TLRmodule.gemm!(C16, A16, B16; compute=Float32, max_workspace=1)
+                synchronize(C16)
+                @test isapprox(Float32.(Array(C16)), ref16; atol=0.2f0, rtol=0.03f0)
+
+                C16native = ArrayType(zeros(Float16, 10, 10))
+                NextLA.TLRmodule.gemm!(C16native, A16, B16; compute=Float16, max_workspace=1)
+                synchronize(C16native)
+                @test isapprox(Float32.(Array(C16native)), ref16; atol=0.5f0, rtol=0.06f0)
+
+                C32 = ArrayType(zeros(Float32, 10, 10))
+                NextLA.TLRmodule.gemm!(C32, A16, B16; compute=Float32, max_workspace=1)
+                synchronize(C32)
+                @test isapprox(Array(C32), ref16; atol=0.2f0, rtol=0.03f0)
+
+                # GEMM scalars follow compute precision, not FP16 factor storage.
+                # The factors make A*B exactly 100I even through FP16 S/T storage,
+                # so rounding alpha to FP16 would produce 100 instead of 100.01.
+                Aexact = NextLA.TLRMatrix(ArrayType(zeros(Float16, 4, 4)), 4, 4)
+                Bexact = NextLA.TLRMatrix(ArrayType(zeros(Float16, 4, 4)), 4, 4)
+                I16 = Matrix{Float16}(I, 4, 4)
+                Aexact.int_U .= ArrayType(reshape(10 .* I16, 4, 4, 1))
+                Aexact.int_V .= ArrayType(reshape(I16, 4, 4, 1))
+                Bexact.int_U .= ArrayType(reshape(10 .* I16, 4, 4, 1))
+                Bexact.int_V .= ArrayType(reshape(I16, 4, 4, 1))
+                Aexact.ranks .= 4
+                Bexact.ranks .= 4
+                alpha32 = Float32(1.0001)
+                beta32 = Float32(0.1234)
+                Cscalar = ArrayType(fill(Float32(10), 4, 4))
+                NextLA.TLRmodule.gemm!(Cscalar, Aexact, Bexact;
+                                       alpha=alpha32, beta=beta32)
+                synchronize(Cscalar)
+                scalar_ref = alpha32 .* (Float32(100) .* Matrix{Float32}(I, 4, 4)) .+
+                             beta32 .* fill(Float32(10), 4, 4)
+                @test isapprox(Array(Cscalar), scalar_ref; atol=2f-5, rtol=2f-6)
+
+                A32 = NextLA.TLRMatrix(ArrayType(zeros(Float32, 8, 8)), 4, 2)
+                B32 = NextLA.TLRMatrix(ArrayType(zeros(Float32, 8, 8)), 4, 2)
+                fill_random_tlr!(A32, ArrayType; seed=503)
+                fill_random_tlr!(B32, ArrayType; seed=504)
+                Ctf32 = ArrayType(zeros(Float32, 8, 8))
+                NextLA.TLRmodule.gemm!(Ctf32, A32, B32; compute=NextLA.TF32())
+                synchronize(Ctf32)
+                ref32 = reconstruct_tlr(A32) * reconstruct_tlr(B32)
+                @test isapprox(Array(Ctf32), ref32; atol=0.1f0, rtol=0.03f0)
+            end
         end
+    end
+end
+
+@testset "TF32 backend capability" begin
+    for (backend_name, ArrayType, _) in available_backends()
+        backend_name == "AMDGPU" || continue
+        A = NextLA.TLRMatrix(ArrayType(zeros(Float32, 8, 8)), 4, 2)
+        B = NextLA.TLRMatrix(ArrayType(zeros(Float32, 8, 8)), 4, 2)
+        C = ArrayType(zeros(Float32, 8, 8))
+        @test_throws ArgumentError NextLA.TLRmodule.gemm!(C, A, B; compute=NextLA.TF32())
     end
 end

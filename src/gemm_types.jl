@@ -30,18 +30,17 @@ Standard GEMM behavior:
 
 | Operation | CPU | CUDA | AMDGPU | oneAPI | Metal |
 | --- | --- | --- | --- | --- | --- |
-| `gemmEx!` with default `compute_type` | unsupported | `CUBLAS.gemm!` | `rocBLAS.gemm!` | unsupported | unsupported |
+| `gemmEx!` with default `compute_type` | unsupported | cuBLAS GEMMEx | rocBLAS GEMMEx | unsupported | unsupported |
 | `gemm_batched!` | loop of standard GEMMs | pointer or strided batched GEMM | pointer or strided batched GEMM | pointer or strided batched GEMM | strided MPS matmul |
-| `gemmEx_batched!` with default `compute_type` | falls back to `gemm_batched!` | falls back to `gemm_batched!` | falls back to `gemm_batched!` | falls back to `gemm_batched!` for same-type batches | falls back to `gemm_batched!` for same-type batches |
+| `gemmEx_batched!` with default `compute_type` | same-type fallback only | cuBLAS batched GEMMEx | rocBLAS batched GEMMEx | same-type fallback only | same-type fallback only |
 | `syrk!` | `BLAS.syrk!` | `CUBLAS.syrk!` | native rocBLAS SYRK | `oneMKL.syrk!` | MPS GEMM fallback |
 
-Representative non-default `compute_type` combinations:
+Representative supported `compute_type` combinations:
 
 | A/B storage | C storage | `compute_type` | CUDA | AMDGPU | oneAPI | Metal |
 | --- | --- | --- | --- | --- | --- | --- |
 | `Float16` | `Float16` | `Float32` | yes | yes | unsupported | unsupported |
 | `Float16` | `Float32` | `Float32` | yes | yes | unsupported | unsupported |
-| `Float32` | `Float32` | `Float16` | yes | yes | unsupported | unsupported |
 | `Int8` | `Int32` | `Int32` | yes | yes | unsupported | unsupported |
 
 TF32 and other backend-specific fast-math modes are intentionally excluded from
@@ -56,13 +55,21 @@ const GEMM_COMPUTE_TYPES = (
     Int32,
 )
 
-@inline _gemm_typeof(x) = typeof(x)
-@inline _gemm_typeof(x::AbstractArray{T}) where {T} = T
-@inline _gemm_typeof(x::AbstractVector{<:AbstractArray{T}}) where {T} = T
+"""
+    NATIVE_GEMM_TYPES
+
+Element types for which the GPU backends expose a native same-type GEMM. Used by
+the backend extensions to choose between the native BLAS call and the generic
+`Ex` path.
+"""
+const NATIVE_GEMM_TYPES = Union{Float16, Float32, Float64, ComplexF32, ComplexF64}
+
+@inline _supports_native_gemm(::Type{T}, ::Type{T}, ::Type{T}) where {T<:NATIVE_GEMM_TYPES} = true
+@inline _supports_native_gemm(::Type, ::Type, ::Type) = false
 
 @inline function _default_compute_type(::Type{T}) where {T}
     if T <: Complex
-        return _default_compute_type(T.parameters[1]) === Float64 ? ComplexF64 : ComplexF32
+        return _default_compute_type(real(T)) === Float64 ? ComplexF64 : ComplexF32
     elseif T === Float16
         return Float16
     elseif T <: AbstractFloat
@@ -95,11 +102,11 @@ Backends may still reject unsupported storage and compute type combinations.
 """
 @inline function default_compute_type(alpha, A, B, beta, C)
     T = promote_type(
-        _gemm_typeof(alpha),
-        _gemm_typeof(A),
-        _gemm_typeof(B),
-        _gemm_typeof(beta),
-        _gemm_typeof(C),
+        eltype(alpha),
+        _batch_eltype(A),
+        _batch_eltype(B),
+        eltype(beta),
+        _batch_eltype(C),
     )
     return _default_compute_type(T)
 end

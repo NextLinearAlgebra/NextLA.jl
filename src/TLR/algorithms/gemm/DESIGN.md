@@ -48,9 +48,9 @@ the output tile is `bm × bn` and only the contraction size `bk` must be shared
 (`nominal_tile_size(A,2) == nominal_tile_size(B,1)`; the `TLRDenseDiagMatrix` path is
 square with `bm = bk = bn`). Constant `maxrank` with zero-padded
 inactive rank columns. It does not pack factors or materialise padded tensors —
-every stage operand is a zero-copy strided view, and both CPU and CUDA execute
-through `gemm_batched!`. Boundary panels (`right`/`bottom`) and the corner are
-handled only for the easy terms so far.
+every stage operand is a zero-copy strided view, and execution goes through the
+precision-aware batched GEMM dispatcher. Boundary panels (`right`/`bottom`) and the
+corner use the same dispatcher and precision rules.
 
 ## 3. Layering (the morphism chain)
 
@@ -61,7 +61,7 @@ physical TLR storage
   → budgeted run descriptors             schedule.jl
   → S/T scratch + batch view buffers     schedule.jl
   → stage descriptors                    stage.jl
-  → batched GEMM execution               stage.jl → gemm_batched!
+  → precision-aware batched GEMM          stage.jl → precision_gemm_batched!
 ```
 
 Files:
@@ -71,7 +71,7 @@ Files:
 | `layout.jl` | pure traits: `Stride1Axis`, `KAxisSchedule`, `FreeAxisSchedule`, and the functions deriving them from `TLRDenseDiagMatrix` types |
 | `panel.jl` | `InteriorOperand` over factor storage + `GridKind` enumeration policy; logical operands (`LogicalTLROperands`), `ScratchS`/`ScratchT` |
 | `schedule.jl` | budgeted `RowRun`/`ColumnRun` iterators; `allocate_workspace` and the reusable batch-view buffers |
-| `stage.jl` | `StageDescriptor` and the `execute_stage!` methods that lower each stage straight to `gemm_batched!` |
+| `stage.jl` | `StageDescriptor` and the `execute_stage!` methods that lower each stage through the precision-aware dispatcher |
 | `diagonal.jl` | the three easy terms |
 | `gemm.jl` | `gemm!` entry + validation + `_offdiag_offdiag_gemm!` orchestration |
 
@@ -174,9 +174,9 @@ is reused, so hot loops allocate nothing.
 ## 7. Stages and execution (`stage.jl`)
 
 A `StageDescriptor` bundles `(stage, placement, run, ops, workspace, C, alpha,
-blocking)`. `stage1/2/3(placement, run, ops, ws[, C, alpha])` build them;
+blocking, compute)`. `stage1/2/3(placement, run, ops, ws[, C, alpha], compute)` build them;
 `execute_stage!` is dispatched on `(Stage, KAxisSchedule[, FreeAxisSchedule])`
-and refills the batch buffers, then calls `gemm_batched!` once.
+and refills the batch buffers, then calls the precision-aware dispatcher once.
 
 `prepare_run!` runs before the stages: for row runs it zeroes the used T slice
 (so the dead `k=j` slots contribute nothing to the fused-K Stage 3); for column
@@ -226,9 +226,9 @@ placement = k_axis_schedule(stride1_axis_left(A), stride1_axis_right(B))
 ws  = allocate_workspace(placement, A, B, C, budget)
 for run in runs(placement, A, B, budget)
     prepare_run!(placement, run, ws)
-    execute_stage!(stage1(placement, run, ops, ws))
-    execute_stage!(stage2(placement, run, ops, ws))
-    execute_stage!(stage3(placement, run, ops, ws, C, alpha))
+    execute_stage!(stage1(placement, run, ops, ws, fold, compute))
+    execute_stage!(stage2(placement, run, ops, ws, fold, compute))
+    execute_stage!(stage3(placement, run, ops, ws, C, alpha, beta, fold, compute))
 end
 ```
 
@@ -425,3 +425,31 @@ dimensions.
 
 Flags are case-insensitive `N/T`; other flags are rejected. Conjugate transpose is a
 future complex-arithmetic extension.
+
+## 13. Precision-aware lowering
+
+`gemm!(C, A, B; compute=...)` infers operand storage from `A`/`B` and output storage
+from `C`; the user selects only the compute mode. Supported real-valued signatures
+are:
+
+| operand storage | `S/T` storage | `C` storage | compute mode |
+| --- | --- | --- | --- |
+| `Float16` | `Float16` | `Float16` | `Float16` or `Float32` |
+| `Float16` | `Float16` | `Float32` | `Float32` |
+| `Float32` | `Float32` | `Float32` | `Float32`, or `TF32()` on CUDA |
+| `Float64` | `Float64` | `Float64` | `Float64` |
+
+The entry point validates both signatures required by the lowering before launching
+work: `Tin × Tin → Tin` for intermediate stages and `Tin × Tin → Tout` for the final
+stage. `S` and `T` are always allocated in `Tin`. Thus a different dense output type
+is visible only to GEMMs that write `C`; it never creates a mixed-type Stage-2 or
+Stage-3 operand pair. Unsupported combinations, including `TF32()` on non-CUDA
+backends, fail before scheduling.
+
+`alpha` and `beta` are converted to the selected compute type, not operand storage.
+Consequently FP16 factors with FP32 compute do not quantize GEMM scalars to FP16.
+Standalone scaling of `C` converts `beta` to `eltype(C)` at the output operation.
+
+Every region term uses `precision_gemm_batched!`. Ordinary compute modes lower to
+GEMMEx with an explicit accumulation type. CUDA TF32 lowers to the corresponding
+cuBLAS fast-TF32 compute enum; TF32 is a compute mode, not a storage type.
