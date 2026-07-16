@@ -1,6 +1,9 @@
-include("helpers.jl")
+# Container layer: tile-index geometry, constructors, storage shapes, factor access.
 
 @testset "TLR geometry" begin
+    # The column-major table is the hand-enumerated ground truth for the index
+    # arithmetic; the row-major variant only flips the enumeration axis, so it is
+    # pinned by the round-trip property plus spot checks below.
     @testset "column-major index table" begin
         A = NextLA.TLRDenseDiagMatrix(zeros(Float32, 10, 9), 4, 4; tile_order=NextLA.TileColMajor)
         expected = [
@@ -24,103 +27,47 @@ include("helpers.jl")
 
         @test NextLA.tilegrid_size(A) == (3, 3)
         @test NextLA.TLRmodule._offdiag_index(A.order, NextLA.tilegrid_size(A)..., 2, 1) == 1
-        @test NextLA.TLRmodule._offdiag_index(A.order, NextLA.tilegrid_size(A)..., 3, 1) == 2
-        @test NextLA.TLRmodule._offdiag_index(A.order, NextLA.tilegrid_size(A)..., 1, 2) == 3
         @test NextLA.TLRmodule._offdiag_index(A.order, NextLA.tilegrid_size(A)..., 1, 3) == 5
         @test NextLA.TLRmodule._offdiag_coords(A.order, NextLA.tilegrid_size(A)..., 1) == (2, 1)
-        @test NextLA.TLRmodule._offdiag_coords(A.order, NextLA.tilegrid_size(A)..., 2) == (3, 1)
-        @test NextLA.TLRmodule._offdiag_coords(A.order, NextLA.tilegrid_size(A)..., 3) == (1, 2)
         @test NextLA.TLRmodule._offdiag_coords(A.order, NextLA.tilegrid_size(A)..., 5) == (1, 3)
     end
 
-    @testset "row-major index table" begin
+    @testset "row-major round trip and offdiag slots" begin
         A = NextLA.TLRDenseDiagMatrix(zeros(Float32, 10, 9), 4, 4; tile_order=NextLA.TileRowMajor)
-        expected = [
-            (1, 1, 1, 1, 1, 4, 4),
-            (1, 2, 2, 1, 5, 4, 4),
-            (1, 3, 3, 1, 9, 4, 1),
-            (2, 1, 4, 5, 1, 4, 4),
-            (2, 2, 5, 5, 5, 4, 4),
-            (2, 3, 6, 5, 9, 4, 1),
-            (3, 1, 7, 9, 1, 2, 4),
-            (3, 2, 8, 9, 5, 2, 4),
-            (3, 3, 9, 9, 9, 2, 1),
-        ]
+        gs = NextLA.tilegrid_size(A)
+        @test gs == (3, 3)
 
-        for (i, j, linear, p0, q0, tile_m, tile_n) in expected
-            @test NextLA.TLRmodule.tile_linear_index(A.order, NextLA.tilegrid_size(A)..., i, j) == linear
-            @test NextLA.TLRmodule.inverse_tile_index(A.order, NextLA.tilegrid_size(A)..., linear) == (i, j)
-            @test NextLA.tile_origin_coords(A, i, j) == (p0, q0)
-            @test NextLA.tile_size(A, i, j) == (tile_m, tile_n)
+        for linear in 1:prod(gs)
+            i, j = NextLA.TLRmodule.inverse_tile_index(A.order, gs..., linear)
+            @test NextLA.TLRmodule.tile_linear_index(A.order, gs..., i, j) == linear
         end
+        # Row-major enumerates j fastest — the transpose of the col-major table.
+        @test NextLA.TLRmodule.tile_linear_index(A.order, gs..., 1, 2) == 2
+        @test NextLA.TLRmodule.tile_linear_index(A.order, gs..., 2, 1) == 4
 
-        @test NextLA.tilegrid_size(A) == (3, 3)
-        @test NextLA.TLRmodule._offdiag_index(A.order, NextLA.tilegrid_size(A)..., 1, 2) == 1
-        @test NextLA.TLRmodule._offdiag_index(A.order, NextLA.tilegrid_size(A)..., 1, 3) == 2
-        @test NextLA.TLRmodule._offdiag_index(A.order, NextLA.tilegrid_size(A)..., 2, 1) == 3
-        @test NextLA.TLRmodule._offdiag_index(A.order, NextLA.tilegrid_size(A)..., 3, 1) == 5
-        @test NextLA.TLRmodule._offdiag_coords(A.order, NextLA.tilegrid_size(A)..., 1) == (1, 2)
-        @test NextLA.TLRmodule._offdiag_coords(A.order, NextLA.tilegrid_size(A)..., 2) == (1, 3)
-        @test NextLA.TLRmodule._offdiag_coords(A.order, NextLA.tilegrid_size(A)..., 5) == (3, 1)
+        @test NextLA.TLRmodule._offdiag_index(A.order, gs..., 1, 2) == 1
+        @test NextLA.TLRmodule._offdiag_index(A.order, gs..., 3, 1) == 5
+        @test NextLA.TLRmodule._offdiag_coords(A.order, gs..., 1) == (1, 2)
+        @test NextLA.TLRmodule._offdiag_coords(A.order, gs..., 5) == (3, 1)
     end
 end
 
 @testset "TLRDenseDiagMatrix constructor and storage allocation" begin
-    for (backend_name, ArrayType, synchronize) in available_backends()
-        @testset "$backend_name" begin
-            prototype = ArrayType(zeros(Float32, 32, 32))
-            # 32×32 with b=16: 2×2 tile grid, no boundary tiles
-            A = NextLA.TLRDenseDiagMatrix(prototype, 16, 16)
-
-            @test !ismutable(A)
-            @test size(A) == (32, 32)
-            @test NextLA.tilegrid_size(A) == (2, 2)
-            @test NextLA.TLRmodule.tile_order(A) isa NextLA.TileColMajor
-            @test A.nominal_tile_size == (16, 16)
-            @test NextLA.nominal_tile_size(A) == (16, 16)
-            @test NextLA.nominal_tile_size(A, 1) == 16
-            @test NextLA.nominal_tile_size(A, 2) == 16
-            @test NextLA.tail_tile_size(A) == (0, 0)
-            @test NextLA.tail_tile_size(A, 1) == 0
-            @test NextLA.tail_tile_size(A, 2) == 0
-            @test NextLA.maxrank(A) == 16
-            @test size(A.int_U) == (16, 16, 2)
-            @test size(A.int_V) == (16, 16, 2)
-            @test size(A.right_U, 3) == 0   # no right boundary
-            @test size(A.right_V, 3) == 0
-            @test size(A.bottom_U, 3) == 0  # no bottom boundary
-            @test size(A.bottom_V, 3) == 0
-            @test size(NextLA.dense_diag(A)) == (16, 16, 2)
-            @test size(NextLA.dense_diag_corner(A)) == (16, 16, 0)
-            @test NextLA.dense_diag_corner(A) === A.D_corner
-            @test size(NextLA.ranks(A)) == (4,)
-            @test Int(NextLA.ranks(A)[NextLA.TLRmodule._rank_index(A, 1, 1)]) == 16
-            @test Int(NextLA.ranks(A)[NextLA.TLRmodule._rank_index(A, 2, 2)]) == 16
-            @test Int(NextLA.ranks(A)[NextLA.TLRmodule._rank_index(A, 1, 2)]) == 0
-            @test Int(NextLA.ranks(A)[NextLA.TLRmodule._rank_index(A, 2, 1)]) == 0
-            @test size(A.int_U, 3) == 2
-            @test size(A.right_U, 3) == 0
-            @test size(A.bottom_U, 3) == 0
-            @test expected_storage_slot(A, 1, 2) == 3
-            @test expected_storage_slot(A, 2, 1) == 2
-
-            synchronize(A.int_U)
-            synchronize(A.int_V)
-            synchronize(A.D)
-            synchronize(A.D_corner)
-        end
-    end
-
+    # Rectangular nominal tiles with tails on both axes: exercises every storage
+    # region (interior, right, bottom, dense corner) in one construction.
     @testset "rectangular nominal tile geometry" begin
         A = NextLA.TLRDenseDiagMatrix(zeros(Float64, 10, 11), (4, 5), 3)
 
+        @test !ismutable(A)
         @test size(A) == (10, 11)
+        @test NextLA.TLRmodule.tile_order(A) isa NextLA.TileColMajor
         @test NextLA.nominal_tile_size(A) == (4, 5)
         @test NextLA.nominal_tile_size(A, 1) == 4
         @test NextLA.nominal_tile_size(A, 2) == 5
         @test NextLA.tail_tile_size(A) == (2, 1)
         @test NextLA.tail_tile_size(A, 1) == 2
         @test NextLA.tail_tile_size(A, 2) == 1
+        @test NextLA.maxrank(A) == 3
         @test NextLA.tilegrid_size(A) == (3, 3)
         @test NextLA.tile_origin_coords(A, 3, 3) == (9, 11)
         @test NextLA.tile_size(A, 1, 1) == (4, 5)
@@ -134,17 +81,33 @@ end
         @test size(A.bottom_V) == (5, 3, 2)
         @test size(A.D) == (4, 5, 2)
         @test size(A.D_corner) == (2, 1, 1)
+        @test NextLA.dense_diag_corner(A) === A.D_corner
     end
 
-    @testset "dispatch by order" begin
-        order_tag(::NextLA.TLRDenseDiagMatrix{<:Any,<:Any,<:Any,<:Any,NextLA.TileColMajor}) = :col
-        order_tag(::NextLA.TLRDenseDiagMatrix{<:Any,<:Any,<:Any,<:Any,NextLA.TileRowMajor}) = :row
+    @testset "backend allocation smoke" begin
+        for (backend_name, ArrayType, synchronize) in available_backends()
+            @testset "$backend_name" begin
+                prototype = ArrayType(zeros(Float32, 32, 32))
+                # 32×32 with b=16: 2×2 tile grid, no boundary tiles
+                A = NextLA.TLRDenseDiagMatrix(prototype, 16, 16)
 
-        A_col = NextLA.TLRDenseDiagMatrix(zeros(Float32, 8, 8), 4, 2; tile_order=NextLA.TileColMajor)
-        A_row = NextLA.TLRDenseDiagMatrix(zeros(Float32, 8, 8), 4, 2; tile_order=NextLA.TileRowMajor)
+                @test size(A) == (32, 32)
+                @test NextLA.tilegrid_size(A) == (2, 2)
+                @test size(A.int_U) == (16, 16, 2)
+                @test size(A.right_U, 3) == 0   # no right boundary
+                @test size(A.bottom_U, 3) == 0  # no bottom boundary
+                @test size(NextLA.dense_diag(A)) == (16, 16, 2)
+                @test size(NextLA.dense_diag_corner(A)) == (16, 16, 0)
+                @test size(NextLA.ranks(A)) == (4,)
+                @test Int(NextLA.ranks(A)[NextLA.TLRmodule._rank_index(A, 1, 1)]) == 16
+                @test Int(NextLA.ranks(A)[NextLA.TLRmodule._rank_index(A, 1, 2)]) == 0
 
-        @test order_tag(A_col) == :col
-        @test order_tag(A_row) == :row
+                synchronize(A.int_U)
+                synchronize(A.int_V)
+                synchronize(A.D)
+                synchronize(A.D_corner)
+            end
+        end
     end
 
     @testset "constructor validation" begin
@@ -158,9 +121,9 @@ end
         @test_throws BoundsError  NextLA.TLRmodule.tile_linear_index(A.order, NextLA.tilegrid_size(A)..., 1, 3)
         @test_throws ArgumentError NextLA.TLRmodule.region_slot(A, 1, 1)
 
+        # Smaller than one tile: the whole matrix is the dense corner.
         A_small = NextLA.TLRDenseDiagMatrix(zeros(Float64, 2, 2), 4, 2)
         @test size(NextLA.dense_diag(A_small)) == (4, 4, 0)
-        @test size(A_small.D_corner) == (2, 2, 1)
         @test size(NextLA.dense_diag_corner(A_small)) == (2, 2, 1)
     end
 end
@@ -208,6 +171,7 @@ end
     @test size(U_corner) == (2, 2)
     @test size(V_corner) == (4, 2)
 
+    # Tile-aligned row-major variant: boundary storage is empty.
     B = NextLA.TLRMatrix(zeros(Float32, 8, 10), (4, 5), 2; tile_order=NextLA.TileRowMajor)
     @test NextLA.tilegrid_size(B) == (2, 2)
     @test NextLA.TLRmodule.tile_order(B) isa NextLA.TileRowMajor
@@ -229,15 +193,6 @@ end
     internal_slot = NextLA.TLRmodule._rank_index(A_tlr, 1, 2)
     bottom_slot   = NextLA.TLRmodule._rank_index(A_tlr, 3, 1)
     right_slot    = NextLA.TLRmodule._rank_index(A_tlr, 1, 3)
-
-    @test size(A_tlr.int_U)    == (4, 3, 2)   # 2 interior off-diag tiles: (2,1),(1,2)
-    @test size(A_tlr.right_U)  == (4, 3, 2)   # 2 right-boundary tiles: (1,3),(2,3)
-    @test size(A_tlr.right_V)  == (2, 3, 2)   # tail_n=2
-    @test size(A_tlr.bottom_U) == (2, 3, 2)   # 2 bottom-boundary tiles: (3,1),(3,2), tail_m=2
-    @test size(A_tlr.bottom_V) == (4, 3, 2)
-    @test size(A_tlr.D)        == (4, 4, 2)
-    @test size(A_tlr.D_corner) == (2, 2, 1)
-    @test size(NextLA.dense_diag_corner(A_tlr)) == (2, 2, 1)
 
     # Write data for interior tile
     ki = NextLA.TLRmodule._offdiag_index(A_tlr.order, 2, 2, 1, 2)

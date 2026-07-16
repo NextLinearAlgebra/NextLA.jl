@@ -13,7 +13,7 @@ using KernelAbstractions: zeros, allocate
 using KernelAbstractions.Extras: @unroll
 
 using ..NextLA: gemm_batched!, trsm_batched!, potrf_batched!
-using ..NextLA: precision_gemm_batched!, gemm_compute_mode, gemm_compute_type
+using ..NextLA: precision_gemm!, precision_gemm_batched!, gemm_compute_mode, gemm_compute_type
 using ..NextLA: GEMMCompute, validate_gemm_signature
 using ..NextLA: create_streams, with_stream, sync_stream, sync_streams_with_default
 using ..NextLA: SUBGROUP_SIZE, unwrap

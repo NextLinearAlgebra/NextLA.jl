@@ -1,10 +1,10 @@
 function NextLA.gemmEx!(transA::Char,
                         transB::Char,
                         alpha,
-                        A::AMDGPU.ROCArray{<:Any, 2},
-                        B::AMDGPU.ROCArray{<:Any, 2},
+                        A::AMDGPU.StridedROCMatrix,
+                        B::AMDGPU.StridedROCMatrix,
                         beta,
-                        C::AMDGPU.ROCArray{<:Any, 2};
+                        C::AMDGPU.StridedROCMatrix;
                         compute_type::Type = NextLA.default_compute_type(alpha, A, B, beta, C))
     NextLA._check_compute_type(compute_type)
     if NextLA._supports_native_gemm(eltype(A), eltype(B), eltype(C)) && compute_type == eltype(C)

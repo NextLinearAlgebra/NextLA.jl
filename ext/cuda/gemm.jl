@@ -180,10 +180,10 @@ end
 function NextLA.gemmEx!(transA::Char,
                         transB::Char,
                         alpha,
-                        A::CUDA.CuArray{<:Any,2},
-                        B::CUDA.CuArray{<:Any,2},
+                        A::CUDA.StridedCuMatrix,
+                        B::CUDA.StridedCuMatrix,
                         beta,
-                        C::CUDA.CuArray{<:Any,2};
+                        C::CUDA.StridedCuMatrix;
                         compute_type::Type=NextLA.default_compute_type(alpha, A, B, beta, C))
     NextLA._check_compute_type(compute_type)
 
@@ -194,6 +194,18 @@ function NextLA.gemmEx!(transA::Char,
         CUBLAS.handle(), transA, transB, m, n, k, CUDA.CuRef{scalar_type}(alpha),
         A, eltype(A), lda, B, eltype(B), ldb, CUDA.CuRef{scalar_type}(beta),
         C, eltype(C), ldc, _cublas_compute_type(compute_type), CUBLAS.CUBLAS_GEMM_DEFAULT,
+    )
+    return C
+end
+
+function NextLA._gemm_compute!(::NextLA.TF32, transA, transB, alpha,
+                               A::CUDA.StridedCuMatrix, B::CUDA.StridedCuMatrix,
+                               beta, C::CUDA.StridedCuMatrix)
+    m, n, k, lda, ldb, ldc = NextLA._gemm_dims(transA, transB, A, B, C)
+    CUBLAS.cublasGemmEx(
+        CUBLAS.handle(), transA, transB, m, n, k, CUDA.CuRef{Float32}(alpha),
+        A, Float32, lda, B, Float32, ldb, CUDA.CuRef{Float32}(beta), C, Float32, ldc,
+        CUBLAS.CUBLAS_COMPUTE_32F_FAST_TF32, CUBLAS.CUBLAS_GEMM_DEFAULT,
     )
     return C
 end

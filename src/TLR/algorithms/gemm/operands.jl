@@ -1,3 +1,5 @@
+# Canonical logical operands and factor-storage views.
+
 """Tile-column of `SkipDiag` local panel position `pos` within row `r` (skips `r`)."""
 @inline local_to_col(r::Integer, pos::Integer) = pos < r ? pos : pos + 1
 
@@ -62,6 +64,25 @@ Base.size(A::LogicalTLROperand, d::Int) = size(A)[d]
 @inline maxrank(A::LogicalTLROperand) = maxrank(physical(A))
 @inline KernelAbstractions.get_backend(A::LogicalTLROperand) = get_backend(physical(A))
 
+"""Zero-copy logical `N/T` view of a standalone dense GEMM operand."""
+struct LogicalDenseOperand{Op,A<:AbstractMatrix}
+    data::A
+end
+
+@inline logical_dense_operand(A::AbstractMatrix, op::Char='N') =
+    _logical_dense_operand(A, Val(_normalize_tlr_op(op)))
+@inline _logical_dense_operand(A, ::Val{'N'}) = LogicalDenseOperand{:N,typeof(A)}(A)
+@inline _logical_dense_operand(A, ::Val{'T'}) = LogicalDenseOperand{:T,typeof(A)}(A)
+Base.eltype(A::LogicalDenseOperand) = eltype(A.data)
+Base.size(A::LogicalDenseOperand{:N}) = size(A.data)
+Base.size(A::LogicalDenseOperand{:T}) = reverse(size(A.data))
+Base.size(A::LogicalDenseOperand, d::Int) = size(A)[d]
+@inline KernelAbstractions.get_backend(A::LogicalDenseOperand) = get_backend(A.data)
+
+"""Physical dense block and BLAS operation representing logical `rows × cols`."""
+@inline _dense_block(A::LogicalDenseOperand{:N}, rows, cols) = (view(A.data, rows, cols), 'N')
+@inline _dense_block(A::LogicalDenseOperand{:T}, rows, cols) = (view(A.data, cols, rows), 'T')
+
 """Logical tile coordinates for a region-local physical storage slot."""
 @inline region_tile_coords(A::LogicalTLROperand{:N}, region::TLRRegion, k::Int) =
     region_tile_coords(physical(A), region, k)
@@ -82,6 +103,29 @@ end
 @inline ndiag_tiles(A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}) = ndiag_tiles(physical(A))
 @inline _nfull_diag_tiles(A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}) = _nfull_diag_tiles(physical(A))
 
+"""Logical row/column range of one TLR tile along `axis`."""
+@inline function _tile_axis_range(A::LogicalTLROperand, tile::Int, axis::Int)
+    first = (tile - 1) * nominal_tile_size(A, axis) + 1
+    extent = tile_size(A, axis == 1 ? tile : 1, axis == 2 ? tile : 1)[axis]
+    return first:(first + extent - 1)
+end
+
+"""Canonical full-rank-column factor views of logical full-LR tile `(i,j)`."""
+@inline function logical_tile_factors(A::LogicalTLROperand{<:Any,<:TLRMatrix}, i::Int, j::Int)
+    qm, qn = regular_tilegrid_size(A)
+    region, slot = if i <= qm && j <= qn
+        (_INTERIOR, tile_linear_index(tile_order(A), qm, qn, i, j))
+    elseif i <= qm
+        (_RIGHT, i)
+    elseif j <= qn
+        (_BOTTOM, j)
+    else
+        (_CORNER, 1)
+    end
+    return (view(outer_factors(A, region), :, :, slot),
+            view(inner_factors(A, region), :, :, slot))
+end
+
 # ─── Interior operand ─────────────────────────────────────────────────────────
 
 """
@@ -98,6 +142,11 @@ struct InteriorOperand{Kind<:GridKind,OrderT<:TileOrderStyle,A3<:AbstractArray}
     qm::Int
     qn::Int
 end
+
+@inline stride1_axis_left(p::InteriorOperand) = stride1_axis_left(p.order)
+@inline stride1_axis_right(p::InteriorOperand) = stride1_axis_right(p.order)
+@inline complete_k_stack(::InteriorOperand{FullGrid}) = true
+@inline complete_k_stack(::InteriorOperand{SkipDiag}) = false
 
 @inline blockdim(p::InteriorOperand) = size(p.data, 1)   # b
 @inline rankdim(p::InteriorOperand)  = size(p.data, 2)   # maxrank
@@ -215,11 +264,6 @@ function logical_operands(A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix},
     )
 end
 
-"""Zero-copy view of dense output tile `(i, j)`: rows step by `bm`, columns by `bn`
-(equal for square tiles)."""
-@inline dense_tile(C::AbstractMatrix, bm::Int, bn::Int, i::Int, j::Int) =
-    view(C, (i - 1) * bm + 1:i * bm, (j - 1) * bn + 1:j * bn)
-
 """
     _output_tile_view(C, A, B, i, j)
 
@@ -235,8 +279,3 @@ from the correct operand). For square, equal-size A, B this coincides with
     tn = tile_size(B, 1, j)[2]
     return view(C, p0:(p0 + tm - 1), q0:(q0 + tn - 1))
 end
-
-"""Zero-copy view of dense output row-block `i` (height `bm`), columns `j0:j1`
-(width `bn` each)."""
-@inline dense_rowblock(C::AbstractMatrix, bm::Int, bn::Int, i::Int, j0::Int, j1::Int) =
-    view(C, (i - 1) * bm + 1:i * bm, (j0 - 1) * bn + 1:j1 * bn)

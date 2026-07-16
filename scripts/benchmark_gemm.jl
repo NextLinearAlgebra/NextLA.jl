@@ -6,9 +6,14 @@
 # Run (CPU + GPU):
 #   julia --project=../gpuenv benchmark_gemm.jl
 #
-# Times the hard-term-dominated `gemm!(C, A, B)` across problem sizes and the four
-# operand-layout combinations (kj, kk, ik, ij). A large `max_workspace` is used so
-# the scheduler batches maximally (row family → 3 launches, column → 2+nt).
+# Times `gemm!(C, A, B)` across problem sizes and the four operand-layout combinations
+# (kj, kk, ik, ij). A large `max_workspace` is used so the scheduler batches maximally
+# (row family → 3 launches, column → 2+nt).
+#
+# Configs come in two families. `tail=0` is tile-aligned and hard-term-dominated: it
+# measures the interior alone, and is the regression baseline the contraction IR must
+# hold flat. `tail≠0` switches on the right/bottom panels and the corner, which carry no
+# scheduling today — those rows are the signal for the panel migration.
 
 using LinearAlgebra, Printf, Random, Statistics, KernelAbstractions
 
@@ -32,23 +37,38 @@ const COMBOS = (
     ("ij", M.TileColMajor, M.TileRowMajor),   # column family
 )
 
-# (b = tile size, nt = tiles per side, r = maxrank)
+# (b = tile size, nt = tiles per side, r = maxrank, tail = m % b)
+#
+# `tail = 0` is tile-aligned: the product is the interior term alone. A non-zero tail
+# switches on the right/bottom panels and the corner — six of the eight terms — which
+# were otherwise never measured. Keep both: the aligned rows are the interior's
+# regression baseline for milestone 3 steps 3 and 5, and the tailed rows are the only
+# signal on the panel terms migrating in step 4.
 const CONFIGS = (
-    (b=64,  nt=16, r=16),
-    (b=64,  nt=32, r=16),
-    (b=64,  nt=48, r=24),
-    (b=128, nt=16, r=32),   # big tiles — most compute-bound
-    (b=256, nt=16, r=64),
-    (b=32,  nt=64, r=8),    # many tiny tiles — most launch-bound
+    (b=64,  nt=16, r=16, tail=0),
+    (b=64,  nt=32, r=16, tail=0),
+    (b=64,  nt=48, r=24, tail=0),
+    (b=128, nt=16, r=32, tail=0),   # big tiles — most compute-bound
+    (b=256, nt=16, r=64, tail=0),
+    (b=32,  nt=64, r=8,  tail=0),   # many tiny tiles — most launch-bound
+    (b=64,  nt=32, r=16, tail=37),  # panels + corner, tail < b
+    (b=32,  nt=64, r=8,  tail=17),  # panels + corner, launch-bound
+    (b=128, nt=16, r=32, tail=65),  # panels + corner, big tiles
 )
 
-const T = Float64
-const NREPS = 5
-const WARMUP = 2
+const T = Float32
+const NREPS = 10
+const WARMUP = 1
 
 function make_tlr(backend, m, b, r, order)
-    X = M.TLRMatrix(backend, T, m, m, b, r; tile_order=order)
-    randn!(X.int_U); randn!(X.int_V); randn!(X.D)
+    X = M.TLRMatrix(backend, T, m, m, (b, b), r; tile_order=order)
+    # Panel/corner factors are empty when m % b == 0 and must be filled when it isn't;
+    # `length == 0` covers both without branching on the tail.
+    for f in (X.int_U, X.int_V, X.right_U, X.right_V, X.bottom_U, X.bottom_V,
+              X.corner_U, X.corner_V)
+        length(f) == 0 && continue
+        randn!(f)
+    end
     X.ranks .= r
     return X
 end
@@ -66,12 +86,15 @@ function time_dense(backend, m)
     return minimum(ts) * 1e3
 end
 
-function time_gemm(backend, b, nt, r, oA, oB)
-    m = b * nt
+function time_gemm(backend, b, nt, r, tail, oA, oB)
+    m = b * nt + tail
     A = make_tlr(backend, m, b, r, oA)
     B = make_tlr(backend, m, b, r, oB)
     C = backend isa CPU ? randn(T, m, m) : CUDA.CuArray(randn(T, m, m))
-    budget = M.gemm_workspace_bytes(A, B)          # full batching
+    # Full batching for the interior. `gemm_workspace_bytes` accounts only for `O_A O_B`,
+    # so on a tailed config it under-reports the panel terms' scratch — those terms are
+    # unbudgeted today anyway (see ROADMAP milestone 3). Both are fixed in step 6.
+    budget = M.gemm_workspace_bytes(A, B)
     for _ in 1:WARMUP
         M.gemm!(C, A, B; alpha=1.0, beta=0.5, max_workspace=budget); gpu_sync()
     end
@@ -89,15 +112,15 @@ function main()
     backend = HAS_CUDA ? CUDA.CUDABackend() : NextLA.KernelAbstractions.CPU()
     @printf("NextLA TLR gemm! benchmark — backend: %s, eltype: %s\n\n",
             HAS_CUDA ? "CUDA" : "CPU", T)
-    @printf("%-22s%10s", "config (b×nt, r)", "dense")
+    @printf("%-30s%10s", "config (b×nt, r, tail)", "dense")
     for (name, _, _) in COMBOS; @printf("%10s", name); end
     println()
-    println("-"^(22 + 10 * (length(COMBOS) + 1)))
+    println("-"^(30 + 10 * (length(COMBOS) + 1)))
     for cfg in CONFIGS
-        @printf("%-22s", @sprintf("b=%d nt=%d r=%d", cfg.b, cfg.nt, cfg.r))
-        @printf("%10.3f", time_dense(backend, cfg.b * cfg.nt))
+        @printf("%-30s", @sprintf("b=%d nt=%d r=%d tail=%d", cfg.b, cfg.nt, cfg.r, cfg.tail))
+        @printf("%10.3f", time_dense(backend, cfg.b * cfg.nt + cfg.tail))
         for (_, oA, oB) in COMBOS
-            t = time_gemm(backend, cfg.b, cfg.nt, cfg.r, oA, oB)
+            t = time_gemm(backend, cfg.b, cfg.nt, cfg.r, cfg.tail, oA, oB)
             @printf("%10.3f", t)
         end
         println("  (ms)")

@@ -1,3 +1,5 @@
+# Static lowering strategies derived from operand layout.
+
 """
     GemmStage
 
@@ -91,7 +93,7 @@ interior (the diagonal tile is stored separately, so it is excluded from the low
 grid); `FullGrid` is the fully low-rank interior (every tile present). The staged core
 consults this to decide how tile rows enumerate their contraction tiles, so one set of
 `execute_stage!` methods serves both container types; for `FullGrid` the skip helpers
-fold to identities. See `panel.jl` for the policy bodies.
+fold to identities. See `operands.jl` for the policy bodies.
 """
 abstract type GridKind end
 struct SkipDiag <: GridKind end   # dense-diag interior: diagonal excluded

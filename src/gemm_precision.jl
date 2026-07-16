@@ -55,6 +55,18 @@ function _gemm_compute_batched!(mode::GEMMCompute, transA, transB, alpha, A, B, 
                            compute_type=gemm_compute_type(mode))
 end
 
+function _gemm_compute!(mode::GEMMCompute, transA, transB, alpha, A, B, beta, C)
+    if get_backend(C) isa KernelAbstractions.CPU
+        return BLAS.gemm!(transA, transB, eltype(C)(alpha), A, B, eltype(C)(beta), C)
+    end
+    return gemmEx!(transA, transB, alpha, A, B, beta, C;
+                   compute_type=gemm_compute_type(mode))
+end
+
+function _gemm_compute!(::TF32, transA, transB, alpha, A, B, beta, C)
+    throw(ArgumentError("TF32 GEMM is supported only on CUDA"))
+end
+
 function _gemm_compute_batched!(::TF32, transA, transB, alpha, A, B, beta, C)
     throw(ArgumentError("TF32 GEMM is supported only on CUDA"))
 end
@@ -74,4 +86,12 @@ function precision_gemm_batched!(transA, transB, alpha, A, B, beta, C,
         backend, _batch_eltype(A), _batch_eltype(B), _batch_eltype(C), mode,
     )
     return _gemm_compute_batched!(mode, transA, transB, alpha, A, B, beta, C)
+end
+
+"""Precision-policy dispatch for one GEMM, including mixed output storage."""
+function precision_gemm!(transA, transB, alpha, A, B, beta, C,
+                         mode::AbstractGEMMComputeMode)
+    backend = get_backend(C)
+    validate_gemm_signature(backend, eltype(A), eltype(B), eltype(C), mode)
+    return _gemm_compute!(mode, transA, transB, alpha, A, B, beta, C)
 end

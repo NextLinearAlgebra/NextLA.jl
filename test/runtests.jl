@@ -52,9 +52,12 @@ end
 
 include("NextLAMatrix.jl")
 
-include("TLR/tilemap_and_constructor.jl")
+include("TLR/helpers.jl")
+include("TLR/containers.jl")
 include("TLR/compress.jl")
 include("TLR/gemm.jl")
+include("TLR/gemm_budget.jl")
+include("TLR/gemm_ir.jl")
 
 include("lu.jl")
 include("unified_rectrxm.jl")

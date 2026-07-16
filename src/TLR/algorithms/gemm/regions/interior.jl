@@ -178,40 +178,8 @@ accumulates with β = 1.
 function _offdiag_offdiag_gemm!(C, A::LogicalTLROperand{<:Any,<:AbstractTLRMatrix{<:Any,T}}, B::LogicalTLROperand;
     alpha, beta=one(alpha), budget, fold::Union{Nothing,FoldSide}=nothing,
     compute=default_gemm_compute_mode(T)) where {T}
-    ops = logical_operands(A, B)
-    qm = ops.av.qm
-    qn = ops.bw.qn
-    bm = blockdim(ops.au)                       # C row-tile height (from op(A)'s U)
-    bn = blockdim(ops.bz)                       # C col-tile width  (from op(B)'s Z)
-    region = view(C, 1:(qm * bm), 1:(qn * bn))  # the interior block O_A O_B writes
-
-    # tiles_per_row(ops.av) == 0 covers both `nt == 1` (SkipDiag: only the diagonal)
-    # and an empty grid; zero rank on either side leaves nothing to contract. The
-    # product is empty but β must still be folded for the region.
-    if tiles_per_row(ops.av) == 0 || rankdim(ops.av) == 0 || rankdim(ops.bw) == 0
-        isone(beta) || _scale_output!(region, beta)
-        return C
-    end
-
-    # Effective (transpose-folded) layout dictates the fold (`FoldLeft` iff op(B)
-    # TileColMajor on a FullGrid); the placement follows the fold's stacked operand.
-    # `fold` may be forced for tests.
-    f = fold === nothing ? choose_fold(ops) : fold
-    placement = placement_for_fold(f, ops)
-    beta_stage = beta
-    if placement isa KAsSerialLoop
-        isone(beta) || _scale_output!(region, beta)   # column family: pre-scale, then accumulate
-        beta_stage = one(alpha)
-    end
-
-    ws = allocate_workspace(placement, ops, C, budget, f)
-    @inbounds for run in runs(placement, ops, budget)
-        prepare_run!(placement, run, ws)
-        execute_stage!(stage1(placement, run, ops, ws, f, compute))
-        execute_stage!(stage2(placement, run, ops, ws, f, compute))
-        execute_stage!(stage3(placement, run, ops, ws, C, alpha, beta_stage, f, compute))
-    end
-    return C
+    op = interior_contract(C, A, B, alpha, ScaleExisting(beta))
+    return execute!(lower(op; compute, budget, reassociation=fold))
 end
 
 function _offdiag_offdiag_gemm!(C, A::AbstractTLRMatrix{<:Any,T}, B::AbstractTLRMatrix{<:Any,T};
@@ -251,63 +219,7 @@ in `A`) or the pairing is incomplete (non-square boundary).
 # container types, so it dispatches on `AbstractTLRMatrix`.
 function tlr_gemm_rpanel_by_bpanel(C, A::LogicalTLROperand{<:Any,<:AbstractTLRMatrix{<:Any,T}}, B::LogicalTLROperand, alpha;
     beta=one(alpha), budget::Int, compute=default_gemm_compute_mode(T)) where {T}
-    qmA = region_tile_count(A, _RIGHT)   # A right-panel tiles → output rows
-    qnB = region_tile_count(B, _BOTTOM)  # B bottom-panel tiles → output cols
-    (qmA == 0 || qnB == 0) && return C
-
-    rA = maxrank(A)
-    rB = maxrank(B)
-    (rA == 0 || rB == 0) && return C
-
-    AU = outer_factors(A, _RIGHT)
-    AV = inner_factors(A, _RIGHT)
-    BU = outer_factors(B, _BOTTOM)
-    BV = inner_factors(B, _BOTTOM)
-    sk = size(AV, 1) # shared contraction tail (== size(BU, 1))
-    bn = nominal_tile_size(B, 2)  # output tile width (T = S Zᵀ column extent)
-
-    Vstack = reshape(AV, sk, rA * qmA) # [V_1 | … | V_qmA]   (sk × qmA·rA)
-    Wstack = reshape(BU, sk, rB * qnB) # [W_1 | … | W_qnB]  (sk × qnB·rB)
-
-    # column-block width fitting the budget
-    bytes_per_j = max(qmA * rA * (rB + bn) * sizeof(T), 1)  # S col-block (qmA·rA × rB) + T (qmA·rA × bn).
-    maxJ = clamp(div(budget, bytes_per_j), 1, qnB)
-
-    Swork = allocate(get_backend(A), T, qmA * rA, maxJ * rB)
-    Twork = allocate(get_backend(A), T, qmA * rA, bn, maxJ)
-
-    s3u = Vector{typeof(view(AU, :, :, 1))}()
-    s3t = Vector{typeof(view(Twork, 1:rA, :, 1))}()
-    s3c = Vector{typeof(_output_tile_view(C, A, B, 1, 1))}()
-
-    @inbounds for jrange in Iterators.partition(1:qnB, maxJ)
-        j0 = first(jrange)
-        j1 = last(jrange)
-        nj = length(jrange)
-
-        # Stage 1
-        Wsub = view(Wstack, :, ((j0 - 1) * rB + 1):(j1 * rB))
-        Ssub = view(Swork, :, 1:(nj * rB))
-        precision_gemm_batched!('T', 'N', one(T), [Vstack], [Wsub], zero(T), [Ssub], compute)
-
-        # Stage 2
-        S2 = reshape(Ssub, qmA * rA, rB, nj)
-        Z2 = view(BV, :, :, jrange)
-        T2 = view(Twork, :, :, (1:nj))
-        precision_gemm_batched!('N', 'T', one(T), S2, Z2, zero(T), T2, compute)
-
-        # Stage 3
-        empty!(s3u);
-        empty!(s3t);
-        empty!(s3c)
-        @inbounds for (jl, j) in enumerate(jrange)
-            for i in 1:qmA
-                push!(s3u, view(AU, :, :, i))
-                push!(s3t, view(Twork, ((i - 1) * rA + 1):(i * rA), :, jl))
-                push!(s3c, _output_tile_view(C, A, B, i, j))
-            end
-        end
-        precision_gemm_batched!('N', 'N', alpha, s3u, s3t, beta, s3c, compute)
-    end
-    return C
+    op = rpanel_by_bpanel_contract(C, A, B, alpha, ScaleExisting(beta))
+    (isempty(op.domain.i) || isempty(op.domain.j)) && return C
+    return execute!(lower(op; compute, budget))
 end

@@ -1,4 +1,4 @@
-# Stage descriptors
+# BLAS-stage descriptors and execution.
 
 struct StageDescriptor{StageT<:GemmStage,PlacementT<:KAxisSchedule,RunT,OpsT,WST,CT,AlphaT,BetaT,FoldT,BlockingT,ComputeT}
     stage::StageT
@@ -24,8 +24,8 @@ end
 # family is write-once so it passes β directly; the column family loops the reduction,
 # so `_offdiag_offdiag_gemm!` pre-scales the region and passes β = 1 here. `FoldLeft` is
 # only ever paired with the row family, so it too folds β in its single write.
-@inline stage3(placement::KAxisSchedule, run, ops, ws, C::AbstractMatrix, alpha, beta, fold::FoldSide, compute) =
-    StageDescriptor(Stage3(), placement, run, ops, ws, C, alpha, beta, fold, nothing, compute)
+@inline stage3(placement::KAxisSchedule, run, ops, ws, output::DenseOutput, alpha, beta, fold::FoldSide, compute) =
+    StageDescriptor(Stage3(), placement, run, ops, ws, output, alpha, beta, fold, nothing, compute)
 
 @inline _ws_eltype(ws) = eltype(ws.S.data)
 
@@ -150,7 +150,7 @@ function execute_stage!(::Stage3, ::KAsGemmK, ::FoldRight, ::Any, d::StageDescri
         Tstack = reshape(view(ws.T.data, :, :, :, 1:Jw, il), noff * rA, Jw * bn)
         push!(vb.s3u, view(ws.Ustacked, :, :, i))
         push!(vb.s3t, Tstack)
-        push!(vb.s3c, dense_rowblock(d.C, bm, bn, i, run.j0, run.j1))
+        push!(vb.s3c, output_rowblock(d.C, i, run.j0, run.j1))
     end
     return precision_gemm_batched!('N', 'N', d.alpha, vb.s3u, vb.s3t, d.beta, vb.s3c, d.compute)
 end
@@ -209,7 +209,7 @@ function execute_stage!(::Stage3, ::KAsGemmK, ::FoldLeft, ::Any, d::StageDescrip
             Tstack = reshape(view(ws.T.data, :, :, :, jl, il), bm, rB * noff)
             push!(vb.s3t, Tstack)
             push!(vb.s3z, view(Zall, :, :, j))
-            push!(vb.s3c, dense_tile(d.C, bm, bn, i, j))
+            push!(vb.s3c, output_tile(d.C, i, j))
         end
     end
     return precision_gemm_batched!('N', 'T', d.alpha, vb.s3t, vb.s3z, d.beta, vb.s3c, d.compute)
@@ -300,7 +300,7 @@ function execute_stage!(::Stage3, ::KAsSerialLoop, ::FoldRight, ::Any, d::StageD
                 j = panel_col(ops.bw, k, jpos)
                 push!(vb.s3u, view(ws.Ufactored, :, :, li, k))
                 push!(vb.s3t, view(ws.T.data, :, li, :, jx, kx))
-                push!(vb.s3c, dense_tile(d.C, bm, bn, i, j))
+                push!(vb.s3c, output_tile(d.C, i, j))
             end
         end
         precision_gemm_batched!('N', 'N', d.alpha, vb.s3u, vb.s3t, d.beta, vb.s3c, d.compute)

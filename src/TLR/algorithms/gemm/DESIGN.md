@@ -1,455 +1,445 @@
-# TLR × TLR → dense GEMM — implementation guide
+# TLR GEMM design
 
-This document explains the code under `src/TLR/algorithms/gemm/`. It describes
-what each layer does and how a call flows through them, so the individual files
-can be read without reverse-engineering the whole pipeline.
+This document describes the GEMM implementation that exists today. Future compiler,
+TLR-output, compression, and merge-tree work belongs in `ROADMAP.md`.
 
-Entry point:
+## 1. Implemented operations
 
-```julia
-gemm!(C::AbstractMatrix, A::TLRDenseDiagMatrix, B::TLRDenseDiagMatrix; alpha=true, beta=false, max_workspace)
-```
-
-computes `C := alpha·(A·B) + beta·C`, where `A`, `B` are tile-low-rank and `C` is
-a dense column-major matrix.
-
-## 1. What is computed
-
-Split each operand into its dense diagonal `D` and low-rank off-diagonal `O`:
+Every public method computes
 
 ```text
-A·B = (D_A + O_A)(D_B + O_B)
-    = D_A D_B  +  O_A D_B  +  D_A O_B  +  O_A O_B
+C := alpha * op(A) * op(B) + beta * C
 ```
 
-All four terms accumulate into the same dense `C` (which is first scaled by
-`beta`). The first three are "easy" — single-stage batched products handled in
-`diagonal.jl`; they already support boundary tile categories and the corner
-diagonal tile.
+where `op` is `N` or the non-conjugating transpose `T`.
 
-The **hard term `O_A O_B`** is the focus of the rest of the pipeline. With
-`A_ik = U_ik V_ikᵀ` and `B_kj = W_kj Z_kjᵀ` (constant `maxrank`), it is computed
-in three stages, summed over the contraction tile index `k`:
-
-```text
-Stage 1   S_ikj = V_ikᵀ W_kj      (r_A × r_B)   contract the block dim b
-Stage 2   T_ikj = S_ikj Z_kjᵀ     (r_A × b)     contract r_B
-Stage 3   C_ij += U_ik T_ikj      (b   × b)     contract r_A, reduce over k
-```
-
-Only Stage 3 writes `C`, and its left operand `U` comes from `A` — this single
-fact drives the whole traversal choice (§4).
-
-## 2. Scope and invariants
-
-The hard term operates on the **uniform core** only (interior off-diagonal tiles,
-`int_U`/`int_V`). Tiles may be rectangular: `bm × bk` for A and `bk × bn` for B, so
-the output tile is `bm × bn` and only the contraction size `bk` must be shared
-(`nominal_tile_size(A,2) == nominal_tile_size(B,1)`; the `TLRDenseDiagMatrix` path is
-square with `bm = bk = bn`). Constant `maxrank` with zero-padded
-inactive rank columns. It does not pack factors or materialise padded tensors —
-every stage operand is a zero-copy strided view, and execution goes through the
-precision-aware batched GEMM dispatcher. Boundary panels (`right`/`bottom`) and the
-corner use the same dispatcher and precision rules.
-
-## 3. Layering (the morphism chain)
-
-```text
-physical TLR storage
-  → zero-copy factor-panel views        panel.jl
-  → logical operands                     panel.jl
-  → budgeted run descriptors             schedule.jl
-  → S/T scratch + batch view buffers     schedule.jl
-  → stage descriptors                    stage.jl
-  → precision-aware batched GEMM          stage.jl → precision_gemm_batched!
-```
-
-Files:
-
-| file | responsibility |
-| --- | --- |
-| `layout.jl` | pure traits: `Stride1Axis`, `KAxisSchedule`, `FreeAxisSchedule`, and the functions deriving them from `TLRDenseDiagMatrix` types |
-| `panel.jl` | `InteriorOperand` over factor storage + `GridKind` enumeration policy; logical operands (`LogicalTLROperands`), `ScratchS`/`ScratchT` |
-| `schedule.jl` | budgeted `RowRun`/`ColumnRun` iterators; `allocate_workspace` and the reusable batch-view buffers |
-| `stage.jl` | `StageDescriptor` and the `execute_stage!` methods that lower each stage through the precision-aware dispatcher |
-| `diagonal.jl` | the three easy terms |
-| `gemm.jl` | `gemm!` entry + validation + `_offdiag_offdiag_gemm!` orchestration |
-
-The key design rule: no single function knows about storage layout, stage
-algebra, diagonal skipping, workspace budgeting, and execution dispatch at once.
-Control flow is selected by trait dispatch, not by branches inside a big driver.
-
-## 4. Layout traits and the four combos (`layout.jl`)
-
-Storage order fixes which tile axis is contiguous:
-
-```text
-stride1_axis_left(A)  = Stride1Axis{:i}  (A col-major)  |  Stride1Axis{:k}  (A row-major)
-stride1_axis_right(B) = Stride1Axis{:k}  (B col-major)  |  Stride1Axis{:j}  (B row-major)
-```
-
-Two derived traits then pick the algorithm:
-
-- **`KAxisSchedule`** — where the `k`-reduction goes. Determined by A only:
-  - `A :k` → `KAsGemmK{BAx}` — `k` fuses into Stage 3's contraction dim ⇒
-    each `C` tile is **written once** (block-ROW sweep).
-  - `A :i` → `KAsSerialLoop{BAx}` — `k` becomes an outer loop, Stage 3
-    **accumulates** with `β=1` (block-COLUMN sweep).
-  - `BAx` is B's contiguous panel axis (`:k` or `:j`), carried as a type
-    parameter so Stage 1 specialisation is selected without runtime checks.
-
-- **`FreeAxisSchedule`** — how Stage 1 fuses the free tile axes:
-  - `free_axis_schedule(::KAsGemmK{:j}) = JAsGemmN`   (j-fused Stage 1)
-  - `free_axis_schedule(::KAsGemmK{:k}) = FreeAsBatch` (per-tile Stage 1)
-  - `free_axis_schedule(::KAsSerialLoop{:k}) = IAsGemmM`   (i-fused Stage 1)
-  - `free_axis_schedule(::KAsSerialLoop{:j}) = IJAsGemmMN`  (i- and j-fused)
-
-Resulting dispatch for the four `(A order, B order)` combinations:
-
-| combo | `stride1_axis_left/right` | `KAxisSchedule` | `FreeAxisSchedule` | traversal / Stage 1 |
-| --- | --- | --- | --- | --- |
-| `(k,j)` Row/Row | `:k`,`:j` | `KAsGemmK{:j}` | `JAsGemmN` | write-once ROW, j-fused S1 |
-| `(k,k)` Row/Col | `:k`,`:k` | `KAsGemmK{:k}` | `FreeAsBatch` | write-once ROW, per-tile S1 |
-| `(i,k)` Col/Col | `:i`,`:k` | `KAsSerialLoop{:k}` | `IAsGemmM` | accumulate COL, i-fused S1 |
-| `(i,j)` Col/Row | `:i`,`:j` | `KAsSerialLoop{:j}` | `IJAsGemmMN` | accumulate COL, i+j-fused S1 |
-
-`(k,j)` is the recommended layout: write-once traversal *and* a fused Stage 1.
-Fusing `j` (B row-major makes `W_k,:` contiguous) turns Stage 1 from many tiny
-`r_A×r_B` GEMMs into one wide GEMM per `(i,k)` — measured ~1.2–2× on the whole
-`gemm!` at large `nt`, since tiny-GEMM Stage 1 otherwise dominates the row family.
-`(k,k)` cannot fuse (both operands stride-1 in `k`) and stays tilewise.
-
-## 5. Physical access (`panel.jl`)
-
-`InteriorOperand{Kind,Order,A3}` wraps one flat factor array `[b, maxrank, ntiles]`
-plus its grid extents `(qm, qn)`, traversal `order`, and enumeration `Kind`
-(`SkipDiag`/`FullGrid`, §10). All tile addressing goes through the `Kind` policy, so
-the stage code is agnostic to whether the diagonal is stored separately.
-
-Accessors, all zero-copy (each dispatches on the operand's `Kind`):
-
-- `tilefactor(p, i, j)` — factor of tile `(i,j)` (slot via `_offdiag_index` for
-  `SkipDiag`, `tile_linear_index` for `FullGrid`);
-- `rowpanel(p, r)` — a contiguous `[b, maxrank, tiles_per_row]` row panel;
-- `tiles_per_row(p)` — contraction tiles in a row (`qn-1` skipping the diagonal, or `qn`);
-- `panel_col(p, r, pos)` — row-panel local position → actual tile column;
-- `col_scratch_pos(p, j0, k, j)` — output column `j`'s scratch slot, `0` to skip it;
-- `first_offdiag_col`/`last_offdiag_col`/`panel_local` — fused-Stage-1 panel-slice bounds.
-
-`logical_operands(A, B)` bundles the operands as
-`LogicalTLROperands(av=V, bw=W, bz=Z, au=U)` — `au` (A's `U`) is carried for the
-column family's tilewise Stage 3; the row family stacks `U` in workspace. The dense
-output is passed as `C` directly; `dense_tile(C, bm, bn, ...)` /
-`dense_rowblock(C, bm, bn, ...)` cut zero-copy `bm × bn` tile or row-block views of it.
-
-## 6. Scheduling and workspace (`schedule.jl`)
-
-The workspace budget (bytes) is the only runtime knob. It caps the run width; the
-T-workspace dominates (`≈ r_A · noff · bn · run_width`, where `bn` is the output-tile
-width = T's spatial extent).
-
-- **Row family** (`KAsGemmK`): `RowRun(i0, i1, j0, j1)` — a rectangular block of
-  output tiles (rows `i0:i1` × columns `j0:j1`). Rows are independent (no
-  cross-`i` dependence), so every stage batches over the whole block — `i` is a
-  batch axis, not a serial loop. `_row_block` sets `maxI × maxJ` from the budget
-  (columns filled first), so at full budget the entire grid is one run of 3
-  batched GEMMs.
-- **Column family** (`KAsSerialLoop`): `ColumnRun(k0, k1, jpos0, jpos1)` — a
-  block of contraction tiles `k0:k1` × B row-`k` **local** panel positions
-  `jpos0:jpos1` (`jpos`; actual columns via `local_to_col(k, jpos)`, which avoids
-  allocating a `[j for j≠k]` list per `k`). Stages 1/2 are independent over `k`
-  so they batch the whole `k`-block; Stage 3 loops `k` (the reduction).
-  `_column_block` sets `maxK × maxJ` from the budget (positions filled first), so
-  at full budget the hard term is `2 + nt` launches instead of `3·nt`.
-
-`runs(placement, A, B, budget)` returns the matching iterator.
-
-`allocate_workspace(placement, …)` allocates, once per hard-term call:
-`ScratchS`/`ScratchT` sized to the run width, the reshaped `Ustacked`
-(row) or `Vstacked`/`Ufactored` (column) operands, and a named tuple of
-**batch-view buffers**. The buffers are concrete `Vector`s of a concrete view
-type, `sizehint!`-ed once and refilled per run with `empty!`/`push!` — capacity
-is reused, so hot loops allocate nothing.
-
-## 7. Stages and execution (`stage.jl`)
-
-A `StageDescriptor` bundles `(stage, placement, run, ops, workspace, C, alpha,
-blocking, compute)`. `stage1/2/3(placement, run, ops, ws[, C, alpha], compute)` build them;
-`execute_stage!` is dispatched on `(Stage, KAxisSchedule[, FreeAxisSchedule])`
-and refills the batch buffers, then calls the precision-aware dispatcher once.
-
-`prepare_run!` runs before the stages: for row runs it zeroes the used T slice
-(so the dead `k=j` slots contribute nothing to the fused-K Stage 3); for column
-runs it is a no-op (Stage 2 writes exactly the slots Stage 3 reads).
-
-### Row / write-once family (`KAsGemmK`)
-
-Per `RowRun(i0:i1, j0:j1)`. Scratch `T[:,kk,:,jl,il]` is indexed by absolute
-column `jl` (so the fused-K Stage 3 sees a clean `(k,j)` grid); scratch
-`S[:,:,p,kk,il]` is indexed by the *off-diagonal position* `p` within the block
-(the diagonal `j=k` is skipped, so columns past `k` shift down) — this lets a
-fused Stage 1 write a contiguous `[r_A, len·r_B]` slice. Stage 2 maps `p→jl`.
-
-- **Stage 1** — `FreeAsBatch` (`(k,k)`): for each `i`, `k≠i`, `j∈j0:j1` with
-  `j≠k`, push `V_ikᵀ`, `W_kj`, the `S` slot; one batched `'T','N'` over `(i,k,j)`.
-  `JAsGemmN` (`(k,j)`): B row-major makes the block's off-diagonal columns a
-  contiguous slice of `rowpanel(k)`, so `j` fuses into N — `V_ikᵀ · W_k[block]`,
-  one wide GEMM per `(i,k)`, batched over `(i,k)`.
-- **Stage 2**: same iteration; `S_ikj · Z_kjᵀ` scattered into the clean `(k,j)`
-  grid `T[:, kk, :, jl, il]`; batched `'N','T'`.
-- **Stage 3**: `k` is fused into `K = noff·r_A`. For each `i ∈ i0:i1`,
-  `Ustack = Ustacked[:,:,i]`, `Tstack = reshape(T[…,il], noff·r_A, Jw·b)`; a
-  single `'N','N'` batched GEMM over `i` (β=1) writes every `C[i, j0:j1]`
-  row-block in place. Rows being independent, the whole block is one launch.
-
-### Column / accumulate family (`KAsSerialLoop`)
-
-Per `ColumnRun(k0:k1, jpos0:jpos1)` (scratch `S`/`T` carry a `k`-axis:
-`S[:,:,jx,kx]`, `T[:,:,:,jx,kx]`):
-
-- **Stage 1** — `IAsGemmM` (`(i,k)`): `Vpanel_kᵀ · W_kj` fuses over `i`
-  (`M = |I|·r_A`), batched over `(k, jpos)`, `'T','N'`. `IJAsGemmMN` (`(i,j)`):
-  the column block is a contiguous slice of B's row-`k` panel, so `j` also fuses
-  into one GEMM (`Vpanel_kᵀ · Wsub`) per `k`, batched over `k`.
-- **Stage 2**: `S · Z_kjᵀ` into `T`, batched over `(k, jpos)`, `'N','T'`.
-- **Stage 3**: the reduction axis `k` is looped (one accumulate GEMM per `k`,
-  batched over `(i, jpos)`, `β=1`); different `k` write the same `dense_tile(i,j)`
-  so they cannot share a batch, but successive launches accumulate.
-
-## 8. Orchestration (`gemm.jl`)
-
-`gemm!` validates shapes and the shared nominal tile size, scales `C` by `beta`, adds the
-three easy terms, then calls `_offdiag_offdiag_gemm!`, which is small:
-
-```julia
-placement = k_axis_schedule(stride1_axis_left(A), stride1_axis_right(B))
-ws  = allocate_workspace(placement, A, B, C, budget)
-for run in runs(placement, A, B, budget)
-    prepare_run!(placement, run, ws)
-    execute_stage!(stage1(placement, run, ops, ws, fold, compute))
-    execute_stage!(stage2(placement, run, ops, ws, fold, compute))
-    execute_stage!(stage3(placement, run, ops, ws, C, alpha, beta, fold, compute))
-end
-```
-
-The control-flow shape is fixed by `placement`; the loop body only touches
-concrete run, workspace, operand, and dense output objects.
-
-## 9. Status and extension points
-
-Working and validated (CPU + CUDA, all four combos, `alpha`/`beta`,
-`budget = 1` and large): the full `A·B` on the uniform core. Launch counts at
-full budget: **3** (row family, all of `(i,k,j)` batched) and **2 + nt** (column
-family, `k` looped in the reduction); `(k,j)` Stage 1 is `j`-fused (`JAsGemmN`).
-
-Not yet done, in rough priority:
-
-- **Occupancy floor / k-panel fallback** — batch Stage 3 over several rows for
-  small `b`; sub-panel `k` with `β=1` when one tile's full-`k` T exceeds the
-  budget (the only correctness gap at extreme budgets).
-- **Boundary tiles in the hard term** — extend beyond the uniform core.
-- **`canonicalize`** — fold `(i,k)→(k,j)` (transpose) and `op(A)·op(B)` /
-  conjugation into trait selection.
-- **TLR×TLR → TLR** — introduce an output abstraction only when a low-rank
-  accumulator/recompression target exists; the panel/schedule/stage machinery
-  can then be reused intentionally.
-
-## 10. Extending to `TLRMatrix` (fully low-rank, no dense diagonal)
-
-Goal: run the same four-region GEMM on `TLRMatrix` operands (every tile —
-diagonal, boundary, corner — is low-rank; the interior grid may be rectangular).
-
-### The one axis of difference
-
-The Stage 1/2/3 algebra, the layout traits, the budgeting, and the batched
-execution are **identical** for both container types. The only thing that varies
-in the hard core is **interior tile-grid enumeration**:
-
-| | `TLRDenseDiagMatrix` interior | `TLRMatrix` interior |
-| --- | --- | --- |
-| grid | square `Q×Q` | rectangular `q_m × q_n` (`_full_regular_grid`) |
-| tiles per row | `noff = nt-1` (diagonal excluded) | full `q_n` |
-| slot map | `_offdiag_index` (skips diagonal) | `tile_linear_index` (no skip) |
-| k-reduction for `(i,j)` | `k ≠ i` and `k ≠ j` | all `k ∈ 1:q_c` |
-| S-scratch column | `_offdiag_pos` (packed around the gap) | `p = jl` (contiguous) |
-
-Every `local_to_col` / `j==k && continue` / `_offdiag_pos` / `_offdiag_index`
-call is **diagonal-skip bookkeeping**. For the full grid they are identities, so
-full-LR is the *degenerate (no-gap) case* of the same core, not a second core.
-
-### `GridKind` policy
-
-The difference is absorbed by a trait, not by duplicated stage code:
-
-```julia
-abstract type GridKind end
-struct SkipDiag <: GridKind end   # dense-diag interior: diagonal excluded
-struct FullGrid <: GridKind end   # full-LR: every tile present
-```
-
-The four skip-dependent operations dispatch on it (`FullGrid` folds to no-ops,
-so the compiler regenerates today's `SkipDiag` code unchanged — the guarantee
-that unifying cannot regress the working path):
-
-```julia
-tiles_per_row(::SkipDiag, qm, qn) = qn - 1;  tiles_per_row(::FullGrid, qm, qn) = qn
-krange(::SkipDiag, i, qc) = (k for k in 1:qc if k != i); krange(::FullGrid, _, qc) = 1:qc
-col_included(::SkipDiag, k, j) = j != k;     col_included(::FullGrid, _, _) = true
-scratch_pos(::SkipDiag, j0, k, j) = _offdiag_pos(j0,k,j); scratch_pos(::FullGrid, j0, _, j) = j-j0+1
-slot(::SkipDiag, order, qm, qn, i, j) = _offdiag_index(order, qm, qn, i, j)
-slot(::FullGrid, order, qm, qn, i, j) = tile_linear_index(order, qm, qn, i, j)
-```
-
-The policy rides on the operand descriptor. `PanelView` becomes the grid-generic
-`InteriorOperand{Kind<:GridKind, Order, A3}` (this folds in the earlier
-`PanelView` slimming — drop the `matrix` back-reference, the write-only `contig`
-field, and the phantom `Side`/`Factor`/`Ax` params):
-
-```julia
-struct InteriorOperand{Kind<:GridKind, Order, A3<:AbstractArray}
-    U::A3; V::A3          # int_U / int_V factor storage
-    order::Order
-    qm::Int; qn::Int      # this operand's regular-tile grid extents
-end
-```
-
-`TLRDenseDiagMatrix → InteriorOperand{SkipDiag}` with `qm=qn=Q`;
-`TLRMatrix → InteriorOperand{FullGrid}` with `(qm,qn)=_full_regular_grid`.
-
-### What is shared vs per-type
-
-- **Shared, written once against `InteriorOperand`:** all of `stage.jl`,
-  `schedule.jl`, the layout traits, and `_offdiag_offdiag_gemm!`. The core carries
-  three extents `(q_m^A, q_c, q_n^B)` instead of one `Q`, so rectangular falls out.
-  The layout traits already need only `order` (re-dispatch on `AbstractTLRMatrix`).
-- **Per-type, thin:** region orchestration + easy/boundary terms.
-  - `tlr_gemm_int_by_int(::TLRMatrix)` = one `_offdiag_offdiag_gemm!` on the full
-    grid. Components 1 & 2 (`D_AD_B`, `O_AD_B + D_AO_B`) **vanish** — there is no
-    dense diagonal to split out.
-  - Boundary/corner for full-LR: each `_diag_tile_view` / `D_corner` / dense
-    `mul!` becomes a low-rank product. Most are already Stage 1/2/3 shapes (e.g.
-    `bpanel_by_rpanel` is a 3-stage reduction today) and reuse the primitive;
-    `corner_by_corner` goes from one dense `mul!` to a single-tile low-rank product.
-
-### Implementation sequence (each step stays test-green)
-
-1. **[done]** Swap `_interior_grid → _full_regular_grid` across gemm (mechanical;
-   identical on square, unlocks rectangular geometry).
-2. **[done]** Slim `PanelView` into `InteriorOperand` + `GridKind`, wiring only
-   `SkipDiag` (pure refactor).
-3. **[done]** Add `FullGrid` + the `TLRMatrix` interior path. `schedule.jl` is now
-   operand-driven with explicit rectangular extents (`_interior_geom`: `q_m`, `q_c`,
-   `q_n`, plus `perA_row`/`perA_col`/`perB_row` — all equal to `nt-1` on a square
-   `SkipDiag` interior). `gemm!(::TLRMatrix, ::TLRMatrix)` runs the full-grid staged
-   product; tested (square + rectangular, all four combos, both budgets) against a
-   dense reference. Restricted to tile-aligned dimensions (no boundary tiles).
-4. **[done]** Add `TLRMatrix` boundary/corner terms (as `TLRMatrix` methods in each
-   region file, next to their dense-diagonal counterparts) + the four-region
-   `gemm!(::TLRMatrix, ::TLRMatrix)` orchestrator. The pure-panel terms
-   (`rpanel_by_bpanel`, `bpanel_by_rpanel`) are shared by relaxing their signatures
-   to `AbstractTLRMatrix`; the five dense-touching terms get full-LR versions where
-   the corner is a low-rank 3-stage product and the interior×panel reductions run
-   over all `k` (no diagonal split). Tested (both orders, both budgets, zero rank)
-   against a dense reference.
-5. **[done]** Rectangular boundary. Output tiles now index via
-   `_output_tile_view(C, A, B, i, j)` (rows from A's tile-row `i`, cols from B's
-   tile-col `j`), and `rpanel_by_bpanel` takes independent row/col counts
-   (`Qi = q_m^A`, `Qj = q_n^B`). Tested with independent tails in `m`, `k`, `n`.
-
-### β folding (both structures, no branching)
-
-`O_A O_B` touches *every* interior tile, so it — not the diagonal terms — is the
-region's first writer and folds β. `tlr_gemm_int_by_int` (dense-diag) now runs
-`_offdiag_offdiag_gemm!` *first* (folding β), then the three diagonal components with
-β = 1; the `TLRMatrix` interior, being *only* `O_A O_B`, uses the identical path.
-Every region's first term folds β and the second accumulates (β = 1), so both
-`gemm!` orchestrators share one β-folding structure — no per-container branching.
-
-How β is folded is layout-dependent and lives in the staged core (`schedule.jl` /
-`stage.jl`): the **row family** writes each output tile exactly once, so Stage 3
-applies β directly (threaded through `StageDescriptor.beta`); the **column family**
-loops the reduction across runs, so `_offdiag_offdiag_gemm!` pre-scales the interior
-region once and Stage 3 then accumulates with β = 1. The rank-0 case (identically
-zero product) is a single up-front `_scale_output!`.
-
-## 11. Fold selection (`FoldSide`) — layout-driven Stage-2/3 association
-
-A contraction term `A_ik B_kj = U_ik (V_ik' W_kj) Z_kj' = U_ik S_ikj Z_kj'` can be
-lowered two ways after Stage 1 (`S = V'W`, association-independent):
-
-- **`FoldRight`** (default): Stage 2 forms `T = S Z'` (`r_A×b_n`); Stage 3 stacks A's
-  `U` over `k` — one write-once GEMM `C += Σ_k U_ik T_ikj` iff A's k-axis is stride-1
-  (A `TileRowMajor`).
-- **`FoldLeft`**: Stage 2 forms `T' = U S` (`b_m×r_B`); Stage 3 stacks B's `Z` over `k`
-  — one write-once GEMM `C += Σ_k T'_ikj Z_kj'` (`'N','T'`, output `[b_m×b_n]`) iff B's
-  k-axis is stride-1 (B `TileColMajor`).
-
-The reduction "inverts": FoldRight's write-once needs `A TileRowMajor`, FoldLeft's needs
-`B TileColMajor`. **Storage layout dictates the fold** (`choose_fold`), so a plain `A·B`
-gets a write-once fused Stage 3 across more layout combos with *no operand transpose*
-(notably A ColMajor · B ColMajor, previously a serial loop). The change in intermediate
-size (`r_A·b_n` vs `b_m·r_B`) is a documented consequence, used only to break ties when
-both (`A Row, B Col`) or neither (`A Col, B Row`) layout yields write-once.
-
-Scope: FoldLeft is used only on a **`FullGrid`** interior (no diagonal skip ⇒ the Z-stack
-is a clean `reshape(bz.data, b_n, r_B·q_c, q_n)`) and, being chosen only when B is
-`TileColMajor`, is always the write-once row family — so it needs no serial-loop variant
-and folds β directly in its single write. `SkipDiag` (dense-diagonal) stays `FoldRight`.
-`FoldSide` is a `StageDescriptor` field dispatched alongside `stage`/`placement`, so the
-FoldLeft Stage 2/3 executors sit beside their FoldRight mirrors; Stage 1 is shared.
-
-## 12. Whole-matrix transpose canonicalisation (`transA` / `transB`)
-
-`gemm!(C, A, B; transA, transB)` computes `C = α·op(A)·op(B) + β·C` with
-`op(X) = Xᵀ` for `T`. A transpose is a pure **relabeling of stored data** — no data
-movement. `LogicalTLROperand{:N/:T}` performs this canonicalisation once for the
-complete matrix: effective dimensions, tile sizes, tails, grid extents, and tile order
-swap; logical right and bottom panels map to the opposite stored panels; and their
-factors swap so every low-rank tile remains `outer * innerᵀ`. Low-rank corners follow
-the same factor swap.
-
-The interior `logical_operands(Aop, Bop)` builder now only names the four canonical
-factor fields required by the staged contraction. Axis/fold/placement inference reads
-their effective order (`stride1_axis_*(order)`, `choose_fold(ops)`,
-`placement_for_fold(fold, ops)`). The executors, schedule, and Stage-3 K-stack / fused
-Stage-1 reshapes remain unchanged. Boundary terms use the same canonical factor accessors and
-effective output geometry, so their lowerings also have no transpose branches.
-
-Dense diagonal and dense corner tiles use `LogicalDenseTile`, pairing a physical
-zero-copy tile view with its required `N/T` GEMM operation. Dense leaves stay full-rank;
-no transposed copies or identity-factor encodings are formed. Transposed
-`TLRDenseDiagMatrix` GEMM currently supports square operands with equal square tiling;
-transposed rectangular dense-diagonal operands are rejected explicitly. Fully low-rank
-`TLRMatrix` supports rectangular tiles and independent boundary tails in all effective
-dimensions.
-
-Flags are case-insensitive `N/T`; other flags are rejected. Conjugate transpose is a
-future complex-arithmetic extension.
-
-## 13. Precision-aware lowering
-
-`gemm!(C, A, B; compute=...)` infers operand storage from `A`/`B` and output storage
-from `C`; the user selects only the compute mode. Supported real-valued signatures
-are:
-
-| operand storage | `S/T` storage | `C` storage | compute mode |
+| left operand | right operand | output | status |
 | --- | --- | --- | --- |
-| `Float16` | `Float16` | `Float16` | `Float16` or `Float32` |
-| `Float16` | `Float16` | `Float32` | `Float32` |
-| `Float32` | `Float32` | `Float32` | `Float32`, or `TF32()` on CUDA |
-| `Float64` | `Float64` | `Float64` | `Float64` |
+| `TLRMatrix` | `TLRMatrix` | dense | implemented |
+| `TLRDenseDiagMatrix` | `TLRDenseDiagMatrix` | dense | implemented |
+| `TLRMatrix` | dense matrix | dense | implemented |
+| dense matrix | `TLRMatrix` | dense | implemented |
+| `TLRDenseDiagMatrix` | dense matrix | dense | not implemented |
+| dense matrix | `TLRDenseDiagMatrix` | dense | not implemented |
+| any supported input pair | TLR | not implemented |
 
-The entry point validates both signatures required by the lowering before launching
-work: `Tin × Tin → Tin` for intermediate stages and `Tin × Tin → Tout` for the final
-stage. `S` and `T` are always allocated in `Tin`. Thus a different dense output type
-is visible only to GEMMs that write `C`; it never creates a mixed-type Stage-2 or
-Stage-3 operand pair. Unsupported combinations, including `TF32()` on non-CUDA
-backends, fail before scheduling.
+The two TLR operands of a TLR–TLR product currently have the same storage element
+type and container kind. Mixed `TLRMatrix`/`TLRDenseDiagMatrix` products are not
+public methods.
 
-`alpha` and `beta` are converted to the selected compute type, not operand storage.
-Consequently FP16 factors with FP32 compute do not quantize GEMM scalars to FP16.
-Standalone scaling of `C` converts `beta` to `eltype(C)` at the output operation.
+`TLRMatrix` supports rectangular matrices, rectangular nominal tiles, independent
+tails on all three GEMM dimensions, all tile-order pairs, and all four `N/T`
+combinations.
 
-Every region term uses `precision_gemm_batched!`. Ordinary compute modes lower to
-GEMMEx with an explicit accumulation type. CUDA TF32 lowers to the corresponding
-cuBLAS fast-TF32 compute enum; TF32 is a compute mode, not a storage type.
+The non-transposed `TLRDenseDiagMatrix` path retains its established equal-tiling
+requirement. A transposed dense-diagonal operand is accepted only in the square,
+equal-square-tiling regime. Unsupported transposed rectangular dense-diagonal
+products fail explicitly.
+
+Complex arithmetic and conjugating transpose are not supported by this layer.
+
+## 2. Matrix model
+
+A fully low-rank tile is represented canonically as
+
+```text
+A[i,k] = U[i,k] * V[i,k]'
+B[k,j] = W[k,j] * Z[k,j]'
+```
+
+with fixed allocated rank width `maxrank`. Inactive factor columns are expected to be
+zero padded by the container/compression layer.
+
+`TLRMatrix` stores every tile in low-rank form. `TLRDenseDiagMatrix` stores regular
+diagonal tiles and the dense corner as full-rank dense tiles; its remaining tiles are
+low rank. Dense tiles are not represented as low-rank factors with an identity
+operand.
+
+For a low-rank tile pair, the common algebra is
+
+```text
+S = V' * W
+T = S * Z'
+C += U * T
+```
+
+The lowering may instead associate the last two stages from the left:
+
+```text
+S  = V' * W
+T' = U * S
+C += T' * Z'
+```
+
+Both are the same contraction. The selected association is a storage-layout decision.
+
+## 3. Source organization
+
+```text
+gemm/
+├── gemm.jl                    public methods, validation, region orchestration
+├── operands.jl                canonical N/T operands and factor-storage views
+├── precision.jl               TLR precision defaults and signature validation
+├── tlr_dense.jl               complete TLR×dense and dense×TLR kernels
+├── contraction/
+│   ├── domain.jl              regular/boundary (i,k,j) spans
+│   ├── leaves.jl              low-rank and dense algebra leaves
+│   ├── init.jl                output initialization policy
+│   ├── operation.jl           ContractOp and dense output mapping
+│   └── lowering.jl            scheduled contracts, execution, workspace query
+├── lowering/
+│   ├── strategy.jl            placement, fusion, grid, and fold traits
+│   ├── schedule.jl            geometry, runs, workspaces, batch buffers
+│   └── stages.jl              Stage 1/2/3 descriptors and GEMM calls
+└── regions/
+    ├── interior.jl
+    ├── right.jl
+    ├── bottom.jl
+    └── corner.jl
+```
+
+The dependency direction is:
+
+```text
+physical containers
+  → canonical logical operands
+  → domains + leaves + ContractOp
+  → scheduled contraction
+  → budgeted runs and stage descriptors
+  → precision-aware GEMM/GEMMEx
+```
+
+The region files compose operations for a destination region. They do not define
+transpose semantics, precision policy, or generic low-rank scheduling.
+
+## 4. Canonical operands and transpose
+
+`LogicalTLROperand{Op}` is an internal zero-copy view of an
+`AbstractTLRMatrix`. `LogicalDenseOperand{Op}` provides the corresponding view for a
+standalone dense operand. Flags are normalized case-insensitively to `N` or `T`; every
+other flag throws `ArgumentError`.
+
+The logical TLR operand owns the effective interpretation of:
+
+- matrix size;
+- nominal and tail tile sizes;
+- full and regular tile-grid dimensions;
+- tile order;
+- region coordinates;
+- low-rank outer and inner factors.
+
+For `T`, both matrix and tile axes are reversed, tile row/column order is exchanged,
+and the right and bottom regions swap. The factor mapping is
+
+```text
+outer(op(A), region) = inner(A, transpose_region(region))
+inner(op(A), region) = outer(A, transpose_region(region))
+```
+
+Consequently every lowering still sees `outer * inner'`; no region kernel interprets
+`transA` or `transB`.
+
+A dense diagonal or dense corner is exposed as `LogicalDenseTile{Op}`: a physical
+view plus an `N/T` operation. The implementation never materializes a transposed
+dense tile.
+
+`LogicalTLROperand` remains GEMM-internal. The roadmap records the proposal to promote
+this behavior to a container-level lazy transpose view when another algorithm needs it.
+
+## 5. Contraction representation
+
+### Domains
+
+A `ContractDomain` is an `(i,k,j)` triple of `AxisSpan`s. Each span is either the
+regular tile range or the optional boundary tile. The eight combinations partition
+the complete tile-triple space:
+
+| operation | i | k | j | output region |
+| --- | --- | --- | --- | --- |
+| `interior` | regular | regular | regular | interior |
+| `int_by_rpanel` | regular | regular | boundary | right |
+| `bpanel_by_int` | boundary | regular | regular | bottom |
+| `rpanel_by_bpanel` | regular | boundary | regular | interior |
+| `rpanel_by_corner` | regular | boundary | boundary | right |
+| `corner_by_bpanel` | boundary | boundary | regular | bottom |
+| `bpanel_by_rpanel` | boundary | regular | boundary | corner |
+| `corner_by_corner` | boundary | boundary | boundary | corner |
+
+An aligned axis has an empty boundary span, so the corresponding operations become
+empty without special transpose or tail code.
+
+The domain describes coordinates only. Whether an interior tile exists in low-rank
+storage is a leaf property: `FullGrid` includes every regular tile, while `SkipDiag`
+omits the dense diagonal.
+
+### Leaves
+
+`LowRankLeaf` pairs canonical outer and inner factor operands. Those operands may
+address a two-dimensional interior, a one-dimensional right/bottom panel, or a
+single corner. `DenseLeaf` carries a `LogicalDenseTile`.
+
+The leaf pair selects one of four lowering families:
+
+| left leaf | right leaf | lowering |
+| --- | --- | --- |
+| low rank | low rank | three-stage contraction |
+| low rank | dense | two stages |
+| dense | low rank | two stages |
+| dense | dense | one GEMM |
+
+This is why dense tiles remain distinct leaves: the lowering can call the appropriate
+dense GEMM directly without creating identity factors.
+
+### Operations and outputs
+
+A `ContractOp` contains only:
+
+- a `ContractDomain`;
+- left and right leaves;
+- a `DenseOutput`;
+- an `InitPolicy`;
+- `alpha`.
+
+It contains no fold, iterator placement, run width, workspace, stream, or backend
+library call.
+
+`DenseOutput` maps operation-local tile coordinates back into the correct part of
+`C`, using effective row geometry from `op(A)` and effective column geometry from
+`op(B)`. Regular and tail output tiles therefore use the same scheduled code.
+
+`InitPolicy(beta)` represents both first-writer and accumulation behavior:
+`ScaleExisting(beta)` carries the caller's beta, while `AccumulateExisting(T)` is
+the `beta == 1` case.
+
+All representation and scheduled-operation types remain concrete Julia types. This
+is required for inference of workspace array and batch-vector element types; the
+implementation does not use a heterogeneous runtime list of operations.
+
+## 6. Lowering low-rank contractions
+
+Lowering a low-rank pair performs four decisions:
+
+1. derive `ContractGeometry` from the domain and leaves;
+2. choose `FoldRight` or `FoldLeft`;
+3. map the reduction to `KAsGemmK` or `KAsSerialLoop`;
+4. choose the budgeted run dimensions.
+
+The resulting `ScheduledLowRankContract` owns these decisions. Execution promotes
+workspace once, refills preallocated batch vectors for each run, and invokes
+Stage 1/2/3 through `precision_gemm_batched!`.
+
+Specialized scheduled types implement low-rank–dense, dense–low-rank, and
+dense–dense leaf pairs. Their terminal GEMM observes the same output and compute
+policy as the three-stage path.
+
+### Reduction placement
+
+Tile order determines the physically contiguous tile axis:
+
+| effective order | left operand contiguous axis | right operand contiguous axis |
+| --- | --- | --- |
+| tile column-major | `i` | `k` |
+| tile row-major | `k` | `j` |
+
+For the left operand:
+
+- contiguous `k` selects `KAsGemmK`: the tile reduction is fused into a GEMM K
+  dimension and an output tile is written once;
+- contiguous `i` selects `KAsSerialLoop`: reduction runs accumulate into the same
+  output tile.
+
+The right operand's contiguous axis controls whether Stage 1 can fuse its free
+column axis. The four effective order pairs select:
+
+| A order | B order | reduction placement | Stage-1 free-axis mapping |
+| --- | --- | --- | --- |
+| row-major | row-major | `KAsGemmK{:j}` | `JAsGemmN` |
+| row-major | column-major | `KAsGemmK{:k}` | `FreeAsBatch` |
+| column-major | column-major | `KAsSerialLoop{:k}` | `IAsGemmM` |
+| column-major | row-major | `KAsSerialLoop{:j}` | `IJAsGemmMN` |
+
+Transpose changes effective tile order before this decision.
+
+### Fold selection
+
+`FoldRight` produces `T = S*Z'` and finishes with the left outer factor.
+`FoldLeft` produces `T' = U*S` and finishes with the right inner factor. A fold is
+legal only when its required reduction stack is complete and contiguous. When both
+choices are legal, the scheduler prefers a write-once placement and then the smaller
+terminal intermediate.
+
+The bottom-panel–right-panel corner operation is deliberately kept as a serial,
+budget-blocked reduction instead of forming an unbounded complete stack.
+
+## 7. Workspace and initialization
+
+`max_workspace` is a per-operation scratch budget in bytes. It controls `RowRun` or
+`ColumnRun` sizes and the promoted S/T buffers. It is not a strict whole-call memory
+cap:
+
+- one element of progress is always permitted even if the requested budget is
+  smaller;
+- persistent operand/output storage is excluded;
+- on GPU, four disjoint output regions may execute concurrently, so their scratch
+  allocations can coexist.
+
+`gemm_workspace_bytes(A, B; transA, transB)` returns the maximum full-width scratch
+requirement among the eight structured contractions emitted for the logical TLR pair.
+It is not the sum of concurrently executing regions and does not describe the direct
+standalone-dense kernels.
+
+Batch-vector containers are allocated with concrete view element types when workspace
+is promoted, then reused with `empty!` and `push!` inside run loops.
+
+Output initialization depends on placement:
+
+- `KAsGemmK` writes each output tile once, so the terminal GEMM receives beta;
+- `KAsSerialLoop` may write an output tile repeatedly, so its destination region is
+  scaled once before the reduction and every terminal GEMM accumulates with beta one.
+
+At the top level, each of the four output regions has a first term that owns the
+caller's beta and a second term that accumulates with beta one. Empty reductions still
+apply the required output scaling.
+
+## 8. TLR–TLR region orchestration
+
+The dense result is split into four disjoint regions:
+
+```text
+C = [ interior  right
+      bottom    corner ]
+```
+
+Each region contains two boundary-cube operations listed in section 5. CPU execution
+runs the regions sequentially. Non-CPU execution creates four streams, assigns one
+region to each stream, and synchronizes all four at the end. Operations within one
+region remain ordered because they may update the same output tiles.
+
+For `TLRMatrix × TLRMatrix`, all tiles are low rank and the region operations use the
+structured low-rank lowering directly.
+
+For `TLRDenseDiagMatrix × TLRDenseDiagMatrix`, the low-rank off-diagonal and boundary
+parts use the same representation. Regular dense-diagonal contributions are expanded
+in the region entry points:
+
+```text
+A_int * B_int =
+    O_A * O_B +
+    D_A * D_B +
+    O_A * D_B +
+    D_A * O_B
+```
+
+The `O_A*O_B` term owns beta for the interior; dense-diagonal components accumulate
+after it. The analogous diagonal contribution is performed before the structured
+off-diagonal remainder in the right and bottom regions. Dense corners lower through
+`DenseLeaf`, not through an identity-factor approximation.
+
+## 9. Products with one standalone dense operand
+
+`TLRMatrix × dense` and `dense × TLRMatrix` deliberately use direct two-stage tile
+kernels rather than `ContractOp`.
+
+For a left TLR tile:
+
+```text
+T = V' * B_block
+C_block += U * T
+```
+
+For a right TLR tile:
+
+```text
+T = A_block * U
+C_block += T * V'
+```
+
+The standalone dense operand is viewed through `LogicalDenseOperand`, so `N/T`
+changes view coordinates and GEMM flags without copying data. `max_workspace` blocks
+dense columns or rows respectively. The intermediate retains the TLR operand storage
+type. Beta is applied once to the complete dense output before tile accumulation.
+
+These paths require the dense operand, TLR factors, and output to use the same backend,
+and the standalone dense operand currently has the same element type as the TLR
+operand.
+
+## 10. Precision policy
+
+TLR GEMM supports operand storage types `Float16`, `Float32`, and `Float64`.
+Operand storage is inferred from the inputs and output storage from `C`; the caller
+selects only `compute`.
+
+Defaults are:
+
+| operand storage | default compute |
+| --- | --- |
+| `Float16` | `Float32` |
+| `Float32` | `Float32` |
+| `Float64` | `Float64` |
+
+The central invariant is that S and T use operand storage. Stages that produce another
+intermediate therefore validate
+
+```text
+Tin × Tin → Tin
+```
+
+while only the terminal stage may validate
+
+```text
+Tin × Tin → Tout
+```
+
+This permits, subject to backend support, FP16 operands with FP32 accumulation and
+either FP16 or FP32 output. FP32 and FP64 use their backend-supported same-precision
+signatures. `alpha` and `beta` are converted to the compute type.
+
+`TF32()` is a CUDA-only compute mode for FP32 operands and FP32 output. Selecting it
+on another backend fails validation before scheduling.
+
+All scheduled calls go through `precision_gemm!` or
+`precision_gemm_batched!`. Those functions validate the actual operand,
+destination, backend, and compute-mode signature before calling native GEMM or
+GEMMEx.
+
+On CPU, the generic policy currently accepts same-type FP32 and FP64 GEMM. GPU
+mixed-precision availability is determined by the CUDA/AMDGPU backend extensions.
+Other backends reject signatures they do not advertise.
+
+## 11. Validation and degeneracies
+
+TLR–TLR entry points validate once, after logical transpose canonicalization:
+
+- effective inner matrix dimensions agree;
+- `C` has the effective output shape;
+- effective contraction-axis nominal tile sizes agree;
+- precision and backend signatures are supported.
+
+Standalone-dense paths additionally validate effective dimensions and a common backend.
+
+A zero-rank `TLRMatrix × TLRMatrix` product scales `C` by beta and returns. Empty
+boundary domains are no-ops unless they own initialization of a nonempty output
+region. The lowering avoids constructing zero-sized runs.
+
+`N/T` are non-conjugating operations. A future complex implementation must add a
+separate adjoint/conjugation-aware factor mapping rather than treating `C` as `T`.
+
+## 12. Extension boundaries
+
+The implemented contraction representation ends at a dense output mapping. Milestones
+4–6 in `ROADMAP.md` add:
+
+- output sinks that can receive dense tiles or low-rank updates;
+- bounded TLR accumulation and recompression;
+- contraction and compression workspace accounting;
+- merge-tree planning;
+- the remaining TLR-output product families.
+
+Those features must preserve the current separation:
+
+- operands canonicalize storage and transpose;
+- leaves describe algebraic values;
+- domains describe iteration spaces;
+- lowering selects association, placement, runs, and library calls;
+- output policy owns materialization or compression;
+- memory budget and approximation budget remain distinct.

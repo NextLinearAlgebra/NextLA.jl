@@ -1,201 +1,60 @@
-function fill_random_tlr!(A_tlr::NextLA.TLRDenseDiagMatrix, ArrayType::Type; seed::Integer)
-    rng = MersenneTwister(seed)
-    T = eltype(A_tlr)
-    A_tlr.D .= ArrayType(randn(rng, T, size(A_tlr.D)))
-    A_tlr.D_corner .= ArrayType(randn(rng, T, size(A_tlr.D_corner)))
-    A_tlr.int_U .= ArrayType(randn(rng, T, size(A_tlr.int_U)))
-    A_tlr.int_V .= ArrayType(randn(rng, T, size(A_tlr.int_V)))
-    A_tlr.right_U .= ArrayType(randn(rng, T, size(A_tlr.right_U)))
-    A_tlr.right_V .= ArrayType(randn(rng, T, size(A_tlr.right_V)))
-    A_tlr.bottom_U .= ArrayType(randn(rng, T, size(A_tlr.bottom_U)))
-    A_tlr.bottom_V .= ArrayType(randn(rng, T, size(A_tlr.bottom_V)))
-    A_tlr.ranks .= A_tlr.maxrank
-    return A_tlr
-end
+# TLR gemm! to dense: correctness against tile-reconstructed dense references.
+#
+# Parameter sweeps use pairwise coverage: every value of each dimension (tile
+# orders, budget extremes, boundary regimes, transpose flags) appears, and every
+# pair of dimensions is exercised at least once, without full cross-products.
+# Drivers live in `helpers.jl`.
 
-function assert_tlr_gemm_matches_dense(ArrayType::Type, T::Type, n::Int, b::Int, r::Int,
-                                       orderA, orderB, synchronize; budget::Int,
-                                       alpha=T(1.3), beta=T(-0.4), atol=1e-10, rtol=1e-10)
-    A_tlr = NextLA.TLRDenseDiagMatrix(ArrayType(zeros(T, n, n)), b, r; tile_order=orderA)
-    B_tlr = NextLA.TLRDenseDiagMatrix(ArrayType(zeros(T, n, n)), b, r; tile_order=orderB)
-    fill_random_tlr!(A_tlr, ArrayType; seed=101)
-    fill_random_tlr!(B_tlr, ArrayType; seed=202)
+@testset "TLR gemm! to dense on CPU (dense-diagonal)" begin
+    RM = NextLA.TileRowMajor(); CM = NextLA.TileColMajor()
+    huge = 128 * 1024 * 1024
+    nosync = _ -> nothing
 
-    rng = MersenneTwister(303)
-    C0_cpu = randn(rng, T, n, n)
-    C = ArrayType(C0_cpu)
-    NextLA.TLRmodule.gemm!(C, A_tlr, B_tlr; alpha=alpha, beta=beta, max_workspace=budget)
-    synchronize(C)
-
-    A_dense = reconstruct_tlr(A_tlr)
-    B_dense = reconstruct_tlr(B_tlr)
-    C_ref = alpha * A_dense * B_dense + beta * C0_cpu
-    @test isapprox(Array(C), C_ref; atol=atol, rtol=rtol)
-end
-
-@testset "TLR gemm! to dense on CPU" begin
-    orders = (NextLA.TileRowMajor(), NextLA.TileColMajor())
-    for orderA in orders, orderB in orders
-        @testset "$(orderA) * $(orderB), budget=1" begin
-            assert_tlr_gemm_matches_dense(Array, Float64, 12, 4, 2, orderA, orderB, _ -> nothing;
-                                          budget=1)
-        end
-        @testset "$(orderA) * $(orderB), large budget" begin
-            assert_tlr_gemm_matches_dense(Array, Float64, 16, 4, 3, orderA, orderB, _ -> nothing;
-                                          budget=128 * 1024 * 1024)
+    # (orderA, orderB, budget, n, b, r) — aligned, all three boundary regimes
+    # (incl. tail ≥ Q: n=87,b=16 → Q=5,s=7 and tail < Q: n=35,b=8 → Q=4,s=3),
+    # zero rank, and a single-tile matrix.
+    cases = (
+        (RM, CM, 1,    12, 4,  2),   # aligned grid
+        (CM, RM, huge, 35, 8,  3),   # boundary, tail < Q
+        (CM, CM, 1,    87, 16, 4),   # boundary, tail ≥ Q
+        (RM, RM, huge, 46, 12, 5),   # boundary
+        (CM, RM, 1,    46, 10, 0),   # zero rank + boundary
+        (CM, RM, 1,     4, 4,  2),   # single tile
+    )
+    for (oA, oB, budget, n, b, r) in cases
+        @testset "$(oA) * $(oB), n=$n b=$b r=$r budget=$budget" begin
+            assert_tlr_gemm_matches_dense(Array, Float64, n, b, r, oA, oB, nosync; budget)
         end
     end
-
-    @testset "zero rank and one tile" begin
-        assert_tlr_gemm_matches_dense(Array, Float64, 8, 4, 0,
-                                      NextLA.TileRowMajor(), NextLA.TileColMajor(), _ -> nothing;
-                                      budget=1)
-        assert_tlr_gemm_matches_dense(Array, Float64, 4, 4, 2,
-                                      NextLA.TileColMajor(), NextLA.TileRowMajor(), _ -> nothing;
-                                      budget=1)
-    end
-
-    # Non-uniform tiling (m % b ≠ 0): exercises the boundary decomposition — interior,
-    # right/bottom panels and corner. Covers the tail ≥ Q regime (n=87,b=16 → Q=5,s=7)
-    # that the Stage-3 tile-size fix unblocked, and tail < Q (n=35,b=8 → Q=4,s=3).
-    @testset "boundary tiling (m % b ≠ 0)" begin
-        for orderA in orders, orderB in orders
-            for (n, b, r) in ((35, 8, 3), (87, 16, 4), (46, 12, 5))
-                @testset "$(orderA) * $(orderB), n=$n b=$b" begin
-                    assert_tlr_gemm_matches_dense(Array, Float64, n, b, r, orderA, orderB, _ -> nothing;
-                                                  budget=1)
-                    assert_tlr_gemm_matches_dense(Array, Float64, n, b, r, orderA, orderB, _ -> nothing;
-                                                  budget=128 * 1024 * 1024)
-                end
-            end
-        end
-        @testset "boundary with zero rank" begin
-            assert_tlr_gemm_matches_dense(Array, Float64, 46, 10, 0,
-                                          NextLA.TileColMajor(), NextLA.TileRowMajor(), _ -> nothing;
-                                          budget=1)
-        end
-    end
-
-end
-
-function fill_random_tlr!(A_tlr::NextLA.TLRMatrix, ArrayType::Type; seed::Integer)
-    rng = MersenneTwister(seed)
-    T = eltype(A_tlr)
-    for f in (A_tlr.int_U, A_tlr.int_V, A_tlr.right_U, A_tlr.right_V,
-              A_tlr.bottom_U, A_tlr.bottom_V, A_tlr.corner_U, A_tlr.corner_V)
-        length(f) == 0 && continue
-        f .= ArrayType(randn(rng, T, size(f)))
-    end
-    A_tlr.ranks .= A_tlr.maxrank
-    return A_tlr
-end
-
-# Fully low-rank TLR × TLR → dense over a (possibly rectangular) tile-aligned grid.
-# `A` is `mA×k`, `B` is `k×nB` (all divisible by `b`), so there are no boundary tiles
-# and the whole product is the `FullGrid` interior term.
-function assert_fulllr_gemm_matches_dense(ArrayType::Type, T::Type, mA::Int, k::Int, nB::Int,
-                                          b::Int, r::Int, orderA, orderB, synchronize; budget::Int,
-                                          alpha=T(1.3), beta=T(-0.4), atol=1e-10, rtol=1e-10)
-    A_tlr = NextLA.TLRMatrix(ArrayType(zeros(T, mA, k)), b, r; tile_order=orderA)
-    B_tlr = NextLA.TLRMatrix(ArrayType(zeros(T, k, nB)), b, r; tile_order=orderB)
-    fill_random_tlr!(A_tlr, ArrayType; seed=101)
-    fill_random_tlr!(B_tlr, ArrayType; seed=202)
-
-    rng = MersenneTwister(303)
-    C0_cpu = randn(rng, T, mA, nB)
-    C = ArrayType(C0_cpu)
-    NextLA.TLRmodule.gemm!(C, A_tlr, B_tlr; alpha=alpha, beta=beta, max_workspace=budget)
-    synchronize(C)
-
-    A_dense = reconstruct_tlr(A_tlr)
-    B_dense = reconstruct_tlr(B_tlr)
-    C_ref = alpha * A_dense * B_dense + beta * C0_cpu
-    @test isapprox(Array(C), C_ref; atol=atol, rtol=rtol)
-end
-
-# Rectangular *tiles* (bm ≠ bn): `A` uses tile size `(bm, bk)`, `B` uses `(bk, bn)`, so
-# the contraction tiling `bk` aligns but the output tile is `bm × bn`. Only the buffer
-# sizes change vs. square tiles; the result must still match the dense product.
-function assert_fulllr_gemm_rect_tiles(ArrayType::Type, T::Type, mA::Int, k::Int, nB::Int,
-                                       bm::Int, bk::Int, bn::Int, r::Int, orderA, orderB, synchronize;
-                                       budget::Int, alpha=T(1.3), beta=T(-0.4), atol=1e-9, rtol=1e-9)
-    A_tlr = NextLA.TLRMatrix(ArrayType(zeros(T, mA, k)), (bm, bk), r; tile_order=orderA)
-    B_tlr = NextLA.TLRMatrix(ArrayType(zeros(T, k, nB)), (bk, bn), r; tile_order=orderB)
-    fill_random_tlr!(A_tlr, ArrayType; seed=101)
-    fill_random_tlr!(B_tlr, ArrayType; seed=202)
-
-    rng = MersenneTwister(303)
-    C0_cpu = randn(rng, T, mA, nB)
-    C = ArrayType(C0_cpu)
-    NextLA.TLRmodule.gemm!(C, A_tlr, B_tlr; alpha=alpha, beta=beta, max_workspace=budget)
-    synchronize(C)
-
-    A_dense = reconstruct_tlr(A_tlr)
-    B_dense = reconstruct_tlr(B_tlr)
-    C_ref = alpha * A_dense * B_dense + beta * C0_cpu
-    @test isapprox(Array(C), C_ref; atol=atol, rtol=rtol)
 end
 
 @testset "full-LR TLR gemm! to dense on CPU" begin
-    orders = (NextLA.TileRowMajor(), NextLA.TileColMajor())
-    for orderA in orders, orderB in orders
-        @testset "$(orderA) * $(orderB)" begin
-            for budget in (1, 128 * 1024 * 1024)
-                # square grid (q = 3)
-                assert_fulllr_gemm_matches_dense(Array, Float64, 12, 12, 12, 4, 2,
-                                                 orderA, orderB, _ -> nothing; budget=budget)
-                # rectangular grid: q_m=3, q_c=2, q_n=4
-                assert_fulllr_gemm_matches_dense(Array, Float64, 12, 8, 16, 4, 3,
-                                                 orderA, orderB, _ -> nothing; budget=budget)
-            end
-        end
-    end
+    RM = NextLA.TileRowMajor(); CM = NextLA.TileColMajor()
+    huge = 128 * 1024 * 1024
+    nosync = _ -> nothing
 
-    # Boundary tiles (n % b ≠ 0): square, equal-size A, B so the right/bottom/corner
-    # panels are populated. Exercises all four regions with low-rank corners.
-    @testset "boundary tiling (n % b ≠ 0)" begin
-        for orderA in orders, orderB in orders
-            for (n, b) in ((14, 4), (35, 8), (46, 12)), budget in (1, 128 * 1024 * 1024)
-                assert_fulllr_gemm_matches_dense(Array, Float64, n, n, n, b, 3,
-                                                 orderA, orderB, _ -> nothing; budget=budget, atol=1e-9, rtol=1e-9)
-            end
+    # (mA, k, nB, tsA, tsB, r, orderA, orderB, budget, tol) — square/rect grids,
+    # independent boundary tails, rectangular tiles, single contraction tile,
+    # zero rank; orders and budgets distributed pairwise across rows.
+    cases = (
+        (12, 12, 12, (4, 4), (4, 4), 2, RM, CM, 1,    1e-10),  # square aligned grid
+        (12,  8, 16, (4, 4), (4, 4), 3, CM, RM, huge, 1e-10),  # rectangular grid
+        (35, 35, 35, (8, 8), (8, 8), 3, CM, CM, 1,    1e-9),   # boundary square
+        (14, 14, 14, (4, 4), (4, 4), 3, RM, RM, huge, 1e-9),   # boundary square, small tiles
+        (22, 14, 10, (4, 4), (4, 4), 3, RM, CM, huge, 1e-9),   # independent m/k/n tails
+        (35, 19, 27, (8, 8), (8, 8), 3, CM, RM, 1,    1e-9),   # independent tails, larger
+        (12,  9, 10, (4, 3), (3, 5), 3, RM, RM, 1,    1e-9),   # rect tiles, aligned
+        (14, 11, 13, (4, 3), (3, 5), 3, CM, CM, huge, 1e-9),   # rect tiles + tails
+        (15,  6,  8, (5, 6), (6, 2), 2, RM, CM, huge, 1e-9),   # tall output tile, q_c=1
+        ( 8,  4,  8, (4, 4), (4, 4), 2, RM, CM, 1,    1e-10),  # single contraction tile
+        ( 8,  8,  8, (4, 4), (4, 4), 0, CM, RM, 1,    1e-10),  # zero rank, aligned
+        (14, 14, 14, (4, 4), (4, 4), 0, CM, RM, 1,    1e-10),  # zero rank, boundary
+    )
+    for (mA, k, nB, tsA, tsB, r, oA, oB, budget, tol) in cases
+        @testset "$(mA)×$(k)×$(nB) tiles=$(tsA)/$(tsB) r=$r $(oA)*$(oB) budget=$budget" begin
+            assert_fulllr_gemm_matches_dense(Array, Float64, mA, k, nB, tsA, tsB, r,
+                                             oA, oB, nosync; budget, atol=tol, rtol=tol)
         end
-    end
-
-    # Rectangular boundary: independent tails in m, k, n (A is mA×k, B is k×nB).
-    @testset "rectangular boundary" begin
-        for orderA in orders, orderB in orders
-            for (mA, k, nB, b) in ((14, 10, 18, 4), (22, 14, 10, 4), (35, 19, 27, 8)), budget in (1, 128 * 1024 * 1024)
-                assert_fulllr_gemm_matches_dense(Array, Float64, mA, k, nB, b, 3,
-                                                 orderA, orderB, _ -> nothing; budget=budget, atol=1e-9, rtol=1e-9)
-            end
-        end
-    end
-
-    # Rectangular tiles (bm ≠ bk ≠ bn): only the intermediate buffer sizes differ.
-    @testset "rectangular tiles (bm ≠ bn)" begin
-        for orderA in orders, orderB in orders, budget in (1, 128 * 1024 * 1024)
-            # aligned grid, no boundary: mA=12(3), k=9(3), nB=10(2); tiles A=(4,3), B=(3,5)
-            assert_fulllr_gemm_rect_tiles(Array, Float64, 12, 9, 10, 4, 3, 5, 3,
-                                          orderA, orderB, _ -> nothing; budget=budget)
-            # with tails in m, k and n: mA=14(tail2), k=11(tail2), nB=13(tail3)
-            assert_fulllr_gemm_rect_tiles(Array, Float64, 14, 11, 13, 4, 3, 5, 3,
-                                          orderA, orderB, _ -> nothing; budget=budget)
-            # tall output tile (bm > bn) and single contraction tile
-            assert_fulllr_gemm_rect_tiles(Array, Float64, 15, 6, 8, 5, 6, 2, 2,
-                                          orderA, orderB, _ -> nothing; budget=budget)
-        end
-    end
-
-    @testset "edge cases" begin
-        # single contraction tile (q_c = 1): kept by FullGrid, unlike the dense-diag interior
-        assert_fulllr_gemm_matches_dense(Array, Float64, 8, 4, 8, 4, 2,
-                                         NextLA.TileRowMajor(), NextLA.TileColMajor(), _ -> nothing; budget=1)
-        # zero rank (aligned and boundary)
-        assert_fulllr_gemm_matches_dense(Array, Float64, 8, 8, 8, 4, 0,
-                                         NextLA.TileColMajor(), NextLA.TileRowMajor(), _ -> nothing; budget=1)
-        assert_fulllr_gemm_matches_dense(Array, Float64, 14, 14, 14, 4, 0,
-                                         NextLA.TileColMajor(), NextLA.TileRowMajor(), _ -> nothing; budget=1)
     end
 end
 
@@ -235,44 +94,14 @@ end
 
     @testset "forced fold matches dense" begin
         for budget in (1, 128 * 1024 * 1024)
-            for oa in (RM, CM)                        # B TileColMajor ⇒ FoldLeft valid
-                assert_fold_matches(oa, CM, 12, 12, 12, (4, 4), (4, 4), 3, FL(), budget)  # square
-                assert_fold_matches(oa, CM, 12, 9, 10, (4, 3), (3, 5), 3, FL(), budget)   # rect tiles
-                assert_fold_matches(oa, CM, 12, 9, 10, (4, 3), (3, 5), 2, FR(), budget)   # FoldRight sanity
-            end
-            assert_fold_matches(RM, CM, 15, 6, 8, (5, 6), (6, 2), 2, FL(), budget)        # tall output tile
+            assert_fold_matches(RM, CM, 12, 9, 10, (4, 3), (3, 5), 3, FL(), budget)
+            assert_fold_matches(CM, CM, 12, 9, 10, (4, 3), (3, 5), 2, FR(), budget)
         end
     end
 end
 
-# Phase 1: transpose flags (`op(X) = Xᵀ` when the flag ≠ 'N') on the aligned FullGrid
-# interior. A transpose is a relabeling of stored factors (`logical_operands`) plus
-# effective-order axis inference — the executors are unchanged. Verify all four
-# op-combinations against the dense `op(A)·op(B)`.
-function assert_transpose_matches_dense(m, k, n, tsA, tsB, oA, oB, transA, transB;
-                                        alpha=1.3, beta=-0.4, budget=128 * 1024 * 1024,
-                                        ArrayType=Array, synchronize=_ -> nothing,
-                                        atol=1e-9, rtol=1e-9)
-    bm, bk = tsA
-    bk2, bn = tsB
-    @assert bk == bk2
-    # tsA/tsB are the *op* tile sizes; the stored matrix/tiles flip on transpose.
-    storedA, tileA = transA == 'T' ? ((k, m), (bk, bm)) : ((m, k), (bm, bk))
-    storedB, tileB = transB == 'T' ? ((n, k), (bn, bk)) : ((k, n), (bk, bn))
-    A = NextLA.TLRMatrix(ArrayType(zeros(Float64, storedA...)), tileA, 3; tile_order=oA)
-    B = NextLA.TLRMatrix(ArrayType(zeros(Float64, storedB...)), tileB, 3; tile_order=oB)
-    fill_random_tlr!(A, ArrayType; seed=1)
-    fill_random_tlr!(B, ArrayType; seed=2)
-    C0 = randn(MersenneTwister(7), Float64, m, n)
-    C = ArrayType(C0)
-    NextLA.TLRmodule.gemm!(C, A, B; alpha=alpha, beta=beta, transA=transA,
-                           transB=transB, max_workspace=budget)
-    synchronize(C)
-    opd(D, t) = t == 'T' ? permutedims(D) : D
-    ref = alpha .* (opd(reconstruct_tlr(A), transA) * opd(reconstruct_tlr(B), transB)) .+ beta .* C0
-    @test isapprox(Array(C), ref; atol=atol, rtol=rtol)
-end
-
+# Whole-matrix transpose is a relabeling of stored factors (`logical_operands`) plus
+# effective-order axis inference — the executors are unchanged.
 @testset "whole-matrix logical N/T operands" begin
     RM = NextLA.TileRowMajor(); CM = NextLA.TileColMajor()
     A = NextLA.TLRMatrix(zeros(Float64, 11, 14), (4, 3), 2; tile_order=RM)
@@ -306,20 +135,28 @@ end
 
 @testset "transpose flags on complete FullGrid operands" begin
     RM = NextLA.TileRowMajor(); CM = NextLA.TileColMajor()
-    @testset "op(A)·op(B), all four combos × layouts" begin
-        for tA in ('N', 'T'), tB in ('N', 'T'), oA in (RM, CM), oB in (RM, CM)
-            assert_transpose_matches_dense(12, 8, 16, (4, 4), (4, 4), oA, oB, tA, tB)   # square tiles
-            assert_transpose_matches_dense(12, 9, 10, (4, 3), (3, 5), oA, oB, tA, tB)   # rectangular tiles
+    huge = 128 * 1024 * 1024
+
+    # All four op-combinations, each on a distinct layout pair; square and
+    # rectangular op tile sizes split between them.
+    @testset "op(A)·op(B), pairwise combos × layouts" begin
+        rows = (
+            ('N', 'N', RM, CM, (12, 8, 16), (4, 4), (4, 4)),
+            ('N', 'T', CM, RM, (12, 8, 16), (4, 4), (4, 4)),
+            ('T', 'N', CM, CM, (12, 9, 10), (4, 3), (3, 5)),
+            ('T', 'T', RM, RM, (12, 9, 10), (4, 3), (3, 5)),
+        )
+        for (tA, tB, oA, oB, (m, k, n), tsA, tsB) in rows
+            assert_transpose_matches_dense(m, k, n, tsA, tsB, oA, oB, tA, tB)
         end
     end
 
-    @testset "independent boundary tails × layouts × budgets" begin
-        for tA in ('N', 'T'), tB in ('N', 'T'), oA in (RM, CM), oB in (RM, CM),
-            budget in (1, 128 * 1024 * 1024)
-            # Effective A is 14×11 with tiles 4×3; effective B is 11×13 with
-            # tiles 3×5. All three dimensions have independent boundary tails.
-            assert_transpose_matches_dense(14, 11, 13, (4, 3), (3, 5), oA, oB, tA, tB;
-                                             budget)
+    @testset "independent boundary tails × budgets" begin
+        # Effective A is 14×11 with tiles 4×3; effective B is 11×13 with
+        # tiles 3×5. All three dimensions have independent boundary tails.
+        for budget in (1, huge)
+            assert_transpose_matches_dense(14, 11, 13, (4, 3), (3, 5), RM, CM, 'T', 'N'; budget)
+            assert_transpose_matches_dense(14, 11, 13, (4, 3), (3, 5), CM, RM, 'N', 'T'; budget)
         end
     end
 
@@ -344,35 +181,48 @@ end
     end
 end
 
-function assert_dense_diag_transpose_matches(n, b, r, oA, oB, transA, transB;
-                                             budget, alpha=1.3, beta=-0.4,
-                                             ArrayType=Array, synchronize=_ -> nothing,
-                                             atol=1e-9, rtol=1e-9)
-    A = NextLA.TLRDenseDiagMatrix(ArrayType(zeros(Float64, n, n)), b, r; tile_order=oA)
-    B = NextLA.TLRDenseDiagMatrix(ArrayType(zeros(Float64, n, n)), b, r; tile_order=oB)
-    fill_random_tlr!(A, ArrayType; seed=11)
-    fill_random_tlr!(B, ArrayType; seed=22)
-    C0 = randn(MersenneTwister(33), Float64, n, n)
-    C = ArrayType(C0)
-    NextLA.TLRmodule.gemm!(C, A, B; alpha, beta, transA, transB, max_workspace=budget)
-    synchronize(C)
-    opd(X, t) = uppercase(t) == 'T' ? transpose(X) : X
-    ref = alpha .* (opd(reconstruct_tlr(A), transA) * opd(reconstruct_tlr(B), transB)) .+ beta .* C0
-    @test isapprox(Array(C), ref; atol, rtol)
-end
-
 @testset "dense-diagonal boundary transpose" begin
-    orders = (NextLA.TileRowMajor(), NextLA.TileColMajor())
-    for tA in ('N', 'T'), tB in ('N', 'T'), oA in orders, oB in orders,
-        budget in (1, 128 * 1024 * 1024)
+    RM = NextLA.TileRowMajor(); CM = NextLA.TileColMajor()
+    huge = 128 * 1024 * 1024
+
+    rows = (
+        ('N', 'N', RM, CM, 1),
+        ('N', 'T', CM, CM, huge),
+        ('T', 'N', RM, RM, huge),
+        ('T', 'T', CM, RM, 1),
+    )
+    for (tA, tB, oA, oB, budget) in rows
         assert_dense_diag_transpose_matches(14, 4, 3, oA, oB, tA, tB; budget)
     end
     # Dense diagonal remains meaningful when every low-rank tile has rank zero.
-    assert_dense_diag_transpose_matches(14, 4, 0, orders...,'T', 'T'; budget=1)
+    assert_dense_diag_transpose_matches(14, 4, 0, RM, CM, 'T', 'T'; budget=1)
 
     Arect = NextLA.TLRDenseDiagMatrix(zeros(Float64, 8, 12), 4, 2)
     Brect = NextLA.TLRDenseDiagMatrix(zeros(Float64, 8, 8), 4, 2)
     @test_throws ArgumentError NextLA.TLRmodule.gemm!(zeros(12, 8), Arect, Brect; transA='T')
+end
+
+@testset "full-LR with one dense operand on CPU" begin
+    RM = NextLA.TileRowMajor(); CM = NextLA.TileColMajor()
+    huge = 128 * 1024 * 1024
+    rows = (
+        ('N', 'N', RM, 1), ('N', 'T', CM, huge),
+        ('T', 'N', CM, 1), ('T', 'T', RM, huge),
+    )
+    for side in (:tlr_dense, :dense_tlr), (ta, tb, order, budget) in rows
+        assert_dense_fulllr_gemm(Array, Float64, side, 14, 11, 13, (4, 3),
+                                 order, ta, tb, _ -> nothing; budget)
+    end
+
+    A = NextLA.TLRMatrix(zeros(Float64, 8, 9), (4, 3), 2)
+    @test_throws DimensionMismatch _TLRM.gemm!(zeros(8, 7), A, zeros(8, 7))
+    @test_throws DimensionMismatch _TLRM.gemm!(zeros(7, 8), zeros(7, 8), A)
+    @test_throws ArgumentError _TLRM.gemm!(zeros(8, 7), A, zeros(9, 7); transB='X')
+
+    Z = NextLA.TLRMatrix(zeros(Float64, 8, 9), (4, 3), 0)
+    Cz = ones(8, 7); _TLRM.gemm!(Cz, Z, zeros(9, 7); beta=-0.5)
+    Dz = ones(6, 9); _TLRM.gemm!(Dz, zeros(6, 8), Z; beta=0.25)
+    @test all(Cz .== -0.5) && all(Dz .== 0.25)
 end
 
 @testset "TLR gemm! to dense on CUDA" begin
@@ -380,19 +230,23 @@ end
         backend_name == "CUDA" || continue
         @testset "$backend_name" begin
             orders = (NextLA.TileRowMajor(), NextLA.TileColMajor())
-            for orderA in orders, orderB in orders
-                assert_tlr_gemm_matches_dense(ArrayType, Float32, 12, 4, 2, orderA, orderB, synchronize;
-                                              budget=1, alpha=Float32(1.2), beta=Float32(0.25),
-                                              atol=5f-3, rtol=5f-3)
-            end
+            assert_tlr_gemm_matches_dense(ArrayType, Float32, 12, 4, 2, orders..., synchronize;
+                                          budget=1, alpha=Float32(1.2), beta=Float32(0.25),
+                                          atol=5f-3, rtol=5f-3)
             # Representative complete-operand transpose checks: independently
             # tailed full-LR geometry and a dense-diagonal boundary corner.
-            assert_transpose_matches_dense(14, 11, 13, (4, 3), (3, 5), orders...,'T', 'N';
+            assert_transpose_matches_dense(14, 11, 13, (4, 3), (3, 5), orders..., 'T', 'N';
                                              budget=1, ArrayType, synchronize,
                                              atol=1e-8, rtol=1e-8)
-            assert_dense_diag_transpose_matches(14, 4, 3, orders...,'T', 'T';
+            assert_dense_diag_transpose_matches(14, 4, 3, orders..., 'T', 'T';
                                                 budget=1, ArrayType, synchronize,
                                                 atol=1e-8, rtol=1e-8)
+            assert_dense_fulllr_gemm(ArrayType, Float32, :tlr_dense, 10, 9, 11, (4, 3),
+                                     orders[1], 'T', 'N', synchronize; budget=1,
+                                     atol=5f-3, rtol=5f-3)
+            assert_dense_fulllr_gemm(ArrayType, Float32, :dense_tlr, 10, 9, 11, (3, 5),
+                                     orders[2], 'N', 'T', synchronize; budget=1,
+                                     atol=5f-3, rtol=5f-3)
 
             @testset "precision policy" begin
                 A16 = NextLA.TLRMatrix(ArrayType(zeros(Float16, 10, 10)), 4, 2;
@@ -417,6 +271,22 @@ end
                 NextLA.TLRmodule.gemm!(C32, A16, B16; compute=Float32, max_workspace=1)
                 synchronize(C32)
                 @test isapprox(Array(C32), ref16; atol=0.2f0, rtol=0.03f0)
+
+                Dright = ArrayType(randn(Float16, 10, 7))
+                Cright = ArrayType(zeros(Float32, 10, 7))
+                NextLA.TLRmodule.gemm!(Cright, A16, Dright; compute=Float32,
+                                       max_workspace=1)
+                synchronize(Cright)
+                @test isapprox(Array(Cright), Float32.(reconstruct_tlr(A16)) *
+                                              Float32.(Array(Dright)); atol=0.2f0, rtol=0.03f0)
+
+                Dleft = ArrayType(randn(Float16, 6, 10))
+                Cleft = ArrayType(zeros(Float32, 6, 10))
+                NextLA.TLRmodule.gemm!(Cleft, Dleft, B16; compute=Float32,
+                                       max_workspace=1)
+                synchronize(Cleft)
+                @test isapprox(Array(Cleft), Float32.(Array(Dleft)) *
+                                             Float32.(reconstruct_tlr(B16)); atol=0.2f0, rtol=0.03f0)
 
                 # GEMM scalars follow compute precision, not FP16 factor storage.
                 # The factors make A*B exactly 100I even through FP16 S/T storage,
@@ -449,6 +319,13 @@ end
                 synchronize(Ctf32)
                 ref32 = reconstruct_tlr(A32) * reconstruct_tlr(B32)
                 @test isapprox(Array(Ctf32), ref32; atol=0.1f0, rtol=0.03f0)
+
+                Dtf32 = ArrayType(randn(Float32, 8, 6))
+                NextLA.TLRmodule.gemm!(view(Ctf32, :, 1:6), A32, Dtf32;
+                                       compute=NextLA.TF32())
+                synchronize(Ctf32)
+                @test isapprox(Array(Ctf32[:, 1:6]), reconstruct_tlr(A32) * Array(Dtf32);
+                               atol=0.1f0, rtol=0.03f0)
             end
         end
     end

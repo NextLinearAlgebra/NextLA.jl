@@ -1,3 +1,5 @@
+# Run geometry, workspace scheduling, and output initialization.
+
 """
 A write-once row run: a rectangular block of output tiles, rows `i0:i1` ×
 columns `j0:j1`. All rows are independent (no cross-`i` dependence), so every
@@ -41,26 +43,80 @@ struct ColumnSchedule
     maxJ::Int
 end
 
-# Interior-product geometry from the logical operands. Tiles may be rectangular, so
-# three distinct block sizes are carried: `bm` (A row / C row height, from `U`), `bk`
-# (contraction tile size, from `V`/`W`), and `bn` (B col / C col width, from `Z`, also
-# the T scratch's spatial extent). For a square interior all three coincide, and for a
-# square dense-diagonal interior `q_m/q_c/q_n` coincide too and every `per*` reduces to
-# `nt-1`.
-@inline function _interior_geom(ops)
-    return (
-        q_m = ops.av.qm,                  # A output-row tiles           (== ops.au.qm)
-        q_c = ops.av.qn,                  # contraction tiles            (== ops.bw.qm)
-        q_n = ops.bw.qn,                  # B output-col tiles           (== ops.bz.qn)
-        rA  = rankdim(ops.av),            # A rank
-        rB  = rankdim(ops.bw),            # B rank
-        bm  = blockdim(ops.au),           # A row / C row tile height
-        bk  = blockdim(ops.av),           # contraction tile size (== blockdim(ops.bw))
-        bn  = blockdim(ops.bz),           # B col / C col tile width (T spatial extent)
-        perA_row = tiles_per_row(ops.av), # A contraction tiles per output row (row family K-stack)
-        perA_col = tiles_per_col(ops.av), # A tiles per contraction column     (column family stacking)
-        perB_row = tiles_per_row(ops.bw), # B output-col tiles per contraction row (column jpos width)
+"""
+    ContractGeometry{T}
+
+The sizes the scheduler needs to budget a run of one structured contraction, with the
+operand storage type `T` as a **type parameter**.
+
+`T` is a type parameter rather than a field on purpose. Scratch is allocated as
+`allocate(backend, eltype(geom), …)`, and `allocate`'s result type is only inferable when
+the element type is known to the compiler. Carrying it as a field (`Tin::DataType`) makes
+the geometry a runtime value, so `allocate` infers `Array{<:Any}`, the workspace type and
+its batch-view eltypes go abstract, and the staged loops allocate ~1.4 KB per run through
+dynamic dispatch — with correctness tests still passing. `test/TLR/gemm_ir.jl` pins the
+inferability with `@inferred`; note `isconcretetype(typeof(ws))` does **not** test this
+(it is true of any runtime value).
+"""
+struct ContractGeometry{T}
+    q_m::Int          # A output-row tiles
+    q_c::Int          # contraction tiles
+    q_n::Int          # B output-col tiles
+    rA::Int           # A rank
+    rB::Int           # B rank
+    bm::Int           # A row / C row tile height
+    bk::Int           # contraction tile size
+    bn::Int           # B col / C col tile width (T spatial extent)
+    perA_row::Int     # A contraction tiles per output row (row family K-stack)
+    perA_col::Int     # A tiles per contraction column     (column family stacking)
+    perB_row::Int     # B output-col tiles per contraction row (column jpos width)
+end
+
+Base.eltype(::ContractGeometry{T}) where {T} = T
+Base.eltype(::Type{ContractGeometry{T}}) where {T} = T
+
+"""
+    geometry(domain, Aleaf, Bleaf) -> ContractGeometry
+
+The sizes the scheduler needs to budget a run of one structured contraction.
+
+Extents come from the **domain**'s spans, so a panel or corner term — whose span is a
+single tile — sizes through this same path rather than a bespoke one. Ranks, block dims,
+element type and stacking depths come from the **leaves**, because they are properties of
+storage and of the enumeration policy (`GridKind`), not of the coordinate set.
+
+Tiles may be rectangular, so three distinct block sizes are carried: `bm` (A row / C row
+height, from the outer factor), `bk` (contraction tile size, from the inner factor), and
+`bn` (B col / C col width, from B's inner factor, also the T scratch's spatial extent).
+For a square interior all three coincide, and for a square dense-diagonal interior
+`q_m/q_c/q_n` coincide too and every `per*` reduces to `nt-1`.
+
+The operand storage type rides as the `ContractGeometry` type parameter (read via
+`eltype`), because the scheduler budgets *bytes* and `allocate` must stay inferable.
+
+The `per*` stacking depths are asked of the leaves, so every leaf kind answers them: an
+interior grid by its `GridKind`, a panel by its live axis, a corner degenerately as 1.
+"""
+@inline function geometry(d::ContractDomain, Aleaf::LowRankLeaf, Bleaf::LowRankLeaf)
+    return ContractGeometry{eltype(Aleaf.inner.data)}(
+        span_extent(d.i),
+        span_extent(d.k),
+        span_extent(d.j),
+        rankdim(Aleaf),
+        rankdim(Bleaf),
+        blockdim(Aleaf.outer),
+        blockdim(Aleaf.inner),            # == blockdim(Bleaf.outer)
+        blockdim(Bleaf.inner),
+        tiles_per_row(Aleaf.inner),
+        tiles_per_col(Aleaf.inner),
+        tiles_per_row(Bleaf.outer),
     )
+end
+
+"""Geometry of the interior contraction of `op(A)` × `op(B)`."""
+@inline function interior_geometry(A::LogicalTLROperand, B::LogicalTLROperand)
+    Aleaf, Bleaf = interior_leaves(A, B)
+    return geometry(contract_domains(A, B).interior, Aleaf, Bleaf)
 end
 
 # Scratch bytes for one batched slice: `S` is r_A·per·r_B and `T` is r_A·per·b_n,
@@ -71,8 +127,8 @@ end
 # Row family: block the `q_m × q_n` output grid into rectangular runs whose tile
 # count fits the budget — `maxJ` columns wide, `maxI` rows tall (columns filled
 # first). All tiles are independent, so the block is a pure batch.
-@inline function _row_block(geom, ::Type{T}, budget::Int) where {T}
-    per_col = _slice_bytes(geom.rA, geom.perA_row, geom.rB, geom.bn, T)
+@inline function _row_block(geom, budget::Int)
+    per_col = _slice_bytes(geom.rA, geom.perA_row, geom.rB, geom.bn, eltype(geom))
     maxtiles = clamp(div(budget, per_col), 1, geom.q_m * geom.q_n)
     maxJ = clamp(maxtiles, 1, geom.q_n)
     maxI = clamp(div(maxtiles, maxJ), 1, geom.q_m)
@@ -82,8 +138,8 @@ end
 # Column family: block the `(k, jpos)` slice space into runs whose slice count fits
 # the budget — `maxJ` panel positions wide, `maxK` contraction tiles deep (positions
 # filled first). Stages 1/2 batch over the whole block; Stage 3 loops `k`.
-@inline function _column_block(geom, ::Type{T}, budget::Int) where {T}
-    per_slice = _slice_bytes(geom.rA, geom.perA_col, geom.rB, geom.bn, T)
+@inline function _column_block(geom, budget::Int)
+    per_slice = _slice_bytes(geom.rA, geom.perA_col, geom.rB, geom.bn, eltype(geom))
     maxslices = clamp(div(budget, per_slice), 1, geom.q_c * geom.perB_row)
     maxJ = clamp(maxslices, 1, geom.perB_row)
     maxK = clamp(div(maxslices, maxJ), 1, geom.q_c)
@@ -98,62 +154,51 @@ end
 """
     choose_fold(ops) -> FoldSide
 
-Pick the Stage-2/3 association from the operands' *effective* layout (which already
-folds in any transpose flag) so the reduction becomes a write-once fused Stage 3
-without transposing either operand (see `FoldSide`). `FoldLeft` stacks B's `Z` and is
-write-once iff op(B) is `TileColMajor`; it is only used on a `FullGrid` interior
-(`SkipDiag`'s excluded diagonal breaks the contiguous Z-stack, and it is square
-regardless). When both op(A) `TileRowMajor` and op(B) `TileColMajor` give write-once,
-the smaller intermediate breaks the tie (`bm·rB` vs `rA·bn`); otherwise `FoldRight`.
+Pick the Stage-2/3 association from the leaves' contiguous iterators so the reduction
+becomes a write-once fused Stage 3 without transposing either operand (see `FoldSide`).
+`FoldLeft` stacks B's `Z` and is write-once when its leaf is contiguous along `k`.
+Reassociation additionally requires complete reduction stacks: `FullGrid` interiors and
+panels qualify; `SkipDiag` does not because its missing diagonal breaks a plain reshape.
+When both sides admit a write-once stack, the smaller intermediate breaks the tie
+(`bm·rB` vs `rA·bn`).
 """
 @inline function choose_fold(ops)
-    ops.av isa InteriorOperand{FullGrid} || return FoldRight()
-    ops.bz.order isa TileColMajor || return FoldRight()   # only op(B)-col gives FoldLeft write-once
-    ops.au.order isa TileRowMajor || return FoldLeft()    # only FoldLeft is write-once
-    geom = _interior_geom(ops)                            # both write-once → smaller intermediate
-    return geom.bm * geom.rB < geom.rA * geom.bn ? FoldLeft() : FoldRight()
+    complete_k_stack(ops.av) || return FoldRight()
+    complete_k_stack(ops.bz) || return FoldRight()
+    stride1_axis_right(ops.bz) isa Stride1Axis{:k} || return FoldRight()
+    stride1_axis_left(ops.au) isa Stride1Axis{:k} || return FoldLeft()
+    # Both write-once → smaller intermediate wins (`bm·rB` vs `rA·bn`). These are storage
+    # sizes, not extents, so they come straight off the operands — the fold is a layout
+    # decision and needs no domain.
+    return blockdim(ops.au) * rankdim(ops.bw) < rankdim(ops.av) * blockdim(ops.bz) ?
+           FoldLeft() : FoldRight()
 end
 
 # Reduction → hardware-axis placement, from the operands' effective tile orders.
 # `FoldRight` keys on op(A) (stacks op(A)'s `U`). `FoldLeft` is only ever chosen when
 # op(B) is `TileColMajor`, which makes op(B)'s `Z` k-stack contiguous — always the
 # write-once row family with tilewise (`FreeAsBatch`) Stage 1.
-@inline placement_for_fold(::FoldRight, ops) = k_axis_schedule(stride1_axis_left(ops.au.order), stride1_axis_right(ops.bz.order))
+@inline placement_for_fold(::FoldRight, ops) =
+    k_axis_schedule(stride1_axis_left(ops.au), stride1_axis_right(ops.bz))
 @inline placement_for_fold(::FoldLeft, ops) = KAsGemmK{:k}()
 
 """
-    gemm_workspace_bytes(A, B) -> Int
-
-Minimum `max_workspace` (bytes) at which `gemm!(C, A, B; max_workspace=…)` runs the
-off-diagonal product `O_A O_B` at full width. For `KAsGemmK` layouts that is the
-entire output tile grid batched in a single run; for `KAsSerialLoop` layouts it is
-one full `k`-column per run. Passing at least this many bytes maximises batching;
-passing less still works but splits the work into smaller runs.
-"""
-function gemm_workspace_bytes(A::AbstractTLRMatrix, B::AbstractTLRMatrix)
-    ops = logical_operands(A, B)
-    geom = _interior_geom(ops)
-    placement = k_axis_schedule(stride1_axis_left(A), stride1_axis_right(B))
-    per = placement isa KAsGemmK ? geom.perA_row : geom.perA_col
-    return _slice_bytes(geom.rA, per, geom.rB, geom.bn, eltype(ops.av.data)) *
-           _full_run_tiles(placement, geom)
-end
-
-"""
-    runs(placement, ops, budget) -> schedule
+    runs(placement, geom, budget) -> schedule
 
 Build the budget-sized run iterator selected by the reduction placement:
 `RowSchedule` for `KAsGemmK`, `ColumnSchedule` for `KAsSerialLoop`.
+
+Takes a `geometry` rather than the operand bundle, so the run space is derived from the
+contraction's domain — the same path a panel or corner term will use once its extents
+are spans of one tile.
 """
-@inline function runs(placement::KAsGemmK, ops, budget::Int)
-    geom = _interior_geom(ops)
-    maxI, maxJ = _row_block(geom, eltype(ops.av.data), budget)
+@inline function runs(placement::KAsGemmK, geom, budget::Int)
+    maxI, maxJ = _row_block(geom, budget)
     return RowSchedule(geom.q_m, geom.q_n, maxI, maxJ)
 end
 
-@inline function runs(placement::KAsSerialLoop, ops, budget::Int)
-    geom = _interior_geom(ops)
-    maxK, maxJ = _column_block(geom, eltype(ops.av.data), budget)
+@inline function runs(placement::KAsSerialLoop, geom, budget::Int)
+    maxK, maxJ = _column_block(geom, budget)
     return ColumnSchedule(geom.q_c, geom.perB_row, maxK, maxJ)
 end
 
@@ -295,21 +340,25 @@ function _row_batches_left(ops, C, Sbuf, Tbuf, Zall, geom, maxI::Int, maxJ::Int)
 end
 
 """
-    allocate_workspace(placement, ops, C, budget, fold) -> RowWorkspace | ColumnWorkspace
+    allocate_workspace(placement, geom, ops, C, budget, fold) -> RowWorkspace | ColumnWorkspace
 
-Allocate S/T scratch and reusable batch buffers once per hard-term call, sized
-to the budgeted run width for the given reduction placement and `fold`. Geometry comes
-from the operands, so this serves both `SkipDiag` and `FullGrid` interiors.
+Promote the contraction's intermediates: allocate S/T scratch and reusable batch buffers
+once per term call, sized to the budgeted run width for the given reduction placement and
+`fold`.
+
+`geom` fixes the sizes (and so the budget), `ops` supplies the storage the reshaped
+K-stacks and batch views are cut from. Splitting them is the point: sizing is now a
+function of the contraction's domain, while promotion stays a function of the leaves'
+storage. Serves both `SkipDiag` and `FullGrid` interiors.
 """
-function allocate_workspace(placement::KAsGemmK, ops, C::AbstractMatrix, budget::Int, ::FoldRight)
-    geom = _interior_geom(ops)
-    T = eltype(ops.av.data)
+function allocate_workspace(placement::KAsGemmK, geom, ops, C::AbstractMatrix, budget::Int, ::FoldRight)
+    T = eltype(geom)
     backend = get_backend(ops.av.data)
     bm = geom.bm; bn = geom.bn
     noff = geom.perA_row
     rA = geom.rA
     rB = geom.rB
-    maxI, maxJ = _row_block(geom, T, budget)
+    maxI, maxJ = _row_block(geom, budget)
     Uall = reshape(ops.au.data, bm, rA * noff, geom.q_m)
     # S[:,:,p,kk,il]: p = position within the run's column block, laid out so a fused
     # per-(i,k) Stage-1 GEMM writes a contiguous [rA, len·rB] slice.
@@ -319,15 +368,14 @@ function allocate_workspace(placement::KAsGemmK, ops, C::AbstractMatrix, budget:
                         _row_batches(ops, C, Sbuf, Tbuf, Uall, geom, maxI, maxJ))
 end
 
-function allocate_workspace(placement::KAsGemmK, ops, C::AbstractMatrix, budget::Int, ::FoldLeft)
-    geom = _interior_geom(ops)
-    T = eltype(ops.av.data)
+function allocate_workspace(placement::KAsGemmK, geom, ops, C::AbstractMatrix, budget::Int, ::FoldLeft)
+    T = eltype(geom)
     backend = get_backend(ops.av.data)
     bm = geom.bm; bn = geom.bn
     noff = geom.perA_row                 # = q_c (FullGrid: every contraction tile)
     rA = geom.rA
     rB = geom.rB
-    maxI, maxJ = _row_block(geom, T, budget)
+    maxI, maxJ = _row_block(geom, budget)
     # Z-stack: for fixed output column j, all k contiguous ⟺ B TileColMajor.
     Zall = reshape(ops.bz.data, bn, rB * noff, geom.q_n)
     Sbuf = allocate(backend, T, rA, rB, maxJ, noff, maxI)
@@ -336,21 +384,44 @@ function allocate_workspace(placement::KAsGemmK, ops, C::AbstractMatrix, budget:
                         _row_batches_left(ops, C, Sbuf, Tbuf, Zall, geom, maxI, maxJ))
 end
 
-function allocate_workspace(placement::KAsSerialLoop, ops, C::AbstractMatrix, budget::Int, ::FoldSide)
-    geom = _interior_geom(ops)
-    T = eltype(ops.av.data)
+function allocate_workspace(placement::KAsSerialLoop, geom, ops, C::AbstractMatrix, budget::Int, ::FoldSide)
+    T = eltype(geom)
     backend = get_backend(ops.av.data)
     bm = geom.bm; bk = geom.bk; bn = geom.bn
     noff = geom.perA_col
     rA = geom.rA
     rB = geom.rB
-    maxK, maxJ = _column_block(geom, T, budget)
+    maxK, maxJ = _column_block(geom, budget)
     Vall = reshape(ops.av.data, bk, rA * noff, geom.q_c)
     Uall = reshape(ops.au.data, bm, rA, noff, geom.q_c)
     Sbuf = allocate(backend, T, rA * noff, rB, maxJ, maxK)
     Tbuf = allocate(backend, T, rA, noff, bn, maxJ, maxK)
     return ColumnWorkspace(ScratchS(Sbuf), ScratchT(Tbuf), Vall, Uall,
                            _column_batches(ops, C, Sbuf, Tbuf, Vall, Uall, geom, maxK, maxJ))
+end
+
+"""
+    lower_init!(region, policy, placement) -> beta_for_stage
+
+Lower an output init policy against a reduction placement, returning the `β` the terminal
+stage should use and performing any up-front scaling the placement forces.
+
+The two placements admit different lowerings of the same policy:
+
+- **row family** (`KAsGemmK`): the reduction is fused into one GEMM, so each output tile
+  is written exactly once and `β` folds directly into that write;
+- **column family** (`KAsSerialLoop`): the reduction is looped across runs, so several
+  writes hit the same tile. `β` cannot ride on any one of them — the region is pre-scaled
+  once and the writes then accumulate.
+
+An accumulate needs no scaling under either placement, which falls out of `isone` —
+which is why it needs no separate policy type.
+"""
+@inline lower_init!(::Any, p::InitPolicy, ::KAsGemmK) = p.beta
+
+@inline function lower_init!(region, p::InitPolicy{T}, ::KAsSerialLoop) where {T}
+    is_accumulate(p) || _scale_output!(region, p.beta)
+    return one(T)
 end
 
 """Scale the dense output by `beta` in place before accumulating product terms."""

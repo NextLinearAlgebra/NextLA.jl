@@ -1,13 +1,19 @@
 # imports
 include("precision.jl")
-include("core/layout.jl")
-include("core/panel.jl")
-include("core/schedule.jl")
-include("core/stage.jl")
-include("terms/interior.jl")
-include("terms/corner.jl")
-include("terms/right.jl")
-include("terms/bottom.jl")
+include("lowering/strategy.jl")
+include("operands.jl")
+include("contraction/leaves.jl")
+include("contraction/domain.jl")
+include("contraction/init.jl")
+include("contraction/operation.jl")
+include("lowering/schedule.jl")
+include("lowering/stages.jl")
+include("contraction/lowering.jl")
+include("regions/interior.jl")
+include("regions/corner.jl")
+include("regions/right.jl")
+include("regions/bottom.jl")
+include("tlr_dense.jl")
 
 const DEFAULT_GEMM_BUDGET = 10^9
 
@@ -32,7 +38,7 @@ equal square tiling.
 
 The output traversal of `C` is a function of the operand layouts (`A.order`,
 `B.order`) — not a free knob. `max_workspace` (bytes) sets how long a contiguous
-run of `C` is materialized at once (see `schedule.jl`).
+run of `C` is materialized at once (see `lowering/schedule.jl`).
 `compute` selects the accumulation mode; when omitted it defaults to `Float32` for
 `Float16` operands and otherwise to the operand type. `alpha` and `beta` are
 converted to that compute type.
@@ -69,15 +75,15 @@ function gemm!(C::AbstractMatrix, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDense
     end
     right = () -> begin                                          # C_right
         tlr_gemm_int_by_rpanel(C, LA, LB, α; beta=β, budget=W, compute=mode)     #   A_int u_B    (folds β)
-        tlr_gemm_rpanel_by_corner(C, LA, LB, α; beta=one_β, compute=mode)        #   u_A γ_B      (accumulate)
+        tlr_gemm_rpanel_by_corner(C, LA, LB, α; beta=one_β, budget=W, compute=mode)        #   u_A γ_B      (accumulate)
     end
     bottom = () -> begin                                         # C_bottom
         tlr_gemm_bpanel_by_int(C, LA, LB, α; beta=β, budget=W, compute=mode)     #   v_Aᵀ B_int   (folds β)
-        tlr_gemm_corner_by_bpanel(C, LA, LB, α; beta=one_β, compute=mode)        #   γ_A v_Bᵀ     (accumulate)
+        tlr_gemm_corner_by_bpanel(C, LA, LB, α; beta=one_β, budget=W, compute=mode)        #   γ_A v_Bᵀ     (accumulate)
     end
     corner = () -> begin                                         # C_corner
         tlr_gemm_corner_by_corner(C, LA, LB, α; beta=β, compute=mode)            #   γ_A γ_B       (folds β)
-        tlr_gemm_bpanel_by_rpanel(C, LA, LB, α; beta=one_β, compute=mode)        #   v_Aᵀ u_B     (accumulate)
+        tlr_gemm_bpanel_by_rpanel(C, LA, LB, α; beta=one_β, budget=W, compute=mode)        #   v_Aᵀ u_B     (accumulate)
     end
 
     if backend isa KernelAbstractions.CPU
@@ -142,15 +148,15 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backend
     end
     right = () -> begin                                          # C_right
         tlr_gemm_int_by_rpanel(C, LA, LB, α; beta=β, budget=W, compute=mode)         # A_int u_B (folds β)
-        tlr_gemm_rpanel_by_corner(C, LA, LB, α; beta=one_β, compute=mode)           # u_A γ_B
+        tlr_gemm_rpanel_by_corner(C, LA, LB, α; beta=one_β, budget=W, compute=mode)           # u_A γ_B
     end
     bottom = () -> begin                                         # C_bottom
         tlr_gemm_bpanel_by_int(C, LA, LB, α; beta=β, budget=W, compute=mode)         # v_Aᵀ B_int (folds β)
-        tlr_gemm_corner_by_bpanel(C, LA, LB, α; beta=one_β, compute=mode)          # γ_A v_Bᵀ
+        tlr_gemm_corner_by_bpanel(C, LA, LB, α; beta=one_β, budget=W, compute=mode)          # γ_A v_Bᵀ
     end
     corner = () -> begin                                         # C_corner
         tlr_gemm_corner_by_corner(C, LA, LB, α; beta=β, compute=mode)               # γ_A γ_B (folds β)
-        tlr_gemm_bpanel_by_rpanel(C, LA, LB, α; beta=one_β, compute=mode)          # v_Aᵀ u_B
+        tlr_gemm_bpanel_by_rpanel(C, LA, LB, α; beta=one_β, budget=W, compute=mode)          # v_Aᵀ u_B
     end
 
     if backend isa KernelAbstractions.CPU
@@ -170,4 +176,56 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backend
         end
     end
     return C
+end
+
+@inline function _validate_dense_backend(C, tlr, dense)
+    backend = get_backend(tlr)
+    typeof(get_backend(dense)) === typeof(backend) &&
+        typeof(get_backend(C)) === typeof(backend) ||
+        throw(ArgumentError("TLR, dense operand, and output must use the same backend"))
+    return backend
+end
+
+"""
+    gemm!(C, A::TLRMatrix, B::AbstractMatrix; ...)
+
+Compute `C := alpha·op(A)·op(B) + beta·C` with a fully low-rank left operand
+and a standalone dense right operand. Intermediates retain the operand storage type.
+"""
+function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::AbstractMatrix{T};
+    alpha=true, beta=false, max_workspace::Int=DEFAULT_GEMM_BUDGET,
+    transA::Char='N', transB::Char='N', compute=nothing) where {BackendT,T}
+    LA = logical_operand(A, transA)
+    LB = logical_dense_operand(B, transB)
+    size(LA, 2) == size(LB, 1) || throw(DimensionMismatch("inner dimensions must match"))
+    size(C) == (size(LA, 1), size(LB, 2)) ||
+        throw(DimensionMismatch("C must be size(op(A),1) × size(op(B),2)"))
+    backend = _validate_dense_backend(C, A, B)
+    mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
+    validate_tlr_gemm_precision(backend, T, eltype(C), mode)
+    ScalarT = gemm_compute_type(mode)
+    return _tlr_dense_gemm!(C, LA, LB, ScalarT(alpha), ScalarT(beta),
+                            max_workspace, mode)
+end
+
+"""
+    gemm!(C, A::AbstractMatrix, B::TLRMatrix; ...)
+
+Compute `C := alpha·op(A)·op(B) + beta·C` with a standalone dense left operand
+and a fully low-rank right operand. Intermediates retain the operand storage type.
+"""
+function gemm!(C::AbstractMatrix, A::AbstractMatrix{T}, B::TLRMatrix{BackendT,T};
+    alpha=true, beta=false, max_workspace::Int=DEFAULT_GEMM_BUDGET,
+    transA::Char='N', transB::Char='N', compute=nothing) where {BackendT,T}
+    LA = logical_dense_operand(A, transA)
+    LB = logical_operand(B, transB)
+    size(LA, 2) == size(LB, 1) || throw(DimensionMismatch("inner dimensions must match"))
+    size(C) == (size(LA, 1), size(LB, 2)) ||
+        throw(DimensionMismatch("C must be size(op(A),1) × size(op(B),2)"))
+    backend = _validate_dense_backend(C, B, A)
+    mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
+    validate_tlr_gemm_precision(backend, T, eltype(C), mode)
+    ScalarT = gemm_compute_type(mode)
+    return _dense_tlr_gemm!(C, LA, LB, ScalarT(alpha), ScalarT(beta),
+                            max_workspace, mode)
 end
