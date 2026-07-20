@@ -167,23 +167,38 @@ function check_lu_accuracy()
 
         println("\n  --- Standard CUSOLVER Scenarios ---")
         for (name, T_prec) in cusolver_scenarios
-            rel_err = get_accuracy_cusolver_lu(A_fp64, T_prec)
-            push!(all_results[name], -log10(rel_err))
-            println("    $name | Rel. Error: $(round(rel_err, sigdigits=3))")
+            try
+                rel_err = get_accuracy_cusolver_lu(A_fp64, T_prec)
+                push!(all_results[name], -log10(rel_err))
+                println("    $name | Rel. Error: $(round(rel_err, sigdigits=3))")
+            catch e
+                push!(all_results[name], NaN)
+                println("    [FAILED] $name | Error: $(sprint(showerror, e))")
+            end
         end
 
         println("\n  --- Pure Recursive Scenarios ---")
         for (name, T_prec) in pure_scenarios
-            rel_err = get_accuracy_pure_lu(A_fp64, T_prec)
-            push!(all_results[name], -log10(rel_err))
-            println("    $name | Rel. Error: $(round(rel_err, sigdigits=3))")
+            try
+                rel_err = get_accuracy_pure_lu(A_fp64, T_prec)
+                push!(all_results[name], -log10(rel_err))
+                println("    $name | Rel. Error: $(round(rel_err, sigdigits=3))")
+            catch e
+                push!(all_results[name], NaN)
+                println("    [FAILED] $name | Error: $(sprint(showerror, e))")
+            end
         end
 
         println("\n  --- Mixed Recursive Scenarios ---")
         for (name, prec_list) in mixed_scenarios
-            rel_err = get_accuracy_mixed_lu(A_fp64, prec_list)
-            push!(all_results[name], -log10(rel_err))
-            println("    $name | Rel. Error: $(round(rel_err, sigdigits=3))")
+            try
+                rel_err = get_accuracy_mixed_lu(A_fp64, prec_list)
+                push!(all_results[name], -log10(rel_err))
+                println("    $name | Rel. Error: $(round(rel_err, sigdigits=3))")
+            catch e
+                push!(all_results[name], NaN)
+                println("    [FAILED] $name | Error: $(sprint(showerror, e))")
+            end
         end
 
         A_cpu = nothing; A_fp64 = nothing; GC.gc(true); CUDA.reclaim()
@@ -201,14 +216,19 @@ function check_lu_accuracy()
     )
 
     for (name, results) in all_results
-        if occursin("CUSOLVER", name)
-            marker_style = :dtriangle
-        elseif occursin("Pure", name)
-            marker_style = :square
+        # Only plot if there's at least one non-NaN data point to avoid empty trace errors
+        if any(!isnan, results)
+            if occursin("CUSOLVER", name)
+                marker_style = :dtriangle
+            elseif occursin("Pure", name)
+                marker_style = :square
+            else
+                marker_style = :circle
+            end
+            plot!(plt, n_values, results, label=name, lw=2, marker=marker_style)
         else
-            marker_style = :circle
+            println("Skipping plot trace for '$name' (all evaluations failed).")
         end
-        plot!(plt, n_values, results, label=name, lw=2, marker=marker_style)
     end
 
     savefig(plt, "lu_accuracy_results.png")
