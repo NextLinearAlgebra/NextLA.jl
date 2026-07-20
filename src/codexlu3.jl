@@ -1,5 +1,12 @@
 using LinearAlgebra
 using CUDA
+
+abstract type AbstractMixedPrec{T} <: AbstractMatrix{T} end
+
+struct TransposedMixedPrec{T, M <: AbstractMixedPrec{T}} <: AbstractMixedPrec{T}
+    parent::M
+end
+
 include("wrappers.jl")
 include("rectrxm.jl")
 
