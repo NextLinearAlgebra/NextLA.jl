@@ -261,7 +261,8 @@ function recgemm!(
 end
 
 function lu_nopiv_basecase!(A::CUDA.StridedCuArray)
-    getrfnp!(A)
+    # getrfnp!(A)
+    CUSOLVER.getrf!(A)
     return A
 end
 
