@@ -1,0 +1,157 @@
+[
+  {
+    "question": "Write a Julia wrapper for the Triangular Solve (trsm!) that targets NVIDIA GPUs by dispatching directly to CUBLAS. The function should accept CUDA arrays and pass the appropriate scalar multipliers and characters for side, uplo, transa, and diag.",
+    "context": "NVIDIA hardware wrappers",
+    "answer": "using CUDA\n\ntrsm!(side::Char, uplo::Char, transa::Char, diag::Char, alpha, A::StridedCuMatrix{T}, B::StridedCuMatrix{T}) where T = CUBLAS.trsm!(side, uplo, transa, diag, alpha, A, B)"
+  },
+  {
+    "question": "Write a Julia wrapper for the General Matrix Multiply (gemm!) that targets NVIDIA GPUs by dispatching directly to CUBLAS. The function should accept CUDA arrays and appropriate characters for transA and transB.",
+    "context": "NVIDIA hardware wrappers",
+    "answer": "using CUDA\n\ngemm!(transA::Char, transB::Char, alpha, A::StridedCuVecOrMat{T}, B::StridedCuVecOrMat{T}, beta, C::StridedCuVecOrMat{T}) where T = CUBLAS.gemm!(transA, transB, alpha, A, B, beta, C)"
+  },
+  {
+    "question": "Write a Julia wrapper for the Mixed-Precision General Matrix Multiply (gemmEx!) that targets NVIDIA GPUs by dispatching directly to CUBLAS.",
+    "context": "NVIDIA hardware wrappers",
+    "answer": "using CUDA\n\ngemmEx!(transA::Char, transB::Char, alpha, A::StridedCuVecOrMat, B::StridedCuVecOrMat, beta, C::StridedCuVecOrMat) = CUBLAS.gemmEx!(transA, transB, alpha, A, B, beta, C)"
+  },
+  {
+    "question": "Write a Julia wrapper for the Symmetric Rank-k update (syrk!) that targets NVIDIA GPUs by dispatching directly to CUBLAS. The function should accept CUDA arrays and pass the appropriate scalar multipliers and characters for uplo and trans.",
+    "context": "NVIDIA hardware wrappers",
+    "answer": "using CUDA\n\nsyrk!(uplo::Char, trans::Char, alpha, A::StridedCuVecOrMat{T}, beta, C::StridedCuMatrix{T}) where T = CUBLAS.syrk!(uplo, trans, alpha, A, beta, C)"
+  },
+  {
+    "question": "Write a Julia wrapper for Cholesky factorization (`potrf!`) that targets NVIDIA GPUs using CUSOLVER. Include a high-level wrapper that defaults to Lower triangular ('L') and handles Float16 arrays by temporarily casting them to Float32 before calling the routine.",
+    "context": "NVIDIA hardware wrappers",
+    "answer": "using CUDA\n\npotrf!(uplo::Char, A::StridedCuMatrix) = CUSOLVER.potrf!(uplo, A)\n\nfunction potrf!(A::AbstractMatrix{T}) where T\n    if eltype(A) == Float16\n        A_f32 = Float32.(A)\n        potrf!('L', A_f32)\n        A .= Float16.(A_f32)\n    else\n        potrf!('L', A)\n    end\nend"
+  },
+  {
+    "question": "Write a Julia wrapper for LU factorization (`getrf!`) that targets NVIDIA GPUs using CUSOLVER. Include a high-level wrapper that handles Float16 arrays by temporarily casting them to Float32 before calling the base routine to prevent memory limitations.",
+    "context": "NVIDIA hardware wrappers",
+    "answer": "using CUDA\n\ngetrf!(A::StridedCuMatrix) = CUSOLVER.getrf!(A)\n\nfunction getrf!(A::AbstractMatrix{T}) where T\n    if eltype(A) == Float16\n        A_f32 = Float32.(A)\n        getrf!(A_f32)\n        A .= Float16.(A_f32)\n    else\n        getrf!(A)\n    end\nend"
+  },
+
+  {
+    "question": "Define a Julia data structure SymmMixedPrec for a hierarchical, recursive mixed-precision symmetric matrix that stores only one triangle. It should recursively partition into two diagonal sub-blocks (A11, A22) and one off-diagonal block (OffDiag).",
+    "context": "Recursive mixed-precision data structures",
+    "answer": "struct SymmMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}\n    A11::Union{SymmMixedPrec{T_Base}, Nothing}\n    A22::Union{SymmMixedPrec{T_Base}, Nothing}\n    OffDiag::Union{AbstractMatrix, Nothing}\n    offDiag_scale::Union{Float32, Nothing}\n    base_scale::Union{Float32, Nothing}\n    BaseCase::Union{AbstractMatrix{T_Base}, Nothing}\n    uplo::Char\n    sz::Tuple{Int, Int}\nend"
+  },
+  {
+    "question": "Define a Julia data structure TriMixedPrec for a hierarchical, recursive mixed-precision triangular matrix. It should partition into two diagonal sub-blocks (A11, A22) and one dense off-diagonal block (OffDiag), and store a character for uplo.",
+    "context": "Recursive mixed-precision data structures",
+    "answer": "struct TriMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}\n    A11::Union{TriMixedPrec{T_Base}, Nothing}\n    A22::Union{TriMixedPrec{T_Base}, Nothing}\n    OffDiag::Union{AbstractMatrix, Nothing}\n    offDiag_scale::Union{Float32, Nothing}\n    base_scale::Union{Float32, Nothing}\n    BaseCase::Union{AbstractMatrix{T_Base}, Nothing}\n    uplo::Char\n    sz::Tuple{Int, Int}\nend"
+  },
+  {
+    "question": "Define a Julia data structure FullMixedPrec for a hierarchical, recursive mixed-precision dense square matrix. It should recursively partition into four sub-blocks (A11, A22, A21, A12) and store independent scaling factors for the off-diagonal blocks.",
+    "context": "Recursive mixed-precision data structures",
+    "answer": "struct FullMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}\n    A11::Union{FullMixedPrec{T_Base}, Nothing}\n    A22::Union{FullMixedPrec{T_Base}, Nothing}\n    A21::Union{AbstractMatrix, Nothing}\n    A12::Union{AbstractMatrix, Nothing}\n    A21_scale::Union{Float32, Nothing}\n    A12_scale::Union{Float32, Nothing}\n    base_scale::Union{Float32, Nothing}\n    BaseCase::Union{AbstractMatrix{T_Base}, Nothing}\n    sz::Tuple{Int, Int}\nend"
+  },
+
+  {
+    "question": "Write an internal helper function `_gemm_dispatch!` that routes GEMM operations to the correct hardware routine (`gemm!` or `gemmEx!`) depending on input element types (`Float16`, `Float32`, `Float64`). Handle fallback upcasting if the types do not match standard signatures.",
+    "context": "Hardware routing and type dispatch for GPU linear algebra",
+    "answer": "function _gemm_dispatch!(alpha, A::AbstractMatrix, B::AbstractMatrix, beta, C::AbstractMatrix)\n    TA, TB, TC = eltype(A), eltype(B), eltype(C)\n    if TA == TB == TC && TC in (Float32, Float64)\n        gemm!('N', 'N', TC(alpha), A, B, TC(beta), C)\n    elseif TA == Float16 && TB == Float16 && TC in (Float16, Float32)\n        gemmEx!('N', 'N', alpha, A, B, beta, C)\n    else\n        A_final = (TA == TC) ? A : TC.(A)\n        B_final = (TB == TC) ? B : TC.(B)\n        if TC in (Float32, Float64)\n            gemm!('N', 'N', TC(alpha), A_final, B_final, TC(beta), C)\n        else\n            gemmEx!('N', 'N', alpha, A_final, B_final, beta, C)\n        end\n    end\nend"
+  },
+  {
+    "question": "Write an internal helper function `_syrk_dispatch!` that routes symmetric rank-k updates or GEMMs to the correct hardware routine depending on input element types (`Float16`, `Float32`, `Float64`). Handle fallback upcasting to `Float32` if the types don't match standard CUBLAS signatures.",
+    "context": "Hardware routing and type dispatch for GPU linear algebra",
+    "answer": "function _syrk_dispatch!(op::Symbol, alpha::Number, A::CUDA.StridedCuArray, B::CUDA.StridedCuArray, beta::Number, C::CUDA.StridedCuArray)\n    TC = eltype(C)\n    TA = eltype(A)\n    if op === :SYRK\n        if TA == TC && TC in (Float32, Float64)\n            syrk!('L', 'N', TC(alpha), A, TC(beta), C)\n        elseif TA == Float16 && TC in (Float16, Float32)\n            gemmEx!('N', 'T', alpha, A, A, beta, C)\n        else\n            compute_type = Float32\n            C_temp = (TC == compute_type) ? C : compute_type.(C)\n            if TA == Float32\n                syrk!('L', 'N', compute_type(alpha), A, compute_type(beta), C_temp)\n            elseif TA == Float16\n                gemmEx!('N', 'T', alpha, A, A, beta, C_temp)\n            else\n                A_temp = compute_type.(A)\n                syrk!('L', 'N', compute_type(alpha), A_temp, compute_type(beta), C_temp)\n            end\n            if C !== C_temp\n                copy!(C, C_temp)\n            end\n        end\n    elseif op === :GEMM\n        TB = eltype(B)\n        if TA == TB == TC && TC in (Float32, Float64)\n            gemm!('N', 'T', TC(alpha), A, B, TC(beta), C)\n        elseif TA == Float16 && TB == Float16 && TC in (Float16, Float32)\n            gemmEx!('N', 'T', alpha, A, B, beta, C)\n        else\n            A_final = (TA == TC) ? A : TC.(A)\n            B_final = (TB == TC) ? B : TC.(B)\n            if TC in (Float32, Float64)\n                gemm!('N', 'T', TC(alpha), A_final, B_final, TC(beta), C)\n            else \n                gemmEx!('N', 'T', alpha, A_final, B_final, beta, C)\n            end\n        end\n    end\nend"
+  },
+   {
+    "question": "Write an internal helper function `dispatch_trsm!` that routes to the base TRSM routine. If the input matrix A is Float16, cast it and the B matrix to Float32 to compute safely, call the routine, and then copy the result back to B. Otherwise, dispatch directly.",
+    "context": "Hardware routing and type dispatch for GPU linear algebra",
+    "answer": "function dispatch_trsm!(side, uplo, trans, diag, alpha, A, B)\n    if eltype(A) == Float16\n        B_temp = Float32.(B)\n        trsm!(side, uplo, trans, diag, alpha, Float32.(A), B_temp)\n        copy!(B, B_temp)\n    else\n        trsm!(side, uplo, trans, diag, alpha, A, B)\n    end\nend"
+  },
+  {
+    "question": "Write an internal helper function `dispatch_trmm!` that routes to the base TRMM routine. If the input matrix A is Float16, cast it and the B matrix to Float32 to compute safely, call the routine, and then copy the result back to B. Otherwise, dispatch directly.",
+    "context": "Hardware routing and type dispatch for GPU linear algebra",
+    "answer": "function dispatch_trmm!(side, uplo, trans, diag, alpha, A, B)\n    if eltype(A) == Float16\n        B_temp = Float32.(B)\n        trmm!(side, uplo, trans, diag, alpha, Float32.(A), B_temp, B_temp)\n        copy!(B, B_temp)\n    else\n        trmm!(side, uplo, trans, diag, alpha, A, B, B)\n    end\nend"
+  },
+  {
+    "question": "Write a helper function `GEMM_ADD!` that performs a generalized matrix multiplication addition `C = C + scale * A * B` on GPU arrays. If `A` and `B` are `Float16`, it should use `gemmEx!` to accumulate safely, clamping values to avoid overflow if `C` is also `Float16`.",
+    "context": "Hardware routing and type dispatch for GPU linear algebra",
+    "answer": "function GEMM_ADD!(A, B, C::AnyGPUArray, scale::Float32=1.0f0)\n    transA = A isa Transpose ? 'T' : 'N'\n    transB = B isa Transpose ? 'T' : 'N'\n    A_mat = A isa Transpose ? parent(A) : A\n    B_mat = B isa Transpose ? parent(B) : B\n    if eltype(A_mat) == Float16 && eltype(B_mat) == Float16\n        if eltype(C) == Float16\n            C_op = Float32.(C)\n            gemmEx!(transA, transB, scale, A_mat, B_mat, 1.0f0, C_op)\n            clamp!(C_op, floatmin(Float16), floatmax(Float16))\n            copy!(C, C_op)\n        else\n            gemmEx!(transA, transB, scale, A_mat, B_mat, 1.0f0, C)\n        end\n    else\n        T_C = eltype(C)\n        gemm!(transA, transB, T_C(scale), A_mat, B_mat, T_C(1.0), C)\n    end\nend"
+  },
+  {
+    "question": "Implement a hardware-agnostic `GEMM_SUB!` function for GPU arrays that computes `C = C - scale * A * B`. If both `A` and `B` are `Float16`, accumulate safely into a `Float32` temporary if `C` is `Float16`, clamping to prevent overflow before copying back. Otherwise, dispatch to standard BLAS `gemm!` with a negative scale.",
+    "context": "Hardware routing and type dispatch for GPU linear algebra",
+    "answer": "function GEMM_SUB!(C::AnyGPUArray, A, B, scale::Float32=1.0f0)\n    transA = A isa Transpose ? 'T' : 'N'\n    transB = B isa Transpose ? 'T' : 'N'\n    A_mat = A isa Transpose ? parent(A) : A\n    B_mat = B isa Transpose ? parent(B) : B\n    if eltype(A_mat) == Float16 && eltype(B_mat) == Float16\n        if eltype(C) == Float16\n            C_op = Float32.(C)\n            gemmEx!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C_op)\n            clamp!(C_op, floatmin(Float16), floatmax(Float16))\n            copy!(C, C_op)\n        else\n            gemmEx!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C)\n        end\n    else\n        T_C = eltype(C)\n        gemm!(transA, transB, T_C(-scale), A_mat, B_mat, T_C(1.0), C)\n    end\nend"
+  },
+
+
+  {
+    "question": "Write the recursive implementation for `recgemm!` on a `FullMixedPrec` matrix `C`. The function should split `A`, `B`, and `C` into four sub-blocks each and compute the updates sequentially or in parallel based on a keyword argument. Check if a `BaseCase` exists first to dispatch to hardware routines.",
+    "context": "Mixed-precision block-recursive linear algebra framework",
+    "answer": "function recgemm!(alpha, A::AbstractMatrix, B::AbstractMatrix, beta, C::FullMixedPrec; parallel::Bool=(size(C, 1) > 512))\n    if C.BaseCase !== nothing\n        _gemm_dispatch!(alpha, A, B, beta, C.BaseCase)\n        return\n    end\n\n    n = size(C, 1)\n    mid = size(C.A11, 1)\n\n    A11 = view(A, 1:mid, 1:mid)\n    A12 = view(A, 1:mid, mid+1:n)\n    A21 = view(A, mid+1:n, 1:mid)\n    A22 = view(A, mid+1:n, mid+1:n)\n\n    B11 = view(B, 1:mid, 1:mid)\n    B12 = view(B, 1:mid, mid+1:n)\n    B21 = view(B, mid+1:n, 1:mid)\n    B22 = view(B, mid+1:n, mid+1:n)\n\n    if parallel\n        @sync begin\n            @async begin\n                recgemm!(alpha, A11, B11, beta, C.A11; parallel=false)\n                recgemm!(alpha, A12, B21, 1.0, C.A11; parallel=false)\n            end\n            @async begin\n                _gemm_dispatch!(alpha, A11, B12, beta, C.A12)\n                _gemm_dispatch!(alpha, A12, B22, 1.0, C.A12)\n            end\n            @async begin\n                _gemm_dispatch!(alpha, A21, B11, beta, C.A21)\n                _gemm_dispatch!(alpha, A22, B21, 1.0, C.A21)\n            end\n            @async begin\n                recgemm!(alpha, A21, B12, beta, C.A22; parallel=false)\n                recgemm!(alpha, A22, B22, 1.0, C.A22; parallel=false)\n            end\n        end\n    else\n        recgemm!(alpha, A11, B11, beta, C.A11; parallel=false)\n        recgemm!(alpha, A12, B21, 1.0, C.A11; parallel=false)\n        _gemm_dispatch!(alpha, A11, B12, beta, C.A12)\n        _gemm_dispatch!(alpha, A12, B22, 1.0, C.A12)\n        _gemm_dispatch!(alpha, A21, B11, beta, C.A21)\n        _gemm_dispatch!(alpha, A22, B21, 1.0, C.A21)\n        recgemm!(alpha, A21, B12, beta, C.A22; parallel=false)\n        recgemm!(alpha, A22, B22, 1.0, C.A22; parallel=false)\n    end\nend"
+  },
+  {
+    "question": "Write the entry-point Julia function recsyrk! for an in-place, nested recursive block symmetric rank-k update on a SymmMixedPrec matrix. It should check if a base case exists to fall back to hardware routines, and if not, determine if the subproblem size exceeds a PARALLEL_THRESHOLD to trigger parallel execution in the internal implementation.",
+    "context": "Mixed-precision block-recursive linear algebra framework",
+    "answer": "const PARALLEL_THRESHOLD = 4096\n\nfunction recsyrk!(alpha::Number, A::AbstractMatrix, beta::Number, C::SymmMixedPrec)\n    if C.BaseCase !== nothing\n        recsyrk!(alpha, A, beta, C.BaseCase)\n        return\n    end\n    n_subproblem = size(C.A11, 1)\n    should_parallelize = n_subproblem > PARALLEL_THRESHOLD\n    _recsyrk_impl!(alpha, A, beta, C, parallel=should_parallelize)\nend"
+  },
+  {
+    "question": "Write the entry-point Julia function `unified_rectrxm!` for mixed-precision triangular solve (`S`) or multiply (`M`). The function should accept `side`, `uplo`, `trans`, `diag`, `alpha`, `func`, an `AbstractMixedPrec` matrix `A`, and a `StridedMatrix` `B`. It should handle transpose conversions, scaling for solve/multiply, and initiate the `unified_rec_mixed` recursion.",
+    "context": "Mixed-precision block-recursive linear algebra framework",
+    "answer": "function unified_rectrxm!(\n        side::Char, \n        uplo::Char, \n        trans::Char, \n        diag::Char,\n        alpha::Number, \n        func::Char, \n        A::AbstractMixedPrec, \n        B::StridedMatrix\n    )\n    threshold = 16\n    if trans == 'T' || trans == 'C'\n        A = transpose(A) \n        uplo = (uplo == 'L') ? 'U' : 'L'\n    end    \n    \n    if func == 'S'\n        threshold = 256\n        B .= alpha .* B\n    end\n    unified_rec_mixed(func, side, uplo, diag, A, B, threshold)\n    if func == 'M'\n        B .= alpha .* B\n    end\n    return B\nend"
+  },
+  {
+    "question": "Write the recursive block sequence for a mixed-precision Triangular Solve (rectrsm!) assuming a Left-side, Lower-triangular configuration. Solve for B1, update B2 using GEMM_SUB! with the off-diagonal block, and then solve for B2.",
+    "context": "Mixed-precision block-recursive linear algebra framework",
+    "answer": "# Step 1: Solve A11 * X1 = B1\nrectrsm_mixed!(side, uplo, diag, A.A11, B1, threshold)\n\n# Step 2: Update B2 = B2 - A21 * X1\nA_type = eltype(OffDiag_block)\nif A_type == Float16 && eltype(B) !== Float64\n    GEMM_SUB!(B2, OffDiag_block, A_type.(B1), A_scale)\nelse\n    B2_lp = Float32.(B2)\n    GEMM_SUB!(B2_lp, OffDiag_block, A_type.(B1), A_scale)\n    copy!(B2, B2_lp)\nend\n\n# Step 3: Solve A22 * X2 = B2\nrectrsm_mixed!(side, uplo, diag, A.A22, B2, threshold)"
+  },
+  {
+    "question": "Write the recursive block sequence for a mixed-precision Triangular Multiply (rectrmm!) assuming a Left-side, Lower-triangular configuration. Recursively multiply A22 with B2 using `unified_rec_mixed` with func 'M', update B2 using `GEMM_ADD!` with the off-diagonal block and B1, and finally multiply A11 with B1.",
+    "context": "Mixed-precision block-recursive linear algebra framework",
+    "answer": "# Step 1: Multiply B2 = A22 * B2\nunified_rec_mixed('M', side, uplo, diag, A.A22, B2, threshold)\n\n# Step 2: Update B2 = B2 + A21 * B1\nA_type = eltype(OffDiag_block)\nif A_type == Float16 && eltype(B) !== Float64\n    GEMM_ADD!(OffDiag_block, A_type.(B1), B2, A_scale)\nelse\n    B2_lp = Float32.(B2)\n    GEMM_ADD!(OffDiag_block, A_type.(B1), B2_lp, A_scale)\n    copy!(B2, B2_lp)\nend\n\n# Step 3: Multiply B1 = A11 * B1\nunified_rec_mixed('M', side, uplo, diag, A.A11, B1, threshold)"
+  },
+  {
+    "question": "Write the core mathematical logic for the internal recursive Symmetric Rank-k update (`_recsyrk_impl!`) on a `SymmMixedPrec` matrix `C` and an input matrix `A`. Split `A` row-wise into `A1` and `A2`. First, dispatch a GEMM update to `C.OffDiag` using `A2` and `A1`. Then, recursively apply the SYRK implementation to `C.A11` (using `A1`) and `C.A22` (using `A2`), handling sequential or parallel execution.",
+    "context": "Mixed-precision block-recursive linear algebra framework",
+    "answer": "n1 = size(C.A11, 1)\nA1 = @view A[1:n1, :]; A2 = @view A[n1+1:end, :]\n\n_syrk_dispatch!(:GEMM, alpha, A2, A1, beta, C.OffDiag)\n\nif parallel\n    @sync begin\n        @async _recsyrk_impl!(alpha, A1, beta, C.A11, parallel=false)\n        @async _recsyrk_impl!(alpha, A2, beta, C.A22, parallel=false)\n    end\nelse\n    _recsyrk_impl!(alpha, A1, beta, C.A11, parallel=false)\n    _recsyrk_impl!(alpha, A2, beta, C.A22, parallel=false)\nend"
+  },
+  {
+    "question": "Write the base case execution block for a mixed-precision recursive Triangular Solve (rectrsm!) on an AbstractMixedPrec matrix A. If A is Float16, apply dynamic quantization to B, dispatch to the base solve routine, dequantize B, and finally divide B by the A_scale.",
+    "context": "Mixed-precision block-recursive linear algebra framework",
+    "answer": "if A.BaseCase !== nothing\n    A_block = A.BaseCase\n    A_scale = A.base_scale !== nothing ? A.base_scale : 1.0f0\n    B_type = eltype(B)\n\n    if eltype(A_block) == Float16 \n        if B_type == Float16\n            unified_rec('S', side, uplo, diag, A_block, B, threshold; A_scale=A_scale)\n        else \n            B_quant, B_scale = quantize(B)\n            unified_rec('S', side, uplo, diag, A_block, B_quant, threshold; A_scale=A_scale)\n            B_dequant = dequantize(B_quant, B_scale, B_type)\n            copy!(B, B_dequant)\n        end\n        B ./= A_scale\n    else\n        B_converted = eltype(A_block).(B)\n        unified_rec('S', side, uplo, diag, A_block, B_converted, threshold)\n        B .= B_converted\n    end\n    return B\nend"
+  },
+  {
+    "question": "Write the base case execution block for a mixed-precision recursive Triangular Multiply (rectrmm!) on an AbstractMixedPrec matrix A. If A is Float16, apply dynamic quantization to B, dispatch to the base multiply routine, dequantize B, and finally multiply B by A_scale and clamp to prevent overflow.",
+    "context": "Mixed-precision block-recursive linear algebra framework",
+    "answer": "if A.BaseCase !== nothing\n    A_block = A.BaseCase\n    A_scale = A.base_scale !== nothing ? A.base_scale : 1.0f0\n    B_type = eltype(B)\n\n    if eltype(A_block) == Float16 \n        if B_type == Float16\n            unified_rec('M', side, uplo, diag, A_block, B, threshold; A_scale=A_scale)\n        else \n            B_quant, B_scale = quantize(B)\n            unified_rec('M', side, uplo, diag, A_block, B_quant, threshold; A_scale=A_scale)\n            B_dequant = dequantize(B_quant, B_scale, B_type)\n            copy!(B, B_dequant)\n        end\n        temp_B_f32 = Float32.(B) .* A_scale\n        clamp!(temp_B_f32, floatmin(eltype(B)), floatmax(eltype(B)))\n        copy!(B, temp_B_f32)\n    else\n        B_converted = eltype(A_block).(B)\n        unified_rec('M', side, uplo, diag, A_block, B_converted, threshold)\n        B .= B_converted\n    end\n    return B\nend"
+  },
+  {
+    "question": "Write a flat recursive Cholesky factorization driver `potrf_recursive!` for a standard matrix. The function should recursively split the matrix into A11, A21, and A22, call itself on A11, update A21 using a triangular solve (`unified_rectrxm!` or `trsm!`), update A22 using a symmetric rank-k update (`recsyrk!` or `syrk!`), and finally call itself on A22. Include a base case that falls back to `potrf!`.",
+    "context": "Mixed-precision block-recursive linear algebra framework",
+    "answer": "function potrf_recursive!(A, block_size)\n    n = size(A, 1)\n\n    if n <= block_size\n        potrf!(A)\n        return\n    end\n\n    n1 = 2^floor(Int, log2(n)) ÷ 2  \n    \n    A11 = @view A[1:n1, 1:n1]\n    A21 = @view A[n1+1:end, 1:n1]\n    A22 = @view A[n1+1:end, n1+1:end]\n\n    potrf_recursive!(A11, block_size)\n\n    if (eltype(A11) == Float16)\n        unified_rectrxm!('R', 'L', 'T', 'N', 1.0, 'S', A11, A21)\n    else\n        trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)\n    end\n\n    if (eltype(A21) == Float16)\n        recsyrk!(-1.0, A21, 1.0, A22)\n    else\n        syrk!('L', 'N', -1.0, A21, 1.0, A22)\n    end\n    \n    potrf_recursive!(A22, block_size)\nend"
+  },
+  {
+    "question": "Write the nested recursive Cholesky factorization `potrf_recursive!` for a `SymmMixedPrec` matrix. It should check for a `BaseCase` to fallback to the flat driver, otherwise recursively factor `A.A11`, solve for `A.OffDiag` using `unified_rectrxm!`, update `A.A22` with `recsyrk!`, and recursively factor `A.A22`.",
+    "context": "Mixed-precision block-recursive linear algebra framework",
+    "answer": "function potrf_recursive!(A::SymmMixedPrec)\n    if A.BaseCase !== nothing\n        potrf_recursive!(A.BaseCase, 4096)\n        return\n    end\n\n    potrf_recursive!(A.A11) \n\n    unified_rectrxm!('R', 'L', 'T', 'N', 1.0, 'S', TriMixedPrec(A.A11), A.OffDiag)\n\n    recsyrk!(-1.0, A.OffDiag, 1.0, A.A22)\n\n    potrf_recursive!(A.A22)\nend"
+  },
+  {
+    "question": "Write a flat recursive unpivoted LU factorization driver `lu_recursive!` for a standard matrix. It should recursively split the matrix into four blocks (A11, A12, A21, A22), factor A11, update A12 and A21 using triangular solves (`unified_rectrxm!`), update A22 using `recgemm!`, and factor A22. Handle the base case by calling the high-level `getrf!` wrapper.",
+    "context": "Mixed-precision block-recursive linear algebra framework",
+    "answer": "function lu_recursive!(A::AbstractMatrix, block_size::Int)\n    n = size(A, 1)\n\n    if n <= block_size\n        getrf!(A)\n        return\n    end\n\n    n1 = 2^floor(Int, log2(n)) ÷ 2\n\n    A11 = @view A[1:n1, 1:n1]\n    A12 = @view A[1:n1, n1+1:end]\n    A21 = @view A[n1+1:end, 1:n1]\n    A22 = @view A[n1+1:end, n1+1:end]\n\n    lu_recursive!(A11, block_size)\n\n    unified_rectrxm!('L', 'L', 'N', 'U', 1.0f0, 'S', A11, A12)\n\n    unified_rectrxm!('R', 'U', 'N', 'N', 1.0f0, 'S', A11, A21)\n\n    recgemm!(-1.0f0, A21, A12, 1.0f0, A22)\n\n    lu_recursive!(A22, block_size)\nend"
+  },
+  {
+    "question": "Write the nested recursive unpivoted LU factorization `lu_recursive_mixed!` for a `FullMixedPrec` matrix. If a `BaseCase` exists, fallback to the flat `lu_recursive!` driver. Otherwise, recursively factor `A.A11`, update off-diagonal blocks `A.A12` and `A.A21` using `unified_rectrxm!`, update `A.A22` using `recgemm!`, and recursively factor `A.A22`.",
+    "context": "Mixed-precision block-recursive linear algebra framework",
+    "answer": "function lu_recursive_mixed!(A::FullMixedPrec{T_Base}, block_size::Int=2048) where {T_Base}\n    if A.BaseCase !== nothing\n        lu_recursive!(A.BaseCase, block_size)\n        return\n    end\n\n    lu_recursive_mixed!(A.A11, block_size)\n\n    unified_rectrxm!('L', 'L', 'N', 'U', 1.0f0, 'S', A.A11, A.A12)\n    unified_rectrxm!('R', 'U', 'N', 'N', 1.0f0, 'S', A.A11, A.A21)\n\n    recgemm!(-1.0f0, A.A21, A.A12, 1.0f0, A.A22)\n\n    lu_recursive_mixed!(A.A22, block_size)\nend"
+  },
+
+  {
+    "question": "Write a snippet showing how to check a matrix block against the Float16 overflow threshold (65504.0) and calculate a dynamic base_scale for mixed-precision scaling.",
+    "context": "Quantization rules and overflow prevention",
+    "answer": "max_val = maximum(abs, A)\nif max_val > 65504.0\n    base_scale = Float32(65504.0 / max_val)\nelse\n    base_scale = 1.0f0\nend"
+  },
+  {
+    "question": "How do I write a Julia function to dynamically quantize a floating-point matrix to Float16? Find the maximum absolute value, and if it exceeds the Float16 maximum of 65504.0f0, calculate a scaling factor to scale the matrix down before clamping and converting. Return both the quantized matrix and the scaling factor.",
+    "context": "Quantization rules and overflow prevention",
+    "answer": "function quantize(matrix::AbstractMatrix{T}) where T <: AbstractFloat\n    FP16_MAX_VAL = 65504.0f0\n    alpha = maximum(abs, matrix) \n    \n    if iszero(alpha)\n        return similar(matrix, Float16), 1.0f0\n    end\n\n    if alpha > FP16_MAX_VAL\n        s = Float32(alpha / FP16_MAX_VAL)\n        quantized_matrix = similar(matrix, Float16, size(matrix))\n        @. quantized_matrix = Float16(round(clamp(matrix / s, -FP16_MAX_VAL, FP16_MAX_VAL)))\n    else\n        s = 1.0f0\n        quantized_matrix = similar(matrix, Float16, size(matrix))\n        @. quantized_matrix = Float16(matrix)\n    end\n\n    return quantized_matrix, s\nend"
+  },
+  {
+    "question": "Provide a Julia helper function named `dequantize` that reverses matrix quantization. It should take a `Float16` quantized matrix, a `Float32` scaling factor, and an original `DataType`. It must multiply the matrix by the scale and return the result in the specified original element type.",
+    "context": "Quantization rules and overflow prevention",
+    "answer": "function dequantize(quantized_matrix::AbstractMatrix{Float16}, s::Float32, original_eltype::DataType)\n    dequantized_matrix = similar(quantized_matrix, original_eltype, size(quantized_matrix))\n    @. dequantized_matrix = quantized_matrix * s\n    return dequantized_matrix\nend"
+  }
+]
