@@ -1,5 +1,7 @@
 using LinearAlgebra
 using CUDA
+
+abstract type AbstractMixedPrec{T} <: AbstractMatrix{T} end
  
 include("wrappers.jl")
 include("rectrxm.jl")   # unified_rectrxm!
