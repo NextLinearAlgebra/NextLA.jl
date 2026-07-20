@@ -38,10 +38,12 @@ end
 # 3. TIER-AWARE DEPENDENCY INJECTOR
 # ==============================================================================
 function inject_dependencies!(sandbox::Module, level::Int)
+    # Bind `include` inside the anonymous sandbox so internal file includes work
+    Core.eval(sandbox, :(include(x) = Base.include($sandbox, x)))
     Core.eval(sandbox, :(using CUDA, LinearAlgebra))
     
     # All levels require the base-case CUSOLVER wrappers
-    Core.eval(sandbox, :(include("src/wrappers.jl")))
+    Base.include(sandbox, "src/wrappers.jl")
     
     if level == 1
         println("  [Tier A: Baseline Flat Matrix Environment Injected]")
@@ -49,13 +51,13 @@ function inject_dependencies!(sandbox::Module, level::Int)
     end
     
     # Levels 2-5 rely on your unified TRSM/TRMM solve kernels
-    Core.eval(sandbox, :(include("src/rectrxm.jl"))) #[cite: 6]
+    Base.include(sandbox, "src/rectrxm.jl")
     
     if level in (3, 5)
         # TIER C: Inject ground-truth data struct and recursive GEMM kernels
         println("  [Tier C: Injecting ground-truth src/matmul.jl and src/fullmixedprec.jl]")
-        Core.eval(sandbox, :(include("src/matmul.jl")))        #[cite: 7]
-        Core.eval(sandbox, :(include("src/fullmixedprec.jl"))) #[cite: 8]
+        Base.include(sandbox, "src/matmul.jl")
+        Base.include(sandbox, "src/fullmixedprec.jl")
     elseif level in (2, 4)
         # TIER B: Do NOT inject fullmixedprec.jl or matmul.jl!
         # Forces the sandbox to evaluate the LLM-generated struct and GEMM implementations.
@@ -68,7 +70,7 @@ end
 # ==============================================================================
 function ensure_reconstruct_matrix!(sandbox::Module)
     if isdefined(sandbox, :reconstruct_matrix)
-        return # Already loaded via src/fullmixedprec.jl in Tier C[cite: 8]
+        return # Already loaded via src/fullmixedprec.jl in Tier C
     end
     
     println("  [Injecting universal reconstruct_matrix fallback for numerical validation...]")
@@ -77,28 +79,28 @@ function ensure_reconstruct_matrix!(sandbox::Module)
     Core.eval(sandbox, quote
         function reconstruct_matrix(A)
             if A.BaseCase !== nothing
-                return copy(A.BaseCase) #[cite: 8]
+                return copy(A.BaseCase)
             end
             
-            C11 = reconstruct_matrix(A.A11) #[cite: 8]
-            C22 = reconstruct_matrix(A.A22) #[cite: 8]
-            C21 = A.A21 #[cite: 8]
-            C12 = A.A12 #[cite: 8]
+            C11 = reconstruct_matrix(A.A11)
+            C22 = reconstruct_matrix(A.A22)
+            C21 = A.A21
+            C12 = A.A12
             
-            n1, m1 = size(C11) #[cite: 8]
-            n2, m2 = size(C22) #[cite: 8]
-            n = n1 + n2 #[cite: 8]
+            n1, m1 = size(C11)
+            n2, m2 = size(C22)
+            n = n1 + n2
 
             # Promote off-diagonal Float16 blocks to the base precision of C11
             T_Base = eltype(C11)
-            C_full = similar(C21, T_Base, n, n) #[cite: 8]
+            C_full = similar(C21, T_Base, n, n)
             
-            C_full[1:n1, 1:m1] .= C11 #[cite: 8]
-            C_full[n1+1:n, 1:m1] .= C21 #[cite: 8]
-            C_full[n1+1:n, m1+1:n] .= C22 #[cite: 8]
-            C_full[1:n1, m1+1:n] .= C12 #[cite: 8]
+            C_full[1:n1, 1:m1] .= C11
+            C_full[n1+1:n, 1:m1] .= C21
+            C_full[n1+1:n, m1+1:n] .= C22
+            C_full[1:n1, m1+1:n] .= C12
 
-            return C_full #[cite: 8]
+            return C_full
         end
     end)
 end
@@ -123,7 +125,8 @@ function run_codex_test(filepath::String, level::Int; N::Int=1024)
     inject_dependencies!(sandbox, level)
     
     try
-        Core.eval(sandbox, Meta.parse("begin\n" * clean_code * "\nend"))
+        # Base.include_string evaluates directly into the module and maps line numbers to the file
+        Base.include_string(sandbox, clean_code, filepath)
         println("--- Compilation: SUCCESS ---")
     catch e
         println("--- Compilation: FAILED ---")
@@ -156,7 +159,7 @@ function run_codex_test(filepath::String, level::Int; N::Int=1024)
         if level > 1 && isdefined(sandbox, :FullMixedPrec)
             StructType = getfield(sandbox, :FullMixedPrec)
             println("  -> Constructing hierarchical FullMixedPrec container...")
-            A_test = StructType(copy(A_gpu); precisions=[Float16, Float32]) #[cite: 8]
+            A_test = StructType(copy(A_gpu); precisions=[Float16, Float32])
             
             # 1. Execute LLM factorization kernel
             llm_func(A_test)
@@ -165,11 +168,11 @@ function run_codex_test(filepath::String, level::Int; N::Int=1024)
             ensure_reconstruct_matrix!(sandbox)
             
             # 3. Unpack back to flat matrix for validation
-            A_result = sandbox.reconstruct_matrix(A_test) #[cite: 8]
+            A_result = sandbox.reconstruct_matrix(A_test)
         else
             println("  -> Executing flat CuMatrix path...")
             A_result = copy(A_gpu)
-            llm_func(A_result) #[cite: 1]
+            llm_func(A_result)
         end
         
         # Verify Relative Residual: ||A - LU||_F / ||A||_F
