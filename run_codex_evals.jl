@@ -8,7 +8,21 @@ function extract_and_sanitize(filepath::String, level::Int)
     
     # Extract only code inside markdown julia blocks
     blocks = [m.match for m in eachmatch(r"```(?:julia)?\s*([\s\S]*?)```", raw_text)]
-    code_str = isempty(blocks) ? raw_text : join(blocks, "\n\n")
+    if isempty(blocks)
+        # Strip markdown prose before Julia execution
+        lines = split(raw_text, '\n')
+        code_str = join(
+            filter(line -> 
+                startswith(strip(line), ("using ", "import ", "const ", "function ", "struct ", "mutable struct ", "macro ", "julia"))
+                || occursin("=", line)
+                || occursin("end", strip(line)),
+                lines
+            ),
+            "\n"
+        )
+    else
+        code_str = join(blocks, "\n\n")
+    end
     
     # Strip all LLM-generated include(...) statements to prevent path errors
     clean_code = replace(code_str, r"^include\(.*?\)"m => "# [Stripped LLM include]")
@@ -40,7 +54,12 @@ end
 function inject_dependencies!(sandbox::Module, level::Int)
     # Bind `include` inside the anonymous sandbox so internal file includes work
     Core.eval(sandbox, :(include(x) = Base.include($sandbox, x)))
-    Core.eval(sandbox, :(using CUDA, LinearAlgebra))
+    Core.eval(sandbox, quote
+        using CUDA
+        using LinearAlgebra
+        using GPUArrays
+        using GPUArraysCore
+    end)
     
     # All levels require the base-case CUSOLVER wrappers
     Base.include(sandbox, "src/wrappers.jl")
