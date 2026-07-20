@@ -1,31 +1,8 @@
-Great — below is a drop-in implementation in the same structural style as your SymmMixedPrec / TriMixedPrec + recursive kernels.
-I split it into 3 parts:
-FullMixedPrec (new hierarchical full matrix structure with the same Float16 dynamic quantization logic)
-recgemm! (new recursive GEMM kernel with @sync/@async parallel structure)
-lu_recursive! (nonpivoting, in-place, recursive block LU with multiple dispatch for AbstractMatrix and FullMixedPrec)
-Note: for the base case, I call a no-pivot CUSOLVER wrapper (getrfnp!) expected from your wrappers.jl. If your wrapper has a different name, swap that one line.
 using LinearAlgebra
 using CUDA
 include("wrappers.jl")
 include("rectrxm.jl")
 
-# ============================================================
-# 1) FullMixedPrec
-# ============================================================
-
-"""
-    FullMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
-
-Hierarchical recursive mixed-precision structure for full dense square matrices.
-
-Block layout:
-    A = [ A11  A12
-          A21  A22 ]
-
-- A11, A22 recurse as `FullMixedPrec`
-- A12, A21 are stored as dense rectangular blocks
-- Float16 blocks use dynamic quantization with per-block scaling
-"""
 struct FullMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
     A11::Union{FullMixedPrec{T_Base}, Nothing}
     A22::Union{FullMixedPrec{T_Base}, Nothing}
@@ -38,18 +15,11 @@ struct FullMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
     sz::Tuple{Int, Int}
 end
 
-"""
-    FullMixedPrec(A::AbstractMatrix; precisions::Vector{DataType})
-
-Constructs recursive mixed-precision full matrix representation.
-Applies the exact Float16 dynamic quantization logic used in your other structures.
-"""
 function FullMixedPrec(A::AbstractMatrix; precisions::Vector{DataType})
     FP16_MAX_VAL = 65504.0f0
     n = size(A, 1)
     @assert n == size(A, 2) "A must be square"
 
-    # Base case
     if length(precisions) == 1 || n <= 1
         T_Base = precisions[1]
         local base_matrix
@@ -83,7 +53,6 @@ function FullMixedPrec(A::AbstractMatrix; precisions::Vector{DataType})
         )
     end
 
-    # Recursive split (same style as your constructors)
     mid = isinteger(log2(n)) ? div(n, 2) : 2^floor(Int, log2(n))
     T_OffDiag = precisions[1]
     remaining_precisions = precisions[2:end]
@@ -98,7 +67,6 @@ function FullMixedPrec(A::AbstractMatrix; precisions::Vector{DataType})
     local A12_scale = nothing
     local A21_scale = nothing
 
-    # A12 quantization
     if T_OffDiag == Float16
         alpha_A12 = maximum(abs, A12_view)
         if alpha_A12 > FP16_MAX_VAL
@@ -119,7 +87,6 @@ function FullMixedPrec(A::AbstractMatrix; precisions::Vector{DataType})
         A12_scale = nothing
     end
 
-    # A21 quantization
     if T_OffDiag == Float16
         alpha_A21 = maximum(abs, A21_view)
         if alpha_A21 > FP16_MAX_VAL
@@ -168,18 +135,8 @@ function Base.getindex(A::FullMixedPrec{T_Base}, i::Int, j::Int) where {T_Base}
     end
 end
 
-# ============================================================
-# 2) recgemm!
-# ============================================================
-
 const RECGEMM_PARALLEL_THRESHOLD = 4096
 
-"""
-    _gemm_dispatch_nn!(alpha, A, B, beta, C)
-
-Dispatch GEMM with mixed-precision handling:
-    C = alpha * A * B + beta * C
-"""
 function _gemm_dispatch_nn!(
     alpha::Number, A::AbstractMatrix, B::AbstractMatrix, beta::Number, C::AbstractMatrix
 )
@@ -269,12 +226,6 @@ function _recgemm_impl!(
     end
 end
 
-"""
-    recgemm!(alpha, A, B, beta, C::AbstractMatrix, threshold=256; A_scale=1f0, B_scale=1f0)
-
-Recursive GEMM:
-    C = alpha * (A_scale*A) * (B_scale*B) + beta*C
-"""
 function recgemm!(
     alpha::Number, A::AbstractMatrix, B::AbstractMatrix, beta::Number,
     C::AbstractMatrix, threshold::Int=256;
@@ -285,11 +236,6 @@ function recgemm!(
     _recgemm_impl!(alpha_eff, A, B, beta, C, threshold, parallel=should_parallelize)
 end
 
-"""
-    recgemm!(alpha, A, B, beta, C::FullMixedPrec; A_scale=1f0, B_scale=1f0)
-
-Recursive GEMM where C is hierarchical mixed-precision full structure.
-"""
 function recgemm!(
     alpha::Number, A::AbstractMatrix, B::AbstractMatrix, beta::Number,
     C::FullMixedPrec;
@@ -307,18 +253,7 @@ function recgemm!(
     _recgemm_impl!(alpha_eff, A, B, beta, C, threshold, parallel=should_parallelize)
 end
 
-# ============================================================
-# 3) Recursive nonpivoting LU (in-place)
-# ============================================================
-
-"""
-    lu_nopiv_basecase!(A::CUDA.StridedCuArray)
-
-CUSOLVER base case (nonpivoting).
-Expected wrapper from `wrappers.jl`: `getrfnp!`
-"""
 function lu_nopiv_basecase!(A::CUDA.StridedCuArray)
-    # Replace with your exact wrapper symbol if different.
     getrfnp!(A)
     return A
 end
@@ -327,17 +262,6 @@ function lu_nopiv_basecase!(A::AbstractMatrix)
     error("Nonpivoting base case is defined here for CUDA arrays only (CUSOLVER).")
 end
 
-"""
-    lu_recursive!(A::AbstractMatrix, block_size=256)
-
-In-place nested recursive nonpivoting LU on dense matrix.
-Order:
-1) LU(A11)
-2) A12 <- L11^{-1} A12
-3) A21 <- A21 U11^{-1}
-4) A22 <- A22 - A21*A12
-5) LU(A22)
-"""
 function lu_recursive!(A::AbstractMatrix, block_size::Int=256)
     n = size(A, 1)
     @assert n == size(A, 2) "A must be square"
@@ -354,55 +278,36 @@ function lu_recursive!(A::AbstractMatrix, block_size::Int=256)
     A21 = @view A[n1+1:end,   1:n1]
     A22 = @view A[n1+1:end,   n1+1:end]
 
-    # 1) A11 -> L11 U11
     lu_recursive!(A11, block_size)
 
-    # 2) A12 <- L11^{-1} A12  (L11 is unit-lower in LU storage)
     unified_rectrxm!('L', 'L', 'N', 'U', 1.0f0, 'S', A11, A12)
 
-    # 3) A21 <- A21 U11^{-1}
     unified_rectrxm!('R', 'U', 'N', 'N', 1.0f0, 'S', A11, A21)
 
-    # 4) A22 <- A22 - A21*A12
     recgemm!(-1.0f0, A21, A12, 1.0f0, A22)
 
-    # 5) A22 -> L22 U22
     lu_recursive!(A22, block_size)
 
     return A
 end
 
-"""
-    lu_recursive!(A::FullMixedPrec)
-
-In-place nested recursive nonpivoting LU on full mixed-precision hierarchy.
-Same 5-step order as dense kernel.
-"""
 function lu_recursive!(A::FullMixedPrec)
     if A.BaseCase !== nothing
         lu_recursive!(A.BaseCase, 4096)
         return A
     end
 
-    # 1) A11 -> L11 U11
     lu_recursive!(A.A11)
 
-    # 2) A12 <- L11^{-1} A12
     unified_rectrxm!('L', 'L', 'N', 'U', 1.0f0, 'S', A.A11, A.A12)
 
-    # 3) A21 <- A21 U11^{-1}
     unified_rectrxm!('R', 'U', 'N', 'N', 1.0f0, 'S', A.A11, A.A21)
 
-    # 4) A22 <- A22 - (A21 * A12), honoring stored quantization scales
     s21 = A.A21_scale !== nothing ? A.A21_scale : 1.0f0
     s12 = A.A12_scale !== nothing ? A.A12_scale : 1.0f0
     recgemm!(-1.0f0, A.A21, A.A12, 1.0f0, A.A22; A_scale=s21, B_scale=s12)
 
-    # 5) A22 -> L22 U22
     lu_recursive!(A.A22)
 
     return A
 end
-
-If you want, I can also give you a compact reconstruct_matrix(::FullMixedPrec) + residual checks (‖A-LU‖/‖A‖) matching your existing validation style.
-
