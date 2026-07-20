@@ -67,7 +67,6 @@ function inject_dependencies!(sandbox::Module, level::Int)
         using CUDA
         using LinearAlgebra
         using GPUArrays
-        using GPUArraysCore
     end)
     
     # All levels require the base-case CUSOLVER wrappers
