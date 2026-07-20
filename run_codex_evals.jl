@@ -66,6 +66,10 @@ function inject_dependencies!(sandbox::Module, level::Int)
     Core.eval(sandbox, quote
         using CUDA
         using LinearAlgebra
+        using Printf
+        using KernelAbstractions
+        using AMDGPU
+        using oneAPI
         using GPUArrays
     end)
     
