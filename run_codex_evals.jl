@@ -12,12 +12,21 @@ function extract_and_sanitize(filepath::String, level::Int)
         # Strip markdown prose before Julia execution
         lines = split(raw_text, '\n')
         code_str = join(
-            filter(line -> 
-                startswith(strip(line), ("using ", "import ", "const ", "function ", "struct ", "mutable struct ", "macro ", "julia"))
-                || occursin("=", line)
-                || occursin("end", strip(line)),
-                lines
-            ),
+            filter(line -> begin
+                s = strip(line)
+
+                any(prefix -> startswith(s, prefix),
+                    ("using ", "import ", "const ", "function ",
+                    "struct ", "mutable struct ", "macro ",
+                    "return ", "if ", "for ", "while ",
+                    "let ", "begin ", "where "))
+                |
+                occursin(r"^[A-Za-z_][A-Za-z0-9_]*\s*=", s)
+                |
+                s == "end"
+                |
+                startswith(s, "#")
+            end, lines),
             "\n"
         )
     else
