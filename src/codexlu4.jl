@@ -17,7 +17,8 @@ function getrf_recursive!(A::AbstractMatrix, block_size::Int=LU_BASECASE)
     @assert n == size(A, 2) "LU requires a square matrix"
  
     if n <= block_size
-        lu_basecase_nopiv!(A)
+        # lu_basecase_nopiv!(A)
+        CUSOLVER.getrf!(A)
         return A
     end
  
