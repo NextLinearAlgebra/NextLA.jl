@@ -9,6 +9,7 @@ include("contraction/operation.jl")
 include("lowering/schedule.jl")
 include("lowering/stages.jl")
 include("contraction/lowering.jl")
+include("contraction/sink.jl")
 include("regions/interior.jl")
 include("regions/corner.jl")
 include("regions/right.jl")
@@ -228,4 +229,78 @@ function gemm!(C::AbstractMatrix, A::AbstractMatrix{T}, B::TLRMatrix{BackendT,T}
     ScalarT = gemm_compute_type(mode)
     return _dense_tlr_gemm!(C, LA, LB, ScalarT(alpha), ScalarT(beta),
                             max_workspace, mode)
+end
+
+# ─── TLR × TLR → TLR (milestone 4) ────────────────────────────────────────────
+
+@inline function _validate_tlr_output(C::TLRMatrix, LA::LogicalTLROperand, LB::LogicalTLROperand)
+    size(LA, 2) == size(LB, 1) ||
+        throw(DimensionMismatch("inner dimensions must match: size(op(A),2) == size(op(B),1)"))
+    size(C) == (size(LA, 1), size(LB, 2)) ||
+        throw(DimensionMismatch("C must be size(op(A),1) × size(op(B),2)"))
+    nominal_tile_size(LA, 2) == nominal_tile_size(LB, 1) ||
+        throw(DimensionMismatch("op(A)'s column tile size must equal op(B)'s row tile size (contraction tiling)"))
+    (nominal_tile_size(C, 1) == nominal_tile_size(LA, 1) &&
+     nominal_tile_size(C, 2) == nominal_tile_size(LB, 2)) ||
+        throw(DimensionMismatch("C's tile size must be (op(A) row tile, op(B) col tile)"))
+    (tail_tile_size(LA, 1) == 0 && tail_tile_size(LA, 2) == 0 &&
+     tail_tile_size(LB, 2) == 0 && tail_tile_size(C, 1) == 0 && tail_tile_size(C, 2) == 0) ||
+        throw(ArgumentError("TLR-output GEMM currently requires aligned (regular-grid) tiling on all axes"))
+    return nothing
+end
+
+# Dispatch on the reduction placement: the row family (KAsGemmK) writes each output tile
+# once, so a run's tiles complete and compress immediately. The lone column-family layout
+# (A tile-column-major × B tile-row-major) is a later milestone step.
+_run_tlr_output!(C::TLRMatrix, scheduled::ScheduledLowRankContract{<:Any,<:KAsGemmK};
+                 eps_sq::Float64, rel::Bool) =
+    _tlr_gemm_rowfamily!(C, scheduled, _alloc_tlr_output_workspace(C, scheduled); eps_sq, rel)
+
+_run_tlr_output!(::TLRMatrix, ::ScheduledLowRankContract{<:Any,<:KAsSerialLoop};
+                 eps_sq::Float64, rel::Bool) =
+    throw(ArgumentError("TLR-output GEMM for the column-family layout " *
+                        "(A tile-column-major × B tile-row-major) is not yet supported"))
+
+"""
+    gemm!(C::TLRMatrix, A::TLRMatrix, B::TLRMatrix; alpha=true, beta=false,
+          tol=0.0, rel=false, max_workspace, transA='N', transB='N', compute=nothing) -> C
+
+Fully low-rank `C := alpha·op(A)·op(B)` compressed in place into the TLR container `C`.
+Currently restricted to regular-grid tiling (no boundary tiles), `beta == 0`, and the
+three row-family layout pairs (every order pair except A tile-column-major with B
+tile-row-major).
+
+Each output tile is accumulated into a bounded dense slab and then compressed with the
+randomized-sketch `compress!` core; `tol`/`rel` are the per-tile approximation budget
+(distinct from the `max_workspace` byte budget). `residuals(C)` reports the achieved
+per-tile error — a tile whose true rank exceeds `maxrank(C)` keeps full rank and reports
+a residual above `tol`.
+"""
+function gemm!(C::TLRMatrix{BackendT,T}, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T};
+    alpha=true, beta=false, max_workspace::Int=DEFAULT_GEMM_BUDGET,
+    transA::Char='N', transB::Char='N', compute=nothing,
+    tol::Real=0.0, rel::Bool=false) where {BackendT,T}
+    LA = logical_operand(A, transA)
+    LB = logical_operand(B, transB)
+    _validate_tlr_output(C, LA, LB)
+    iszero(beta) ||
+        throw(ArgumentError("TLR-output GEMM currently supports beta == 0 only"))
+    tol >= 0 || throw(ArgumentError("tol must be >= 0"))
+    mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
+    backend = get_backend(C)
+    validate_tlr_gemm_precision(backend, T, T, mode)
+    ScalarT = gemm_compute_type(mode)
+
+    if maxrank(A) == 0 || maxrank(B) == 0
+        fill!(C.ranks, zero(eltype(C.ranks)))
+        fill!(C.resid, 0.0)
+        return C
+    end
+
+    α = ScalarT(alpha)
+    placeholder = allocate(backend, T, 0, 0)
+    op = interior_contract(placeholder, LA, LB, α, ScaleExisting(zero(ScalarT)))
+    scheduled = lower(op; compute=mode, budget=max_workspace)
+    _run_tlr_output!(C, scheduled; eps_sq=Float64(tol)^2, rel)
+    return C
 end

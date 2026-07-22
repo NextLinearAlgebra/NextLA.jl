@@ -24,7 +24,9 @@ end
 # family is write-once so it passes β directly; the column family loops the reduction,
 # so `_offdiag_offdiag_gemm!` pre-scales the region and passes β = 1 here. `FoldLeft` is
 # only ever paired with the row family, so it too folds β in its single write.
-@inline stage3(placement::KAxisSchedule, run, ops, ws, output::DenseOutput, alpha, beta, fold::FoldSide, compute) =
+# `output` is the terminal-GEMM destination: a `DenseOutput` for a dense result, or a
+# `SlabOutput` for a TLR result (both answer `output_tile`/`output_rowblock`).
+@inline stage3(placement::KAxisSchedule, run, ops, ws, output::Union{DenseOutput,SlabOutput}, alpha, beta, fold::FoldSide, compute) =
     StageDescriptor(Stage3(), placement, run, ops, ws, output, alpha, beta, fold, nothing, compute)
 
 @inline _ws_eltype(ws) = eltype(ws.S.data)

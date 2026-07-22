@@ -143,9 +143,6 @@ A dense diagonal or dense corner is exposed as `LogicalDenseTile{Op}`: a physica
 view plus an `N/T` operation. The implementation never materializes a transposed
 dense tile.
 
-`LogicalTLROperand` remains GEMM-internal. The roadmap records the proposal to promote
-this behavior to a container-level lazy transpose view when another algorithm needs it.
-
 ## 5. Contraction representation
 
 ### Domains

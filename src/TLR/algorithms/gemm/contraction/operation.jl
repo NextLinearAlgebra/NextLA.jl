@@ -60,6 +60,38 @@ end
     output_block(output, i, i, j0, j1)
 
 """
+    SlabOutput(data, bm, bn, i0, j0)
+
+A run-local dense destination for the terminal GEMM when the result is a TLR container
+(see `contraction/sink.jl`). `data` is the shared slab matrix (sized to the widest run
+block); a run writes its `h·bm × w·bn` top-left corner. Global tile coordinates `(i, j)`
+map to the slab-local block offset by the run origin `(i0, j0)`, so `output_tile` /
+`output_rowblock` produce views of the *same* underlying matrix type the staged batch
+buffers were sized against. It answers the same accessors as `DenseOutput`, so Stage 3 is
+reused unchanged.
+"""
+struct SlabOutput{S<:AbstractMatrix}
+    data::S
+    bm::Int
+    bn::Int
+    i0::Int
+    j0::Int
+end
+
+@inline function output_tile(o::SlabOutput, i::Integer, j::Integer)
+    r = (Int(i) - o.i0) * o.bm
+    c = (Int(j) - o.j0) * o.bn
+    return view(o.data, (r + 1):(r + o.bm), (c + 1):(c + o.bn))
+end
+
+@inline function output_rowblock(o::SlabOutput, i::Integer, j0::Integer, j1::Integer)
+    r = (Int(i) - o.i0) * o.bm
+    c0 = (Int(j0) - o.j0) * o.bn
+    w = Int(j1) - Int(j0) + 1
+    return view(o.data, (r + 1):(r + o.bm), (c0 + 1):(c0 + w * o.bn))
+end
+
+"""
     ContractOp(domain, left, right, output, init, alpha)
 
 One structured tile contraction
