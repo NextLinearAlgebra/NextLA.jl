@@ -193,6 +193,73 @@ end
     return InteriorOperand{typeof(kind),typeof(order),typeof(data)}(data, order, qm, qn)
 end
 
+@inline interior_grid_kind(::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}) = SkipDiag()
+@inline interior_grid_kind(::LogicalTLROperand{<:Any,<:TLRMatrix}) = FullGrid()
+
+# Boundary factor accessors. A right panel is row-live (`X[i,bnd]`), a bottom panel is
+# column-live (`X[bnd,j]`), and a corner has no live coordinate. They expose the same
+# small factor-access interface as `InteriorOperand`, so regular Stage 1 can be reused
+# without algebra-leaf wrappers.
+abstract type PanelAxis end
+struct PanelRowAxis <: PanelAxis end
+struct PanelColAxis <: PanelAxis end
+
+struct PanelOperand{Ax<:PanelAxis,A3<:AbstractArray}
+    data::A3
+end
+
+@inline panel_operand(::Ax, data::A3) where {Ax<:PanelAxis,A3<:AbstractArray} =
+    PanelOperand{Ax,A3}(data)
+@inline blockdim(p::PanelOperand) = size(p.data, 1)
+@inline rankdim(p::PanelOperand) = size(p.data, 2)
+@inline panel_tiles(p::PanelOperand) = size(p.data, 3)
+@inline tilefactor(p::PanelOperand{PanelRowAxis}, i::Integer, ::Integer) =
+    view(p.data, :, :, Int(i))
+@inline tilefactor(p::PanelOperand{PanelColAxis}, ::Integer, j::Integer) =
+    view(p.data, :, :, Int(j))
+
+@inline panel_col(::PanelOperand{PanelRowAxis}, ::Integer, pos::Integer) = Int(pos)
+@inline panel_col(::PanelOperand{PanelColAxis}, ::Integer, pos::Integer) = Int(pos)
+@inline col_scratch_pos(::PanelOperand, j0::Integer, ::Integer, j::Integer) =
+    Int(j - j0 + 1)
+@inline first_offdiag_col(::PanelOperand, j0::Integer, ::Integer) = Int(j0)
+@inline last_offdiag_col(::PanelOperand, j1::Integer, ::Integer) = Int(j1)
+@inline panel_local(::PanelOperand{PanelRowAxis}, ::Integer, ::Integer) = 1
+@inline panel_local(::PanelOperand{PanelColAxis}, ::Integer, j::Integer) = Int(j)
+@inline rowpanel(p::PanelOperand{PanelRowAxis}, k::Integer) =
+    view(p.data, :, :, Int(k):Int(k))
+@inline rowpanel(p::PanelOperand{PanelColAxis}, ::Integer) = p.data
+@inline stride1_axis_right(::PanelOperand{PanelRowAxis}) = Stride1Axis{:k}()
+@inline stride1_axis_left(::PanelOperand{PanelRowAxis}) = Stride1Axis{:i}()
+@inline stride1_axis_left(::PanelOperand{PanelColAxis}) = Stride1Axis{:k}()
+@inline stride1_axis_right(::PanelOperand{PanelColAxis}) = Stride1Axis{:j}()
+@inline complete_k_stack(::PanelOperand) = true
+@inline tiles_per_row(::PanelOperand{PanelRowAxis}) = 1
+@inline tiles_per_col(p::PanelOperand{PanelRowAxis}) = panel_tiles(p)
+@inline tiles_per_row(p::PanelOperand{PanelColAxis}) = panel_tiles(p)
+@inline tiles_per_col(::PanelOperand{PanelColAxis}) = 1
+
+struct CornerOperand{A3<:AbstractArray}
+    data::A3
+end
+
+@inline corner_operand(data::A3) where {A3<:AbstractArray} = CornerOperand{A3}(data)
+@inline blockdim(p::CornerOperand) = size(p.data, 1)
+@inline rankdim(p::CornerOperand) = size(p.data, 2)
+@inline tilefactor(p::CornerOperand, ::Integer, ::Integer) = view(p.data, :, :, 1)
+@inline panel_col(::CornerOperand, ::Integer, pos::Integer) = Int(pos)
+@inline col_scratch_pos(::CornerOperand, j0::Integer, ::Integer, j::Integer) =
+    Int(j - j0 + 1)
+@inline first_offdiag_col(::CornerOperand, j0::Integer, ::Integer) = Int(j0)
+@inline last_offdiag_col(::CornerOperand, j1::Integer, ::Integer) = Int(j1)
+@inline panel_local(::CornerOperand, ::Integer, j::Integer) = Int(j)
+@inline rowpanel(p::CornerOperand, ::Integer) = p.data
+@inline stride1_axis_left(::CornerOperand) = Stride1Axis{:i}()
+@inline stride1_axis_right(::CornerOperand) = Stride1Axis{:k}()
+@inline complete_k_stack(::CornerOperand) = true
+@inline tiles_per_row(::CornerOperand) = 1
+@inline tiles_per_col(::CornerOperand) = 1
+
 """
     LogicalTLROperands(av, bw, bz, au)
 

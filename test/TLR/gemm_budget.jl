@@ -73,8 +73,8 @@ end
 
             # These two used to accept `budget::Int` and never read it, sizing S/T from the
             # full grid unconditionally — byte-identical at every budget, while their
-            # dense-diagonal counterparts below honoured it. Scheduled through the
-            # contraction IR in milestone 3, step 4.
+            # dense-diagonal counterparts below honoured it. Both now use the direct
+            # budgeted regular core.
             @testset "tlr_gemm_int_by_rpanel" begin
                 f = bud -> _TLRM.tlr_gemm_int_by_rpanel(C, LA, LB, 1.0; beta=1.0, budget=bud)
                 @test term_bytes(f, _BUDGET_TINY) < term_bytes(f, _BUDGET_HUGE)

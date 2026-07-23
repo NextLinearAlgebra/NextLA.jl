@@ -1,23 +1,6 @@
 # Static lowering strategies derived from operand layout.
 
 """
-    GemmStage
-
-Singleton supertype for the three stages of the off-diagonal product
-`O_A O_B = U (V' W) Z'` summed over the contraction tile index `k`.
-"""
-abstract type GemmStage end
-
-"""Stage 1: `S_ikj = V_ik' W_kj`."""
-struct Stage1 <: GemmStage end
-
-"""Stage 2: `T_ikj = S_ikj Z_kj'`."""
-struct Stage2 <: GemmStage end
-
-"""Stage 3: `C_ij += U_ik T_ikj`, reducing over `k`."""
-struct Stage3 <: GemmStage end
-
-"""
     Stride1Axis{Ax}
 
 Layout trait naming the logical tile axis stored contiguously.
@@ -59,41 +42,13 @@ struct KAsSerialLoop{BPanelAxis} <: KAxisSchedule end
     KAsSerialLoop{BPanelAxis}()
 
 """
-    FreeAxisSchedule
-
-Trait binding the spatial tile indices `i`, `j` onto Stage 1's GEMM operand
-dimensions (M, N) or leaving them as batch axes.
-"""
-abstract type FreeAxisSchedule end
-
-"""`i` and `j` stay batch axes: Stage 1 is a pointer batch of tile GEMMs."""
-struct FreeAsBatch <: FreeAxisSchedule end
-
-"""`i` is bound onto the Stage 1 GEMM **M** dimension."""
-struct IAsGemmM <: FreeAxisSchedule end
-
-"""`i` and `j` are bound onto the Stage 1 GEMM **M** and **N** dimensions."""
-struct IJAsGemmMN <: FreeAxisSchedule end
-
-"""`j` is bound onto the Stage 1 GEMM **N** dimension (`i` stays a batch axis)."""
-struct JAsGemmN <: FreeAxisSchedule end
-
-# Row family: B stride-1 `:j` makes `W_k,:` contiguous over `j`, so Stage 1 fuses
-# `j` into N (`JAsGemmN`); B stride-1 `:k` cannot, so it stays tilewise.
-@inline free_axis_schedule(::KAsGemmK{:j}) = JAsGemmN()
-@inline free_axis_schedule(::KAsGemmK{:k}) = FreeAsBatch()
-@inline free_axis_schedule(::KAsSerialLoop{:k}) = IAsGemmM()
-@inline free_axis_schedule(::KAsSerialLoop{:j}) = IJAsGemmMN()
-
-"""
     GridKind
 
 Interior tile-grid enumeration policy of an operand. `SkipDiag` is the dense-diagonal
 interior (the diagonal tile is stored separately, so it is excluded from the low-rank
-grid); `FullGrid` is the fully low-rank interior (every tile present). The staged core
-consults this to decide how tile rows enumerate their contraction tiles, so one set of
-`execute_stage!` methods serves both container types; for `FullGrid` the skip helpers
-fold to identities. See `operands.jl` for the policy bodies.
+grid); `FullGrid` is the fully low-rank interior (every tile present). The regular core
+consults this while enumerating factor tiles; for `FullGrid` the skip helpers fold to
+identities. See `operands.jl` for the policy bodies.
 """
 abstract type GridKind end
 struct SkipDiag <: GridKind end   # dense-diag interior: diagonal excluded

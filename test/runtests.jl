@@ -58,7 +58,7 @@ include("TLR/compress.jl")
 include("TLR/gemm.jl")
 include("TLR/gemm_tlr_output.jl")
 include("TLR/gemm_budget.jl")
-include("TLR/gemm_ir.jl")
+include("TLR/gemm_core.jl")
 
 include("lu.jl")
 include("unified_rectrxm.jl")

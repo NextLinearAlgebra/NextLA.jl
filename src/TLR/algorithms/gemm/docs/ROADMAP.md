@@ -1,10 +1,10 @@
 # TLR algebra roadmap
 
-This roadmap tracks the evolution of the TLR multiplication code from a dense-output
-GEMM implementation into a small compiler for tiled dense and low-rank contractions.
-`DESIGN.md` documents implemented behavior; this file records future milestones and
-their acceptance gates. `IR_VOCABULARY.md` defines the MLIR-aligned terminology used
-for Milestone 3 and later lowering work.
+This roadmap tracks the TLR multiplication code. `DESIGN.md` documents the current
+direct execution architecture; this file retains milestone history and future gates.
+The compiler-style contraction IR introduced for Milestone 3 was removed before M5:
+it made the public path harder to follow without adding behavior that direct,
+output-oriented drivers could not provide.
 
 Status: `[x]` done, `[>]` active, `[ ]` planned.
 
@@ -16,18 +16,34 @@ TLR-output products remain planned.
 | --- | --- | --- | --- | --- |
 | `[x]` | 1. Canonical operands | One zero-copy, whole-matrix logical operand for `N/T`, including panels, corners, dense diagonal tiles, effective geometry, and output targeting. | Current interior operand and staged GEMM. | Both TLR containers match dense references for supported boundary transpose cases on CPU and representative GPU cases. |
 | `[x]` | 2. Precision policy | Central GEMM/GEMMEx dispatch that infers operand/output storage, keeps intermediate factors operand-typed, and accepts an explicit compute mode. | Canonical operands. | Supported mixed-precision combinations have backend capability tests, and every lowering preserves the intermediate-type invariant. |
-| `[x]` | 3. Contraction IR | Dense/low-rank leaves, an `(i,k,j)` span domain, contraction descriptors, and one scheduler serving every term rather than only the interior. | Canonical operands and precision policy. | Every term — interior, panel, and corner — honours `max_workspace`, allocates no per-run batch vectors, and selects a legal fold/schedule; promoted workspace stays concretely typed (see *Measurement* below). |
-| `[ ]` | 4. Output sinks | A shared update stream targeting either dense materialization or TLR factor accumulation. | Contraction IR. | One contraction can be lowered unchanged to dense and TLR outputs. |
-| `[ ]` | 5. Bounded TLR accumulation | Streaming merge/recompression whose live contraction, factor, and compression scratch fits one workspace budget. | TLR output sink and tile-source compression. | The first TLR-output product respects rank, approximation, and memory limits. |
+| `[x]` | 3. Direct budgeted contractions | Canonical factor accessors, concrete regular geometry, row/column traversal, and explicit budgeted boundary kernels. | Canonical operands and precision policy. | Every term honours `max_workspace`, reuses concrete batch vectors, and selects a legal fold/traversal. |
+| `[~]` | 4. TLR-output fallback | Row-family regular-grid accumulation into bounded dense slabs followed by recompression. | Direct regular contraction core. | The supported M4 subset is correct on CPU/CUDA and provides the differential oracle for future work. |
+| `[ ]` | 5. Bounded TLR accumulation (deferred) | Numerically robust factor-space merge/recompression whose live scratch fits one workspace budget. | Direct Stage 1 and tile-source compression. | The first production TLR-output product respects rank, approximation, and memory limits. |
 | `[ ]` | 6. Merge-tree planning | Balanced and k-ary merge strategies and complete coverage of TLR×TLR / TLR×dense to dense / TLR outputs. | Bounded accumulation. | All four product families select a valid plan from geometry, precision, error, and workspace constraints. |
+
+Status legend also uses `[~]` for *partially delivered* (a usable subset ships and is
+tested, but the full acceptance gate is intentionally deferred).
+
+## Milestone 4 status and deferred Milestone 5
+
+Milestone 4 shipped a **row-family, regular-grid, `beta == 0` TLR-output sink** built on
+dense accumulation into a bounded slab followed by randomized-sketch recompression
+(`compress_tiles!`). It is tested (CPU + CUDA) and stands as the reference oracle and the
+recompression fallback for Milestone 5 — see `M5_ORTHOGONAL_MERGE.md` for the full record
+of what was delivered, what was deliberately skipped, and why.
+
+M5 is deferred. The dense row-family fallback is retained as a differential-test oracle
+and possible recompression fallback. `M5_ORTHOGONAL_MERGE.md` remains a future draft, but
+its numerical algorithm and its references to the former IR/sink architecture require
+revision before implementation.
 
 ## Architectural decisions
 
 - Transpose is canonicalized before term generation or lowering; executors consume
   canonical `outer * inner'` low-rank factors.
-- Dense tiles are distinct algebra leaves. They share the contraction IR but use
-  specialised one- or two-stage lowerings rather than materialised identity factors.
-- Dense and TLR results are output policies (sinks), not separate input algebras.
+- Dense boundary tiles use specialised one- or two-stage helpers rather than
+  materialised identity factors.
+- Dense and TLR-output drivers own their terminal writes after shared regular Stage 1.
 - Workspace bytes and approximation tolerance are independent budgets. A TLR-output
   plan accounts for contraction scratch, live candidate factors, compression scratch,
   output factors, and concurrency.
@@ -40,7 +56,11 @@ and `B`, output storage comes from `C`, and only the compute mode is selected by
 caller. GEMM scalars use compute precision, while intermediate factors retain operand
 precision. Compression precision remains part of the later TLR-output milestones.
 
-## Milestone 3 plan
+## Historical Milestone 3 record
+
+The section below records the measurements and problems that motivated unified
+budgeting. Its IR types, descriptor steps, and terminology are historical: the useful
+outcomes now live in the direct regular core and explicit boundary helpers.
 
 ### Why
 
@@ -130,8 +150,8 @@ switches **on**, while `bpanel_by_rpanel` needs tails on `i` and `j` instead.
 | step | deliverable | checkpoint |
 | --- | --- | --- |
 | `[x]` 0 | `test/TLR/gemm_budget.jl` budget-response gate; boundary-tiled benchmark configs. | Done: 6 pass, 5 `@test_broken`. Six terms gained a perf signal they never had. |
-| `[x]` 1 | `contraction/leaves.jl`: `PanelOperand`, `CornerOperand`, `DenseLeaf`, `LowRankLeaf`, all answering `tilefactor`/`blockdim`/`rankdim`. | Done: leaf/storage mapping is independently pinned in `test/TLR/gemm_ir.jl`; the interior and first boundary operation now consume these leaves. |
-| `[x]` 2 | `contraction/domain.jl`: `AxisSpan`, `ContractDomain`, `contract_domains(A, B)` enumerating the eight corners. | Done: the eight domains provably partition the tile-triple space (no gaps, no overlaps) across aligned/tailed geometries, and each span's extent equals the `region_tile_count` the matching term computes today. |
+| `[x]` 1 | Historical IR factor wrappers. | Superseded: storage mapping is now pinned in `test/TLR/gemm_core.jl`, and `PanelOperand`/`CornerOperand` live with canonical operands. |
+| `[x]` 2 | Historical span/domain model. | Superseded by explicit output-region drivers and direct live-axis counts. |
 | `[x]` 3 | `_interior_geom` → `geometry(domain, leaves)`; `runs`/`allocate_workspace` domain-driven; `lower_init!` replaces the inline placement branch. | Done: 267 correctness tests unchanged; geometry pinned field-by-field to the operand quantities the old code read; workspace promotion proven concretely typed. |
 | `[x]` 4 | Migrate panel/corner terms: `int_by_rpanel`, `bpanel_by_int`, `bpanel_by_rpanel` (also killed the `permutedims` copy), `rpanel_by_corner`, `corner_by_bpanel` — the last two on both containers. | Done: budget gate **6 pass/5 broken → 13 pass/0 broken**. Every term but `corner_by_corner` (one tile in any geometry) now honours `max_workspace` and uses preallocated batch buffers. |
 | `[x]` 5 | `ContractOp` + `DenseOutput`; interior lowers to a concrete scheduled contraction and executes through the existing Stage 1/2/3 machinery. | Done: semantic construction contains no schedule/workspace/backend state; automatic selection covers all layout pairs and budget extremes, and both folds retain dense-reference correctness on their legal layouts; promoted workspace and tuned stages are unchanged. |

@@ -1,11 +1,9 @@
-# TLR-output sink (ROADMAP milestone 4).
+# TLR-output dense-slab fallback (ROADMAP milestone 4).
 #
 # A dense-output contraction writes each result tile straight into `C`. A TLR output
 # instead accumulates each result tile into a bounded dense **slab**, then compresses
-# the slab's tiles into the output container's low-rank factor panels. The staged
-# Stage 1/2/3 machinery is reused unchanged: only the destination the terminal GEMM
-# writes to differs, and that is expressed through `SlabOutput` answering the same
-# `output_tile` / `output_rowblock` accessors as `DenseOutput`.
+# the slab's tiles into the output container's low-rank factor panels. It shares the
+# output-independent Stages 1/2 and owns a slab-specific terminal stage.
 #
 # This first milestone is deliberately scoped:
 #   * regular grid only (no boundary tiles — one interior contraction per tile);
@@ -40,16 +38,15 @@ struct TLROutputWorkspace{SlabT,WST,UcT,VcT,AccT,TileVT,I32H,I32D}
     maxJ::Int
 end
 
-function _alloc_tlr_output_workspace(C::TLRMatrix{<:Any,T}, scheduled::ScheduledLowRankContract) where {T}
-    geom = scheduled.geometry
+function _alloc_tlr_output_workspace(C::TLRMatrix{<:Any,T}, geom, placement, ops,
+                                     budget::Int, fold) where {T}
     backend = get_backend(C)
     bm = geom.bm
     bn = geom.bn
-    maxI, maxJ = _row_block(geom, scheduled.budget)
+    maxI, maxJ = _row_block(geom, budget, fold)
     G = maxI * maxJ
     slab = allocate(backend, T, maxI * bm, maxJ * bn)
-    stage_ws = allocate_workspace(scheduled.placement, geom, scheduled.operands, slab,
-                                  scheduled.budget, scheduled.reassociation)
+    stage_ws = allocate_workspace(placement, geom, ops, slab, budget, fold)
     kout = C.maxrank
     Uc = allocate(backend, T, bm, kout, G)
     Vc = allocate(backend, T, bn, kout, G)
@@ -67,32 +64,79 @@ end
 # ─── Execution: row family ────────────────────────────────────────────────────
 
 """
-    _tlr_gemm_rowfamily!(C, scheduled, ws; eps_sq, rel) -> C
+    _tlr_gemm_rowfamily!(C, ops, geometry, placement, fold, alpha, budget, compute,
+                         workspace; eps_sq, rel) -> C
 
 Run the write-once (`KAsGemmK`) low-rank contraction into a TLR output. Each run fills
 the slab with `alpha·Σ_k A_ik B_kj` (β = 0), then the run's completed tiles are
 compressed into `C`'s factor panels.
 """
-function _tlr_gemm_rowfamily!(C::TLRMatrix{<:Any,T}, scheduled::ScheduledLowRankContract,
-                              ws::TLROutputWorkspace; eps_sq::Float64, rel::Bool) where {T}
-    geom = scheduled.geometry
-    placement = scheduled.placement
-    ops = scheduled.operands
-    fold = scheduled.reassociation
-    compute = scheduled.compute
-    op = scheduled.op
+@inline function _slab_tile(slab, run::RowRun, bm::Int, bn::Int, i::Int, j::Int)
+    r = (i - run.i0) * bm
+    c = (j - run.j0) * bn
+    return view(slab, (r + 1):(r + bm), (c + 1):(c + bn))
+end
+
+@inline function _slab_rowblock(slab, run::RowRun, bm::Int, bn::Int,
+                                i::Int, j0::Int, j1::Int)
+    r = (i - run.i0) * bm
+    c = (j0 - run.j0) * bn
+    return view(slab, (r + 1):(r + bm), (c + 1):(c + (j1 - j0 + 1) * bn))
+end
+
+function execute_slab_stage3!(::KAsGemmK, ::FoldRight, run::RowRun, ops,
+                              ws::RowWorkspace, slab, alpha, beta, compute)
+    bm = size(ws.Ustacked, 1)
+    bn = size(ws.T.data, 3)
+    noff = size(ws.T.data, 2)
+    rA = size(ws.T.data, 1)
+    Jw = run_width(run)
+    vb = ws.batches
+    _clear_batches!(vb.s3u, vb.s3t, vb.s3c)
+    @inbounds for (il, i) in enumerate(run.i0:run.i1)
+        push!(vb.s3u, view(ws.Ustacked, :, :, i))
+        push!(vb.s3t, reshape(view(ws.T.data, :, :, :, 1:Jw, il),
+                              noff * rA, Jw * bn))
+        push!(vb.s3c, _slab_rowblock(slab, run, bm, bn, i, run.j0, run.j1))
+    end
+    return precision_gemm_batched!('N', 'N', alpha, vb.s3u, vb.s3t, beta,
+                                   vb.s3c, compute)
+end
+
+function execute_slab_stage3!(::KAsGemmK, ::FoldLeft, run::RowRun, ops,
+                              ws::RowWorkspace, slab, alpha, beta, compute)
+    bm = blockdim(ops.au)
+    bn = blockdim(ops.bz)
+    rB = size(ws.T.data, 2)
+    noff = size(ws.T.data, 3)
+    vb = ws.batches
+    _clear_batches!(vb.s3t, vb.s3z, vb.s3c)
+    @inbounds for (il, i) in enumerate(run.i0:run.i1),
+                  (jl, j) in enumerate(run.j0:run.j1)
+        push!(vb.s3t, reshape(view(ws.T.data, :, :, :, jl, il), bm, rB * noff))
+        push!(vb.s3z, view(ws.Ustacked, :, :, j))
+        push!(vb.s3c, _slab_tile(slab, run, bm, bn, i, j))
+    end
+    return precision_gemm_batched!('N', 'T', alpha, vb.s3t, vb.s3z, beta,
+                                   vb.s3c, compute)
+end
+
+function _tlr_gemm_rowfamily!(C::TLRMatrix{<:Any,T}, ops, geom, placement,
+                              fold, alpha, budget::Int, compute,
+                              ws::TLROutputWorkspace; eps_sq::Float64,
+                              rel::Bool) where {T}
     bm = geom.bm
     bn = geom.bn
     slab = ws.slab
     stage_ws = ws.stage_ws
-    beta0 = zero(op.alpha)
+    beta0 = zero(alpha)
 
-    @inbounds for run in runs(placement, geom, scheduled.budget)
-        so = SlabOutput(slab, bm, bn, run.i0, run.j0)
+    @inbounds for run in runs(placement, geom, budget, fold)
         prepare_run!(placement, run, stage_ws)
-        execute_stage!(stage1(placement, run, ops, stage_ws, fold, compute))
-        execute_stage!(stage2(placement, run, ops, stage_ws, fold, compute))
-        execute_stage!(stage3(placement, run, ops, stage_ws, so, op.alpha, beta0, fold, compute))
+        execute_stage1!(placement, run, ops, stage_ws, compute)
+        execute_stage2!(placement, fold, run, ops, stage_ws, compute)
+        execute_slab_stage3!(placement, fold, run, ops, stage_ws, slab,
+                             alpha, beta0, compute)
         _compress_run_into_factors!(C, ws, run, bm, bn; eps_sq, rel)
     end
     return C

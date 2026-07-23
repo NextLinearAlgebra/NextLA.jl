@@ -42,11 +42,11 @@ function tlr_gemm_int_by_rpanel(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatr
         [view(BV, :, :, i) for i in 1:qmA],
         beta, [_output_tile_view(C, A, B, i, nt) for i in 1:qmA], compute)
 
-    # The dense diagonal above is the first writer. The low-rank off-diagonal leaf is a
-    # `SkipDiag` interior and lowers through the same ContractOp as a FullGrid operand,
-    # declaring accumulation so β is not applied twice.
-    op = int_by_rpanel_contract(C, A, B, alpha, AccumulateExisting(typeof(alpha)))
-    return execute!(lower(op; compute, budget))
+    # The dense diagonal above is the first writer. The budgeted `SkipDiag` low-rank
+    # contraction accumulates, so β is not applied twice.
+    return execute_lowrank_term!(C, A, B, _interior_pair(A), _right_pair(B),
+                                 qmA, qkB, 1, 1, nt;
+                                 alpha, beta=one(alpha), budget, compute)
 end
 
 """
@@ -60,15 +60,19 @@ Accumulate `α · u_A γ_B` into the right region of `C`.  A's right-panel tiles
 No-op when `n_A % b == 0`, `A.maxrank == 0`, or B has no corner.
 """
 # Budget blocks the free row axis `i` (scratch was `O(q_m)` with no knob). `γ_B` is a
-# *dense* leaf, so this stays the two-stage lowering — no identity factor is formed — and
-# the corner tile is broadcast across the batch.
+# dense corner uses a direct two-stage helper — no identity factor is formed — and the
+# corner tile is broadcast across the batch.
 function tlr_gemm_rpanel_by_corner(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha;
     beta=one(alpha), budget::Int, compute=default_gemm_compute_mode(T)) where {T}
     qmA = region_tile_count(A, _RIGHT)
     qmA == 0 && return C                      # no right panel (n_A % b == 0)
     size(physical(B).D_corner, 3) == 0 && return C
-    op = rpanel_by_corner_contract(C, A, B, alpha, ScaleExisting(beta))
-    return execute!(lower(op; compute, budget))
+    _, nt = tilegrid_size(B)
+    outer, inner = _right_pair(A)
+    dense = _diag_tile_ref(B, ndiag_tiles(B))
+    return execute_lowrank_dense_term!(C, A, B, outer, inner, dense,
+                                       qmA, 1, nt;
+                                       alpha, beta, budget, compute)
 end
 
 # ── Fully low-rank variants (TLRMatrix) ──────────────────────────────────────
@@ -76,16 +80,17 @@ end
 # Every tile is low-rank, so there is no dense diagonal to split out: `A_int u_B`
 # reduces over ALL contraction tiles `k`, and `u_A γ_B` uses a low-rank corner `γ_B`.
 
-# A_int u_B is the first boundary contraction lowered from `ContractOp`. Its domain is
-# `(regular i, regular k, boundary j)`; the right-panel leaf exposes `k` as its contiguous
-# iterator, and `DenseOutput` maps the scheduler's local `j=1` back to B's physical tail
-# tile-column. The same row/serial reduction families and promoted S/T workspaces used by
-# the interior therefore execute this term without a boundary-specific stage loop.
+# A_int u_B uses the regular low-rank core with a right-panel factor accessor and maps
+# its single local output column directly to B's physical tail tile-column.
 function tlr_gemm_int_by_rpanel(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRMatrix}, alpha;
     beta=one(alpha), budget::Int, compute=default_gemm_compute_mode(T)) where {T}
-    op = int_by_rpanel_contract(C, A, B, alpha, ScaleExisting(beta))
-    (isempty(op.domain.i) || isempty(op.domain.j)) && return C
-    return execute!(lower(op; compute, budget))
+    qm, qk = regular_tilegrid_size(A)
+    qk == region_tile_count(B, _RIGHT) || return C
+    _, nt = tilegrid_size(B)
+    nt > regular_tilegrid_size(B)[2] || return C
+    return execute_lowrank_term!(C, A, B, _interior_pair(A), _right_pair(B),
+                                 qm, qk, 1, 1, nt;
+                                 alpha, beta, budget, compute)
 end
 
 # u_A γ_B:  C_right[i] += A_{i,bnd} γ_B,  i = 1:q_m^A.
@@ -97,7 +102,11 @@ end
 # rather than only the first.
 function tlr_gemm_rpanel_by_corner(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRMatrix}, alpha;
     beta=one(alpha), budget::Int, compute=default_gemm_compute_mode(T)) where {T}
-    op = rpanel_by_corner_contract(C, A, B, alpha, ScaleExisting(beta))
-    (isempty(op.domain.i) || isempty(op.domain.j)) && return C
-    return execute!(lower(op; compute, budget))
+    qm = region_tile_count(A, _RIGHT)
+    qm == 0 && return C
+    _, nt = tilegrid_size(B)
+    nt > regular_tilegrid_size(B)[2] || return C
+    return execute_lowrank_term!(C, A, B, _right_pair(A), _corner_pair(B),
+                                 qm, 1, 1, 1, nt;
+                                 alpha, beta, budget, compute)
 end

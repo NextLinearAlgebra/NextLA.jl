@@ -2,14 +2,10 @@
 include("precision.jl")
 include("lowering/strategy.jl")
 include("operands.jl")
-include("contraction/leaves.jl")
-include("contraction/domain.jl")
-include("contraction/init.jl")
-include("contraction/operation.jl")
 include("lowering/schedule.jl")
 include("lowering/stages.jl")
-include("contraction/lowering.jl")
-include("contraction/sink.jl")
+include("direct.jl")
+include("tlr_output.jl")
 include("regions/interior.jl")
 include("regions/corner.jl")
 include("regions/right.jl")
@@ -249,14 +245,15 @@ end
     return nothing
 end
 
-# Dispatch on the reduction placement: the row family (KAsGemmK) writes each output tile
-# once, so a run's tiles complete and compress immediately. The lone column-family layout
-# (A tile-column-major × B tile-row-major) is a later milestone step.
-_run_tlr_output!(C::TLRMatrix, scheduled::ScheduledLowRankContract{<:Any,<:KAsGemmK};
-                 eps_sq::Float64, rel::Bool) =
-    _tlr_gemm_rowfamily!(C, scheduled, _alloc_tlr_output_workspace(C, scheduled); eps_sq, rel)
+function _run_tlr_output!(C::TLRMatrix, ops, geom, placement::KAsGemmK,
+                          fold, alpha, budget, compute;
+                          eps_sq::Float64, rel::Bool)
+    ws = _alloc_tlr_output_workspace(C, geom, placement, ops, budget, fold)
+    return _tlr_gemm_rowfamily!(C, ops, geom, placement, fold, alpha, budget,
+                                compute, ws; eps_sq, rel)
+end
 
-_run_tlr_output!(::TLRMatrix, ::ScheduledLowRankContract{<:Any,<:KAsSerialLoop};
+_run_tlr_output!(::TLRMatrix, ops, geom, ::KAsSerialLoop, fold, alpha, budget, compute;
                  eps_sq::Float64, rel::Bool) =
     throw(ArgumentError("TLR-output GEMM for the column-family layout " *
                         "(A tile-column-major × B tile-row-major) is not yet supported"))
@@ -298,9 +295,11 @@ function gemm!(C::TLRMatrix{BackendT,T}, A::TLRMatrix{BackendT,T}, B::TLRMatrix{
     end
 
     α = ScalarT(alpha)
-    placeholder = allocate(backend, T, 0, 0)
-    op = interior_contract(placeholder, LA, LB, α, ScaleExisting(zero(ScalarT)))
-    scheduled = lower(op; compute=mode, budget=max_workspace)
-    _run_tlr_output!(C, scheduled; eps_sq=Float64(tol)^2, rel)
+    ops = logical_operands(LA, LB)
+    geom = interior_geometry(LA, LB)
+    fold = choose_fold(ops)
+    placement = placement_for_fold(fold, ops)
+    _run_tlr_output!(C, ops, geom, placement, fold, α, max_workspace, mode;
+                     eps_sq=Float64(tol)^2, rel)
     return C
 end

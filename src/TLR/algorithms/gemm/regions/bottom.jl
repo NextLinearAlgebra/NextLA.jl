@@ -34,9 +34,11 @@ function tlr_gemm_bpanel_by_int(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatr
         beta, [_output_tile_view(C, A, B, mt, j) for j in 1:qkA], compute)
 
     # Dense diagonal × bottom panel above owns β. The remaining bottom-panel ×
-    # `SkipDiag` interior contraction accumulates through the shared low-rank lowering.
-    op = bpanel_by_int_contract(C, A, B, alpha, AccumulateExisting(typeof(alpha)))
-    return execute!(lower(op; compute, budget))
+    # `SkipDiag` interior contraction accumulates through the shared low-rank core.
+    qm, qn = regular_tilegrid_size(B)
+    return execute_lowrank_term!(C, A, B, _bottom_pair(A), _interior_pair(B),
+                                 1, qkA, qn, mt, 1;
+                                 alpha, beta=one(alpha), budget, compute)
 end
 
 """
@@ -50,14 +52,18 @@ times B's bottom-panel tiles `B_{Q+1,j} = W_j Z_jᵀ` give, for each j,
 No-op when `m_B % b == 0`, `B.maxrank == 0`, or A has no corner.
 """
 # Budget blocks the free column axis `j` (scratch was `O(q_n)` with no knob). `γ_A` is a
-# *dense* leaf, so this stays the two-stage lowering, with the corner tile broadcast.
+# dense corner uses a direct two-stage helper, with the corner tile broadcast.
 function tlr_gemm_corner_by_bpanel(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha;
     beta=one(alpha), budget::Int, compute=default_gemm_compute_mode(T)) where {T}
     qnB = region_tile_count(B, _BOTTOM)
     qnB == 0 && return C                      # no bottom panel (m_B % b == 0)
     size(physical(A).D_corner, 3) == 0 && return C
-    op = corner_by_bpanel_contract(C, A, B, alpha, ScaleExisting(beta))
-    return execute!(lower(op; compute, budget))
+    mt, _ = tilegrid_size(A)
+    outer, inner = _bottom_pair(B)
+    dense = _diag_tile_ref(A, ndiag_tiles(A))
+    return execute_dense_lowrank_term!(C, A, B, dense, outer, inner,
+                                       qnB, mt, 1;
+                                       alpha, beta, budget, compute)
 end
 
 # ── Fully low-rank variants (TLRMatrix) ──────────────────────────────────────
@@ -65,15 +71,18 @@ end
 # `v_Aᵀ B_int` reduces over ALL contraction tiles `k` (no dense diagonal), and
 # `γ_A v_Bᵀ` uses a low-rank corner `γ_A`.
 
-# v_Aᵀ B_int is the mirror boundary `ContractOp`: `(boundary i, regular k, regular j)`.
-# The bottom panel supplies a complete contiguous left k-stack, while `DenseOutput` maps
-# the scheduler's single local row to A's physical tail tile-row. The shared stages may
-# reassociate either way according to B's effective layout and intermediate size.
+# v_Aᵀ B_int is the mirror direct boundary path. The bottom panel supplies a complete
+# contiguous left k-stack and the local row maps to A's physical tail tile-row.
 function tlr_gemm_bpanel_by_int(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRMatrix}, alpha;
     beta=one(alpha), budget::Int, compute=default_gemm_compute_mode(T)) where {T}
-    op = bpanel_by_int_contract(C, A, B, alpha, ScaleExisting(beta))
-    (isempty(op.domain.i) || isempty(op.domain.j)) && return C
-    return execute!(lower(op; compute, budget))
+    qk = region_tile_count(A, _BOTTOM)
+    qk == 0 && return C
+    _, qn = regular_tilegrid_size(B)
+    mt, _ = tilegrid_size(A)
+    mt > regular_tilegrid_size(A)[1] || return C
+    return execute_lowrank_term!(C, A, B, _bottom_pair(A), _interior_pair(B),
+                                 1, qk, qn, mt, 1;
+                                 alpha, beta, budget, compute)
 end
 
 # γ_A v_Bᵀ:  C_bottom[j] += γ_A B_{bnd,j},  j = 1:q_n^B.
@@ -83,7 +92,11 @@ end
 # output tile, so β folds in Stage 3 for every block.
 function tlr_gemm_corner_by_bpanel(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRMatrix}, alpha;
     beta=one(alpha), budget::Int, compute=default_gemm_compute_mode(T)) where {T}
-    op = corner_by_bpanel_contract(C, A, B, alpha, ScaleExisting(beta))
-    (isempty(op.domain.i) || isempty(op.domain.j)) && return C
-    return execute!(lower(op; compute, budget))
+    qn = region_tile_count(B, _BOTTOM)
+    qn == 0 && return C
+    mt, _ = tilegrid_size(A)
+    mt > regular_tilegrid_size(A)[1] || return C
+    return execute_lowrank_term!(C, A, B, _corner_pair(A), _bottom_pair(B),
+                                 1, 1, qn, mt, 1;
+                                 alpha, beta, budget, compute)
 end

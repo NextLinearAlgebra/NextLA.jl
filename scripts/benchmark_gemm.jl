@@ -8,12 +8,11 @@
 #
 # Times `gemm!(C, A, B)` across problem sizes and the four operand-layout combinations
 # (kj, kk, ik, ij). A large `max_workspace` is used so the scheduler batches maximally
-# (row family → 3 launches, column → 2+nt).
+# (row and column traversals both use their widest legal runs).
 #
 # Configs come in two families. `tail=0` is tile-aligned and hard-term-dominated: it
-# measures the interior alone, and is the regression baseline the contraction IR must
-# hold flat. `tail≠0` switches on the right/bottom panels and the corner, which carry no
-# scheduling today — those rows are the signal for the panel migration.
+# measures the regular interior alone. `tail≠0` switches on the direct right/bottom
+# panel and corner kernels.
 
 using LinearAlgebra, Printf, Random, Statistics, KernelAbstractions
 
@@ -33,7 +32,7 @@ gpu_sync() = HAS_CUDA ? CUDA.synchronize() : nothing
 const COMBOS = (
     ("kj", M.TileRowMajor, M.TileRowMajor),   # row family (fusable Stage 1)
     ("kk", M.TileRowMajor, M.TileColMajor),   # row family (tilewise Stage 1)
-    ("ik", M.TileColMajor, M.TileColMajor),   # column family
+    ("ik", M.TileColMajor, M.TileColMajor),   # FoldLeft row family
     ("ij", M.TileColMajor, M.TileRowMajor),   # column family
 )
 
@@ -41,9 +40,8 @@ const COMBOS = (
 #
 # `tail = 0` is tile-aligned: the product is the interior term alone. A non-zero tail
 # switches on the right/bottom panels and the corner — six of the eight terms — which
-# were otherwise never measured. Keep both: the aligned rows are the interior's
-# regression baseline for milestone 3 steps 3 and 5, and the tailed rows are the only
-# signal on the panel terms migrating in step 4.
+# were otherwise never measured. Keep both: the aligned rows isolate the regular core,
+# and the tailed rows are the signal for explicit boundary helpers.
 const CONFIGS = (
     (b=64,  nt=16, r=16, tail=0),
     (b=64,  nt=32, r=16, tail=0),
@@ -91,9 +89,7 @@ function time_gemm(backend, b, nt, r, tail, oA, oB)
     A = make_tlr(backend, m, b, r, oA)
     B = make_tlr(backend, m, b, r, oB)
     C = backend isa CPU ? randn(T, m, m) : CUDA.CuArray(randn(T, m, m))
-    # Full batching for the interior. `gemm_workspace_bytes` accounts only for `O_A O_B`,
-    # so on a tailed config it under-reports the panel terms' scratch — those terms are
-    # unbudgeted today anyway (see ROADMAP milestone 3). Both are fixed in step 6.
+    # Full-width budget for every direct regular and boundary kernel.
     budget = M.gemm_workspace_bytes(A, B)
     for _ in 1:WARMUP
         M.gemm!(C, A, B; alpha=1.0, beta=0.5, max_workspace=budget); gpu_sync()

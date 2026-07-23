@@ -59,7 +59,7 @@ end
 end
 
 # The TLR-output workspace must be concretely typed so `allocate` infers its element
-# types — the same invariant `gemm_ir.jl` pins for the dense scheduler (see the `Tin`
+# types — the same invariant `gemm_core.jl` pins for the dense driver (see the `Tin`
 # regression in ROADMAP.md). A `DataType` field would collapse this silently.
 @testset "TLR output workspace inference" begin
     RM = NextLA.TileRowMajor(); CM = NextLA.TileColMajor()
@@ -71,11 +71,12 @@ end
     LA = NextLA.TLRmodule.logical_operand(A, 'N')
     LB = NextLA.TLRmodule.logical_operand(B, 'N')
     mode = NextLA.TLRmodule.default_gemm_compute_mode(T)
-    ph = NextLA.TLRmodule.allocate(NextLA.get_backend(C), T, 0, 0)
-    op = NextLA.TLRmodule.interior_contract(ph, LA, LB, T(1),
-                                            NextLA.TLRmodule.ScaleExisting(T(0)))
-    sched = NextLA.TLRmodule.lower(op; compute=mode, budget=128 * 1024 * 1024)
-    ws = @inferred NextLA.TLRmodule._alloc_tlr_output_workspace(C, sched)
+    ops = NextLA.TLRmodule.logical_operands(LA, LB)
+    geom = NextLA.TLRmodule.interior_geometry(LA, LB)
+    fold = NextLA.TLRmodule.choose_fold(ops)
+    placement = NextLA.TLRmodule.placement_for_fold(fold, ops)
+    ws = @inferred NextLA.TLRmodule._alloc_tlr_output_workspace(
+        C, geom, placement, ops, 128 * 1024 * 1024, fold)
     @test isconcretetype(typeof(ws))
     @test isconcretetype(eltype(ws.slab))
     @test isconcretetype(eltype(ws.accum))

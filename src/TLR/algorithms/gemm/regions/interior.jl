@@ -166,8 +166,8 @@ end
     _offdiag_offdiag_gemm!(C, A, B; alpha, beta=1, budget) -> C
 
 `C_int := β·C_int + α·O_A O_B` over the interior tile grid. Selects the reduction
-placement from the operand layouts, then for each budgeted run lowers Stage 1/2/3
-through the precision-aware batched GEMM dispatcher via `execute_stage!`.
+placement from the operand layouts, then executes Stage 1/2/3 through the
+precision-aware batched GEMM dispatcher.
 
 `O_A O_B` touches *every* interior tile, so it is the natural place to fold β. How β
 is folded depends on the layout (see `schedule.jl`): the **row family** writes each
@@ -178,8 +178,10 @@ accumulates with β = 1.
 function _offdiag_offdiag_gemm!(C, A::LogicalTLROperand{<:Any,<:AbstractTLRMatrix{<:Any,T}}, B::LogicalTLROperand;
     alpha, beta=one(alpha), budget, fold::Union{Nothing,FoldSide}=nothing,
     compute=default_gemm_compute_mode(T)) where {T}
-    op = interior_contract(C, A, B, alpha, ScaleExisting(beta))
-    return execute!(lower(op; compute, budget, reassociation=fold))
+    ops = logical_operands(A, B)
+    geom = interior_geometry(A, B)
+    return execute_lowrank_gemm!(C, A, B, ops, geom, 1, 1;
+                                 alpha, beta, budget, compute, fold)
 end
 
 function _offdiag_offdiag_gemm!(C, A::AbstractTLRMatrix{<:Any,T}, B::AbstractTLRMatrix{<:Any,T};
@@ -219,7 +221,10 @@ in `A`) or the pairing is incomplete (non-square boundary).
 # container types, so it dispatches on `AbstractTLRMatrix`.
 function tlr_gemm_rpanel_by_bpanel(C, A::LogicalTLROperand{<:Any,<:AbstractTLRMatrix{<:Any,T}}, B::LogicalTLROperand, alpha;
     beta=one(alpha), budget::Int, compute=default_gemm_compute_mode(T)) where {T}
-    op = rpanel_by_bpanel_contract(C, A, B, alpha, ScaleExisting(beta))
-    (isempty(op.domain.i) || isempty(op.domain.j)) && return C
-    return execute!(lower(op; compute, budget))
+    qm = region_tile_count(A, _RIGHT)
+    qn = region_tile_count(B, _BOTTOM)
+    (qm == 0 || qn == 0) && return C
+    return execute_lowrank_term!(C, A, B, _right_pair(A), _bottom_pair(B),
+                                 qm, 1, qn, 1, 1;
+                                 alpha, beta, budget, compute)
 end
