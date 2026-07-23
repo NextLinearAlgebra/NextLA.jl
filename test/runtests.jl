@@ -54,6 +54,7 @@ include("NextLAMatrix.jl")
 
 include("TLR/helpers.jl")
 include("TLR/containers.jl")
+include("TLR/numerics.jl")
 include("TLR/compress.jl")
 include("TLR/gemm.jl")
 include("TLR/gemm_tlr_output.jl")

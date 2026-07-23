@@ -18,7 +18,7 @@ TLR-output products remain planned.
 | `[x]` | 2. Precision policy | Central GEMM/GEMMEx dispatch that infers operand/output storage, keeps intermediate factors operand-typed, and accepts an explicit compute mode. | Canonical operands. | Supported mixed-precision combinations have backend capability tests, and every lowering preserves the intermediate-type invariant. |
 | `[x]` | 3. Direct budgeted contractions | Canonical factor accessors, concrete regular geometry, row/column traversal, and explicit budgeted boundary kernels. | Canonical operands and precision policy. | Every term honours `max_workspace`, reuses concrete batch vectors, and selects a legal fold/traversal. |
 | `[~]` | 4. TLR-output fallback | Row-family regular-grid accumulation into bounded dense slabs followed by recompression. | Direct regular contraction core. | The supported M4 subset is correct on CPU/CUDA and provides the differential oracle for future work. |
-| `[ ]` | 5. Bounded TLR accumulation (deferred) | Numerically robust factor-space merge/recompression whose live scratch fits one workspace budget. | Direct Stage 1 and tile-source compression. | The first production TLR-output product respects rank, approximation, and memory limits. |
+| `[>]` | 5. Bounded TLR accumulation | Shared-panel orthogonal merge/recompression whose live scratch fits one workspace budget. The fused numerical foundation is active; GEMM scheduling remains deferred. | Direct Stage 1 and shared TLR numerical kernels. | The first production TLR-output product respects rank, approximation, performance, and memory limits. |
 | `[ ]` | 6. Merge-tree planning | Balanced and k-ary merge strategies and complete coverage of TLR×TLR / TLR×dense to dense / TLR outputs. | Bounded accumulation. | All four product families select a valid plan from geometry, precision, error, and workspace constraints. |
 
 Status legend also uses `[~]` for *partially delivered* (a usable subset ships and is
@@ -32,10 +32,11 @@ dense accumulation into a bounded slab followed by randomized-sketch recompressi
 recompression fallback for Milestone 5 — see `M5_ORTHOGONAL_MERGE.md` for the full record
 of what was delivered, what was deliberately skipped, and why.
 
-M5 is deferred. The dense row-family fallback is retained as a differential-test oracle
-and possible recompression fallback. `M5_ORTHOGONAL_MERGE.md` remains a future draft, but
-its numerical algorithm and its references to the former IR/sink architecture require
-revision before implementation.
+M5's numerical-foundation step is active. The dense row-family fallback is retained as a
+differential-test oracle and possible recompression fallback. The shared-panel algorithm,
+fusion requirements, numerical safeguards, and remaining integration gates are recorded
+in `M5_ORTHOGONAL_MERGE.md`; full merge and scheduling work remains deferred until the
+standalone primitive passes those gates.
 
 ## Architectural decisions
 
@@ -54,7 +55,8 @@ Milestone 2 covers real `Float16`/`Float32`/`Float64` operands, the valid
 same- and mixed-output combinations, and CUDA TF32. Operand storage comes from `A`
 and `B`, output storage comes from `C`, and only the compute mode is selected by the
 caller. GEMM scalars use compute precision, while intermediate factors retain operand
-precision. Compression precision remains part of the later TLR-output milestones.
+precision. Orthogonalization uses a separate promoted precision policy shared by
+compression and factor-space output work.
 
 ## Historical Milestone 3 record
 
