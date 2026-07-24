@@ -7,7 +7,7 @@ include("trmm.jl")
 include("matmul.jl")
 include("rectrxm.jl")
 include("recgemm.jl")
-include("getrf.jl")
+# include("getrf.jl")
 include("wrappers.jl")
 
 """
@@ -34,7 +34,8 @@ through `gemm!` otherwise.
 function getrf_recursive!(A, block_size)
     n = size(A, 1)
     if n <= block_size
-        getrf!(A)
+        # getrf!(A)
+        CUSOLVER.getrf!(A)
         return
     end
 

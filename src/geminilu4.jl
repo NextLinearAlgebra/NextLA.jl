@@ -6,7 +6,7 @@ include("trmm.jl")
 include("matmul.jl")
 include("rectrxm.jl")
 include("recgemm.jl")
-include("getrf.jl") # Assumes getrf!(A) wraps CUSOLVER nonpivoting LU base routines
+# include("getrf.jl") # Assumes getrf!(A) wraps CUSOLVER nonpivoting LU base routines
 include("wrappers.jl")
 
 """
@@ -21,7 +21,7 @@ function getrf_recursive!(A, block_size)
     n = size(A, 1)
 
     if n <= block_size
-        getrf!(A)
+        CUSOLVER.getrf!(A)
         return
     end
 

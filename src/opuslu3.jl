@@ -419,7 +419,8 @@ and through a direct `gemm!` call otherwise.
 function getrf_recursive!(A, block_size)
     n = size(A, 1)
     if n <= block_size
-        getrf!(A)           # CUSOLVER base case (defined in getrf.jl)
+        # getrf!(A)           # CUSOLVER base case (defined in getrf.jl)
+        CUSOLVER.getrf!(A)
         return
     end
 
