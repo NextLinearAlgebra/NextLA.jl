@@ -84,9 +84,3 @@ function getrf_recursive!(A::FullMixedPrec)
     # Step 5: Factorize updated lower-right block: A22 -> L22 U22
     getrf_recursive!(A.A22)
 end
-
-if hasproperty(A, :A21)
-    OffDiag_block = (uplo == 'L') ? A.A21 : A.A12
-else
-    OffDiag_block = A.OffDiag
-end
