@@ -113,15 +113,15 @@ follows `C`. GEMM scalars use the selected compute precision. `precision_gemm_ba
 is the sole backend dispatch point for ordinary GEMM, CUDA GEMMEx/TF32, and capability
 validation.
 
-## Extension boundary for M5
+## M5 extension boundary
 
-M5 is deferred. A future merge implementation may depend only on:
+The M5 global-row-basis implementation depends only on:
 
 - `LogicalTLROperand` and factor accessors;
 - `RegularGeometry`, row/column runs, and workspace utilities;
-- output-independent `execute_stage1!`;
+- its explicit standalone row-basis builder;
 - precision dispatch.
 
-It must own factor accumulation, numerical rank decisions, and fallback behavior. The
-algorithm in `M5_ORTHOGONAL_MERGE.md` is a draft and requires numerical revision before
-implementation.
+It owns factor accumulation, numerical rank decisions, and fallback behavior. The
+preferred CPU path is explicit row basis → coefficient accumulation → one orthogonal
+merge/prune; M4 remains the CUDA/transpose fallback while those schedules are completed.

@@ -59,8 +59,8 @@ end
 end
 
 # The TLR-output workspace must be concretely typed so `allocate` infers its element
-# types — the same invariant `gemm_core.jl` pins for the dense driver (see the `Tin`
-# regression in ROADMAP.md). A `DataType` field would collapse this silently.
+# types — the same invariant `gemm_core.jl` pins for the dense driver (the `Tin`
+# regression). A `DataType` field would collapse this silently.
 @testset "TLR output workspace inference" begin
     RM = NextLA.TileRowMajor(); CM = NextLA.TileColMajor()
     T = Float64
@@ -84,24 +84,12 @@ end
 
 @testset "TLR output validation" begin
     RM = NextLA.TileRowMajor(); CM = NextLA.TileColMajor()
-    # Column-family layout (A col-major × B row-major) is not yet supported.
-    A = NextLA.TLRMatrix(zeros(Float64, 12, 12), (4, 4), 2; tile_order=CM)
-    B = NextLA.TLRMatrix(zeros(Float64, 12, 12), (4, 4), 2; tile_order=RM)
-    fill_random_tlr!(A, Array; seed=1); fill_random_tlr!(B, Array; seed=2)
-    C = NextLA.TLRMatrix(zeros(Float64, 12, 12), (4, 4), 4)
-    @test_throws ArgumentError NextLA.TLRmodule.gemm!(C, A, B; alpha=1.0, beta=0)
-
-    # Boundary (non-aligned) tiling is rejected.
+    # The column-family layout (A col-major × B row-major) and beta != 0 are now
+    # both handled by the row-basis path (covered in row_basis_gemm.jl); they no
+    # longer throw. Only the regular-grid (aligned tiling) requirement is enforced.
     Ab = NextLA.TLRMatrix(zeros(Float64, 10, 10), (4, 4), 2; tile_order=RM)
     Bb = NextLA.TLRMatrix(zeros(Float64, 10, 10), (4, 4), 2; tile_order=RM)
     fill_random_tlr!(Ab, Array; seed=3); fill_random_tlr!(Bb, Array; seed=4)
     Cb = NextLA.TLRMatrix(zeros(Float64, 10, 10), (4, 4), 4)
     @test_throws ArgumentError NextLA.TLRmodule.gemm!(Cb, Ab, Bb; alpha=1.0, beta=0)
-
-    # beta != 0 is not yet supported.
-    Aa = NextLA.TLRMatrix(zeros(Float64, 12, 12), (4, 4), 2; tile_order=RM)
-    Ba = NextLA.TLRMatrix(zeros(Float64, 12, 12), (4, 4), 2; tile_order=RM)
-    fill_random_tlr!(Aa, Array; seed=5); fill_random_tlr!(Ba, Array; seed=6)
-    Ca = NextLA.TLRMatrix(zeros(Float64, 12, 12), (4, 4), 4)
-    @test_throws ArgumentError NextLA.TLRmodule.gemm!(Ca, Aa, Ba; alpha=1.0, beta=0.5)
 end

@@ -182,6 +182,17 @@ end
     return view(p.data, :, :, (Int(r) - 1) * npr + 1 : Int(r) * npr)
 end
 
+"""Contiguous `[b, maxrank, tiles_per_col]` view of tile-column `c`'s panel.
+
+The caller must select this accessor only when the logical operand is
+tile-column-major.  Keeping that decision at the scheduler makes the returned
+view zero-copy and avoids a gather for the preferred row-basis B-side Z stack.
+"""
+@inline function colpanel(p::InteriorOperand, c::Integer)
+    npc = tiles_per_col(p)
+    return view(p.data, :, :, (Int(c) - 1) * npc + 1 : Int(c) * npc)
+end
+
 """Zero-copy factor view for logical interior tile `(i,j)`."""
 @inline tilefactor(p::InteriorOperand{SkipDiag}, i::Integer, j::Integer) =
     view(p.data, :, :, _offdiag_index(p.order, p.qm, p.qn, Int(i), Int(j)))

@@ -2,7 +2,12 @@
 include("precision.jl")
 include("lowering/strategy.jl")
 include("operands.jl")
+include("row_basis_workspace.jl")
+include("row_basis.jl")
 include("lowering/schedule.jl")
+include("coefficient_accumulation.jl")
+include("orthogonal_merge.jl")
+include("row_basis_gemm.jl")
 include("lowering/stages.jl")
 include("direct.jl")
 include("tlr_output.jl")
@@ -280,21 +285,26 @@ function gemm!(C::TLRMatrix{BackendT,T}, A::TLRMatrix{BackendT,T}, B::TLRMatrix{
     LA = logical_operand(A, transA)
     LB = logical_operand(B, transB)
     _validate_tlr_output(C, LA, LB)
-    iszero(beta) ||
-        throw(ArgumentError("TLR-output GEMM currently supports beta == 0 only"))
     tol >= 0 || throw(ArgumentError("tol must be >= 0"))
     mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
     backend = get_backend(C)
     validate_tlr_gemm_precision(backend, T, T, mode)
     ScalarT = gemm_compute_type(mode)
 
+    α = ScalarT(alpha)
+    # The row-basis path handles every non-transposed layout on both the CPU and
+    # CUDA backends (the shared A row basis and B Z stack are contiguous for the
+    # preferred layout, packed otherwise). Transposed operands fall through to the
+    # M4 dense fallback, which does not support beta.
+    if !_istrans(LA) && !_istrans(LB)
+        return _row_basis_gemm!(C, A, B; alpha=α, beta=ScalarT(beta), tol, rel, compute=mode)
+    end
     if maxrank(A) == 0 || maxrank(B) == 0
         fill!(C.ranks, zero(eltype(C.ranks)))
         fill!(C.resid, 0.0)
         return C
     end
-
-    α = ScalarT(alpha)
+    iszero(beta) || throw(ArgumentError("TLR-output GEMM with transposed operands (M4 fallback) does not support beta != 0"))
     ops = logical_operands(LA, LB)
     geom = interior_geometry(LA, LB)
     fold = choose_fold(ops)

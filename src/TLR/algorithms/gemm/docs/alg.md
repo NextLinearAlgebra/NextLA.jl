@@ -271,7 +271,112 @@ major order.
 
 ---
 
-## 7. Implementation plan and gates
+## 7. Workspace, saturation, and scheduling policy
+
+Workspace is a budget for useful GEMM dimensions and independent work; it does
+not itself create GPU occupancy.  A single sufficiently large GEMM can saturate
+the device with little user scratch, while a large allocation feeding only tiny
+GEMMs cannot.  Consequently M5 selects a plan from actual live buffers and
+backend-calibrated work shapes rather than consuming every byte it is given.
+
+### 7.1 Liveness-carved default
+
+The initial implementation owns one concrete workspace arena and carves typed
+views from it according to live ranges.  The peak is the maximum of phase
+requirements, not their sum:
+
+```text
+workspace_single = max(bytes_basis_build,
+                       bytes_coefficient_accumulation,
+                       bytes_merge)
+```
+
+For `h` active rows, `j` output columns, and a Stage-2 depth panel `q`, the
+first sizing model, in factor elements, is:
+
+```text
+persistent per active row:  Q = b*t,  P = K*t*rA
+
+basis build:                Y/Q0 = b*S,  Pfull = S*K*rA,
+                            residual = b*K*rA,
+                            weighted P/covariance = S*K*rA + S*S (promoted)
+
+coefficient accumulation:  Tpanel = h*q*b*t                  (t <= rA)
+                         or Sbuf   = h*j*q*rA*rB               (t > rA)
+                            Rstack = h*j*q*rB*t
+                            M      = h*j*b*t
+
+merge:                      b*(rC + t + rho) per concurrent tile
+```
+
+Promoted Gram/covariance storage is added with its true element size.  `Pfull`
+is compacted or reused as persistent `P`; the explicit residual copy is freed
+after its diagnostic norm is recorded; and `S` in the `t > rA` branch is
+overwritten by `R` as soon as `R = P*S` completes.  In the usual `t <= rA`
+branch, `S[i,k,j]` is not allocated at all.
+
+`Q`, `P`, and unfinished `M` are genuinely persistent for their row/tile
+lifetimes and must not be aliased.  All other roles are arena aliases.  CUDA
+stream order makes reuse safe within one stream without a host synchronization.
+
+### 7.2 Depth versus row/column concurrency
+
+`K` depth and row concurrency enlarge different dimensions:
+
+```text
+row basis:        (b × K*rA) * (K*rA × S)
+terminal Stage 2: (b × q*rB) * (q*rB × t)
+independent jobs: h active rows × j output columns
+```
+
+Use full `K` for the zero-copy Stage-1 row-basis GEMMs whenever it fits: this is
+the purpose of the row-major A fast path.  For Stage 2, choose `q` only up to
+the terminal GEMM's saturation knee.  Once `q*rB` is large enough, spend
+additional budget on `h` and output-column concurrency rather than making an
+already saturated inner dimension deeper.  This is particularly important when
+`t` is small and the terminal GEMM is skinny.
+
+The planner enumerates feasible `(h, jblock, q)` triples, computes their exact
+liveness peak, and selects the smallest candidate predicted or measured to
+reach near-peak throughput.  It must consider the actual backend, precision,
+tile shape, ranks, and SM count; no universal byte count can imply occupancy
+for cuBLAS/cuBLASLt kernels.
+
+### 7.3 Pipeline is optional and measured
+
+The alternative is a two-slot pipeline: while slot A builds the basis for row
+`i+1`, slot B accumulates/merges row `i`.  It requires events, separate stream
+handles, and distinct live arenas:
+
+```text
+workspace_pipeline_2 = bytes_basis_build(slot A)
+                     + bytes_accumulate_merge(slot B)
+```
+
+Do not enable it by default.  It can improve throughput when small CholQR2,
+eigensolve, or panel kernels leave the GPU idle, but concurrent large GEMMs
+normally compete for the same device resources.  Add it only after benchmarking
+one versus two slots on the target CPU/GPU regimes and retain it only for a
+reproducible win.
+
+### 7.4 Workspace query contract
+
+The existing `gemm_workspace_bytes` full-width meaning is preserved.  M5 should
+eventually expose a separate saturation recommendation (or a backward-compatible
+`target = :saturating` query) that reports the selected `(h, jblock, q)` and:
+
+```text
+minimum:    correct execution with narrower runs
+saturating: smallest near-peak-throughput plan
+full-width: all relevant direct work fits at once
+```
+
+Giving a larger budget than the selected saturation plan must not cause needless
+scratch retention.
+
+---
+
+## 8. Implementation plan and gates
 
 ### M5.1 — standalone Stage 1
 
@@ -313,7 +418,7 @@ or M4 baseline requires investigation before promotion.
 
 ---
 
-## 8. Explicit non-goals
+## 9. Explicit non-goals
 
 * No compiler-style semantic IR, generic sink callback, or scheduled-operation
   hierarchy.
