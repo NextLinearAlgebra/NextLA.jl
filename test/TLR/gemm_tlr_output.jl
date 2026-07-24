@@ -85,7 +85,7 @@ end
 @testset "TLR output validation" begin
     RM = NextLA.TileRowMajor(); CM = NextLA.TileColMajor()
     # The column-family layout (A col-major × B row-major) and beta != 0 are now
-    # both handled by the row-basis path (covered in row_basis_gemm.jl); they no
+    # both handled by the row-basis path (covered in row_basis/driver.jl); they no
     # longer throw. Only the regular-grid (aligned tiling) requirement is enforced.
     Ab = NextLA.TLRMatrix(zeros(Float64, 10, 10), (4, 4), 2; tile_order=RM)
     Bb = NextLA.TLRMatrix(zeros(Float64, 10, 10), (4, 4), 2; tile_order=RM)

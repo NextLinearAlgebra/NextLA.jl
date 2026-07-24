@@ -10,24 +10,31 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
 ## State (2026-07)
 
-- Stage 1 `build_row_basis!` — [row_basis.jl](../row_basis.jl) — done, tested.
-- Stage 2 `accumulate_row_coefficients!` — [coefficient_accumulation.jl](../coefficient_accumulation.jl) — done (both `t≤rA` / `t>rA`), tested.
-- Stage 3 `merge_row_basis_tile!` — [orthogonal_merge.jl](../orthogonal_merge.jl) — done (β, empty tiles, residual reorth), tested.
-- Driver `_row_basis_gemm!` — [row_basis_gemm.jl](../row_basis_gemm.jl) — correct, **CPU-only**, allocation-heavy, no budget/concurrency.
-- Planner `row_basis_workspace_plan` — [row_basis_workspace.jl](../row_basis_workspace.jl) — **written but unused (dead code)**.
+The M5 files live under [row_basis/](../row_basis/), mirroring `lowering/`/`regions/`.
+
+- Stage 1 `build_row_basis!` — [row_basis/basis.jl](../row_basis/basis.jl) — done, tested.
+- Stage 2 `accumulate_row_coefficients!` (per-tile) / `_accumulate_row_block!` (batched) —
+  [row_basis/coefficients.jl](../row_basis/coefficients.jl) / [row_basis/driver.jl](../row_basis/driver.jl) —
+  done (both `t≤rA` / `t>rA`), tested. Two implementations pending unification, see follow-ups.
+- Stage 3 `merge_row_basis_tile!` — [row_basis/merge.jl](../row_basis/merge.jl) — done
+  (β, empty tiles, residual reorth), tested.
+- Driver `_row_basis_gemm!` — [row_basis/driver.jl](../row_basis/driver.jl) — correct, runs on
+  CPU and CUDA, batched β=0 path (P5), no budget/planner wiring yet (P2).
+- Planner `row_basis_workspace_plan` — [row_basis/workspace.jl](../row_basis/workspace.jl) —
+  **written but unused (dead code)**.
 
 ## Bugs / regressions found (routing CPU through row-basis)
 
 - [x] **Bug A — merge `invalid maxrank`.** `merge_row_basis_tile!` asserted
   `maxrank <= t + rC`, but the driver passes `C.maxrank` as a *cap*. When the basis
   rank `t` is below the cap (e.g. a single contraction tile, β=0), it threw. Fixed:
-  effective cap is `min(maxrank, active)` per prune (orthogonal_merge.jl).
+  effective cap is `min(maxrank, active)` per prune (row_basis/merge.jl).
 - [x] **Bug B — rectangular / non-square tiles.** Generalized the row-basis path to
   distinct `(bm, k, bn)` dims (bm = A/C row tile, k = contraction, bn = B/C col tile):
   Stage 2 sizes `M` and the `Zstack` by `bn`; the merge sizes its right factor
   (`Vmerge`,`Vtmp`) by `bn` and its left factor by `bm`. New `bn` keyword on
   `CoefficientWorkspace` / `OrthogonalMergeWorkspace` (defaults to the square case).
-  Covered by a new `row_basis_gemm.jl` rectangular test (β=0 and β≠0).
+  Covered by a new `row_basis/driver.jl` rectangular test (β=0 and β≠0).
 - [x] **Stale `gemm_tlr_output.jl` tests.** col×row and β≠0 no longer throw (row-basis
   supports both); dropped those two `@test_throws`, kept the regular-grid guard.
 
@@ -72,6 +79,24 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
   tiny/full budgets vs the M4 dense sink; capture warmed allocations; enforce
   "no row/Z-panel copy on preferred layout, no >15% regression".
 
+- [ ] **P7 — Saturation guard (GPU priority).** The shared row basis has rank
+  `t = min(b, K·rA)`; once `r ≳ b/K` the basis saturates to `t = b` and stops
+  compressing anything, so row-basis pays full basis-build overhead *on top of*
+  dense-sized work. Measured on CUDA (b=512, nt=16 ⇒ K=16): unsaturated (`t/b` small)
+  row-basis beats the M4 dense sink by 1.4–2.8× (bigger tiles win more: b=1024,r=8 →
+  571ms vs 1575ms); once saturated (`t=b`, e.g. r≥32) row-basis is *up to 1.9× slower*
+  than dense. Guard: if `t/b` exceeds a threshold (empirically ~0.5), route that
+  matrix (or row) to the M4 dense path instead. Open: per-matrix vs per-row guard
+  granularity (start per-matrix); default threshold.
+
+- [ ] **Stage-2 unification.** `accumulate_row_coefficients!`/`CoefficientWorkspace`
+  (row_basis/coefficients.jl) and `_accumulate_row_block!` (row_basis/driver.jl)
+  duplicate the same `t≤rA`/`t>rA` contraction. Since β≠0 only needs a *sequential
+  merge* (not a separate coefficient kernel — see alg.md §5), the β≠0 driver branch
+  could call the batched block once and loop only the merge, deleting
+  `coefficients.jl` entirely and batching β≠0 coefficients for free. Deferred from
+  the /simplify pass as a bigger structural change than a cleanup should bundle.
+
 - [ ] **Tests / follow-ups.** Add a merge test forcing residual rank `rho < rC`
   (near-parallel `Uold`/`Q`). Coefficient-aware `gamma` (alg.md §3) is deferred —
-  driver currently hard-codes `gamma = 1` (row_basis_gemm.jl:53-54).
+  driver currently hard-codes `gamma = 1` (row_basis/driver.jl).
