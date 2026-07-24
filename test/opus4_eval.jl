@@ -6,13 +6,13 @@ using Plots.Measures: mm
 using StochasticRounding
 
 # Include your custom data structures, wrappers, and algorithm definitions
-include("fullmixedprec.jl")
-include("recmixedprectri.jl")
-include("trsm.jl")
-include("trmm.jl")
-include("matmul.jl")
-include("rectrxm.jl")
-include("recgemm.jl")
+# include("fullmixedprec.jl")
+# include("recmixedprectri.jl")
+# include("trsm.jl")
+# include("trmm.jl")
+# include("matmul.jl")
+# include("rectrxm.jl")
+# include("recgemm.jl")
 # If your getrf_recursive! implementation is in a separate file (e.g., getrf.jl), uncomment below:
 # include("getrf.jl")
 
