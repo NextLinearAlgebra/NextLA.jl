@@ -98,11 +98,15 @@ Order chosen to *shrink the surface* before the ragged migration.
   gap needs the **batched β≠0 merge** (per-slab active-columns prune + cross-tile
   batched CholQR2) — tracked in C2, now the named owner of the ≤2× gate.
 
-- [ ] **A3 — Copy/launch removal bundle.** Reuse one Ω across rows; store `P`
-  transposed in the basis workspace (kills the per-row `Pc` compaction);
-  shared-Q variant of `prune_orthogonal_columns!` (kills the `Qm`
-  materialization); skip redundant per-tile fills in the β=0 scatter (C already
-  zeroed); hoist packed B panels out of the row loop for non-preferred layouts.
+- [~] **A3 — Copy/launch removal bundle.**
+  - [x] Reuse one Ω across rows (shipped 2026-07-24): draw it once per `gemm!`
+    call, then reuse it for every row-specific `Ubar` basis build.
+  - [ ] Store `P` transposed in the basis workspace (kills the per-row `Pc`
+    compaction).
+  - [ ] Add a shared-Q variant of `prune_orthogonal_columns!` (kills the `Qm`
+    materialization).
+  - [ ] Skip redundant per-tile fills in the β=0 scatter (C already zeroed).
+  - [ ] Hoist packed B panels out of the row loop for non-preferred layouts.
   *Gate:* warmed allocation count strictly down; no regression in the b-sweep.
 
 ## Phase B — ragged ranks (per-row / per-col maxrank)
@@ -140,7 +144,33 @@ Order chosen to *shrink the surface* before the ragged migration.
   uniform ranks, tiny/full budgets, CPU+CUDA, vs the dense baseline; warmed
   allocations; no >15% regression unexplained. Add the merge `rho < rC` test
   (near-parallel `Uold`/`Q`).
+- [x] **C2a — Batched β≠0 row merge. Shipped (2026-07-24), gate met:**
+  β≠0 CUDA b=256: nt=16 **871 → 350 ms** (ratio vs β=0: 4.27× → **1.70×** ≤ 2×);
+  nt=8: 147 → 67 ms (1.65×); per-tile 3.40 → 1.37 ms; profiler events per call
+  305k → 111k, host-API share 46% → 39%. Implementation `merge_row_block!` +
+  `BatchedMergeWorkspace` in row_basis/merge.jl; per-tile `merge_row_basis_tile!`
+  retained as the unit-tested reference. New tests: batched-vs-per-tile equality
+  on identical inputs (ranks, reconstructions, energies; capped + uncapped) and
+  the explicit zero-tail invariant after CholQR2 compress. Suites 85/85 + 22/22.
+  Original scope note:
+  Full-width batching at `rcap = maxrank`, exploiting the zero-tail invariant:
+  `prune_cholqr_coordinates!` zero-pads both factor tails per slab, so batching
+  every merge at `[bm, rcap, g=qn]` and pruning at the uniform active width
+  `t + rcap` is *algebraically equivalent* to per-tile `t + ρ_j` (the energy
+  prune drops exact-zero columns first under any cap). Consequences: **no host
+  `ρ` read at all** (0 syncs in the merge body, vs 3/tile), two batched
+  `mixed_cholqr2_compress!` calls per row (the CholQR2 machinery is already
+  slab-batched), full-width batched tail GEMMs, one batched final prune, one
+  rank/error vector read per row. `merge_row_basis_tile!` is retained as the
+  unit-tested reference; new tests: batched-vs-per-tile equality on identical
+  inputs, explicit zero-tail invariant, plus the existing β end-to-end suite.
+  *Gate:* β≠0 ≤ 2× β=0 at b=256 (1.3–1.5× is target, not promise — β≠0 does
+  real extra work); profile launch count + DtoH copies before/after.
+  **C2b (deferred until profiling demands):** per-slab active-count prune —
+  becomes B3 infrastructure for ragged compression regardless. For the ragged
+  future, run C2a per equal-C-capacity bucket (row-major C: one bucket per
+  output row; col-major C: bucket output columns by capacity).
+
 - [ ] **C2 — Backlog (measured, unscheduled):** basis build batched across rows
   or two-slot pipeline (§7.3; basis ≈28% of GPU time, latency-bound eigh);
-  coefficient-aware `gamma`; batched β≠0 merge (needs per-slab active-columns
-  prune); B-side/right-basis dual (explicit non-goal for now).
+  coefficient-aware `gamma`; B-side/right-basis dual (explicit non-goal for now).

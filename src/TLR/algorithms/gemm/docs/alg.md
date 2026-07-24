@@ -1,428 +1,380 @@
-# Global Row-Basis TLR GEMM — preferred M5 design
+# Global Row-Basis TLR GEMM
 
-This document specifies the deferred M5 algorithm for
-
-```text
-C ← α A B + β C
-```
-
-when all three operands are regular-grid TLR matrices.  It is deliberately an
-explicit execution design, not an IR or a generic contraction framework.
-
-The primary target is the layout pair
+This document describes the row-basis TLR-output path implemented in
+`src/TLR/algorithms/gemm/row_basis/`, together with the immediate extension
+boundary for panel-specific rank capacities.  It is an execution design for
 
 ```text
-logical A: TileRowMajor       logical B: TileColMajor
+C <- alpha * A * B + beta * C
 ```
 
-For that pair, both factor panels used by the algorithm are zero-copy views of
-the stored factors.  Other layout pairs remain supported through direct
-fallbacks described in §6; this is a fast-path preference, not a public API
-restriction.  Layout always means the *logical* layout after `transA` and
-`transB` have been canonicalized.
+where `A`, `B`, and `C` are regular-grid `TLRMatrix` objects.  It does not
+materialize dense output tiles on the row-basis path.  The fallback M4 path
+does materialize a bounded dense slab and recompresses it.
+
+The public TLR-output GEMM selects this path for non-transposed operands.  The
+preferred physical layout is
+
+```text
+A: TileRowMajor                 B: TileColMajor.
+```
+
+For that pair, A's row panels and B's column panels are zero-copy.  Other
+orders are correct through bounded packing helpers; they are not the primary
+performance target.  The terms "row-major" and "column-major" below refer to
+the logical operands after `N/T` canonicalisation.
 
 ---
 
 ## 1. Representation and invariants
 
-For one tile row/column, write
+For an output row `i`, contraction index `k`, and output column `j`, write
 
 ```text
-A[i,k] = U_A[i,k] V_A[i,k]ᵀ       U_A, V_A: b × rA
-B[k,j] = W_B[k,j] Z_B[k,j]ᵀ       W_B, Z_B: b × rB
-C[i,j] = U_C[i,j] V_C[i,j]ᵀ       U_C, V_C: b × rC
+A[i,k] = U[i,k] V[i,k]'          U, V: bm x rA
+B[k,j] = W[k,j] Z[k,j]'          W: bk x rB,  Z: bn x rB
+C[i,j] = Uc[i,j] Vc[i,j]'        Uc: bm x rC, Vc: bn x rC.
 ```
 
-`rA`, `rB`, and `rC` below denote the concrete padded rank capacities used by
-the kernels.  Unused factor columns are zero.  This makes all panel views and
-batches rectangular and concretely typed.
+`rA`, `rB`, and `rC` are factor *capacities*, not the effective numerical
+ranks in `ranks(C)`.  Factors are zero-padded through their capacity.  This is
+an important storage invariant: it makes the factor panels rectangular and
+allows a batch to use a common GEMM shape even when the effective ranks differ.
 
-The load-bearing output invariant is:
+The output left factors are maintained approximately orthonormal:
 
 ```text
-U_C[i,j]ᵀ U_C[i,j] ≈ I.
+Uc[i,j]' * Uc[i,j] ~= I.
 ```
 
-Stage 3 restores this invariant after every update.  Consequently, norms of
-the represented tile and coordinate-energy truncation are computed from its
-right factor without reconstructing a dense tile.
+This lets the final pruning operation compute coordinate energies from the
+right factors, without reconstructing a dense `bm x bn` tile.
 
-For one output row `i`, M5 finds a shared left basis `Q[i]` and block
-coefficients `P[i,k]`:
+For one output row, the algorithm builds a shared orthonormal basis `Q[i]` and
+coefficient blocks `P[i,k]` such that
 
 ```text
-U_A[i,k] ≈ Q[i] P[i,k],       Q[i]ᵀ Q[i] ≈ I,
-P[i,k]: t[i] × rA.
+U[i,k] ~= Q[i] * P[i,k],          Q[i]' * Q[i] ~= I,
+P[i,k]: t[i] x rA.
 ```
 
-Thus the product contribution to output tile `(i,j)` has the form
+The product contribution is consequently
 
 ```text
-ΔC[i,j] ≈ Q[i] M[i,j]ᵀ,
-M[i,j] = Σₖ Z_B[k,j] (P[i,k] (V_A[i,k]ᵀ W_B[k,j]))ᵀ.     # b × t[i]
+DeltaC[i,j] ~= Q[i] * M[i,j]',
+M[i,j] = sum_k Z[k,j] * R[i,k,j],             # bn x t[i]
+R[i,k,j] = W[k,j]' * V[i,k] * P[i,k]'.        # rB x t[i]
 ```
 
-Only `M[i,j]`, not a dense `b × b` product tile, is accumulated.
+Only `M[i,j]` is accumulated; the row-basis path never forms a dense product
+tile.
 
 ---
 
-## 2. Numerical policy
+## 2. Numerical and precision policy
 
-* Factor GEMMs use the established GEMM precision policy.
-* Gram matrices, panel covariance, eigenvalues, rank decisions, and squared
-  norms use the promoted/high-precision policy already used by mixed CholQR2.
-* `mixed_cholqr2_factor!` is used for panel orthogonalization; narrow residual
-  compression uses the same mixed-precision CholQR2 machinery.
-* Rank pruning is fused into the merge path where possible.  Do not decompose
-  hot paths into generic callbacks merely to share a few lines of code.
+* Ordinary factor products use `precision_gemm!` or
+  `precision_gemm_batched!` with the caller's GEMM compute mode.
+* Gram matrices, Cholesky QR, numerical-rank detection, and squared norms use
+  the promoted TLR orthogonalisation type.
+* The output rank cap is authoritative.  If it prevents the requested error
+  tolerance from being met, the achieved residual reports that fact; the code
+  must not silently claim convergence.
+* `residuals(C)` includes the row-basis truncation diagnostic in addition to
+  the tile-level final-prune error.
+* All factor tails past a detected rank are explicitly zeroed.  The batched
+  beta merge relies on this, not merely on a convention in the caller.
 
-The Stage-1 sketch has capacity `S ≤ b`; it is not a promised output rank.
-`tmax ≤ S` and the tile cap is `rmax`.
-
----
-
-## 3. Stage 1 — standalone shared-row-basis builder
-
-This stage is independently callable and testable.  It is the architectural
-extension point M5 needs; dense output owns no part of it.
-
-For logical row-major `A`, `rowpanel(A.U, i)` is already the storage
-
-```text
-[U_A[i,1]  …  U_A[i,K]]  with shape b × (K*rA).
-```
-
-No `W` assembly and no streamed loop of small sketch GEMMs is needed.
-
-```text
-FUNCTION build_row_basis!(A_row_panel, gamma[1:K], eps_basis, S, workspace)
-    # A_row_panel is a b × rA × K zero-copy view for the preferred path.
-    Ubar ← reshape(A_row_panel, b, K*rA)              # zero-copy
-
-    # gamma is a per-k importance weight.  gamma = 1 is the first correctness
-    # baseline; a coefficient-aware estimator may supply nonuniform values.
-    Ω ← random_normal(K*rA, S)
-    Ωgamma ← copy(Ω)
-    for k = 1:K:
-        scale rows ((k-1)*rA+1 : k*rA) of Ωgamma by gamma[k]
-
-    Y ← Ubar * Ωgamma                                # b × S, one GEMM
-    Q0, _ ← mixed_cholqr2_factor!(Y)                 # Q0: b × S
-
-    Pfull ← Q0ᵀ * Ubar                               # S × (K*rA), one GEMM
-
-    # Preserve unweighted Pfull.  Compute the weighted covariance either by
-    # scaling a reusable scratch copy then SYRK, or by a proven faster fused
-    # kernel.  It is mathematically:
-    Ksmall ← Σₖ gamma[k]^2 Pfull[:,block(k)] Pfull[:,block(k)]ᵀ
-                                                            # S × S, high precision
-
-    R, lambda ← eigh(Ksmall)                         # descending eigenvalues
-    t ← choose_rank(lambda, eps_basis, tmax)
-    Q ← Q0 * R[:,1:t]                                # b × t
-    P ← R[:,1:t]ᵀ * Pfull                            # t × (K*rA), one GEMM
-    Pblocks ← reshape(P, t, rA, K)                   # zero-copy block view
-
-    # Do this explicitly, rather than infer it from I - DᵀD.  It is both a
-    # diagnostic and the basis-error measurement used during validation.
-    Ebar ← copy(Ubar)
-    Ebar ← Ebar - Q * P                              # one GEMM into the copy
-
-    return Q, Pblocks, Ebar, t
-END
-```
-
-The panel contains padded zero columns; these are intentionally included.
-They make GPU batches rectangular and do not change the result.
-
-The preferred implementation is approximately four panel-wide GEMM/SYRK
-operations plus CholQR2 and the small `eigh`.  The rotations and residual GEMM
-are retained because they avoid a second pass over `k` and provide a robust
-error diagnostic.
+The current end-to-end driver uses uniform global capacities.  A future
+panel-capacity layout retains the same invariant within a physical panel; see
+section 7.
 
 ---
 
-## 4. Stage 2 — accumulate right coefficients
+## 3. Stage 1 -- build a shared row basis
 
-Stage 2 produces `M[i,j]` in the shared basis.  It must never form a dense
-product tile and must not compress inside the `k` loop.
-
-For every `(i,k)`, choose the cheaper exact association for
+For logical row-major `A`, the stored row panel is already
 
 ```text
-R[i,k,j] = P[i,k] V_A[i,k]ᵀ W_B[k,j],       # t × rB.
+Ubar = [ U[i,1] ... U[i,K] ]                    # bm x (K*rA), zero-copy.
 ```
 
-```text
-IF t[i] ≤ rA:
-    T[i,k] ← V_A[i,k] * P[i,k]ᵀ             # b × t; reusable over j
-    R[i,k,j] ← T[i,k]ᵀ * W_B[k,j]           # t × rB
-ELSE:
-    S[i,k,j] ← V_A[i,k]ᵀ * W_B[k,j]         # rA × rB
-    R[i,k,j] ← P[i,k] * S[i,k,j]            # t × rB
-END
-```
-
-The first branch is normally preferred after successful row compression: it
-pre-compresses `A`'s right factor once and reuses it across output columns.
-The second avoids materializing a wider `b × t` factor when `t > rA`.
-
-### Preferred terminal accumulation: logical B column-major
-
-For fixed `(i,j)`, the `Z_B[k,j]` factors are a zero-copy stack:
+The current driver uses unit block weights (`gamma[k] = 1`), although the
+standalone basis routine supports general nonnegative per-`k` weights.  It
+performs the following calculation.
 
 ```text
-Zstack ← [Z_B[1,j] … Z_B[K,j]]               # b × (K*rB), zero-copy
-Rstack ← [R[i,1,j]ᵀ; …; R[i,K,j]ᵀ]           # (K*rB) × t
-
-M[i,j] ← Zstack * Rstack                     # b × t, one terminal GEMM
-```
-
-This is the TLR analogue of the dense fused path.  `Rstack` is a concrete,
-reusable workspace batch; form it in `k` panels when the full stack does not
-fit the workspace budget, and accumulate into `M[i,j]`.
-
-### Logical B row-major fallback
-
-`Z_B[k,j]` is not a zero-copy k-stack in this layout.  Preserve the same
-algebra with one of the following budgeted implementations:
-
-```text
-M[i,j] ← 0
-for each k-panel Kp:
-    form R[i,k,j] for k ∈ Kp in a concrete batch
-    M[i,j] += Σ_{k∈Kp} Z_B[k,j] * R[i,k,j]ᵀ
-```
-
-Use batched GEMM/reduction or pack a bounded `Z` panel; do not degrade this to
-scalar tile loops.  The numerical result is the same up to ordinary GEMM
-rounding order.
-
-Unlike dense output, a global *left*-basis M5 is intentionally asymmetric.
-The usual dense FoldLeft/FoldRight choice is not a second, equivalent M5 merge:
-expanding `S Zᵀ` to `rA × b` before applying `P` is normally wasteful because
-the output coefficient has only `t` columns.  A B-side/right-basis M5 would be
-a separate future algorithm, with its own orthogonality and merge design.
-
----
-
-## 5. Stage 3 — merge once, prune once
-
-For each output tile, merge the full product coefficient and old tile into an
-orthogonal coordinate system, then prune exactly once.
-
-```text
-FUNCTION merge_tile!(C[i,j], Q, M, alpha, beta, eps_tile, rmax)
-    U ← U_C[i,j] ;  V ← V_C[i,j]              # U is orthonormal
-
-    IF t == 0:
-        V_C[i,j] ← beta * V                   # product is zero
-        return
+FUNCTION build_row_basis!(Ubar, Omega, gamma, eps_basis, S, tmax, tguard)
+    # Omega has shape (K*rA) x S.  Copy and scale it; Ubar is never modified.
+    Omegagamma <- Omega
+    FOR k = 1:K
+        Omegagamma[(k-1)*rA+1 : k*rA, :] *= gamma[k]
     END
 
-    IF beta == 0 OR rC == 0:
-        Qmerge ← Q
-        Vmerge ← alpha * M
-    ELSE:
-        D    ← Qᵀ * U                          # t × rC
-        Ures ← U - Q * D                       # b × rC
-        Qres, Rres ← mixed_cholqr2_compress!(Ures, eps_residual)
-        # Qres: b × rho, Rres: rho × rC, Ures ≈ Qres Rres
+    Y  <- Ubar * Omegagamma                    # bm x S
+    Q0 <- mixed_cholqr2_basis!(Y)              # approximately orthonormal
+    Pfull <- Q0' * Ubar                        # S x (K*rA)
 
-        # Reorthogonalize the narrow residual against Q when required by the
-        # CholQR2 diagnostic, while updating D/Rres to preserve the factor.
-        reorthogonalize_against!(Qres, Rres, Q, D)
+    # Weight selection, but retain an unweighted representation coefficient.
+    Pweighted <- scale_each_k_block(Pfull, gamma)
+    Ksmall <- Pweighted * Pweighted'           # promoted S x S covariance
+    lambda, R <- eigh(Ksmall)
+    t <- choose_rank(lambda, eps_basis, tmax)
 
-        Qmerge ← [Q | Qres]
-        Vmerge ← [alpha*M + beta*V*Dᵀ | beta*V*Rresᵀ]
+    IF t >= tguard
+        RETURN saturated(t)                    # caller will route this row to M4
+    ELSE IF t == 0
+        RETURN Q0[:, 1:0], Pfull[1:0, :], 0
     END
 
-    # Qmerge is orthonormal, so ||Vmerge[:,l]||² is the exact energy of the
-    # corresponding coordinate.  Fused rank pruning drops the least energetic
-    # coordinates subject to eps_tile and rmax.
-    keep ← prune_orthogonal_columns!(Vmerge, eps_tile, rmax)
-    U_C[i,j] ← Qmerge[:,keep]
-    V_C[i,j] ← Vmerge[:,keep]
+    Q <- Q0 * R[:, 1:t]
+    P <- R[:, 1:t]' * Pfull                    # t x (K*rA), unweighted
+    Ebar <- Ubar - Q * P                       # explicit basis-error diagnostic
+    RETURN Q, reshape(P, t, rA, K), t, ||Ebar||_F^2
 END
 ```
 
-An optional small-Gram rotation before the final prune is permitted when it
-measurably lowers ranks.  It must remain inside this merge kernel, not become a
-generic output-sink abstraction.
+The rotations and explicit residual are intentionally retained.  The former
+returns coefficients in the unweighted factor representation; the latter gives
+a diagnostic for the approximation introduced by sharing a row basis.
+
+### Saturation guard and M4 fallback
+
+The row basis is useful only while `t` is appreciably smaller than `bm`.  For
+`beta == 0`, a row that reaches `sat_threshold * bm` is routed to the existing
+M4 dense-slab/recompression path when that path has a write-once row-family
+lowering.  While this guard is armed, the sketch is capped at the threshold and
+the basis build can return early.  After a short streak of saturated rows, the
+remaining rows bypass the probe and use M4 directly.
+
+This is a performance routing choice, not a change in the error contract.  It
+does not currently apply to `beta != 0`, because M4 overwrites rather than
+merges an existing TLR output.
 
 ---
 
-## 6. Layout and overflow policy
+## 4. Stage 2 -- batched coefficient accumulation
 
-1. **Preferred M5:** logical `A` row-major, logical `B` column-major.  Stage 1
-   and the terminal Stage-2 GEMM are both zero-copy panel paths.
-2. **Supported B fallback:** logical `A` row-major, logical `B` row-major.
-   Keep the zero-copy Stage 1, then use budgeted packed/batched Stage 2.
-3. **Supported A fallback:** logical `A` column-major.  Pack one bounded
-   `Ubar` row panel and run the same left-basis algorithm.  Do not introduce a
-   right-basis dual merely to avoid this pack.
-4. **No compression:** if `t` reaches the configured dense threshold or the
-   requested rank/error cannot be represented, route that row/tile to the
-   existing dense/M4 fallback.  Never silently exceed workspace or `rmax`.
+For an output row, Stage 2 computes all `M[i,j]` at once.  It chooses one of
+two exact associations.
 
-The choice is made from canonical logical operands.  Physical storage order
-alone is insufficient because transpose flags exchange logical row and column
-major order.
+```text
+IF t <= rA
+    FOR k = 1:K
+        T[k] <- V[i,k] * P[i,k]'               # bk x t; independent of j
+    END
+    R[k,j] <- W[k,j]' * T[k]                   # rB x t, batched over (k,j)
+ELSE
+    S[k,j] <- V[i,k]' * W[k,j]                 # rA x rB, batched over (k,j)
+    R[k,j] <- S[k,j]' * P[i,k]'                # rB x t, batched over (k,j)
+END
+
+FOR j = 1:qn
+    Zstack[j] <- [ Z[1,j] ... Z[K,j] ]         # bn x (K*rB)
+    Rstack[j] <- [ R[1,j]; ...; R[K,j] ]       # (K*rB) x t
+    M[i,j] <- alpha * Zstack[j] * Rstack[j]
+END
+```
+
+The `t <= rA` association uses batches of sizes `K`, `K*qn`, and `qn`.
+The other association uses `K*qn`, `K*qn`, and `qn`.  With column-major `B`,
+`Zstack[j]` is a zero-copy reshape of the stored column panel.  With another
+layout it is packed; the same algebra and batch structure are retained.
+
+`alpha` is folded into the terminal `Zstack * Rstack` GEMM.  Stage 3 therefore
+receives `Vm[:,:,j] = alpha * M[i,j]`.
 
 ---
 
-## 7. Workspace, saturation, and scheduling policy
+## 5. Stage 3 -- output update and pruning
 
-Workspace is a budget for useful GEMM dimensions and independent work; it does
-not itself create GPU occupancy.  A single sufficiently large GEMM can saturate
-the device with little user scratch, while a large allocation feeding only tiny
-GEMMs cannot.  Consequently M5 selects a plan from actual live buffers and
-backend-calibrated work shapes rather than consuming every byte it is given.
+There are two materially different cases.
 
-### 7.1 Liveness-carved default
+### 5.1 `beta == 0`: product only
 
-The initial implementation owns one concrete workspace arena and carves typed
-views from it according to live ranges.  The peak is the maximum of phase
-requirements, not their sum:
+Every output tile in the row has the same left factor `Q`.  Broadcast it into
+one slab per output column, place `Vm` in the right factors, then prune the
+whole row in one batch.
 
 ```text
-workspace_single = max(bytes_basis_build,
-                       bytes_coefficient_accumulation,
-                       bytes_merge)
+Qm[:,:,j] <- Q                              # bm x t x qn
+Vm[:,:,j] <- alpha * M[i,j]                 # bn x t x qn
+
+prune_orthogonal_columns!(Qm, Vm,
+                          active_columns = t,
+                          maxrank = min(rC, t),
+                          tolerance)
+copy the zero-padded factor slabs and the rank/error vectors into C
 ```
 
-For `h` active rows, `j` output columns, and a Stage-2 depth panel `q`, the
-first sizing model, in factor elements, is:
+The only device-to-host transfers on this path are the final rank and error
+vectors needed by the container's host-resident diagnostics.
+
+### 5.2 `beta != 0`: C2a row-batched orthogonal merge
+
+The old tile basis generally differs from `Q`, so simply adding right factors
+is incorrect.  The old factors are deliberately read at the complete padded
+capacity `rcap = maxrank(C)`, even if the effective old rank is smaller.
+
+For every `j` in the output row, C2a computes the following, but all arrays
+carry a third slab dimension `j = 1:qn` and every GEMM/CholQR operation is
+batched over that dimension.
 
 ```text
-persistent per active row:  Q = b*t,  P = K*t*rA
+FUNCTION merge_row_block!(Q, Vm, Uold[:,:,:], Vold[:,:,:], beta)
+    # Uold and Vold are bm/bn x rcap x qn and are zero-padded.
+    D    <- Q' * Uold
+    Ures <- Uold - Q * D
 
-basis build:                Y/Q0 = b*S,  Pfull = S*K*rA,
-                            residual = b*K*rA,
-                            weighted P/covariance = S*K*rA + S*S (promoted)
+    # First residual factorisation: Ures ~= Q0 * V0'.
+    Q0, V0 <- mixed_cholqr2_compress!(Ures)
 
-coefficient accumulation:  Tpanel = h*q*b*t                  (t <= rA)
-                         or Sbuf   = h*j*q*rA*rB               (t > rA)
-                            Rstack = h*j*q*rB*t
-                            M      = h*j*b*t
+    # Reorthogonalise Q0 against Q, then factor again:
+    # Q0 ~= Q * D2 + Qres * V1'.
+    D2   <- Q' * Q0
+    Qres <- Q0 - Q * D2
+    Qres, V1 <- mixed_cholqr2_compress!(Qres)
 
-merge:                      b*(rC + t + rho) per concurrent tile
+    # Preserve the represented old factor in the new coordinates.
+    D    <- D + D2 * V0'
+    Vtmp <- Vold * V0
+
+    Qmerge <- [ Q | Qres ]
+    Vmerge[:, 1:t, :]     <- Vm + beta * Vold * D'
+    Vmerge[:, t+1:t+rcap, :] <- beta * Vtmp * V1
+
+    # Qres/V1 tails are zero after CholQR pruning.  Consequently the full
+    # width t+rcap is equivalent to each tile's t+rho[j] active width.
+    prune_orthogonal_columns!(Qmerge, Vmerge,
+                              active_columns = t + rcap,
+                              maxrank = rcap,
+                              tolerance)
+    RETURN Qmerge, Vmerge, rank_vector, error_vector
+END
 ```
 
-Promoted Gram/covariance storage is added with its true element size.  `Pfull`
-is compacted or reused as persistent `P`; the explicit residual copy is freed
-after its diagnostic norm is recorded; and `S` in the `t > rA` branch is
-overwritten by `R` as soon as `R = P*S` completes.  In the usual `t <= rA`
-branch, `S[i,k,j]` is not allocated at all.
+This full-width formulation is intentional.  It avoids a host read of each
+data-dependent residual rank `rho[j]`, avoids host-created `1:rho[j]` views,
+and turns the old sequential per-tile merge into two batched CholQR2 calls,
+batched small GEMMs, and one batched final prune.  The rank and error vectors
+are copied to the host once per row after the merge completes.
 
-`Q`, `P`, and unfinished `M` are genuinely persistent for their row/tile
-lifetimes and must not be aliased.  All other roles are arena aliases.  CUDA
-stream order makes reuse safe within one stream without a host synchronization.
+The sequential `merge_row_basis_tile!` remains a useful one-tile reference and
+test primitive.  The end-to-end driver uses the C2a row-batched merge for the
+normal `beta != 0`, positive-capacity case.
 
-### 7.2 Depth versus row/column concurrency
+### Zero product basis
 
-`K` depth and row concurrency enlarge different dimensions:
-
-```text
-row basis:        (b × K*rA) * (K*rA × S)
-terminal Stage 2: (b × q*rB) * (q*rB × t)
-independent jobs: h active rows × j output columns
-```
-
-Use full `K` for the zero-copy Stage-1 row-basis GEMMs whenever it fits: this is
-the purpose of the row-major A fast path.  For Stage 2, choose `q` only up to
-the terminal GEMM's saturation knee.  Once `q*rB` is large enough, spend
-additional budget on `h` and output-column concurrency rather than making an
-already saturated inner dimension deeper.  This is particularly important when
-`t` is small and the terminal GEMM is skinny.
-
-The planner enumerates feasible `(h, jblock, q)` triples, computes their exact
-liveness peak, and selects the smallest candidate predicted or measured to
-reach near-peak throughput.  It must consider the actual backend, precision,
-tile shape, ranks, and SM count; no universal byte count can imply occupancy
-for cuBLAS/cuBLASLt kernels.
-
-### 7.3 Pipeline is optional and measured
-
-The alternative is a two-slot pipeline: while slot A builds the basis for row
-`i+1`, slot B accumulates/merges row `i`.  It requires events, separate stream
-handles, and distinct live arenas:
-
-```text
-workspace_pipeline_2 = bytes_basis_build(slot A)
-                     + bytes_accumulate_merge(slot B)
-```
-
-Do not enable it by default.  It can improve throughput when small CholQR2,
-eigensolve, or panel kernels leave the GPU idle, but concurrent large GEMMs
-normally compete for the same device resources.  Add it only after benchmarking
-one versus two slots on the target CPU/GPU regimes and retain it only for a
-reproducible win.
-
-### 7.4 Workspace query contract
-
-The existing `gemm_workspace_bytes` full-width meaning is preserved.  M5 should
-eventually expose a separate saturation recommendation (or a backward-compatible
-`target = :saturating` query) that reports the selected `(h, jblock, q)` and:
-
-```text
-minimum:    correct execution with narrower runs
-saturating: smallest near-peak-throughput plan
-full-width: all relevant direct work fits at once
-```
-
-Giving a larger budget than the selected saturation plan must not cause needless
-scratch retention.
+If `t == 0`, the product is zero.  For a nonzero `beta` the existing right
+factor is scaled in place; no basis merge is required.  If `maxrank(C) == 0`,
+there is no stored old factor to fold, so the product-only batched path is used.
 
 ---
 
-## 8. Implementation plan and gates
+## 6. Current layout support and fallback behaviour
 
-### M5.1 — standalone Stage 1
+| Situation | Current behaviour |
+| --- | --- |
+| A row-major, B column-major | Preferred zero-copy A row panel and B Z stack. |
+| A row-major, B row-major | A row panel is zero-copy; B column panels are packed. |
+| A column-major | A row panels are packed before basis construction. |
+| Non-transposed, regular-grid TLR output | Row-basis driver is selected. |
+| Saturated row, `beta == 0`, row-family M4 available | Single-row M4 dense slab followed by compression. |
+| Transposed TLR output | Existing M4 fallback rules apply; it does not support `beta != 0`. |
+| Boundary/tail output tiles | Not supported by the current TLR-output row-basis interface. |
 
-Implement only `build_row_basis!` for a contiguous logical row-major `A` panel.
-Use `gamma = 1` first, then the coefficient-aware weights.  Tests:
-
-* zero-copy panel reshape and padded/zero rank handling;
-* equality with a streamed reference calculation;
-* weighted covariance uses `gamma²`, while returned `P` is unweighted;
-* reconstruction and explicit residual norms;
-* rank choice, mixed precision, `@inferred` workspaces, CPU and CUDA.
-
-### M5.2 — preferred coefficient path
-
-Implement the `t ≤ rA` and `t > rA` contractions and the column-major `Zstack`
-terminal GEMM.  Verify against dense tile products before merging.  Benchmark
-aligned and tailed grids, small tiles, and occupancy-saturating large/batched
-cases.
-
-### M5.3 — merge and pruning
-
-Implement the one-merge/one-prune tile driver, including `beta`, empty tiles,
-rank caps, and residual reorthogonalization.  Verify tile accuracy, output
-orthogonality, exact coordinate energies, and repeated-update rank behaviour.
-
-### M5.4 — fallbacks and integration
-
-Add B-row-major packed/batched accumulation, then bounded packing for
-column-major A.  Integrate only after the preferred path is correct.  Preserve
-the existing M4/dense route for overflow and unsupported conditions.
-
-### M5.5 — performance acceptance
-
-Capture warmed allocations and timings for all four logical layout pairs,
-rank-asymmetric cases, aligned/tail grids, tiny/full workspace budgets, CPU,
-and available CUDA.  The preferred layout must use no row-panel or Z-panel
-copy.  Any reproducible slowdown of 15% or more against the established dense
-or M4 baseline requires investigation before promotion.
+Packing is bounded but is not yet a performance-equivalent substitute for the
+preferred layout.  A right-basis dual is explicitly out of scope; it should not
+be smuggled in as a FoldLeft/FoldRight option.
 
 ---
 
-## 9. Explicit non-goals
+## 7. Panel-specific rank capacities: target extension
 
-* No compiler-style semantic IR, generic sink callback, or scheduled-operation
-  hierarchy.
-* No per-`k` recompression of `C`.
-* No streamed small-GEMM Stage 1 when the logical A row panel is contiguous.
-* No B-side/right-basis M5 hidden behind a FoldLeft/FoldRight switch.
-* No materialization of dense `b × b` product tiles on the M5 path.
+The intended storage extension replaces one global capacity with a capacity per
+physical panel:
+
+```text
+TileRowMajor:  rcap[i] for all factors in tile row i
+TileColMajor:  rcap[j] for all factors in tile column j.
+```
+
+Effective tile ranks remain separate metadata.  Padding is retained *within*
+a panel, so the key fusions remain valid:
+
+```text
+Stage 1, B row-major:  V[i,k]' * [W[k,j0] ... W[k,j1]]
+Stage 3, FoldRight:    [U[i,1] ... U[i,K]] * Tstack[i]
+Stage 3, FoldLeft:     Tstack[:,j] * [Z[1,j] ... Z[K,j]]'
+```
+
+Each expression holds a fixed physical panel and therefore a fixed capacity.
+What changes is the surrounding batch: operations with different `(m,n,k,ld*)`
+must be bucketed or issued through grouped GEMM.
+
+For C2a specifically:
+
+* a row-major output `C` has one capacity for an output row, so its beta merge
+  remains one homogeneous row batch;
+* a column-major output `C` can have different capacities across `j`, so the
+  row is partitioned into equal-capacity buckets before the same C2a algorithm
+  is applied.
+
+The first ragged implementation should use an aligned arena plus panel offsets,
+not one independent GPU allocation per panel.  Capacity values should be
+quantised to a small aligned palette where possible.  This limits the number of
+GEMM groups and protects tensor-core-friendly shapes.
+
+An optional later primitive may accept per-slab active/max-rank vectors in the
+prune kernel.  It is useful for more general ragged compression, but C2a does
+not require it because its full-width residual tails are zero.
+
+---
+
+## 8. Workspace and performance contracts
+
+The current driver allocates phase workspaces directly; `RowBasisWorkspacePlan`
+is a sizing model rather than the runtime allocator.  Its liveness principle is
+still the intended direction:
+
+```text
+single-stream peak = max(basis-build peak,
+                         coefficient-accumulation peak,
+                         merge peak).
+```
+
+The important live shapes are
+
+```text
+basis:        Ubar bm x (K*rA), Omega (K*rA) x S,
+              Pfull S x (K*rA), promoted S x S covariance
+coefficients: Rstack (K*rB) x t x qn, M bn x t x qn
+C2a merge:    Q/V merge bm/bn x (t+rcap) x qn,
+              residual/CholQR work bm x rcap x qn and rcap x rcap x qn.
+```
+
+`max_workspace` is a correctness budget for the direct/M4 paths.  It is not a
+claim that a particular allocation saturates a GPU.  Any pipeline across rows
+must be measured: concurrent large GEMMs often contend for the same device,
+and the batched C2a merge has deliberately removed the host synchronisations
+that would otherwise make such a pipeline tempting.
+
+Performance acceptance should measure warmed execution, GPU kernel/API counts,
+and accuracy.  In particular, the beta path must be compared with the same
+coefficient workload at `beta == 0`; a row-batched beta merge should eliminate
+per-tile device-to-host synchronisation, though it still performs more
+numerical work than a product-only update.
+
+---
+
+## 9. Non-goals
+
+* No generic contraction IR or output-sink abstraction.
+* No dense `bm x bn` product tile on the row-basis path.
+* No recompression inside the contraction-index loop.
+* No scalar tile loop merely because a panel is not contiguous; use bounded
+  packing and batches.
+* No B-side/right-basis algorithm hidden behind an association switch.
+* No claim that grouped GEMM alone implements panel-ragged TLR: storage
+  accessors, scratch scheduling, compression, and output bucketing must agree
+  on the same panel capacities.

@@ -188,6 +188,10 @@ function _row_basis_gemm!(C::TLRMatrix{BackendT,T},
 
     backend = get_backend(C.int_U)
     omega = allocate(backend, T, K * rA, S)
+    # The random test matrix is independent of the output row.  Reuse one draw
+    # for the whole GEMM call: every row still builds its own basis from its own
+    # Ubar, while avoiding an RNG launch/fill per row.
+    randn!(omega)
     gamma = allocate(backend, T, K); fill!(gamma, one(T))
     basis_ws = RowBasisWorkspace(reshape(_packed_row_panel(ApU, 1), b, K * rA), S)
     basis_err_host = Vector{Float64}(undef, 1)
@@ -201,7 +205,6 @@ function _row_basis_gemm!(C::TLRMatrix{BackendT,T},
         Urow = _packed_row_panel(ApU, i)
         Vrow = _packed_row_panel(ApV, i)
         Ubar = reshape(Urow, b, K * rA)
-        randn!(omega)
         basis = build_row_basis!(basis_ws, Ubar, omega, gamma;
                                  eps_basis=eps_basis, tmax=S, tguard, compute=compute)
         t = basis.t
@@ -237,11 +240,13 @@ function _row_basis_gemm!(C::TLRMatrix{BackendT,T},
         Pc = allocate(backend, T, t, K * rA)
         copyto!(Pc, basis.P)
         Pblocks = reshape(Pc, t, rA, K)
-        if iszero(beta)
+        if iszero(beta) || C.maxrank == 0
             # Batched row: coefficients for every output column at once (one set of
             # batched GEMMs), then a single batched prune since every tile shares the
             # left basis Q. This removes both the per-tile coefficient calls and the
             # per-tile merge synchronizations that otherwise dominate the GPU cost.
+            # (A zero-capacity C stores nothing to fold, so beta != 0 degenerates
+            # to the same path.)
             Qm = allocate(backend, T, b, t, qn)
             Vm = allocate(backend, T, bn, t, qn)
             rvec = allocate(backend, Int32, qn)
@@ -259,29 +264,30 @@ function _row_basis_gemm!(C::TLRMatrix{BackendT,T},
                                evec_h[j] + basis_err_sq, ranks_host, resid_host)
             end
         else
-            # beta != 0: the coefficients for the whole row come from the same
-            # batched Stage 2 as beta == 0 (alpha folded there); only the merge is
-            # per tile, because each tile folds its stored factor through a
-            # data-dependent residual CholQR2. Old factors are taken at full
-            # `maxrank` width — padded columns are zero by the container invariant,
-            # so the algebra is unchanged and one merge workspace (allocated once
-            # per row: t is row-constant) serves every tile.
+            # beta != 0: coefficients from the same batched Stage 2 as beta == 0
+            # (alpha folded there), then the whole row merges in one batched pass
+            # (C2a): old factors enter at the uniform `maxrank` width — padded
+            # columns are zero by the container invariant, so full-width batching
+            # plus one uniform-width prune is algebraically equivalent to the
+            # per-tile merge, with zero device→host reads in the merge body.
             Vm = allocate(backend, T, bn, t, qn)
             _accumulate_row_block!(Vm, Vrow, Pblocks, BpU, BpV, qn, alpha, compute)
             rcap = C.maxrank
-            merge_ws = OrthogonalMergeWorkspace(basis.Q, view(C.int_U, :, 1:rcap, 1); bn=bn)
-            for j in 1:qn
-                slot = tile_linear_index(C.order, qm, qn, i, j)
-                Uold = view(C.int_U, :, 1:rcap, slot)
-                Vold = view(C.int_V, :, 1:rcap, slot)
-                merged = merge_row_basis_tile!(merge_ws, basis.Q, view(Vm, :, :, j),
-                                               Uold, Vold;
-                                               alpha=one(T), beta, eps_sq,
-                                               rel, maxrank=C.maxrank, compute)
-                _scatter_tile!(C, slot, _rank_index(C, i, j), merged.rank,
-                               merged.Q, merged.V,
-                               _merge_error_sq(merge_ws) + basis_err_sq,
-                               ranks_host, resid_host)
+            rvec = allocate(backend, Int32, qn)
+            evec = allocate(backend, Float64, qn)
+            slots = [tile_linear_index(C.order, qm, qn, i, j) for j in 1:qn]
+            mws = BatchedMergeWorkspace(basis.Q, rcap, bn, qn)
+            merge_row_block!(mws, basis.Q, Vm,
+                             [view(C.int_U, :, 1:rcap, s) for s in slots],
+                             [view(C.int_V, :, 1:rcap, s) for s in slots],
+                             beta, eps_sq, rel, C.maxrank, rvec, evec, compute)
+            rvec_h = Array(rvec); evec_h = Array(evec)
+            @inbounds for j in 1:qn
+                rank = Int(rvec_h[j])
+                _scatter_tile!(C, slots[j], _rank_index(C, i, j), rank,
+                               view(mws.Qmerge, :, 1:rank, j),
+                               view(mws.Vmerge, :, 1:rank, j),
+                               evec_h[j] + basis_err_sq, ranks_host, resid_host)
             end
         end
     end
