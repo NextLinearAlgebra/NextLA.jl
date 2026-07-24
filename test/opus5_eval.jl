@@ -1,12 +1,21 @@
 using CUDA
+using CUDA.CUSOLVER
 using LinearAlgebra
 using Plots
+using Plots.Measures: mm
+using StochasticRounding
 
 # Include your custom data structures, wrappers, and algorithm definitions
-# include("wrappers.jl")
-# include("matmul.jl")
-# include("rectrxm.jl")
-# include("fullmixedprec.jl") # <-- Replace with your actual implementation file name
+include("fullmixedprec.jl")
+include("recmixedprectri.jl")
+include("trsm.jl")
+include("trmm.jl")
+include("matmul.jl")
+include("rectrxm.jl")
+include("recgemm.jl")
+include("wrappers.jl")
+# If your getrf_recursive! implementation above is saved in a separate file (e.g., getrf.jl), uncomment below:
+# include("getrf.jl")
 
 # ==============================================================================
 # --- Accuracy Helper Functions ---
@@ -221,7 +230,7 @@ function run_lu_accuracy_benchmark()
         legend=:outertopright,
         size=(1050, 700),
         dpi=300,
-        margin=5Plots.mm
+        margin=5mm
     )
 
     for (name, results) in all_results

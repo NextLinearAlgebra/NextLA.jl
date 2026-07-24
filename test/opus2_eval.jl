@@ -1,61 +1,19 @@
 using CUDA
+using CUDA.CUSOLVER
 using LinearAlgebra
 using Plots
+using Plots.Measures: mm
+using StochasticRounding
 
 # Include your custom data structures, wrappers, and algorithm definitions
 # include("wrappers.jl")
 # include("matmul.jl")
 # include("rectrxm.jl")
-# include("fullmixedprec.jl") # <-- Replace with your actual implementation file name
+include("fullmixedprec.jl") # <-- Ensure this matches your implementation filename
 
 # ==============================================================================
 # --- Accuracy Helper Functions ---
 # ==============================================================================
-
-"""
-Unpacks a hierarchical FullMixedPrec matrix back into a dense CPU Matrix,
-strictly preserving host parametric types and applying any FP16 scaling factors
-that were generated during dynamic overflow quantization.
-"""
-function unpack_and_rescale(A::FullMixedPrec{T_Base}) where {T_Base}
-    n, m = size(A)
-
-    # Base case leaf: unpack and rescale if needed
-    if A.BaseCase !== nothing
-        base = Array(A.BaseCase)
-        if A.base_scale !== nothing
-            return T_Base(A.base_scale) .* T_Base.(base)
-        else
-            return T_Base.(base)
-        end
-    end
-
-    n1 = size(A.A11, 1)
-
-    # Recursively unpack diagonal blocks
-    A11 = unpack_and_rescale(A.A11)
-    A22 = unpack_and_rescale(A.A22)
-
-    # Unpack off-diagonal views and apply scaling if present
-    A12 = T_Base.(Array(A.A12))
-    A21 = T_Base.(Array(A.A21))
-
-    if A.A12_scale !== nothing
-        A12 .*= T_Base(A.A12_scale)
-    end
-
-    if A.A21_scale !== nothing
-        A21 .*= T_Base(A.A21_scale)
-    end
-
-    result = zeros(T_Base, n, m)
-    result[1:n1, 1:n1] .= A11
-    result[1:n1, n1+1:end] .= A12
-    result[n1+1:end, 1:n1] .= A21
-    result[n1+1:end, n1+1:end] .= A22
-
-    return result
-end
 
 function get_accuracy_cusolver_lu(A_fp64::CuMatrix, T_prec::DataType)
     A_to_factor = T_prec.(A_fp64)
@@ -102,8 +60,8 @@ function get_accuracy_mixed_lu(A_fp64::CuMatrix, precisions::Vector)
     # Factorize using your overloaded mixed-precision routine
     getrf_recursive!(A_mixed_input)
 
-    # Unpack to dense CPU matrix while restoring any dynamic FP16 scaling factors
-    A_result = unpack_and_rescale(A_mixed_input)
+    # Reconstruct dense GPU matrix using your implementation's built-in helper (§5)
+    A_result = reconstruct_matrix(A_mixed_input)
     A_cpu = Matrix(A_result)
     
     # Reconstruct A = L * U
@@ -221,7 +179,7 @@ function run_lu_accuracy_benchmark()
         legend=:outertopright,
         size=(1050, 700),
         dpi=300,
-        margin=5Plots.mm
+        margin=5mm
     )
 
     for (name, results) in all_results
