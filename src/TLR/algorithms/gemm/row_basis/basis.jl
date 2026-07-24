@@ -90,16 +90,22 @@ end
 end
 
 """
-    build_row_basis!(ws, Ubar, omega, gamma; eps_basis, tmax, compute) -> (; Q, P, t, residual_sq)
+    build_row_basis!(ws, Ubar, omega, gamma; eps_basis, tmax, tguard, compute)
+        -> (; Q, P, t, residual_sq)
 
 Build a shared orthogonal left basis for the already-contiguous row panel
 `Ubar = [U[i,1] … U[i,K]]`. `omega` has shape `(K*rA, S)` and `gamma` has one
 weight per k block.  Returned `P` is unweighted, so importance weights choose
 directions but do not rescale the represented factors.
+
+When the detected rank reaches `tguard`, the build returns early with empty
+`Q`/`P` (only `t` is meaningful): the caller has declared it will discard a
+basis that wide (saturation guard), so the rotations and residual are skipped.
 """
 function build_row_basis!(ws::RowBasisWorkspace, Ubar::AbstractMatrix{T},
                           omega::AbstractMatrix{T}, gamma::AbstractVector{T};
                           eps_basis::Real, tmax::Int=size(ws.Q, 2),
+                          tguard::Int=typemax(Int),
                           compute=default_gemm_compute_mode(T)) where {T}
     b, width = size(Ubar)
     S = size(ws.Q, 2)
@@ -138,6 +144,13 @@ function build_row_basis!(ws::RowBasisWorkspace, Ubar::AbstractMatrix{T},
     values, vectors = _row_basis_eigh!(ws.Ksmall)
     values_host = Array(values)
     t = _row_basis_choose_rank(values_host, eps_basis, tmax)
+    if t >= tguard
+        # The caller treats this row as saturated and will discard the basis:
+        # skip the rotations and the explicit residual, which are the expensive
+        # tail of the build. Only `t` is meaningful in the returned tuple.
+        return (; Q=view(ws.Q, :, 1:0, 1), P=view(ws.Pfull, 1:0, :),
+                t, residual_sq=ws.residual_sq)
+    end
     if t == 0
         fill!(ws.Q, zero(T)); fill!(ws.Pfull, zero(T)); fill!(ws.residual_sq, 0.0)
         return (; Q=view(ws.Q, :, 1:0, 1), P=view(ws.Pfull, 1:0, :),

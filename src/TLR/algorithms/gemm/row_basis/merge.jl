@@ -116,16 +116,17 @@ function merge_row_basis_tile!(ws::OrthogonalMergeWorkspace,
     copyto!(view(ws.Ures, :, :, 1), U)
     precision_gemm!('N', 'N', -one(T), Q, ws.D, one(T), view(ws.Ures, :, :, 1), compute)
 
+    # First shifted-CholQR2 pass factors the residual `Ures ≈ Qres0·V0'`. Its rank
+    # is deliberately not read back (that would be a device→host sync per tile): a
+    # fully absorbed residual zero-fills `chol.V` beyond the detected rank (the
+    # prune kernel pads), so every second-pass term below vanishes on its own.
     rank_tol = cholqr_rank_rtol_sq(T, tlr_orthogonalization_type(T), bm, rC)
     fill!(ws.error_sq, 0.0)
     mixed_cholqr2_compress!(ws.chol, ws.ranks, ws.error_sq, rC, rank_tol)
-    rho0 = _merge_scalar_rank(ws)
-    if rho0 == 0
-        precision_gemm!('N', adj, beta, V, ws.D, one(T), view(Vout, :, 1:t, 1), compute)
-        return _finish!(t)
-    end
-
     copyto!(ws.V0, ws.chol.V)
+
+    # Reorthogonalize the residual basis against Q and refactor; `rho` is the one
+    # rank read the beta-fold path pays before the final prune.
     Qres0 = view(ws.Ures, :, :, 1)
     precision_gemm!(adj, 'N', one(T), Q, Qres0, zero(T), ws.D2, compute)
     precision_gemm!('N', 'N', -one(T), Q, ws.D2, one(T), Qres0, compute)
@@ -136,12 +137,13 @@ function merge_row_basis_tile!(ws::OrthogonalMergeWorkspace,
     # U = Q*(D + D2*V0') + Qres*(V1'*V0').
     precision_gemm!('N', adj, one(T), ws.D2, view(ws.V0, :, :, 1), zero(T), ws.Dtmp, compute)
     ws.D .+= ws.Dtmp
-    precision_gemm!('N', 'N', one(T), V, view(ws.V0, :, :, 1), zero(T), ws.Vtmp, compute)
-    precision_gemm!('N', 'N', beta, ws.Vtmp, view(ws.chol.V, :, :, 1),
-                    zero(T), view(Vout, :, (t + 1):(t + rC), 1), compute)
+    if rho > 0
+        precision_gemm!('N', 'N', one(T), V, view(ws.V0, :, :, 1), zero(T), ws.Vtmp, compute)
+        precision_gemm!('N', 'N', beta, ws.Vtmp, view(ws.chol.V, :, 1:rho, 1),
+                        zero(T), view(Vout, :, (t + 1):(t + rho), 1), compute)
+        copyto!(view(Qout, :, (t + 1):(t + rho), 1), view(ws.Ures, :, 1:rho, 1))
+    end
     precision_gemm!('N', adj, beta, V, ws.D, one(T), view(Vout, :, 1:t, 1), compute)
-    rho > 0 && copyto!(view(Qout, :, (t + 1):(t + rho), 1),
-                        view(ws.Ures, :, 1:rho, 1))
 
     return _finish!(t + rho)
 end

@@ -1,102 +1,146 @@
-# TLR GEMM — row-basis TODO
+# TLR GEMM — plan: finish accumulation + ragged ranks
 
-Tracks remaining work on the global row-basis TLR×TLR→TLR path
-(`_row_basis_gemm!` and friends). The algorithm is specified in
-[alg.md](alg.md); the architecture in [DESIGN.md](DESIGN.md). Stages 1–3 are
-numerically complete and unit-tested. All items below concern the **executor**,
-which is currently a naive sequential loop that ignores §7 of `alg.md`.
+Tracks the TLR×TLR→TLR work: the row-basis path (`row_basis/`, algorithm in
+[alg.md](alg.md), architecture in [DESIGN.md](DESIGN.md)) and the planned
+storage-contract change to per-row/per-column maxrank ("ragged ranks").
 
 Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
-## State (2026-07)
+## State (2026-07-24)
 
-The M5 files live under [row_basis/](../row_basis/), mirroring `lowering/`/`regions/`.
+Shipped and green (row-basis 47/47, output 22/22, full TLR 558/558, CPU+CUDA):
 
-- Stage 1 `build_row_basis!` — [row_basis/basis.jl](../row_basis/basis.jl) — done, tested.
-- Stage 2 `accumulate_row_coefficients!` (per-tile) / `_accumulate_row_block!` (batched) —
-  [row_basis/coefficients.jl](../row_basis/coefficients.jl) / [row_basis/driver.jl](../row_basis/driver.jl) —
-  done (both `t≤rA` / `t>rA`), tested. Two implementations pending unification, see follow-ups.
-- Stage 3 `merge_row_basis_tile!` — [row_basis/merge.jl](../row_basis/merge.jl) — done
-  (β, empty tiles, residual reorth), tested.
-- Driver `_row_basis_gemm!` — [row_basis/driver.jl](../row_basis/driver.jl) — correct, runs on
-  CPU and CUDA, batched β=0 path (P5), no budget/planner wiring yet (P2).
-- Planner `row_basis_workspace_plan` — [row_basis/workspace.jl](../row_basis/workspace.jl) —
-  **written but unused (dead code)**.
+- Stages 1–3 numerically complete and unit-tested
+  ([basis.jl](../row_basis/basis.jl), [coefficients.jl](../row_basis/coefficients.jl),
+  [merge.jl](../row_basis/merge.jl), driver in [driver.jl](../row_basis/driver.jl)).
+- Rectangular `(bm, k, bn)` tiles; β≠0; CUDA enabled (all non-transposed layouts
+  route to row-basis; transposed → M4 dense sink, β=0 only).
+- β=0 path batched per row: coefficients (`_accumulate_row_block!`, 3 grouped-batch
+  GEMM calls/row) + single batched prune. GPU crossover vs CPU ≈ b=128;
+  b=1024,r=8: row-basis 571 ms vs dense 1575 ms (2.8×).
+- Workspaces hoisted (3.1× fewer allocs); host-mirror scalar reads; merge maxrank
+  cap fix; merge `_finish!`/`_scatter_tile!` dedup.
+- **Known envelope limit (measured):** shared basis rank `t = min(b, K·rA)`
+  saturates once `rA ≳ b/K`; saturated rows do dense-sized work *plus* basis
+  overhead — up to 1.9× slower than the M4 dense sink. Unsaturated rows win
+  1.4–2.8×. This drives Phase A1.
+- Planner in [workspace.jl](../row_basis/workspace.jl) still dead code and stale
+  (models per-tile shapes, not the batched ones) — absorbed into Phase B2.
 
-## Bugs / regressions found (routing CPU through row-basis)
+## Ragged-rank contract analysis (summary, 2026-07-24)
 
-- [x] **Bug A — merge `invalid maxrank`.** `merge_row_basis_tile!` asserted
-  `maxrank <= t + rC`, but the driver passes `C.maxrank` as a *cap*. When the basis
-  rank `t` is below the cap (e.g. a single contraction tile, β=0), it threw. Fixed:
-  effective cap is `min(maxrank, active)` per prune (row_basis/merge.jl).
-- [x] **Bug B — rectangular / non-square tiles.** Generalized the row-basis path to
-  distinct `(bm, k, bn)` dims (bm = A/C row tile, k = contraction, bn = B/C col tile):
-  Stage 2 sizes `M` and the `Zstack` by `bn`; the merge sizes its right factor
-  (`Vmerge`,`Vtmp`) by `bn` and its left factor by `bm`. New `bn` keyword on
-  `CoefficientWorkspace` / `OrthogonalMergeWorkspace` (defaults to the square case).
-  Covered by a new `row_basis/driver.jl` rectangular test (β=0 and β≠0).
-- [x] **Stale `gemm_tlr_output.jl` tests.** col×row and β≠0 no longer throw (row-basis
-  supports both); dropped those two `@test_throws`, kept the regular-grid guard.
+Proposal: per-**row** maxrank for row-major factor storage, per-**column** for
+col-major (rank varies along the storage-panel axis only).
 
-## Plan
+- **Key property:** panels stay rectangular and zero-copy (`[b, mr_i, K]`), so
+  every panel fusion survives: Stage-1 `:j` fuse, Stage-3 GEMM-K/FoldLeft stacks,
+  M5 `Ubar`/`Zstack`. What breaks is batching *across* rows of A / cols of B —
+  those become **grouped** batches (uniform within a group).
+- **Migration is incremental:** padded factor columns are zero, so one can store
+  per-row ranks but compute any run padded to the run-max rank — no batching
+  changes at all — then tighten: rank-bucketed runs → exact grouped GEMM.
+- **Grouped GEMM:** CUDA.jl ≥5.11 wraps `cublas[SD]gemmGroupedBatched`
+  (FP32/FP64 only; other compute modes → one batched call per group). AMD:
+  loop of batched calls over a stream pool (house pattern exists in
+  compress.jl). CPU: already a heterogeneous loop.
+- **M5 payoff:** `S_i = min(b, K·mr_i)` — saturation becomes per-row; only
+  genuinely high-rank rows fall back to dense.
+- **Two-pass C:** capacity from host-side `ranks(A)`/`ranks(B)`:
+  `mr_i(C) = min(max_j Σ_k min(rA[i,k], rB[k,j]), min(bm,bn), rmax)`; loose
+  bound → cap hard, optionally compact after fill; β≠0 needs a capacity policy
+  (pre-sized C or realloc).
+- **Compression v1:** sketch at uniform width `min(max_i mr_i, tm, tn)` into
+  dedicated scratch (output-aliasing breaks when `mr_i < S`), per-slab cap
+  array in `prune_randqb_columns!`, ragged scatter.
+- **Costs:** offset-table plumbing through container/operands/kernels, loss of
+  strided-batched on affected paths, more+smaller launches if grouping is done
+  naively (hedged by run-max padding and rank bucketing).
 
-- [x] **P1 — Hoist workspaces out of the i/j loops.** Done: `RowBasisWorkspace`,
-  `omega`, `gamma` once before the row loop; `CoefficientWorkspace` and (β=0) merge
-  scratch once per row. **750 KB → 244 KB on an 8×8 grid (3.1×).** 43/43 green.
+## Phase A — finish accumulation on the uniform contract
 
-- [x] **P3 — Remove per-tile host syncs.** Done: reusable 1-element host mirrors in
-  the merge workspace; scalars move via `copyto!` (bulk, no per-call alloc, single D2H
-  on CUDA). `Array(values)` per-row eigenvalue copy retained (host rank loop, O(qm)).
+Order chosen to *shrink the surface* before the ragged migration.
 
-- [x] **P4 — Enable CUDA.** Dropped the CPU-only gate; all non-transposed layouts now
-  route to row-basis on both backends (transposed → M4). Fixed a CUDA-only bug: the
-  compressed `basis.P` is a strided row-subset view, which CUBLAS rejects in the batched
-  coefficient GEMMs — now compacted into a contiguous `t×(K*rA)` block per row. CUSOLVER
-  eigh already present. Added CUDA-inclusive β≠0 and (via gemm_tlr_output) rectangular
-  coverage. Row-basis subset 47/47, output subset 22/22 on CPU+CUDA. **Note:** still
-  correct-but-slow on GPU (per-tile host syncs + skinny GEMMs) until P5.
+- [x] **A1 — Per-row saturation guard.** Shipped (2026-07-24). Mechanics:
+  - pre-guard: `S_full < θ·b` ⇒ no row can saturate, guard disarmed;
+  - armed guard caps the sketch at `S = ⌈θ·b⌉` (a wider basis would be discarded
+    anyway) and passes `tguard` so `build_row_basis!` returns right after rank
+    detection for saturated rows (skips rotations + residual);
+  - saturated rows (`t ≥ θ·b`) run through the M4 dense sink via synthesized
+    single-row `RowRun`s (`_m4_row!`); after `SAT_STREAK_CUTOFF = 2` consecutive
+    saturated rows the rest of the matrix routes dense without probing;
+  - fallback exists for β = 0 + row family only; otherwise rows stay on the
+    (correct) row-basis path. `sat_threshold` exposed on `gemm!` (θ ≥ 2 ⇒ pure
+    row-basis, θ = 0 ⇒ pure dense);
+  - `basis.residual_sq` now folded into per-tile residuals (diagnostic add,
+    read once per row, only when `eps_basis > 0`).
+  *Gate (CUDA, nt=16, b=512):* r=8 **359 vs 496 ms** (row-basis wins 1.4×);
+  r=128 (deep saturation) **5445 vs 5479** (ties/wins); boundary band
+  (t ≈ θ·b: r=16 +13%, r=32 +9.5%) carries the per-row probe premium — the
+  latency-bound eigh/CholQR2 of two probes; irreducible without batched basis
+  builds (C2) and tunable away via θ when the rank regime is known.
+  Tests: guard testset (θ default/2.0/0.0 routes, column-family fall-through,
+  mixed-rank routing); suites 55/55 + 22/22 CPU+CUDA.
 
-- [ ] **P2 — Wire the budget/planner.** Thread `max_workspace` into the driver; use
-  `row_basis_workspace_plan`/`workspace_fits` to choose `q` (Stage-2 depth) and reject
-  over-budget runs. Stops silently overrunning `max_workspace` (alg.md §7.4).
+- [x] **A2 — Stage-2 unification + β≠0 cleanup.** Shipped (2026-07-24):
+  `coefficients.jl`/`CoefficientWorkspace` deleted — β≠0 now takes its whole-row
+  coefficients from the same batched `_accumulate_row_block!` as β=0 (α folded
+  there; merge called with α=1) and loops only the merge. One merge workspace per
+  row (old factors padded to `maxrank` width — zero-padded columns leave the
+  algebra unchanged and make the tile dims uniform, batching-ready). Merge lost
+  the `rho0` shortcut/sync: the prune kernel zero-pads `chol.V`, so an absorbed
+  residual vanishes through the second-pass algebra on its own; tail writes are
+  sized by the one remaining `rho` read. Replacement unit test for the batched
+  Stage 2 (both `t≤rA`/`t>rA` branches). Suites 61/61 + 22/22.
+  **Gate result (honest miss):** β≠0 CUDA at b=256,r=8: 929 ms vs β=0 212 ms
+  (4.4×) — and the pre-A2 baseline measured 924 ms, i.e. allocs/packs/syncs were
+  *not* the bottleneck: the serialized per-tile merge compute (2 CholQR2 passes +
+  ~8 small latency-bound kernels per tile, pipeline-draining) is. Closing the
+  gap needs the **batched β≠0 merge** (per-slab active-columns prune + cross-tile
+  batched CholQR2) — tracked in C2, now the named owner of the ≤2× gate.
 
-- [x] **P5 — Concurrency (β=0 path).** Two batched pieces:
-  - **Batched row merge** — every tile in a row shares Q, so the whole row is pruned in
-    one `prune_orthogonal_columns!` call with two D2H copies instead of 2·qn.
-  - **Batched coefficient accumulation** (`_accumulate_row_block!`) — the per-(k,j) S/R
-    GEMMs and the terminal Zstack GEMM run as three batched calls per row (batch dims
-    K·qn, K·qn, qn) instead of qn sequential per-tile calls.
+- [ ] **A3 — Copy/launch removal bundle.** Reuse one Ω across rows; store `P`
+  transposed in the basis workspace (kills the per-row `Pc` compaction);
+  shared-Q variant of `prune_orthogonal_columns!` (kills the `Qm`
+  materialization); skip redundant per-tile fills in the β=0 scatter (C already
+  zeroed); hoist packed B panels out of the row loop for non-preferred layouts.
+  *Gate:* warmed allocation count strictly down; no regression in the b-sweep.
 
-  **Measured (nt=16, sweep b, CPU vs CUDA):** batching wins in the launch/sync-bound
-  regime and GPU crosses over to winning around b≈128:
-  `b=16: 4.4/37.5ms · b=64: 57/87 · b=128: 257/242 · b=256: 1047/856` (CPU/CUDA ms).
-  The b=16 CUDA case dropped from 81 ms (pre-P5) to 37.5 ms (2.2×). At very large b
-  (≥512) each per-tile GEMM already saturates the device (fp64-compute-bound), so
-  batching is ~neutral there — expected. β≠0 stays on the per-tile path (future work).
-  Row concurrency `h` and depth `q` budgeting deferred to P2.
+## Phase B — ragged ranks (per-row / per-col maxrank)
 
-- [ ] **P6 — Perf acceptance (alg.md §M5.5).** Benchmark all four layout pairs and
-  tiny/full budgets vs the M4 dense sink; capture warmed allocations; enforce
-  "no row/Z-panel copy on preferred layout, no >15% regression".
+- [ ] **B1 — Container + addressing.** Flat factor buffer + per-row
+  `offsets`/`mr` tables on `TLRMatrix` (interior first; boundary regions keep
+  global maxrank initially); thread through `InteriorOperand`
+  (`rankdim` → per-row); uniform ranks remain the degenerate case so the
+  current behavior is the bit-comparable oracle. Paths not yet migrated must
+  throw on non-uniform, never silently mis-read.
+  *Gate:* uniform-ragged equivalence on the full suite.
 
-- [ ] **P7 — Saturation guard (GPU priority).** The shared row basis has rank
-  `t = min(b, K·rA)`; once `r ≳ b/K` the basis saturates to `t = b` and stops
-  compressing anything, so row-basis pays full basis-build overhead *on top of*
-  dense-sized work. Measured on CUDA (b=512, nt=16 ⇒ K=16): unsaturated (`t/b` small)
-  row-basis beats the M4 dense sink by 1.4–2.8× (bigger tiles win more: b=1024,r=8 →
-  571ms vs 1575ms); once saturated (`t=b`, e.g. r≥32) row-basis is *up to 1.9× slower*
-  than dense. Guard: if `t/b` exceeds a threshold (empirically ~0.5), route that
-  matrix (or row) to the M4 dense path instead. Open: per-matrix vs per-row guard
-  granularity (start per-matrix); default threshold.
+- [ ] **B2 — Run-max-padded compute + budget/arena (absorbs old P2).** M4 + M5
+  consume ragged storage padded to run-max rank (no grouped GEMM yet). Scratch
+  moves from fixed 5-d tensors to one liveness-carved arena with offset tables
+  (alg.md §7.1) — built once, for the ragged layout. Wire `max_workspace`:
+  jblock/q chunking of `Rstack`/`Sbuf` (today unbounded, ~1 GB at
+  nt=64,b=512,r=64), rewrite the planner model to the batched shapes.
+  *Gate:* mixed-rank suite green; budget-compliance test (tiny budget runs
+  correctly, never exceeds); planner no longer dead code.
 
-- [ ] **Stage-2 unification.** `accumulate_row_coefficients!`/`CoefficientWorkspace`
-  (row_basis/coefficients.jl) and `_accumulate_row_block!` (row_basis/driver.jl)
-  duplicate the same `t≤rA`/`t>rA` contraction. Since β≠0 only needs a *sequential
-  merge* (not a separate coefficient kernel — see alg.md §5), the β≠0 driver branch
-  could call the batched block once and loop only the merge, deleting
-  `coefficients.jl` entirely and batching β≠0 coefficients for free. Deferred from
-  the /simplify pass as a bigger structural change than a cleanup should bundle.
+- [ ] **B3 — Compression + two-pass C.** Uniform-width sketch into scratch,
+  per-slab caps in the prune kernels, ragged scatter; `gemm!` pass-1 capacity
+  inference from `ranks(A)`/`ranks(B)` + allocation, pass-2 fill; document the
+  β≠0-into-undersized-C policy. *Gate:* compress→gemm round-trip with skewed
+  ranks; measured memory footprint vs global maxrank on a skewed case.
 
-- [ ] **Tests / follow-ups.** Add a merge test forcing residual rank `rho < rC`
-  (near-parallel `Uold`/`Q`). Coefficient-aware `gamma` (alg.md §3) is deferred —
-  driver currently hard-codes `gamma = 1` (row_basis/driver.jl).
+- [ ] **B4 — Measured tightenings.** Native grouped GEMM (CUDA FP32/64;
+  stream-pool fallback elsewhere); rank-bucketed run scheduling; packed-`Ubar`
+  (Σ ranks < b < K·mr_i regime). Each lands only with a reproducible win.
+
+## Phase C — acceptance + backlog
+
+- [ ] **C1 — Perf acceptance (alg.md §M5.5).** Four layout pairs, skewed +
+  uniform ranks, tiny/full budgets, CPU+CUDA, vs the dense baseline; warmed
+  allocations; no >15% regression unexplained. Add the merge `rho < rC` test
+  (near-parallel `Uold`/`Q`).
+- [ ] **C2 — Backlog (measured, unscheduled):** basis build batched across rows
+  or two-slot pipeline (§7.3; basis ≈28% of GPU time, latency-bound eigh);
+  coefficient-aware `gamma`; batched β≠0 merge (needs per-slab active-columns
+  prune); B-side/right-basis dual (explicit non-goal for now).
