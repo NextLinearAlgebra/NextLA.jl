@@ -9,8 +9,8 @@ struct TransposedMixedPrec{T, M <: AbstractMixedPrec{T}} <: AbstractMixedPrec{T}
     parent::M
 end
 
-include("fullmixedprec.jl")   # FullMixedPrec struct + constructor (this file, §1)
-include("recgemm.jl")         # recgemm_sub! (this file, §2)
+# include("fullmixedprec.jl")   # FullMixedPrec struct + constructor (this file, §1)
+# include("recgemm.jl")         # recgemm_sub! (this file, §2)
 include("rectrxm.jl")
 include("recsyrk.jl")
 # include("wrappers.jl")
