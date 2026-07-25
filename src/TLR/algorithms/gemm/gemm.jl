@@ -2,7 +2,6 @@
 include("precision.jl")
 include("lowering/strategy.jl")
 include("operands.jl")
-include("row_basis/workspace.jl")
 include("row_basis/basis.jl")
 include("lowering/schedule.jl")
 include("row_basis/merge.jl")
@@ -264,18 +263,14 @@ _run_tlr_output!(::TLRMatrix, ops, geom, ::KAsSerialLoop, fold, alpha, budget, c
 
 """
     gemm!(C::TLRMatrix, A::TLRMatrix, B::TLRMatrix; alpha=true, beta=false,
-          tol=0.0, rel=false, max_workspace, transA='N', transB='N', compute=nothing,
-          sat_threshold=0.5) -> C
+          tol=0.0, rel=false, max_workspace, transA='N', transB='N', compute=nothing) -> C
 
 Fully low-rank `C := alpha·op(A)·op(B) + beta·C` compressed in place into the TLR
 container `C`. Currently restricted to regular-grid tiling (no boundary tiles).
 
-Non-transposed operands run the global row-basis path (`alg.md`): a shared orthogonal
-left basis per output row, batched coefficient accumulation, and a one-merge/one-prune
-tile update (this path supports `beta != 0`). Rows whose basis saturates
-(`t >= sat_threshold*bm` — the basis no longer compresses anything) are routed to the
-dense-slab sink instead when `beta == 0`; `sat_threshold >= 2` effectively disables the
-guard, `0` forces the dense route. Transposed operands use the dense-slab sink directly
+Non-transposed operands run the global row-basis path: a shared orthogonal left basis
+per output row, batched coefficient accumulation, and a one-merge/one-prune tile update
+(this path supports `beta != 0`). Transposed operands use the dense-slab sink
 (`beta == 0` only).
 
 `tol`/`rel` are the per-tile approximation budget (distinct from the `max_workspace`
@@ -285,7 +280,7 @@ rank exceeds `maxrank(C)` keeps full rank and reports a residual above `tol`.
 function gemm!(C::TLRMatrix{BackendT,T}, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T};
     alpha=true, beta=false, max_workspace::Int=DEFAULT_GEMM_BUDGET,
     transA::Char='N', transB::Char='N', compute=nothing,
-    tol::Real=0.0, rel::Bool=false, sat_threshold::Real=0.5) where {BackendT,T}
+    tol::Real=0.0, rel::Bool=false) where {BackendT,T}
     LA = logical_operand(A, transA)
     LB = logical_operand(B, transB)
     _validate_tlr_output(C, LA, LB)
@@ -302,7 +297,7 @@ function gemm!(C::TLRMatrix{BackendT,T}, A::TLRMatrix{BackendT,T}, B::TLRMatrix{
     # M4 dense fallback, which does not support beta.
     if !_istrans(LA) && !_istrans(LB)
         return _row_basis_gemm!(C, A, B; alpha=α, beta=ScalarT(beta), tol, rel,
-                                compute=mode, max_workspace, sat_threshold)
+                                compute=mode)
     end
     if maxrank(A) == 0 || maxrank(B) == 0
         fill!(C.ranks, zero(eltype(C.ranks)))

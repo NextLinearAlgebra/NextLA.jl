@@ -75,61 +75,6 @@ function _accumulate_row_block!(Vm::AbstractArray{T,3}, Vrow::AbstractArray{T,3}
     return Vm
 end
 
-# ── Saturation guard (alg.md §6.4) ───────────────────────────────────────────
-# The shared row basis only pays off while `t ≪ b`. A saturated row (`t ≥ θ·b`)
-# compresses nothing: it would do dense-sized coefficient work *plus* the basis
-# overhead, measurably slower than the M4 dense-slab sink. Such rows are routed
-# through the M4 machinery via single-row runs. The fallback exists only for
-# `beta == 0` and the row family (`KAsGemmK`); otherwise rows stay on the
-# row-basis path, which remains correct, just slower.
-#
-# Two devices keep the detection cost negligible:
-#   * the sketch is capped at `S = ⌈θ·b⌉` when the guard is armed — a row that
-#     needs more than the cap is routed to dense anyway, so the probe never
-#     builds a wider basis than the row-basis path could use;
-#   * after `SAT_STREAK_CUTOFF` consecutive saturated rows the remaining rows
-#     are routed to dense without probing at all (routing is a performance
-#     choice — both paths meet the requested tolerance).
-const SAT_STREAK_CUTOFF = 2
-
-# Build the M4 lowering context once per call, or `nothing` when the layout
-# lowers to the column family (no M4 TLR-output support).
-function _m4_row_context(C::TLRMatrix, A::TLRMatrix, B::TLRMatrix, budget::Int)
-    LA = logical_operand(A, 'N')
-    LB = logical_operand(B, 'N')
-    ops = logical_operands(LA, LB)
-    geom = interior_geometry(LA, LB)
-    fold = choose_fold(ops)
-    placement = placement_for_fold(fold, ops)
-    placement isa KAsGemmK || return nothing
-    ws = _alloc_tlr_output_workspace(C, geom, placement, ops, budget, fold)
-    return (; ops, geom, placement, fold, ws)
-end
-
-# Compute one output row through the M4 dense-slab sink: single-row runs chunked
-# to the workspace's column capacity. `_compress_run_into_factors!` writes
-# `C.ranks`/`C.resid` directly, so the driver's host mirrors are resynced.
-function _m4_row!(C::TLRMatrix, m4, i::Int, alpha, compute,
-                  ranks_host, resid_host; eps_sq::Float64, rel::Bool)
-    (; ops, geom, placement, fold, ws) = m4
-    qn = geom.q_n
-    @inbounds for j0 in 1:ws.maxJ:qn
-        run = RowRun(i, i, j0, min(j0 + ws.maxJ - 1, qn))
-        prepare_run!(placement, run, ws.stage_ws)
-        execute_stage1!(placement, run, ops, ws.stage_ws, compute)
-        execute_stage2!(placement, fold, run, ops, ws.stage_ws, compute)
-        execute_slab_stage3!(placement, fold, run, ops, ws.stage_ws, ws.slab,
-                             alpha, zero(alpha), compute)
-        _compress_run_into_factors!(C, ws, run, geom.bm, geom.bn; eps_sq, rel)
-    end
-    @inbounds for j in 1:qn
-        ridx = _rank_index(C, i, j)
-        ranks_host[ridx] = C.ranks[ridx]
-        resid_host[ridx] = C.resid[ridx]
-    end
-    return C
-end
-
 # Write one merged output tile back into C: clear its factor slots, copy the first
 # `rank` columns of the new factors in, and record the rank and residual (from the
 # squared error `resid_sq`). Shared by the batched (beta==0) and per-tile paths.
@@ -147,15 +92,14 @@ function _row_basis_gemm!(C::TLRMatrix{BackendT,T},
                              A::TLRMatrix{BackendT,T},
                              B::TLRMatrix{BackendT,T};
                              alpha::T=one(T), beta::T=zero(T), tol::Real=0.0,
-                             rel::Bool=false, compute=default_gemm_compute_mode(T),
-                             max_workspace::Int=DEFAULT_GEMM_BUDGET,
-                             sat_threshold::Real=0.5) where {BackendT,T}
+                             rel::Bool=false,
+                             compute=default_gemm_compute_mode(T)) where {BackendT,T}
     qm, K = regular_tilegrid_size(A)
     _, qn = regular_tilegrid_size(B)
     b = size(A.int_U, 1)          # output row tile size (bm)
     bn = size(C.int_V, 1)         # output column tile size
     rA, rB = A.maxrank, B.maxrank
-    S_full = min(b, K * rA)
+    S = min(b, K * rA)
     eps_basis = tol == 0 ? zero(Float64) : Float64(tol) / 4
     eps_sq = Float64(tol)^2
     ApU = interior_operand(FullGrid(), A.int_U, A.order, qm, K)
@@ -173,19 +117,6 @@ function _row_basis_gemm!(C::TLRMatrix{BackendT,T},
     # On a regular grid every row shares the panel shape (b × K*rA), so the sketch
     # buffers and the row-basis workspace are row-independent: allocate them once
     # and reuse across all rows. `build_row_basis!` overwrites all of its fields.
-    # Saturation guard: build the M4 fallback context only when a row could
-    # actually saturate (`t ≤ S_full`, so `S_full < θ·b` rules it out a priori)
-    # and the fallback applies (beta == 0; row-family layout — checked inside).
-    m4 = iszero(beta) && S_full >= sat_threshold * b ?
-         _m4_row_context(C, A, B, max_workspace) : nothing
-    # With the fallback armed, rows needing t ≥ θ·b are routed to dense anyway,
-    # so the sketch (and every downstream buffer, which scales with t) is capped
-    # at the threshold; hitting the cap is the saturation signal, and the basis
-    # build is told (`tguard`) to return early at it rather than finish a basis
-    # the guard will discard.
-    S = m4 === nothing ? S_full : min(S_full, ceil(Int, sat_threshold * b))
-    tguard = m4 === nothing ? typemax(Int) : ceil(Int, sat_threshold * b)
-
     backend = get_backend(C.int_U)
     omega = allocate(backend, T, K * rA, S)
     # The random test matrix is independent of the output row.  Reuse one draw
@@ -195,25 +126,14 @@ function _row_basis_gemm!(C::TLRMatrix{BackendT,T},
     gamma = allocate(backend, T, K); fill!(gamma, one(T))
     basis_ws = RowBasisWorkspace(reshape(_packed_row_panel(ApU, 1), b, K * rA), S)
     basis_err_host = Vector{Float64}(undef, 1)
-    sat_streak = 0
 
     for i in 1:qm
-        if m4 !== nothing && sat_streak >= SAT_STREAK_CUTOFF
-            _m4_row!(C, m4, i, alpha, compute, ranks_host, resid_host; eps_sq, rel)
-            continue
-        end
         Urow = _packed_row_panel(ApU, i)
         Vrow = _packed_row_panel(ApV, i)
         Ubar = reshape(Urow, b, K * rA)
         basis = build_row_basis!(basis_ws, Ubar, omega, gamma;
-                                 eps_basis=eps_basis, tmax=S, tguard, compute=compute)
+                                 eps_basis=eps_basis, tmax=S, compute=compute)
         t = basis.t
-        if m4 !== nothing && t >= sat_threshold * b
-            sat_streak += 1
-            _m4_row!(C, m4, i, alpha, compute, ranks_host, resid_host; eps_sq, rel)
-            continue
-        end
-        sat_streak = 0
         # Basis truncation error for this row (nonzero only when eps_basis > 0);
         # folded into every tile residual below as a diagnostic upper-add so
         # `residuals(C)` does not silently under-report the shared-basis error.
