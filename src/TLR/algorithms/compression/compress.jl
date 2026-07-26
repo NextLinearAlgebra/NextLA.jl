@@ -87,13 +87,40 @@ end
 @inline _cosketch!(V_tiles, src::TileSource{T}, Q_tiles) where {T} =
     gemm_batched!(_adjoint_blas_char(T), 'N', one(T), src.tiles, Q_tiles, zero(T), V_tiles)
 
+# The black box the ARA loop samples through: draw a fresh Gaussian block and
+# apply the tiles to it. Freshness per pass is required -- the stopping rule is
+# the Halko-Martinsson-Tropp a posteriori bound, whose failure probability
+# decays only for independent samples.
+function _ara_tile_sampler(src::TileSource{T}, cat::CompressCategoryWorkspace) where {T}
+    return function (Y, width)
+        Om = view(cat.omega, :, 1:width, :)
+        Random.randn!(Om)
+        gemm_batched!('N', 'N', one(T), src.tiles,
+                      _batch_views(Om, width), zero(T),
+                      _batch_views(view(Y, :, 1:width, :), width))
+        return Y
+    end
+end
+
 """
     compress_tiles!(src, cat; eps_sq, rel) -> cat
 
-Randomized-sketch compression (randQB_EI) of the tile batch described by `src`
-into the workspace `cat`: writes the retained factors into `cat.U`/`cat.V` and the
-per-tile rank / squared error into `cat.ranks_local` / `cat.norm_err_sq`. Input-
-agnostic — see [`TileSource`](@ref). Degenerates to rank 0 when `cat.R_keep == 0`.
+Blocked adaptive randomized approximation (ARA) of the tile batch described by
+`src` into the workspace `cat`: writes the retained factors into `cat.U`/`cat.V`
+and the per-tile rank / squared error into `cat.ranks_local` / `cat.norm_err_sq`.
+Input-agnostic — see [`TileSource`](@ref). Degenerates to rank 0 when
+`cat.R_keep == 0`.
+
+Sampling is adaptive: each tile stops once its own range is captured, rather
+than every tile paying a single sketch at the full `maxrank` width. That earlier
+scheme produced a panel that was rank deficient by construction on any tile of
+true rank below capacity, which is precisely where shifted CholQR2 stops
+revealing rank (`docs/TODO.md` in the GEMM tree, worklog items 1 and 3); the
+prune then decided on a basis that `κ(R₁)` had already destroyed.
+
+The reported error is exact rather than indicative. With `Q` orthonormal,
+`‖A − QQᵀA‖² = ‖A‖² − ‖Z‖²` by Pythagoras, and the truncation adds
+`Σ_{k>r} σ_k²`, so the total is `‖A‖² − Σ_{k≤r} σ_k²`.
 """
 function compress_tiles!(src::TileSource{T}, cat::CompressCategoryWorkspace; eps_sq::Float64, rel::Bool) where {T}
     _ntiles(src) == 0 && return cat
@@ -104,30 +131,33 @@ function compress_tiles!(src::TileSource{T}, cat::CompressCategoryWorkspace; eps
         return cat
     end
 
-    # Step 1: range sampling  Q = A·Ω  (Ω drawn into V_T; step 3 overwrites it)
-    Random.randn!(cat.V_T)
-    _sketch!(cat.Q_tiles, src, cat.V_tiles)
-
-    # Step 2: form/factor each Gram matrix in high precision, then apply its
-    # triangular factor to Q with a work-precision TRSM. Ω is dead after the
-    # sketch, so its leading S×S rows hold the triangular factors.
-    R_work = view(cat.V_T, 1:cat.S, :, :)
-    mixed_cholqr2_basis!(cat.Q_T, cat.Y_hi, cat.G_hi, R_work, cat.R_tiles,
-        cat.Q_tiles, cat.shift_mult)
-
-    # Step 3: co-range  V = Aᴴ·Q  (overwrites the Ω we no longer need)
-    _cosketch!(cat.V_tiles, src, cat.Q_tiles)
-
-    # Step 4: the final Gram matrix is dead, so its first element in each slab
-    # stores ‖A‖² and is then overwritten by the achieved squared error.
+    # ‖A_tile‖², captured before the Gram-bearing buffers are reused. It is both
+    # the tolerance reference and the range-capture accounting below.
     _tile_norms_sq!(cat.norm_err_sq, src)
 
-    # Step 5: rank detection + truncation (fused SMEM kernel, EI-corrected budget)
-    delta_floor = Float64(_cholqr_shift_coeff(eltype(cat.G_hi), size(cat.Y_hi, 1), cat.S))
-    prune_randqb_columns!(cat.U, cat.V, cat.ranks_local, cat.norm_err_sq,
-        cat.S, cat.R_keep, eps_sq, rel, delta_floor)
+    # Step 1: grow the basis adaptively. `eps_rel` steers the sampling only; the
+    # binding accuracy decision is the truncation in step 3.
+    eps_rel = max(sqrt(eps_sq), ara_stopping_floor(tlr_orthogonalization_type(T)))
+    ara_build_basis!(cat.ara, _ara_tile_sampler(src, cat);
+                     eps_rel, r_required=_ARA_CONSECUTIVE)
+
+    # Step 2: co-range Z = Aᴴ·Q, into the output V panel's sketch-width view.
+    _cosketch!(cat.V_tiles, src, _batch_views(cat.Qbuf, cat.S))
+
+    # Step 3: optimal (Eckart-Young) truncation, charging the range-capture
+    # error against the same budget.
+    ara_truncate!(view(cat.U, :, 1:cat.R_keep, :), view(cat.V, :, 1:cat.R_keep, :),
+                  cat.ranks_local, cat.norm_err_sq, cat.Qbuf, cat.V_T;
+                  tol=sqrt(eps_sq), relative=rel, maxrank=cat.R_keep,
+                  energy=cat.norm_err_sq)
     return cat
 end
+
+# Consecutive negligible columns required before a tile is declared converged.
+# The Halko-Martinsson-Tropp bound makes the false-stop probability decay like
+# 10^-p in this count, so it is a confidence level, not a fitted constant. The
+# reference (Boukaram, Turkiyyah & Keyes) uses 10.
+const _ARA_CONSECUTIVE = 10
 
 # Compress one off-diagonal tile category from the dense matrix `A`: wrap its tiles
 # as a `DenseTiles` source and run the input-agnostic core.

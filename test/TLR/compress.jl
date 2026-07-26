@@ -399,3 +399,47 @@ end
     @test [findfirst(!iszero, U[:, j, 1]) for j in 1:2] == [4, 3]
     @test all(iszero, view(U, :, 3:S, 1))
 end
+
+# What moving `compress!` onto ARA actually buys: sampling is adaptive, so a
+# tile is never handed the wide rank-deficient panel that defeated the old
+# one-shot maxrank-width sketch (see the GEMM tree's docs/TODO.md, items 1/3).
+@testset "compress! adapts sampling to the tile rank" begin
+    b, ntiles = 64, 3
+    ranks = (3, 9, 20)
+    rng = MersenneTwister(4242)
+
+    # Tiles of known exact rank, embedded far below the storage capacity.
+    U0 = zeros(Float64, b, 32, ntiles); V0 = zeros(Float64, b, 32, ntiles)
+    tiles = zeros(Float64, b, b, ntiles)
+    for (k, r) in enumerate(ranks)
+        L = randn(rng, b, r); R = randn(rng, b, r)
+        tiles[:, :, k] = L * R'
+    end
+    cat = _TLRM.alloc_tile_workspace(U0, V0, b, b, 32, ntiles)
+    _TLRM.compress_tiles!(_TLRM.PackedTiles(copy(tiles)), cat;
+                          eps_sq=1e-12, rel=true)
+    got = Array(cat.ranks_local)
+    for (k, r) in enumerate(ranks)
+        # Exact rank recovered, not the capacity.
+        @test got[k] == r
+        Uk = U0[:, 1:got[k], k]; Vk = V0[:, 1:got[k], k]
+        @test norm(tiles[:, :, k] - Uk * Vk') / norm(tiles[:, :, k]) <= 1e-10
+        @test norm(Uk' * Uk - I, Inf) <= 1e-11
+        # The reported residual is the achieved error, not an indicator.
+        @test sqrt(cat.norm_err_sq[k]) <= 1e-9 * norm(tiles[:, :, k])
+    end
+
+    # The sampling block width is a performance knob: same ranks, same accuracy.
+    for blk in (4, 8, 32)
+        U1 = zeros(Float64, b, 32, ntiles); V1 = zeros(Float64, b, 32, ntiles)
+        c = _TLRM.alloc_tile_workspace(U1, V1, b, b, 32, ntiles)
+        ara = _TLRM.ARAWorkspace(c.Qbuf; block=blk)
+        c2 = typeof(c)(c.region, c.rank_indices, c.S, c.R_keep, c.U, c.V, c.Q_T,
+                       c.V_T, c.Q_tiles, c.V_tiles, c.R_tiles, c.Y_hi, c.G_hi,
+                       c.ranks_local, c.norm_err_sq, c.shift_mult, c.p0s, c.q0s,
+                       ara, c.Qbuf, c.omega)
+        _TLRM.compress_tiles!(_TLRM.PackedTiles(copy(tiles)), c2;
+                              eps_sq=1e-12, rel=true)
+        @test Array(c2.ranks_local) == collect(ranks)
+    end
+end

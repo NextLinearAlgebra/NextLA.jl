@@ -18,7 +18,10 @@
                 (12, 12, 12, (4, 4), (4, 4), 2, RM, RM, 4, huge),
                 (12, 12, 12, (4, 4), (4, 4), 2, RM, CM, 4, 1),
                 (12, 12, 12, (4, 4), (4, 4), 2, CM, CM, 4, huge),
-                (10,  8,  9, (4, 3), (3, 5), 3, RM, CM, 4, 1),   # rectangular tiles + tails
+                # Rectangular tiles. Dimensions must stay aligned to the tiling:
+                # non-regular-grid (tail) tiles are deferred and this path
+                # rejects them outright.
+                (12,  9, 10, (4, 3), (3, 5), 3, RM, CM, 4, 1),
             )
             for (mA, k, nB, tsA, tsB, r, oA, oB, mr, budget) in cases
                 @testset "$(mA)×$(k)×$(nB) tiles=$(tsA)/$(tsB) r=$r $(oA)*$(oB) budget=$budget" begin

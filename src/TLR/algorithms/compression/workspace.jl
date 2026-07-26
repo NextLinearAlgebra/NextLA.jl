@@ -1,5 +1,5 @@
 struct CompressCategoryWorkspace{RegionT,PanelT,ScratchT,ScratchHiT,TileVT,RTileVT,
-    RankVT,ErrV,ShiftV,I32V,RankIndexT}
+    RankVT,ErrV,ShiftV,I32V,RankIndexT,ARAT,QBufT,OmegaT}
     region::RegionT        # TLR region, or `nothing` for a standalone tile batch
     rank_indices::RankIndexT # category-local tile slot -> A_tlr.ranks / A_tlr.resid slot
     S::Int                 # sketch width    = min(maxrank, tm, tn)
@@ -18,6 +18,10 @@ struct CompressCategoryWorkspace{RegionT,PanelT,ScratchT,ScratchHiT,TileVT,RTile
     shift_mult::ShiftV     # view into expired V[1,1,:] for POTRF escalation
     p0s::I32V              # per-tile dense-source row origin (1-based)
     q0s::I32V              # per-tile dense-source col origin (1-based)
+    ara::ARAT              # blocked ARA loop scratch (basis grown into Qbuf)
+    Qbuf::QBufT            # tm × S × n basis; cannot alias U, since the final
+                           # lift U = Q·W would then read and write one array
+    omega::OmegaT          # tn × block × n sketch block
 end
 
 # Reusable scratch for a matrix layout. The output capacity is also the sketch
@@ -64,6 +68,14 @@ function _alloc_category_workspace(A_tlr::AbstractTLRMatrix{<:Any,T}, spec, r::I
     p0s = copyto!(allocate(backend, Int32, n), p0_host)
     q0s = copyto!(allocate(backend, Int32, n), q0_host)
 
+    # The ARA loop samples in blocks rather than once at full width, so the
+    # sketch is never the wide rank-deficient panel that defeated the old
+    # CholQR2 prune (docs/TODO.md, worklog items 1 and 3).
+    Qbuf = zeros(backend, T, spec.tm, S, n)
+    blk = compress_ara_block(S)
+    ara = S == 0 ? nothing : ARAWorkspace(Qbuf; block=blk)
+    omega = zeros(backend, T, spec.tn, max(blk, 1), n)
+
     return CompressCategoryWorkspace(
         spec.region, rank_indices, S, min(r, S), spec.U, spec.V, Q_T, V_T,
         _batch_views(Q_T, S), _batch_views(V_T, S),
@@ -73,8 +85,20 @@ function _alloc_category_workspace(A_tlr::AbstractTLRMatrix{<:Any,T}, spec, r::I
         shift_mult,
         p0s,
         q0s,
+        ara,
+        Qbuf,
+        omega,
     )
 end
+
+"""
+    compress_ara_block(S) -> Int
+
+Sampling block width for `compress!`. Purely a performance knob — the recovered
+rank and the achieved error do not depend on it (there is a test) — so it is set
+to the reference's 32 (a warp) and clamped to the available capacity.
+"""
+@inline compress_ara_block(S::Int) = max(min(32, S), 1)
 
 """
     alloc_workspace(A_tlr) → CompressWorkspace
@@ -107,26 +131,32 @@ end
 end
 
 """
-    compress_arena_elems(tm, tn, kout, ntiles) -> (; S, accum)
+    compress_arena_elems(tm, tn, kout, ntiles) -> (; S, accum, work)
 
-Element count one category needs from its high-precision scratch arena. The
-work-precision intermediates alias the output factors; `accum` contains `Y_hi`
-and `G_hi` at sketch width `S = min(kout, tm, tn)`. Sum over categories to size
-a shared arena.
+Element counts one category needs from its two scratch arenas, at sketch width
+`S = min(kout, tm, tn)`. `accum` is high precision and holds `Y_hi`/`G_hi`;
+`work` is working precision and holds the ARA basis `Qbuf` plus one sketch
+block `omega`.
+
+`Qbuf` cannot alias the output `U` the way the co-range does: the final lift
+`U = Q·W` would then read and write the same array.
 """
 @inline function compress_arena_elems(tm::Int, tn::Int, kout::Int, ntiles::Int)
     S = min(kout, tm, tn)
-    return (; S, accum=(tm * S + S * S) * ntiles)
+    blk = compress_ara_block(S)
+    return (; S,
+            accum=(tm * S + S * S) * ntiles,
+            work=(tm * S + tn * blk) * ntiles)
 end
 
 """
     compress_bytes(T, tm, tn, kout, ntiles) -> Int
 
-Bytes one category needs in its high-precision scratch arena.
+Bytes one category needs in scratch, across both arenas.
 """
 @inline function compress_bytes(::Type{T}, tm::Int, tn::Int, kout::Int, ntiles::Int) where {T}
     e = compress_arena_elems(tm, tn, kout, ntiles)
-    return e.accum * sizeof(_compress_accum_type(T))
+    return e.accum * sizeof(_compress_accum_type(T)) + e.work * sizeof(T)
 end
 
 """
@@ -151,6 +181,9 @@ function carve_tile_workspace(U::AbstractArray{T,3}, V, tm::Int, tn::Int, kout::
     G_hi, accum_off = _take(accum, accum_off, S, S, ntiles)
     norm_err_sq = S == 0 ? zeros(backend, Float64, ntiles) : view(G_hi, 1, 1, :)
     empty_i32 = allocate(backend, Int32, 0)
+    blk = compress_ara_block(S)
+    Qbuf = zeros(backend, T, tm, S, ntiles)
+    omega = zeros(backend, T, tn, blk, ntiles)
     cat = CompressCategoryWorkspace(
         nothing, Int[], S, min(kout, S), U, V, Q_T, V_T,
         _batch_views(Q_T, S), _batch_views(V_T, S),
@@ -159,6 +192,7 @@ function carve_tile_workspace(U::AbstractArray{T,3}, V, tm::Int, tn::Int, kout::
         norm_err_sq,
         shift_mult,
         empty_i32, empty_i32,
+        S == 0 ? nothing : ARAWorkspace(Qbuf; block=blk), Qbuf, omega,
     )
     return cat, accum_off
 end

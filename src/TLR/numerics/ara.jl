@@ -314,6 +314,8 @@ struct ARAWorkspace{QT,YT,DT,CT,FM,FV,IV,SV}
     dR::FM
     status::IV             # per-member potrf info from the first CholQR pass
     status_host::Vector{Int32}
+    kcut::IV               # per-member first numerically invalid column
+    kcut_host::Vector{Int32}
     state::SV
     block::Int
 end
@@ -329,10 +331,23 @@ function ARAWorkspace(::Type{T}, backend, m::Int, maxrank::Int, count::Int;
                       block::Int=32) where {T}
     maxrank >= 0 && count >= 0 && m >= 0 ||
         throw(ArgumentError("m, maxrank and count must be nonnegative"))
+    return ARAWorkspace(allocate(backend, T, m, maxrank, count); block)
+end
+
+"""
+    ARAWorkspace(Q; block=32)
+
+Wrap a caller-owned basis panel `Q` (`m × maxrank × count`), so the loop can
+write straight into storage the caller already has — `compress!` keeps its basis
+inside the output factor panels this way. Everything else is allocated on `Q`'s
+backend.
+"""
+function ARAWorkspace(Q::AbstractArray{T,3}; block::Int=32) where {T}
     block >= 1 || throw(ArgumentError("block must be positive"))
+    m, maxrank, count = size(Q)
+    backend = get_backend(Q)
     blk = min(block, max(maxrank, 1))
     Thi = tlr_orthogonalization_type(T)
-    Q = allocate(backend, T, m, maxrank, count)
     Yblk = allocate(backend, T, m, blk, count)
     Dproj = allocate(backend, T, max(maxrank, 1), blk, count)
     chol = CholQR2FactorWorkspace(
@@ -347,6 +362,7 @@ function ARAWorkspace(::Type{T}, backend, m::Int, maxrank::Int, count::Int;
         Q, Yblk, Dproj, chol,
         allocate(backend, Float64, blk, count), allocate(backend, Float64, count),
         allocate(backend, Float64, blk, count),
+        allocate(backend, Int32, count), Vector{Int32}(undef, count),
         allocate(backend, Int32, count), Vector{Int32}(undef, count),
         ARAConvergenceState(backend, count), blk,
     )
@@ -430,7 +446,9 @@ function ara_build_basis!(ws::ARAWorkspace, sample_right!;
         copyto!(ws.status_host, ws.status)
 
         ara_block_norms!(ws.dR, ws.chol, ws.colmax; shift_coeff=0)
-        ara_mask_breakdown!(ws.Yblk, ws.dR, ws.status, width)
+        ara_mask_breakdown!(ws.Yblk, ws.dR, ws.kcut, ws.chol.R1, ws.status,
+                            width, floor_rel)
+        copyto!(ws.kcut_host, ws.kcut)
 
         view(ws.Q, :, (grown + 1):(grown + width), :) .=
             view(ws.Yblk, :, 1:width, :)
@@ -439,46 +457,92 @@ function ara_build_basis!(ws::ARAWorkspace, sample_right!;
 
         ara_update_convergence!(ws.state, ws.dR, eps_rel, r_required,
                                 width, maxrank)
-        active = _ara_retire_broken!(ws.state, ws.status_host)
+        active = _ara_retire_broken!(ws.state, ws.kcut_host, width)
         active == 0 && break
     end
 
     return (; Q=view(ws.Q, :, 1:grown, :), ranks=ws.state.ranks, passes)
 end
 
-# `potrf` reports `info = k` when the leading minor of order `k` is not positive
-# definite, so columns `1..k-1` of the block were validly factored and only
-# `k..width` are meaningless. Because `R` is upper triangular, column `j` of
-# `Y R⁻¹` depends only on the leading `j×j` block of `R`, so the valid prefix is
-# untouched by whatever the failed tail contains — the contamination is
-# forward-only. Zero the tail of the basis block and its `dR` entries: the
-# zeros then read as "no new content", which is exactly what they are.
-@kernel function _ara_mask_breakdown_kernel!(Y::AbstractArray{T,3}, dR, status,
+# Where a block stops being numerically usable.
+#
+# Two things can end it, and `potrf`'s status alone is not enough:
+#
+#   * `potrf` reports `info = k` when the leading minor of order `k` is not
+#     positive definite, so columns `1..k-1` were validly factored.
+#   * `potrf` can also *succeed* on a pivot that is positive but far too small
+#     to divide by. Measured on a rank-4 Float32 panel of width 12: status 0,
+#     yet pivots 5–12 sat at `~5e-7` against a leading `6.6`. The triangular
+#     solve then produces garbage (or, on an exactly zero panel, `NaN` from
+#     `0/0`).
+#
+# The second cut is the CholeskyQR2 validity condition itself, applied per
+# column: the `O(u)` orthogonality guarantee holds for `κ(Y) ≤ u^{-1/2}`, and
+# `κ(R) = κ(Y)`, so a pivot below `√u · R_max` is outside the regime where the
+# factorization means anything. It is the same `√u` that bounds the stopping
+# tolerance — not a separate constant.
+#
+# Everything from the cut onward is zeroed. That is not over-eager: `R` is upper
+# triangular, so column `j` of `Y R⁻¹` is built from the leading `j×j` block,
+# and once a pivot is invalid every later column inherits it. The zeros then
+# read as "no new content", which is what they are.
+# The cut must be read off the **first** CholQR pass. `dR` is the composite
+# `R₂R₁` diagonal, and once pass 1's triangular solve has produced garbage
+# columns, pass 2's Gram is computed from them — so a contaminated `R₂` can drag
+# the composite below threshold on columns that were perfectly valid. Measured:
+# a rank-20 operator sampled at width 8 gave `potrf` status 5 (four genuine new
+# directions) while the composite-based cut fired at column 1, losing them.
+@kernel function _ara_cut_kernel!(kcut, R1::AbstractArray{T,3}, status,
+                                  width::Int, floor_rel::Float64) where {T}
+    b = @index(Global, Linear)
+    @inbounds begin
+        mx = 0.0
+        for j in 1:width
+            d = sqrt(_abs2_f64(R1[j, j, b]))
+            (isfinite(d) && d > mx) && (mx = d)
+        end
+        k = width + 1
+        info = Int(status[b])
+        (info > 0 && info < k) && (k = info)
+        thresh = floor_rel * mx
+        for j in 1:width
+            d = sqrt(_abs2_f64(R1[j, j, b]))
+            if !isfinite(d) || d < thresh
+                (j < k) && (k = j)
+                break
+            end
+        end
+        kcut[b] = Int32(k)
+    end
+end
+
+@kernel function _ara_mask_breakdown_kernel!(Y::AbstractArray{T,3}, dR, kcut,
                                              width::Int) where {T}
     j, b = @index(Global, NTuple)
-    @inbounds begin
-        k = Int(status[b])
-        if k > 0 && j >= k && j <= width
-            for i in axes(Y, 1)
-                Y[i, j, b] = zero(T)
-            end
-            dR[j, b] = 0.0
+    @inbounds if j >= Int(kcut[b]) && j <= width
+        for i in axes(Y, 1)
+            Y[i, j, b] = zero(T)
         end
+        dR[j, b] = 0.0
     end
 end
 
 """
-    ara_mask_breakdown!(Y, dR, status, width) -> nothing
+    ara_mask_breakdown!(Y, dR, kcut, R1, status, width, floor_rel) -> kcut
 
-Discard the columns a broken-down `potrf` never factored, keeping its valid
-prefix. See [`ara_build_basis!`](@ref) for why breakdown is information.
+Discard the columns of a block that the orthonormalization could not deliver,
+keeping its valid prefix. `R1` is the **first**-pass triangular factor and
+`floor_rel` the CholeskyQR2 validity threshold `√u_hi`; see the commentary above
+for why `potrf`'s status alone is insufficient and why the composite factor
+cannot be used here.
 """
-function ara_mask_breakdown!(Y, dR, status, width::Int)
-    width == 0 && return nothing
-    _ara_mask_breakdown_kernel!(get_backend(Y))(
-        Y, dR, status, width; ndrange=(width, size(Y, 3)),
-    )
-    return nothing
+function ara_mask_breakdown!(Y, dR, kcut, R1, status, width::Int, floor_rel::Float64)
+    width == 0 && return kcut
+    backend = get_backend(Y)
+    count = size(Y, 3)
+    _ara_cut_kernel!(backend)(kcut, R1, status, width, floor_rel; ndrange=count)
+    _ara_mask_breakdown_kernel!(backend)(Y, dR, kcut, width; ndrange=(width, count))
+    return kcut
 end
 
 # Breakdown means the block of `width` fresh Gaussian samples produced only
@@ -488,13 +552,210 @@ end
 # captured all of it. The member is therefore converged, and forcing it is not a
 # heuristic but the conclusion of that argument. Runs *after* the convergence
 # update so the rank from this pass is recorded first.
-function _ara_retire_broken!(state::ARAConvergenceState, status_host)
-    any(!iszero, status_host) || return count_active(state)
+function _ara_retire_broken!(state::ARAConvergenceState, kcut_host, width::Int)
+    any(k -> k <= width, kcut_host) || return count_active(state)
     samples = state.samples_host
     copyto!(samples, state.samples)
-    @inbounds for b in eachindex(status_host)
-        iszero(status_host[b]) || (samples[b] = Int32(0))
+    @inbounds for b in eachindex(kcut_host)
+        (kcut_host[b] <= width) && (samples[b] = Int32(0))
     end
     copyto!(state.samples, samples)
     return count_active(state)
+end
+
+# ---------------------------------------------------------------------------
+# A2: optimal truncation of X ≈ Q Zᵀ.
+# ---------------------------------------------------------------------------
+#
+# With `Q` orthonormal and `Z = P Σ Wᵀ` the thin SVD of `Z`,
+#
+#     Q Zᵀ = Q W Σ Pᵀ = (Q W) Σ Pᵀ ,
+#
+# and `QW` has orthonormal columns, so this *is* the SVD of the represented
+# matrix: its singular values are those of `Z`. Truncating at rank `r` is
+# therefore optimal in the Eckart–Young sense, with squared error `Σ_{k>r} σ_k²`
+# known exactly and for free. The outputs are `U = Q·W[:,1:r]` and
+# `V = P[:,1:r]·diag(σ_{1:r})` — the latter a column scaling, not a product.
+#
+# Two invariants make this safe when `Q` carries zero columns (which it does:
+# `ara_mask_breakdown!` zeroes the tail of a broken-down block).
+#
+#   * Column `j` of `Z = XᵀQ` is zero whenever column `j` of `Q` is. Then
+#     `Z[:,j] = P Σ W[j,:]ᵀ = 0` and, since `P` has orthonormal columns,
+#     `σ_k W[j,k] = 0` for every `k`. So the retained right singular vectors
+#     (those with `σ_k > 0`) vanish on exactly the rows that index zero columns
+#     of `Q`. Hence `UᵀU = W[:,1:r]ᵀ (QᵀQ) W[:,1:r] = I` even though `QᵀQ ≠ I`.
+#   * Members truncate to different ranks. The batch runs at the row-wise
+#     maximum with `W`'s tail zeroed per member, so every product stays a single
+#     uniform batched GEMM and the surplus columns come out exactly zero.
+
+"""
+    batched_thin_svd!(A) -> (U, S, V)
+
+Thin SVD `A[:,:,b] = U[:,:,b] * Diagonal(S[:,b]) * V[:,:,b]'` of every member of
+a batch of tall-skinny matrices, with `size(A,1) ≥ size(A,2)`. `A` may be
+overwritten.
+
+This is the one backend hook of the truncation step. The generic method loops
+LAPACK on the host and is correct for every array type; backends override it:
+
+  * **CUDA** — `gesvdaStridedBatched`. Measured on this repository's panels it
+    is 3.4× faster than a Gram plus `syevjBatched` at `s = 64` and recovers the
+    true rank where the Gram route over-retains, because it never squares the
+    condition number. Its *left* factor is not orthonormal when returned
+    untruncated, but the caller consumes the *right* factor, which measures
+    clean at `~1e-14`.
+  * **AMD** — `rocsolver_?gesvdj_strided_batched`, the batched one-sided Jacobi
+    SVD, which is the closest rocSOLVER equivalent.
+"""
+function batched_thin_svd!(A::AbstractArray{T,3}) where {T}
+    m, n, count = size(A)
+    m >= n || throw(ArgumentError("batched_thin_svd! requires size(A,1) >= size(A,2)"))
+    RT = real(T)
+    Ah = A isa Array ? A : Array(A)
+    U = Array{T,3}(undef, m, n, count)
+    S = Array{RT,2}(undef, n, count)
+    V = Array{T,3}(undef, n, n, count)
+    @inbounds for b in 1:count
+        F = svd!(view(Ah, :, :, b); full=false)
+        copyto!(view(U, :, :, b), F.U)
+        copyto!(view(S, :, b), F.S)
+        copyto!(view(V, :, :, b), F.V)
+    end
+    A isa Array && return (U, S, V)
+    dev = similar(A, T, 0)                       # backend-typed constructor
+    return (_to_backend(dev, U), _to_backend(dev, S), _to_backend(dev, V))
+end
+
+@inline function _to_backend(proto, H::Array)
+    D = similar(proto, eltype(H), size(H))
+    copyto!(D, H)
+    return D
+end
+
+# Per member: the smallest `r` whose discarded energy fits the budget, capped at
+# `maxrank`. Scanning from the tail accumulates the discarded energy directly,
+# so the reported error is the achieved one, not a bound.
+#
+# When `has_energy`, `energy[b] = ‖X‖²_F` of the *original* operator is supplied
+# and the range-capture error is charged against the budget too. `Q` is
+# orthonormal, so `‖QQᵀX‖² = ‖Z‖² = Σ_k σ_k²` and Pythagoras gives
+# `‖X − QQᵀX‖² = ‖X‖² − Σ_k σ_k²` exactly; the total error of the returned
+# factors is then `‖X‖² − Σ_{k≤r} σ_k²`. This is the randQB_EI indicator, and it
+# carries its cancellation: both terms are `O(‖X‖²)` while the difference may be
+# far smaller, so it is clamped to zero below the rounding floor of the
+# subtraction — otherwise noise there is charged as real error and the rank
+# is inflated.
+@kernel function _ara_truncation_rank_kernel!(ranks, err_sq, S, energy, tol_sq,
+                                              relative::Bool, has_energy::Bool,
+                                              maxrank::Int, width::Int, rows::Int)
+    b = @index(Global, Linear)
+    @inbounds begin
+        total = 0.0
+        for k in 1:width
+            total += Float64(S[k, b])^2
+        end
+        reference = has_energy ? Float64(energy[b]) : total
+        capture = 0.0
+        if has_energy
+            capture = reference - total
+            floor_sq = Float64(rows) * Float64(eps(Float64)) * reference
+            capture = (capture < floor_sq) ? 0.0 : capture
+        end
+        budget = (relative ? Float64(tol_sq) * reference : Float64(tol_sq)) - capture
+        dropped = 0.0
+        r = width
+        while r > 0
+            e = Float64(S[r, b])^2
+            dropped + e > budget && break
+            dropped += e
+            r -= 1
+        end
+        if r > maxrank                     # capacity is authoritative
+            for k in (maxrank + 1):r
+                dropped += Float64(S[k, b])^2
+            end
+            r = maxrank
+        end
+        ranks[b] = eltype(ranks)(r)
+        err_sq[b] = capture + dropped
+    end
+end
+
+# Zero `W[:, r_b+1 : width]` and scale `V[:, k] = P[:, k]·σ_k` (zero past `r_b`),
+# so the subsequent GEMM can run at one uniform width for the whole batch.
+@kernel function _ara_apply_truncation_kernel!(W::AbstractArray{T,3},
+                                               V::AbstractArray{T,3},
+                                               P::AbstractArray{T,3},
+                                               S, ranks, width::Int) where {T}
+    k, b = @index(Global, NTuple)
+    @inbounds begin
+        keep = k <= Int(ranks[b])
+        for i in axes(W, 1)
+            W[i, k, b] = keep ? W[i, k, b] : zero(T)
+        end
+        scale = keep ? T(S[k, b]) : zero(T)
+        for i in axes(V, 1)
+            V[i, k, b] = P[i, k, b] * scale
+        end
+    end
+end
+
+"""
+    ara_truncate!(U, V, ranks, err_sq, Q, Z; tol, relative=true, maxrank)
+        -> (; U, V, ranks, err_sq)
+
+Optimally truncate `X ≈ Q Zᵀ` to per-member rank, writing `U` (`b_m × maxrank ×
+count`, orthonormal columns) and `V` (`b_n × maxrank × count`).
+
+`tol` is the Frobenius error budget, squared internally; with `relative=true` it
+is taken against each member's reference energy. `err_sq[b]` returns the
+**achieved** squared error, and `ranks[b] == maxrank` flags a member whose
+spectrum did not fit — no separate residual pass is needed to report either (see
+`docs/TODO.md`, worklog item 4).
+
+`energy[b] = ‖X‖_F²` of the original operator may be supplied when it is known
+independently, as it is when compressing an explicit matrix. The range-capture
+error `‖X‖² − ‖Z‖²` is then charged against the budget as well, so `err_sq` is
+the total error of the returned factors rather than the truncation part alone.
+Without it the reference is `‖Z‖²` and capture is assumed zero, which is correct
+when `Q` was built to tolerance by [`ara_build_basis!`](@ref).
+
+`Z` is overwritten.
+"""
+function ara_truncate!(U, V, ranks, err_sq, Q, Z;
+                       tol::Real, relative::Bool=true, maxrank::Int,
+                       energy=nothing, compute=nothing)
+    T = eltype(Q)
+    bm, sQ, count = size(Q)
+    bn = size(Z, 1)
+    size(Z) == (bn, sQ, count) ||
+        throw(DimensionMismatch("Z must be ($bn, $sQ, $count)"))
+    size(U) == (bm, maxrank, count) ||
+        throw(DimensionMismatch("U must be ($bm, $maxrank, $count)"))
+    size(V) == (bn, maxrank, count) ||
+        throw(DimensionMismatch("V must be ($bn, $maxrank, $count)"))
+    maxrank <= sQ ||
+        throw(ArgumentError("maxrank must not exceed the basis width $sQ"))
+    tol >= 0 || throw(ArgumentError("tol must be nonnegative"))
+    count == 0 && return (; U, V, ranks, err_sq)
+
+    mode = compute === nothing ? default_gemm_compute_mode(T) :
+           gemm_compute_mode(compute)
+    backend = get_backend(Q)
+
+    P, S, W = batched_thin_svd!(Z)
+    _ara_truncation_rank_kernel!(backend)(
+        ranks, err_sq, S, energy === nothing ? err_sq : energy,
+        Float64(tol)^2, relative, energy !== nothing, maxrank, sQ, bn;
+        ndrange=count,
+    )
+    _ara_apply_truncation_kernel!(backend)(
+        W, V, P, S, ranks, maxrank; ndrange=(maxrank, count),
+    )
+    # U = Q · W[:, 1:maxrank]; columns past each member's rank are zero because
+    # the kernel above zeroed the matching columns of W.
+    precision_gemm_batched!('N', 'N', one(T), Q, view(W, :, 1:maxrank, :),
+                            zero(T), U, mode)
+    return (; U, V, ranks, err_sq)
 end

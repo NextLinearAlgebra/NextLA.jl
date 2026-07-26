@@ -121,19 +121,31 @@ residual range, and the member is done.
 `cholqr2_relative_shift_floor` survives as the guard for paths that *do* shift —
 the wide one-shot panels of item 3.
 
-### 3. `compress!` (dense → TLR) is in the bad regime and must move to ARA
+### 3. `compress!` (dense → TLR) moved to ARA
 
-[compress.jl](../../compression/compress.jl) sketches **one-shot at full
+[compress.jl](../../compression/compress.jl) used to sketch **one-shot at full
 `maxrank`** — its docstring: *"`maxrank` is both the output capacity and the
 sketch capacity."* For a tile of true rank `r ≪ maxrank` that is a monolithic,
 wide, rank-deficient panel with no blocking and no BCGS2: precisely the setup of
 item 1, where `κ(R₁)` pollutes the basis before the greedy V-column-norm prune
-ever runs. **That prune has no guarantees there.**
+ever runs. That prune had no guarantees there.
 
-Moving it to ARA fixes the numerics and pays twice: the reference takes the
-sampler as a black box (§2.3.2), so one loop serves both `compress!` (dense tile
-GEMM sampler) and the GEMM output (factor-list sampler); and tiles stop at their
-actual rank instead of always paying full `maxrank` width.
+Now `compress_tiles!` runs the ARA loop, so each tile stops at its own rank and
+the orthonormalizer never sees a wide deficient panel. `TileSource` already
+*was* the black-box sampler interface — `_sketch!`/`_cosketch!` are
+`ApplyRight`/`ApplyLeft` — so the same loop serves both this path and the GEMM
+output.
+
+The reported residual is now exact rather than indicative: with `Q` orthonormal,
+`‖A − QQᵀA‖² = ‖A‖² − ‖Z‖²` by Pythagoras, and truncation adds `Σ_{k>r} σ_k²`,
+so the total is `‖A‖² − Σ_{k≤r} σ_k²`. That is the randQB_EI indicator and it
+keeps its cancellation floor (see [[tlr-ei-cancellation-floor]] reasoning:
+both terms are `O(‖A‖²)` while the difference may be far smaller), so it is
+clamped below the rounding floor of the subtraction.
+
+`Qbuf` cannot alias the output `U` the way the co-range aliases `V`: the final
+lift `U = Q·W` would read and write one array. It is a separate working-precision
+buffer, accounted in `compress_arena_elems(...).work` so the budget stays honest.
 
 ### 4. The exact residual was removed from the hot path
 
@@ -173,7 +185,83 @@ flag used by tests.
   factor — which is exactly the final `K = ZᵀZ` eigensolve in `algorithm.tex`.
   So the blueprint already closes their noted weakness; keep that step.
 
-### 6. Batched factorization survey (measured on this machine)
+### 6. The final truncation uses `gesvda`, not a Gram
+
+With `Q` orthonormal and `Z = P Σ Wᵀ` the thin SVD of `Z`,
+`Q Zᵀ = (QW) Σ Pᵀ` — and `QW` is orthonormal, so this *is* the SVD of the
+represented matrix. Truncation is therefore Eckart–Young optimal, with squared
+error `Σ_{k>r} σ_k²` exact and free. Two routes reach it: eigendecompose the
+Gram `K = ZᵀZ`, or factor `Z` directly.
+
+Measured (`b_n=256`, `nb=128`, fp64, ms; and rank recovered at `τ = 1e-8` with a
+true rank of `s_Q/2` and a spectral gap of `1e-10`):
+
+| `s_Q` | gesvda | gram+syevj | rank gesvda | rank gram | true |
+| --- | --- | --- | --- | --- | --- |
+| 16 | 11.65 | **4.31** | **8** | 11 | 8 |
+| 32 | 29.62 | 35.64 | **16** | 21 | 16 |
+| 48 | **22.34** | 73.01 | — | — | — |
+| 64 | **27.09** | 94.78 | 42 | 44 | 32 |
+
+`gesvda` wins for `s_Q > 32` on speed and everywhere on rank, because it never
+squares the condition number: the Gram route resolves singular values only to
+`√u·σ_max`, so with a gap below that it cannot separate signal from noise and
+over-retains by 30–40%. It also **saves two GEMMs** — `Z = PΣWᵀ` yields both
+output factors directly (`U = Q·W[:,1:r]`, `V = P[:,1:r]·diag σ`, a column
+scaling), where the Gram route needs `K = ZᵀZ`, then `V = ZW`, then `U = QW` —
+and it removes the need for a batched `syevj` binding entirely.
+
+Adopted: **one path, `gesvda`**, accepting the 2.7× penalty at `s_Q = 16`
+(7 ms per 128 tiles in absolute terms) in exchange for a single code path.
+
+Two things that are *not* hand-waved:
+
+- **`gesvda`'s left factor is not orthonormal when returned untruncated**
+  (measured `‖UᵀU−I‖ = 8e-4` at gap `1e-6`). We consume the **right** factor,
+  measured clean at `~1e-14`, and truncate before use. There is a test on it.
+- **`Q` carries exact zero columns** (`ara_mask_breakdown!` puts them there), so
+  `QᵀQ ≠ I` and `U = QW` is not obviously orthonormal. It is, and by an
+  identity rather than luck: column `j` of `Z = XᵀQ` is zero whenever column `j`
+  of `Q` is, so `Z[:,j] = PΣW[j,:]ᵀ = 0` gives `σ_k W[j,k] = 0` for all `k`.
+  The retained right singular vectors therefore vanish on exactly the rows
+  indexing dead columns of `Q`, and `UᵀU = W ᵀ(QᵀQ)W = I`. Tested directly with
+  a deliberately holed `Q`.
+
+The Gram route was not unsafe, merely slower and looser: `Z` comes out of the
+ARA loop, whose tail already sits at `ε_rel ≥ √u`, so the Gram's `√u` resolution
+would have been *exactly* sufficient by construction — the same `√u` bound
+appearing for the third time (items 2 and 5).
+
+Backends: CUDA `gesvdaStridedBatched`; AMD `rocsolver_?gesvdj_strided_batched`
+(batched one-sided Jacobi, the closest rocSOLVER equivalent — **written but
+never executed**, since the AMDGPU extension does not precompile here; the
+generic method keeps ROCArrays correct meanwhile); CPU a LAPACK loop.
+
+### 7. `potrf` success is not a usability certificate
+
+Two bugs surfaced when `compress!` moved onto ARA, both caught by the **Float32
+CUDA** roundtrip, and both worth knowing before touching this code.
+
+**`potrf` can succeed on a pivot you must not divide by.** Measured on a rank-4
+Float32 panel of width 12: `info = 0`, yet pivots 5–12 sat at `~5e-7` against a
+leading `6.6`. The triangular solve then returns garbage — and on an exactly
+zero panel, `NaN` from `0/0`. Breakdown detection alone therefore under-reports;
+the guard is the CholeskyQR2 validity condition applied per column, `R[j,j] ≥
+√u·R_max`. That is the same `√u` as items 2 and 5, not a new constant.
+
+**The cut must come from the first CholQR pass.** `dR` is the composite `R₂R₁`
+diagonal, and once pass 1's solve has produced garbage columns, pass 2's Gram is
+built from them, so a contaminated `R₂` drags the composite below threshold on
+columns that were fine. Measured: a rank-20 operator sampled at width 8 gave
+`potrf` status 5 — four genuine new directions — while the composite-based cut
+fired at column 1 and lost them, reporting rank 16 instead of 20.
+`_ara_cut_kernel!` reads `R1` directly for this reason.
+
+Everything from the cut is zeroed, which is not over-eager: `R` is upper
+triangular, so column `j` of `Y R⁻¹` is built from the leading `j×j` block, and
+once a pivot is invalid every later column inherits it.
+
+### 8. Batched factorization survey (measured on this machine)
 
 | API | Batched | Notes |
 | --- | --- | --- |
@@ -238,16 +326,23 @@ reverted — the design it served no longer exists.
   the loop (the reference does the same, its line 32), rather than accumulated
   per pass as `algorithm.tex` draws it. Same total work, fewer launches.
 
-- [ ] **A2 — final truncation.** `K = ZᵀZ`, batched syev, rank from the tail sum
-  `Σ_{k>r} λ_k ≤ τ²`, lift `U = QW`, `V = ZW`. Note `ext/NextLACUDAExt.jl` has
-  `_row_basis_eigh!` = `syevd!`, **non-batched**; a batched `syevj` binding is
-  needed. Gate: recovers the optimal rank on prescribed spectra, closing the
-  overshoot of item 5.
+- [x] **A2 — final truncation.** `batched_thin_svd!` (backend hook) and
+  `ara_truncate!` in [numerics/ara.jl](../../../numerics/ara.jl); CUDA override
+  in `ext/NextLACUDAExt.jl`, AMD in `ext/amdgpu/svd.jl`. 31/31 CPU + 10/10 CUDA.
+  Rationale and the measured comparison are worklog item 6. Gates: the achieved
+  error equals the Eckart–Young optimum to round-off, the reported `err_sq` is
+  the achieved error rather than a bound, ragged ranks stay in one batched call
+  with surplus columns exactly zero, and the device path is asserted to stay on
+  device (the generic fallback would pass every numerical check while silently
+  costing a host round trip per tile).
 
-- [ ] **A3 — `compress!` on ARA.** Dense-tile sampler; retire the one-shot
-  `maxrank`-width sketch and its unguarded prune (item 3). Gate: existing
-  `test/TLR/compress.jl` green; ranks at or below the current ones; no
-  regression on tiles that genuinely need full rank.
+- [x] **A3 — `compress!` on ARA.** `compress_tiles!` now runs `ara_build_basis!`
+  plus `ara_truncate!` against a dense-tile sampler; the one-shot
+  `maxrank`-width sketch, `mixed_cholqr2_basis!` and `prune_randqb_columns!` are
+  off this path. Worklog items 3 and 7. All pre-existing compress tests green
+  (56 + 15 + 12 CPU, 4 CUDA, 12 packed-batch) plus a new testset asserting the
+  recovered rank equals the true rank rather than the capacity, and that the
+  sampling block width changes neither rank nor accuracy.
 
 - [ ] **R1 — factor-list sampler.** `S`/`H`/`T` prologue and the fused
   `ApplyRight`/`ApplyLeft` over the zero-copy `rowpanel`/`colpanel` views in

@@ -332,3 +332,141 @@ end
         end
     end
 end
+
+# A2: optimal truncation of X ≈ Q Zᵀ.
+
+# Build (Q, Z) representing a matrix with a prescribed spectrum, so the optimal
+# truncation error is known in closed form from Eckart-Young.
+function truncation_fixture(::Type{T}, bm, bn, sQ, sigmas, rng) where {T}
+    Q = Matrix(qr(randn(rng, T, bm, sQ)).Q)[:, 1:sQ]
+    P = Matrix(qr(randn(rng, T, bn, sQ)).Q)[:, 1:sQ]
+    W = Matrix(qr(randn(rng, T, sQ, sQ)).Q)
+    Z = P * Diagonal(T.(sigmas)) * W'          # so Q*Z' has singular values σ
+    return Q, Z
+end
+
+@testset "ARA truncation on CPU" begin
+    rng = MersenneTwister(1501)
+    bm, bn, sQ = 48, 40, 12
+
+    @testset "matches the Eckart-Young optimum" begin
+        sigmas = [2.0^(-k) for k in 0:(sQ-1)]         # smooth decay
+        Q, Z = truncation_fixture(Float64, bm, bn, sQ, sigmas, rng)
+        X = Q * Z'
+        for tol in (1e-1, 1e-3, 1e-6)
+            U = zeros(Float64, bm, sQ, 1)
+            V = zeros(Float64, bn, sQ, 1)
+            ranks = zeros(Int32, 1); err = zeros(Float64, 1)
+            _TLRM.ara_truncate!(U, V, ranks, err,
+                                reshape(copy(Q), bm, sQ, 1),
+                                reshape(copy(Z), bn, sQ, 1);
+                                tol, relative=true, maxrank=sQ)
+            r = Int(ranks[1])
+            Ur, Vr = U[:, 1:r, 1], V[:, 1:r, 1]
+            achieved = norm(X - Ur * Vr')
+            optimal = sqrt(sum(abs2, sigmas[(r+1):end]))
+            # Optimality: the achieved error equals the Eckart-Young bound for
+            # the rank chosen, to round-off.
+            @test achieved ≈ optimal atol = 1e-12 rtol = 1e-8
+            # The budget is met, and one rank less would have missed it.
+            @test achieved <= tol * norm(X) * (1 + 1e-8)
+            @test r == 1 || sqrt(sum(abs2, sigmas[r:end])) > tol * norm(X)
+            # The reported error is the achieved one, not a bound.
+            @test sqrt(err[1]) ≈ optimal atol = 1e-12 rtol = 1e-8
+            @test norm(Ur' * Ur - I, Inf) <= 1e-12
+        end
+    end
+
+    @testset "orthonormal output despite zero columns in Q" begin
+        # ara_mask_breakdown! leaves exact zero columns in Q, so QᵀQ ≠ I. The
+        # retained right singular vectors must vanish on those rows, which is
+        # what keeps U = QW orthonormal.
+        sigmas = [1.0, 0.5, 0.25, 0.1, 0.0, 0.0]
+        s = length(sigmas)
+        Q, Z = truncation_fixture(Float64, bm, bn, s, sigmas, rng)
+        Q[:, 5:6] .= 0.0                      # dead columns
+        Z[:, :] = Z * Diagonal([1, 1, 1, 1, 0, 0])
+        @test norm(Q' * Q - I, Inf) > 0.5     # Q really is not orthonormal
+        U = zeros(Float64, bm, s, 1); V = zeros(Float64, bn, s, 1)
+        ranks = zeros(Int32, 1); err = zeros(Float64, 1)
+        _TLRM.ara_truncate!(U, V, ranks, err, reshape(Q, bm, s, 1),
+                            reshape(copy(Z), bn, s, 1);
+                            tol=1e-8, relative=true, maxrank=s)
+        r = Int(ranks[1])
+        @test r == 4
+        Ur = U[:, 1:r, 1]
+        @test norm(Ur' * Ur - I, Inf) <= 1e-12
+        @test norm(Q * Z' - Ur * V[:, 1:r, 1]') / norm(Q * Z') <= 1e-12
+    end
+
+    @testset "ragged ranks stay in one batched call" begin
+        count = 3
+        specs = ([1.0, 1e-9, 1e-9, 1e-9], [1.0, 0.5, 0.25, 1e-9], [1.0, 0.5, 0.25, 0.125])
+        s = 4
+        Qs = zeros(Float64, bm, s, count); Zs = zeros(Float64, bn, s, count)
+        for b in 1:count
+            q, z = truncation_fixture(Float64, bm, bn, s, specs[b], rng)
+            Qs[:, :, b] = q; Zs[:, :, b] = z
+        end
+        U = zeros(Float64, bm, s, count); V = zeros(Float64, bn, s, count)
+        ranks = zeros(Int32, count); err = zeros(Float64, count)
+        _TLRM.ara_truncate!(U, V, ranks, err, copy(Qs), copy(Zs);
+                            tol=1e-6, relative=true, maxrank=s)
+        @test ranks == Int32[1, 3, 4]
+        for b in 1:count
+            r = Int(ranks[b])
+            @test norm(U[:, 1:r, b]' * U[:, 1:r, b] - I, Inf) <= 1e-12
+            # Surplus columns must be exactly zero, so the padded batch is safe
+            # to consume without per-member bookkeeping downstream.
+            @test all(iszero, U[:, (r+1):s, b])
+            @test all(iszero, V[:, (r+1):s, b])
+        end
+    end
+
+    @testset "maxrank cap is authoritative and self-reporting" begin
+        sigmas = fill(1.0, 8)                 # flat: nothing is truncatable
+        s = 8
+        Q, Z = truncation_fixture(Float64, bm, bn, s, sigmas, rng)
+        U = zeros(Float64, bm, 3, 1); V = zeros(Float64, bn, 3, 1)
+        ranks = zeros(Int32, 1); err = zeros(Float64, 1)
+        _TLRM.ara_truncate!(U, V, ranks, err, reshape(Q, bm, s, 1),
+                            reshape(copy(Z), bn, s, 1);
+                            tol=1e-8, relative=true, maxrank=3)
+        @test ranks[1] == 3                   # saturation visible in the rank
+        @test sqrt(err[1]) ≈ sqrt(5.0) rtol = 1e-10   # 5 discarded unit values
+    end
+end
+
+@testset "ARA truncation on GPU" begin
+    for (backend_name, ArrayType, synchronize) in available_backends()
+        @testset "$backend_name" begin
+            rng = MersenneTwister(1502)
+            bm, bn, sQ = 48, 40, 12
+            sigmas = [2.0^(-k) for k in 0:(sQ-1)]
+            Qh, Zh = truncation_fixture(Float64, bm, bn, sQ, sigmas, rng)
+            X = Qh * Zh'
+            U = ArrayType(zeros(Float64, bm, sQ, 1))
+            V = ArrayType(zeros(Float64, bn, sQ, 1))
+            ranks = ArrayType(zeros(Int32, 1)); err = ArrayType(zeros(Float64, 1))
+            _TLRM.ara_truncate!(U, V, ranks, err,
+                                ArrayType(reshape(Qh, bm, sQ, 1)),
+                                ArrayType(reshape(Zh, bn, sQ, 1));
+                                tol=1e-6, relative=true, maxrank=sQ)
+            synchronize(U)
+            r = Int(Array(ranks)[1])
+            Ur = Array(U)[:, 1:r, 1]; Vr = Array(V)[:, 1:r, 1]
+            optimal = sqrt(sum(abs2, sigmas[(r+1):end]))
+            @test norm(X - Ur * Vr') ≈ optimal atol = 1e-12 rtol = 1e-6
+            @test norm(Ur' * Ur - I, Inf) <= 1e-11
+            @test sqrt(Array(err)[1]) ≈ optimal atol = 1e-12 rtol = 1e-6
+
+            # The batched SVD must run on device. The generic fallback copies to
+            # the host and would pass every numerical check above while quietly
+            # costing a round trip per tile, so assert residency directly.
+            Zd = ArrayType(reshape(Zh, bn, sQ, 1))
+            Ud, Sd, Vd = _TLRM.batched_thin_svd!(Zd)
+            @test Ud isa typeof(Zd) && Vd isa typeof(Zd)
+            @test Array(Sd)[:, 1] ≈ svd(Zh).S rtol = 1e-12
+        end
+    end
+end
