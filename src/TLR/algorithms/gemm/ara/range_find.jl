@@ -121,3 +121,103 @@ function range_find_tile!(U::AbstractArray{T,3}, V::AbstractArray{T,3},
                      fill!(view(V, :, (sQ + 1):maxrank, :), zero(T)))
     return (; passes=basis.passes)
 end
+
+@kernel function _scatter_run_factor_kernel!(dest, src, ranks_slot,
+                                             slot_to_member)
+    i, k, slot = @index(Global, NTuple)
+    @inbounds dest[i, k, Int(slot_to_member[slot])] =
+        k <= Int(ranks_slot[slot]) ? src[i, k, slot] : zero(eltype(dest))
+end
+
+@kernel function _scatter_run_diagnostic_kernel!(ranks, err_sq, ranks_slot,
+                                                 err_slot, slot_to_member)
+    slot = @index(Global, Linear)
+    @inbounds begin
+        member = Int(slot_to_member[slot])
+        ranks[member] = ranks_slot[slot]
+        err_sq[member] = err_slot[slot]
+    end
+end
+
+"""
+    range_find_column_run!(U, V, ranks, err_sq, ops, rows, j; ...)
+
+R3 fixed-column RangeFind. The tiles `(rows, j)` share one `H_ℓj` per sampling
+pass and occupy a physically contiguous active prefix. Members that converge
+are swap-removed into a retired suffix; the complete run is truncated as one
+batch and scattered once back to the caller's original row order.
+
+This is the tile-column-major output fast path. The symmetric tile-row-major
+path samples `X'Ω` over a fixed row and will reuse the same packed-active ARA
+driver with a row-family factor apply.
+"""
+function range_find_column_run!(U::AbstractArray{T,3}, V::AbstractArray{T,3},
+                                ranks, err_sq,
+                                ops::LogicalTLROperands, rows, j::Integer;
+                                alpha, beta=false, C=nothing,
+                                eps_rel::Real, r_required::Int=10,
+                                tol::Real, rel::Bool=true,
+                                block::Int=32, compute=nothing) where {T}
+    row_ids = collect(Int, rows)
+    count = length(row_ids)
+    bm, maxrank, countU = size(U)
+    bn, maxrankV, countV = size(V)
+    countU == countV == count == length(ranks) == length(err_sq) ||
+        throw(DimensionMismatch("run outputs and diagnostics must match length(rows)"))
+    maxrank == maxrankV ||
+        throw(DimensionMismatch("U and V must have the same rank capacity"))
+    count == 0 && return (; passes=0, active_counts=Int[], member_ids=Int[])
+    fill!(U, zero(T)); fill!(V, zero(T))
+
+    if maxrank == 0
+        fill!(ranks, zero(eltype(ranks)))
+        fill!(err_sq, 0.0)
+        return (; passes=0, active_counts=Int[], member_ids=collect(1:count))
+    end
+
+    backend = get_backend(U)
+    ws = ARAWorkspace(T, backend, bm, maxrank, count; block)
+    run = ColumnRunCoupling(ops, row_ids, j;
+                            alpha, beta, C, block=ws.block, maxrank, compute)
+    member_ids = collect(1:count)
+    sampler = function (Y, width, active_ids)
+        apply_right_run!(Y, run, width, length(active_ids); beta, compute)
+    end
+    basis = ara_build_basis_packed!(
+        ws, sampler, member_ids; eps_rel, r_required, compute,
+        swap_member! = (p, q) -> _swap_column_run_members!(run, p, q),
+    )
+    sQ = size(basis.Q, 2)
+
+    if sQ == 0
+        fill!(ranks, zero(eltype(ranks)))
+        fill!(err_sq, 0.0)
+        return (; passes=basis.passes, active_counts=basis.active_counts,
+                member_ids=basis.member_ids)
+    end
+
+    Z = allocate(backend, T, bn, sQ, count)
+    apply_left_run!(Z, run, basis.Q, sQ; beta, compute)
+    Uh = allocate(backend, T, bm, sQ, count)
+    Vh = allocate(backend, T, bn, sQ, count)
+    ranks_slot = allocate(backend, eltype(ranks), count)
+    err_slot = allocate(backend, eltype(err_sq), count)
+    ara_truncate!(Uh, Vh, ranks_slot, err_slot, basis.Q, Z;
+                  tol, relative=rel, maxrank=sQ, compute)
+
+    slot_to_member = copyto!(allocate(backend, Int32, count),
+                             Int32.(basis.member_ids))
+    _scatter_run_factor_kernel!(backend)(
+        view(U, :, 1:sQ, :), Uh, ranks_slot, slot_to_member;
+        ndrange=(bm, sQ, count),
+    )
+    _scatter_run_factor_kernel!(backend)(
+        view(V, :, 1:sQ, :), Vh, ranks_slot, slot_to_member;
+        ndrange=(bn, sQ, count),
+    )
+    _scatter_run_diagnostic_kernel!(backend)(
+        ranks, err_sq, ranks_slot, err_slot, slot_to_member; ndrange=count,
+    )
+    return (; passes=basis.passes, active_counts=basis.active_counts,
+            member_ids=basis.member_ids)
+end

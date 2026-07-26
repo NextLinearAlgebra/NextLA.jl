@@ -334,6 +334,37 @@ test: `test/TLR/ara.jl`, "ARA interleaves projection with the Cholesky passes".
 stays until the ARA path is green. The uncommitted M1 shared-basis work was
 reverted — the design it served no longer exists.
 
+### 10. R3 uses a dense active prefix, not masked batch slots
+
+The first R3 fast path is the column-family run
+`range_find_column_run!`: consecutive output rows at one fixed column `j`.
+Every pass draws one shared Gaussian block and forms
+`H_{ℓj} = (V^B_{ℓj})ᵀΩ` exactly once; the `S·H` contractions and fused `U·T`
+reductions are then batched over the active tiles.
+
+Tiles do **not** remain in stable physical batch slots. After convergence the
+member is swap-removed with the last active slot, leaving
+`1:nactive` dense and a retired suffix. The swap moves only run-local retained
+state (`Q`, `S`, convergence scalars, and the slot-to-tile map); source A/B
+factors remain in their containers. Consequently the numerically important
+SYRK/POTRF/TRSM sequence always sees a true contiguous batch rather than masked
+members or a pointer list with holes. At the end, one batched co-range and
+truncation run in the final packed order, followed by a single device scatter
+back to the caller's original tile order.
+
+This deliberately separates two policies:
+
+- **Output layout chooses the run family.** Tile-column-major output uses this
+  fixed-column `XΩ` path and hoists `H`. Tile-row-major output will use the
+  symmetric fixed-row `XᵀΩ` path and hoist `G`.
+- **Ranks size runs; they do not choose a different fold per tile.** A
+  per-member fold would fragment the batches and reintroduce packing. A
+  rank-driven run-level override can be added only with a measured cost model.
+
+R3 currently contains the packed-active ARA driver and the column-family fast
+path. The symmetric row-family apply remains before R3 is complete. Arena
+carving, budget-driven run growth, and reduction sub-panelling remain R4.
+
 - [x] **A0 — convergence bookkeeping.** [numerics/ara.jl](../../../numerics/ara.jl),
   tests [test/TLR/ara.jl](../../../../../test/TLR/ara.jl), 40/40 CPU + 12/12 CUDA.
   Provides `cholqr2_relative_shift_floor`, `ara_column_norms_sq!`,
@@ -430,11 +461,12 @@ reverted — the design it served no longer exists.
 
 - [X] **R2 — `RangeFind` on one tile.** A1 + R1. No exact residual (item 4).
 
-- [ ] **R3 — batch across a run.** Tiles converge at different pass counts. The
+- [~] **R3 — batch across a run.** Tiles converge at different pass counts. The
   reference solves this with per-member sample counts (`batchSetSamples`), which
   A0 already implements: a converged member has `samples == 0` and is skipped.
-  What remains is **packing active members contiguously** so a converged member
-  does not keep occupying a batch slot. `H_ℓj` hoisted per column.
+  The column-family path now **packs active members contiguously** by
+  swap-removing converged members and hoists `H_ℓj` per column. The symmetric
+  row-family (`XᵀΩ`, hoisted `G_iℓ`) remains for tile-row-major output.
 
 - [ ] **R4 — scheduler + arena.** `w_ij(s)` from rank metadata, budget-bounded
   run growth, sub-panel fallback for long reductions. Gate: a tiny budget runs

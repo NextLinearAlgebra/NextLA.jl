@@ -258,11 +258,13 @@ function ara_update_convergence!(state::ARAConvergenceState,
                                  r_required::Int,
                                  block::Int,
                                  maxrank::Int,
+                                 count::Int=length(state.samples),
 )
-    count = length(state.samples)
     count == 0 && return 0
-    size(dR, 2) == count ||
-        throw(DimensionMismatch("dR must have $count columns"))
+    0 <= count <= length(state.samples) ||
+        throw(ArgumentError("count must lie in 0:$(length(state.samples))"))
+    size(dR, 2) >= count ||
+        throw(DimensionMismatch("dR must have at least $count columns"))
     block <= size(dR, 1) ||
         throw(ArgumentError("block exceeds the rows of dR"))
     eps_rel >= 0 || throw(ArgumentError("eps_rel must be nonnegative"))
@@ -272,7 +274,7 @@ function ara_update_convergence!(state::ARAConvergenceState,
         Float64(eps_rel), r_required, block, maxrank; ndrange=count,
     )
     copyto!(state.samples_host, state.samples)
-    return count_active(state)
+    return Base.count(>(Int32(0)), view(state.samples_host, 1:count))
 end
 
 """Number of members still drawing samples, from the host mirror."""
@@ -582,6 +584,175 @@ function _ara_retire_broken!(state::ARAConvergenceState, kcut_host, width::Int)
     end
     copyto!(state.samples, samples)
     return count_active(state)
+end
+
+# Swap two batch members in the persistent basis and convergence state. Packed
+# ARA keeps live members in `1:nactive`; a retiring member is exchanged with the
+# last live slot, leaving a dense active prefix and a retired suffix. The
+# accumulated basis is moved once, at retirement, rather than inactive members
+# occupying every later batched factorization.
+@kernel function _ara_swap_basis_kernel!(Q, p::Int, q::Int)
+    i, j = @index(Global, NTuple)
+    @inbounds begin
+        x = Q[i, j, p]
+        Q[i, j, p] = Q[i, j, q]
+        Q[i, j, q] = x
+    end
+end
+
+@kernel function _ara_swap_state_kernel!(samples, ranks, svec, jcount, rmax,
+                                         p::Int, q::Int)
+    _ = @index(Global, Linear)
+    @inbounds begin
+        x = samples[p]; samples[p] = samples[q]; samples[q] = x
+        x = ranks[p]; ranks[p] = ranks[q]; ranks[q] = x
+        x = svec[p]; svec[p] = svec[q]; svec[q] = x
+        x = jcount[p]; jcount[p] = jcount[q]; jcount[q] = x
+        y = rmax[p]; rmax[p] = rmax[q]; rmax[q] = y
+    end
+end
+
+function _ara_swap_members!(ws::ARAWorkspace, p::Int, q::Int)
+    p == q && return ws
+    backend = get_backend(ws.Q)
+    _ara_swap_basis_kernel!(backend)(ws.Q, p, q;
+                                     ndrange=(size(ws.Q, 1), size(ws.Q, 2)))
+    _ara_swap_state_kernel!(backend)(
+        ws.state.samples, ws.state.ranks, ws.state.svec, ws.state.jcount,
+        ws.state.rmax, p, q; ndrange=(1,),
+    )
+    ws.state.samples_host[p], ws.state.samples_host[q] =
+        ws.state.samples_host[q], ws.state.samples_host[p]
+    return ws
+end
+
+"""
+    ara_build_basis_packed!(ws, sample_right!, member_ids;
+                            eps_rel, r_required=10, compute,
+                            swap_member! = (p,q)->nothing)
+
+Packed-active variant of [`ara_build_basis!`](@ref). `member_ids[slot]` records
+which logical operator occupies a physical batch slot. After every pass,
+converged members are swap-removed into a retired suffix, so all subsequent
+GEMM/SYRK/POTRF/TRSM calls operate on the contiguous prefix `1:nactive`.
+
+`sample_right!(Y, width, active_ids)` overwrites the active prefix of `Y`.
+`swap_member!(p,q)` lets an implicit-operator implementation apply the same
+slot permutation to retained run-local data such as coupling matrices.
+
+The returned `member_ids` is the final slot-to-logical-member permutation.
+"""
+function ara_build_basis_packed!(ws::ARAWorkspace, sample_right!,
+                                 member_ids::Vector{Int};
+                                 eps_rel::Real,
+                                 r_required::Int=10,
+                                 compute=nothing,
+                                 swap_member!::Function=(p, q) -> nothing)
+    T = eltype(ws.Q)
+    Thi = tlr_orthogonalization_type(T)
+    maxrank, count = size(ws.Q, 2), size(ws.Q, 3)
+    length(member_ids) == count ||
+        throw(DimensionMismatch("member_ids must have length $count"))
+    mode = compute === nothing ? default_gemm_compute_mode(T) :
+           gemm_compute_mode(compute)
+    blk = ws.block
+
+    eps_rel > 0 || throw(ArgumentError("eps_rel must be positive"))
+    floor_rel = ara_stopping_floor(Thi)
+    eps_rel >= floor_rel || throw(ArgumentError(
+        "eps_rel = $eps_rel is below the CholeskyQR2 orthogonality limit " *
+        "√u = $floor_rel for Gram type $Thi"))
+    (count == 0 || maxrank == 0) &&
+        return (; Q=view(ws.Q, :, 1:0, :), ranks=ws.state.ranks,
+                passes=0, member_ids, active_counts=Int[])
+
+    adj = _adjoint_blas_char(T)
+    ara_reset!(ws.state, blk, maxrank)
+    fill!(ws.Q, zero(T))
+    passes = 0
+    grown = 0
+    nactive = count
+    active_counts = Int[]
+
+    while grown < maxrank && nactive > 0
+        push!(active_counts, nactive)
+        width = min(blk, maxrank - grown)
+        Y = view(ws.Yblk, :, :, 1:nactive)
+        sample_right!(Y, width, view(member_ids, 1:nactive))
+        width < blk && fill!(view(Y, :, (width + 1):blk, :), zero(T))
+
+        Qc = grown > 0 ? view(ws.Q, :, 1:grown, 1:nactive) : nothing
+        D = grown > 0 ? view(ws.Dproj, 1:grown, :, 1:nactive) : nothing
+        chol = CholQR2FactorWorkspace(
+            Y,
+            view(ws.chol.V, :, :, 1:nactive),
+            view(ws.chol.Y_hi, :, :, 1:nactive),
+            view(ws.chol.G_hi, :, :, 1:nactive),
+            view(ws.chol.R1, :, :, 1:nactive),
+            view(ws.chol.R2, :, :, 1:nactive),
+            view(ws.chol.multipliers, 1:nactive),
+        )
+        status = view(ws.status, 1:nactive)
+        fill!(status, Int32(0))
+        for pass in 1:2
+            if Qc !== nothing
+                precision_gemm_batched!(adj, 'N', one(T), Qc, Y,
+                                        zero(T), D, mode)
+                precision_gemm_batched!('N', 'N', -one(T), Qc, D,
+                                        one(T), Y, mode)
+            end
+            if pass == 1
+                ara_column_norms_sq!(
+                    view(ws.cn, :, 1:nactive), view(ws.colmax, 1:nactive),
+                    Y, width,
+                )
+                mixed_cholqr_pass!(chol, chol.R1, chol.R1_tiles;
+                                   shift_coeff=0, escalate=false, status)
+            else
+                mixed_cholqr_pass!(chol, chol.R2, chol.R2_tiles;
+                                   shift_coeff=0, escalate=false)
+            end
+        end
+        copyto!(ws.status_host, ws.status)
+
+        dR = view(ws.dR, :, 1:nactive)
+        ara_block_norms!(dR, chol, view(ws.colmax, 1:nactive); shift_coeff=0)
+        kcut = view(ws.kcut, 1:nactive)
+        ara_mask_breakdown!(Y, dR, kcut, chol.R1, status, width, floor_rel)
+        copyto!(ws.kcut_host, ws.kcut)
+
+        view(ws.Q, :, (grown + 1):(grown + width), 1:nactive) .=
+            view(Y, :, 1:width, :)
+        grown += width
+        passes += 1
+
+        ara_update_convergence!(ws.state, ws.dR, eps_rel, r_required,
+                                width, maxrank, nactive)
+        _ara_retire_broken!(ws.state, view(ws.kcut_host, 1:nactive), width)
+
+        # Partition in place: active prefix, retired suffix. Targets are chosen
+        # from the shrinking tail, so swap pairs are disjoint within a pass.
+        p = 1
+        while p <= nactive
+            if ws.state.samples_host[p] > 0
+                p += 1
+                continue
+            end
+            while nactive > p && ws.state.samples_host[nactive] == 0
+                nactive -= 1
+            end
+            if p < nactive
+                _ara_swap_members!(ws, p, nactive)
+                swap_member!(p, nactive)
+                member_ids[p], member_ids[nactive] =
+                    member_ids[nactive], member_ids[p]
+            end
+            nactive -= 1
+        end
+    end
+
+    return (; Q=view(ws.Q, :, 1:grown, :), ranks=ws.state.ranks,
+            passes, member_ids, active_counts)
 end
 
 # ---------------------------------------------------------------------------
