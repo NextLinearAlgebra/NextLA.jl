@@ -243,6 +243,53 @@ function CholQR2FactorWorkspace(Q::AbstractArray{T,3},
 end
 
 """
+    mixed_cholqr_pass!(ws, Rdest, Rdest_tiles; shift_coeff, escalate, status) -> ws
+
+**One** mixed-precision (optionally shifted) Cholesky-QR pass over `ws.Q`:
+Gram in the promoted type, Cholesky, then a working-precision `trsm` that
+overwrites `ws.Q` with the orthonormalized panel. The triangular factor is
+written to `Rdest`.
+
+Exposed separately because the two passes of a CholeskyQR2 are not always
+adjacent. A blocked range finder must interleave them with the projection
+against the existing basis --- `(P·CholQR)²`, not `P²·CholQR²` --- since the
+first Cholesky amplifies a near-null column's `O(u)` overlap with that basis to
+`O(1)`, and only a projection placed *after* that amplification can remove it.
+See `ara_build_basis!` and `docs/TODO.md` worklog item 9.
+"""
+function mixed_cholqr_pass!(ws::CholQR2FactorWorkspace, Rdest, Rdest_tiles;
+                            shift_coeff=nothing,
+                            escalate::Bool=true,
+                            status=nothing,
+)
+    Q = ws.Q
+    count = size(Q, 3)
+    count == 0 && return ws
+
+    T = eltype(Q)
+    Thi = eltype(ws.Y_hi)
+    RT = real(Thi)
+    m, r = size(Q, 1), size(Q, 2)
+    coeff = shift_coeff === nothing ? _cholqr_shift_coeff(Thi, m, r) :
+            RT(shift_coeff)
+    nt_shift = _reduce_threads(r)
+    backend = get_backend(Q)
+
+    fill!(ws.multipliers, one(RT))
+    ws.Y_hi .= Q
+    _shifted_cholesky!(ws.G_hi,
+                       ws.Y_hi, ws.multipliers, coeff, nt_shift;
+                       escalate, status_out=status,
+    )
+    _copy_upper_triangle_kernel!(backend)(
+        Rdest, ws.G_hi; ndrange=size(Rdest),
+    )
+    trsm_batched!('R', 'U', 'N', 'N', Rdest_tiles, ws.Q_tiles, one(T))
+    fill!(ws.multipliers, one(RT))
+    return ws
+end
+
+"""
     mixed_cholqr2_factor!(ws::CholQR2FactorWorkspace) -> ws
 
 Factor-producing mixed-precision shifted CholQR2. For the panel `X` initially
@@ -292,19 +339,8 @@ function mixed_cholqr2_factor!(ws::CholQR2FactorWorkspace;
             RT(shift_coeff)
     nt_shift = _reduce_threads(r)
     backend = get_backend(Q)
-    fill!(ws.multipliers, one(RT))
 
-    ws.Y_hi .= Q
-    _shifted_cholesky!(ws.G_hi,
-                       ws.Y_hi, ws.multipliers, coeff, nt_shift;
-                       escalate, status_out=status,
-    )
-    _copy_upper_triangle_kernel!(backend)(
-        ws.R1, ws.G_hi; ndrange=size(ws.R1),
-    )
-    trsm_batched!('R',
-                  'U', 'N', 'N', ws.R1_tiles, ws.Q_tiles, one(T),
-    )
+    mixed_cholqr_pass!(ws, ws.R1, ws.R1_tiles; shift_coeff=coeff, escalate, status)
 
     fill!(ws.multipliers, one(RT))
     ws.Y_hi .= Q

@@ -279,6 +279,55 @@ repo's `larfb`/`larfg` kernels. Parked.
 
 ---
 
+### 9. `(P·CholQR)²`, not `P²·CholQR²` — the interleaving is load-bearing
+
+The first implementation ran both Gram–Schmidt projections, *then* both Cholesky
+passes. Algorithm 2.3 lines 22–27 put the Gram/potrf/trsm **inside** the
+`for i = 1:2` loop. In finite precision these are different algorithms, and the
+difference is not small.
+
+**Mechanism.** A column numerically dependent on the rest of its block has a
+within-block residual of size `O(u‖Y‖)` — and BCGS leaves an overlap with the
+existing basis `Q` of the *same* order, `O(u‖Y‖)`. So that residual's direction
+has an `O(1)` **fraction** lying in `span(Q)`. The first Cholesky normalizes it
+to unit length and freezes that fraction in at `O(1)` absolute. Interleaved, the
+second projection runs after the amplification and removes it; batched, both
+projections happen before it and nothing ever does.
+
+**Measured** (rank-`r` operator, `‖QᵀQ−I‖ > 1e-10`, 300 seeds):
+
+| `r` | block | `P²·CholQR²` | `(P·CholQR)²` |
+| --- | --- | --- | --- |
+| 6 | 4 | 97/300 (worst 0.998) | **0/300** (worst 3.7e-12) |
+| 7 | 4 | 105/300 (worst 0.992) | **0/300** (worst 1.4e-12) |
+| 20 | 8 | 95/300 (worst 0.872) | **2/300** (worst 2.8e-10) |
+
+End-to-end through `range_find_tile!`: 99/300 bad → **0/300**.
+
+**Exposure**, for anyone reading a passing test as proof of absence: the mixed
+(part-genuine, part-null) block must fall in a pass *after* the first — pass 1
+has no basis to lose orthogonality against, and there `P` is a no-op so the two
+orderings are identical — and it is worst with 1–2 null columns (35% at one).
+With 3+, `potrf` almost surely breaks down on an early one and the `status` path
+catches it cleanly. `compress!` uses `block = 32`, which puts typical tile ranks
+in the pass-1 regime; a sweep over ranks 3/9/20/31/33/40 × 50 seeds found no
+failures **before** this fix. That is parameter luck, not immunity.
+
+**This also retires a wrong conclusion of item 2.** "Breakdown and loss of the
+CholeskyQR2 guarantee coincide" is false as stated: `potrf` success is necessary
+but not sufficient. Worse, the `√u` pivot guard cannot close the gap, because
+`R[j,j]` for a null column is *itself* `≈ √u·‖Y‖` — the Cholesky recurrence
+computes it as a cancelling subtraction of `O(‖Y‖²)` terms — so the test sits
+inside its own noise floor and is a coin flip exactly in the case it exists to
+catch. Measured at the boundary: `R[3,3] = 2.107e-8` against a threshold of
+`1.501e-8`. The guard is still worth keeping for the breakdown case, but it is
+not what makes the loop correct — the ordering is.
+
+**Do not "optimize" the two projections into one batched pair.** It looks like
+pure launch-count savings and silently reintroduces this.
+`mixed_cholqr_pass!` exists to make the interleaving expressible; regression
+test: `test/TLR/ara.jl`, "ARA interleaves projection with the Cholesky passes".
+
 ## Current state
 
 `row_basis/*` is the **currently shipped** TLR-output path (`gemm.jl:299`) and
@@ -379,7 +428,7 @@ reverted — the design it served no longer exists.
   per call rather than threaded through a persistent workspace — correctness
   first, matching the "R1 mechanical / R3 handles batching perf" split.
 
-- [ ] **R2 — `RangeFind` on one tile.** A1 + R1. No exact residual (item 4).
+- [X] **R2 — `RangeFind` on one tile.** A1 + R1. No exact residual (item 4).
 
 - [ ] **R3 — batch across a run.** Tiles converge at different pass counts. The
   reference solves this with per-member sample counts (`batchSetSamples`), which

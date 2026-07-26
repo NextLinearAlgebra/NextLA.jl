@@ -423,26 +423,47 @@ function ara_build_basis!(ws::ARAWorkspace, sample_right!;
         sample_right!(ws.Yblk, width)
         width < blk && fill!(view(ws.Yblk, :, (width + 1):blk, :), zero(T))
 
-        # Two-pass block classical Gram-Schmidt against the existing basis.
-        if grown > 0
-            Qc = view(ws.Q, :, 1:grown, :)
-            D = view(ws.Dproj, 1:grown, :, :)
-            for _ in 1:2
+        # Block Gram-Schmidt with one reorthogonalization, INTERLEAVED with the
+        # two Cholesky-QR passes: `(P·CholQR)²`, exactly as Algorithm 2.3 lines
+        # 22-27 (the Gram/potrf/trsm sit inside the `for i = 1:2` loop).
+        #
+        # The interleaving is load-bearing, not stylistic. `P²·CholQR²` -- both
+        # projections, then both normalizations -- is a different algorithm in
+        # finite precision. A column that is numerically dependent on the rest
+        # of the block has a within-block residual of size `O(u‖Y‖)`, the same
+        # order as the `O(u‖Y‖)` overlap with `Q` that BCGS leaves behind; so
+        # that residual's direction has an `O(1)` *fraction* lying in `span(Q)`.
+        # The first Cholesky normalizes it to unit length and bakes that
+        # fraction in at `O(1)`. Interleaved, the second projection runs *after*
+        # that amplification and removes it; batched together, both projections
+        # happen before it and nothing ever does.
+        #
+        # Measured on a rank-6 operator at block width 4: `P²CholQR²` produced
+        # `‖QᵀQ−I‖ > 1e-10` on 97/300 seeds (worst 0.998); `(P·CholQR)²` on
+        # 0/300 (worst 3.7e-12). See docs/TODO.md worklog item 9.
+        Qc = grown > 0 ? view(ws.Q, :, 1:grown, :) : nothing
+        D = grown > 0 ? view(ws.Dproj, 1:grown, :, :) : nothing
+        fill!(ws.status, Int32(0))
+        for pass in 1:2
+            if Qc !== nothing
                 precision_gemm_batched!(adj, 'N', one(T), Qc, ws.Yblk,
                                         zero(T), D, mode)
                 precision_gemm_batched!('N', 'N', -one(T), Qc, D,
                                         one(T), ws.Yblk, mode)
             end
+            if pass == 1
+                # The scale the stopping test is relative to, captured before
+                # the Gram overwrites the panel.
+                ara_column_norms_sq!(ws.cn, ws.colmax, ws.Yblk, width)
+                # Unshifted: `potrf` breakdown is the rank signal, not an error.
+                mixed_cholqr_pass!(ws.chol, ws.chol.R1, ws.chol.R1_tiles;
+                                   shift_coeff=0, escalate=false,
+                                   status=ws.status)
+            else
+                mixed_cholqr_pass!(ws.chol, ws.chol.R2, ws.chol.R2_tiles;
+                                   shift_coeff=0, escalate=false)
+            end
         end
-
-        # The scale the stopping test is relative to, captured before the Gram
-        # overwrites the panel.
-        ara_column_norms_sq!(ws.cn, ws.colmax, ws.Yblk, width)
-
-        # Unshifted: `potrf` breakdown is the rank signal, not an error.
-        fill!(ws.status, Int32(0))
-        mixed_cholqr2_factor!(ws.chol; shift_coeff=0, escalate=false,
-                              status=ws.status)
         copyto!(ws.status_host, ws.status)
 
         ara_block_norms!(ws.dR, ws.chol, ws.colmax; shift_coeff=0)

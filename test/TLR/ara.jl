@@ -470,3 +470,48 @@ end
         end
     end
 end
+
+# Regression: the projection must be INTERLEAVED with the two Cholesky passes,
+# `(P·CholQR)²` as in Algorithm 2.3 lines 22-27 -- not `P²·CholQR²`.
+#
+# The two are different algorithms in finite precision. A column numerically
+# dependent on the rest of its block has a within-block residual of size
+# `O(u‖Y‖)`, the same order as the `O(u‖Y‖)` overlap with `Q` that BCGS leaves;
+# so its direction has an `O(1)` fraction inside `span(Q)`. The first Cholesky
+# normalizes it to unit length, freezing that fraction at `O(1)`. Only a
+# projection placed *after* that amplification removes it.
+#
+# The exposure needs a mixed (part-genuine, part-null) block in a pass *after*
+# the first -- pass 1 has no basis to lose orthogonality against -- and is worst
+# when the block has just 1-2 null columns. Batched ordering failed ~1/3 of
+# seeds here with `‖QᵀQ−I‖` up to 1.0; interleaved is clean.
+@testset "ARA interleaves projection with the Cholesky passes" begin
+    T = Float64
+    bm, bn = 32, 34
+    for (r_true, block) in ((6, 4), (7, 4), (20, 8))
+        worst_orth = 0.0
+        worst_rank = 0
+        for seed in 1:40
+            rng = MersenneTwister(seed)
+            Uo = Matrix(qr(randn(rng, T, bm, r_true)).Q)[:, 1:r_true]
+            Vo = Matrix(qr(randn(rng, T, bn, r_true)).Q)[:, 1:r_true]
+            X = Uo * Diagonal(collect(range(1.0, 0.6; length=r_true))) * Vo'
+            ws = _TLRM.ARAWorkspace(T, CPU(), bm, 32, 1; block)
+            omega = zeros(T, bn, ws.block, 1)
+            sampler = function (Y, width)
+                Om = view(omega, :, 1:width, 1)
+                Random.randn!(Om)
+                copyto!(view(Y, :, 1:width, 1), X * Om)
+                return Y
+            end
+            res = _TLRM.ara_build_basis!(ws, sampler; eps_rel=1e-7, r_required=4)
+            r = Int(Array(res.ranks)[1])
+            Qr = Array(res.Q)[:, 1:r, 1]
+            worst_orth = max(worst_orth, opnorm(Qr' * Qr - I, Inf))
+            worst_rank = max(worst_rank, abs(r - r_true))
+        end
+        # Batched ordering gave ~1e0 here; interleaved must stay at round-off.
+        @test worst_orth <= 1e-10
+        @test worst_rank == 0
+    end
+end

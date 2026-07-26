@@ -125,8 +125,16 @@ function apply_right!(Y::AbstractMatrix{T}, coupling::TileCoupling,
 
     if qk > 0
         H = similar(Y, T, rB, s, qk)
+        # Copy Omega into a plain, freshly-allocated 3D buffer rather than
+        # reshaping it in place: `reshape` of a view the caller handed in
+        # (e.g. a slice of a slice, as `range_find_tile!` produces) does not
+        # reliably dispatch to the batched GPU GEMM and can silently fall
+        # through to a host BLAS call on device memory. The copy is one
+        # bn×s transfer, negligible next to the GEMMs it feeds.
+        Omega3 = similar(Y, T, bn, s, 1)
+        copyto!(view(Omega3, :, :, 1), Omega)
         precision_gemm_batched!(adj, 'N', one(T), coupling.colZ,
-                                reshape(Omega, bn, s, 1), zero(T), H, mode)
+                                Omega3, zero(T), H, mode)
 
         # T written straight into (rA, qk, s): ℓ is the *middle* index, matching
         # rowpanel(au,i)'s own memory order (rA fastest, then ℓ) so the fused
@@ -180,8 +188,13 @@ function apply_left!(Z::AbstractMatrix{T}, coupling::TileCoupling,
 
     if qk > 0
         G = similar(Z, T, rA, s, qk)
+        # See apply_right!'s matching comment: copy rather than reshape a
+        # caller-supplied view in place, so the batched GPU GEMM dispatch
+        # cannot silently fall through to a host BLAS call.
+        Q3 = similar(Z, T, bm, s, 1)
+        copyto!(view(Q3, :, :, 1), Q)
         precision_gemm_batched!(adj, 'N', one(T), coupling.rowU,
-                                reshape(Q, bm, s, 1), zero(T), G, mode)
+                                Q3, zero(T), G, mode)
 
         Wbuf = similar(Z, T, rB, qk, s)
         Sviews = [view(coupling.S, :, :, l) for l in 1:qk]
