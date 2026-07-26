@@ -2,6 +2,7 @@
 include("precision.jl")
 include("lowering/strategy.jl")
 include("operands.jl")
+include("ara/tile_apply.jl")
 include("row_basis/basis.jl")
 include("lowering/schedule.jl")
 include("row_basis/merge.jl")

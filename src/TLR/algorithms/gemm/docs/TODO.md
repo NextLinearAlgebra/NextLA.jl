@@ -344,11 +344,40 @@ reverted — the design it served no longer exists.
   recovered rank equals the true rank rather than the capacity, and that the
   sampling block width changes neither rank nor accuracy.
 
-- [ ] **R1 — factor-list sampler.** `S`/`H`/`T` prologue and the fused
-  `ApplyRight`/`ApplyLeft` over the zero-copy `rowpanel`/`colpanel` views in
-  [operands.jl](../operands.jl). β=0 and β≠0 (the old tile rides inside the
-  sketch as one further factor pair). Gate: matches a dense reference; dependent
-  launches per tile are `O(1)` in `q_k`.
+- [x] **R1 — factor-list sampler.** [ara/tile_apply.jl](../ara/tile_apply.jl):
+  `TileCoupling` (the `S` prologue, one strided-batched GEMM over
+  `rowpanel(av,i)`/`colpanel(bw,j)`, retained across ARA passes), `TileBetaTerm`
+  (the optional `β C_ij` factor pair), and `apply_right!`/`apply_left!` — the
+  fused `ApplyRight`/`ApplyLeft` of algorithm.tex eq:HT/eq:Y. 23/23 CPU + 4/4
+  CUDA in [test/TLR/tile_apply.jl](../../../../../test/TLR/tile_apply.jl),
+  covering β=0/β≠0, rectangular tiles, `q_k=1`, and a zero-rank operand.
+
+  **Layout scope, deliberately narrow.** Requires `A` tile-row-major and `B`
+  tile-col-major, so `rowpanel`/`colpanel` are zero-copy — the preferred layout
+  the fusion is built for. Other layout pairs are R5's job (packing or a
+  different fusion), same split as the existing dense-accumulation code
+  (`choose_fold`/`placement_for_fold`).
+
+  **The one non-obvious design point: `T`/`W`'s memory layout.** `H_{ℓj}` and
+  `G_{iℓj}` batch naturally over `ℓ` as `(rank, s, q_k)` — batch-last, what a
+  strided-batched GEMM produces directly. But the fused reduction needs
+  `T`/`W` as `(rank, q_k, s)` — `q_k` in the *middle* — to match
+  `rowpanel(au,i)`/`colpanel(bz,j)`'s own memory order (`rank` fastest, then
+  `q_k`) so `reshape(·, rank·q_k, s)` on both operands is a zero-copy alias, not
+  a copy. A strided-batched call can't write that layout directly (batch dim is
+  hardcoded to be last). Fixed by borrowing the existing `FoldLeft` Stage-2
+  idiom (`lowering/stages.jl`): a **pointer-batched** call whose `q_k` output
+  views (`view(Tbuf,:,l,:)`) are individually strided but collectively land in
+  the right layout — proven pattern, not a new one. `permutedims`/an extra copy
+  was the alternative considered and rejected: still `O(1)` launches, but this
+  needs none.
+
+  Total launches: 3 (`H`, `T`, the fused `Y`) or 5 with `β≠0` — independent of
+  `q_k`, satisfying the gate directly rather than by measurement.
+
+  Deliberately deferred to R2/R3: scratch (`H`/`T`/`G`/`W`) is allocated fresh
+  per call rather than threaded through a persistent workspace — correctness
+  first, matching the "R1 mechanical / R3 handles batching perf" split.
 
 - [ ] **R2 — `RangeFind` on one tile.** A1 + R1. No exact residual (item 4).
 
