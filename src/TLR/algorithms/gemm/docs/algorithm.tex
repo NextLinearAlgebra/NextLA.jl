@@ -1,788 +1,536 @@
-% ---------------------------------------------------------------------------
-% Adaptive global row-basis TLR GEMM.
-% Pseudocode requires:  \usepackage{algorithm}  \usepackage{algpseudocode}
-% ---------------------------------------------------------------------------
-\section{Adaptive Global Row-Basis TLR GEMM}
-\label{sec:adaptive-global-row-basis-gemm}
+\documentclass[11pt]{article}
 
-We consider the tile-low-rank (TLR) update
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{booktabs}
+\usepackage[expansion=false]{microtype}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue]{hyperref}
+
+\algrenewcommand\algorithmicrequire{\textbf{Input:}}
+\algrenewcommand\algorithmicensure{\textbf{Output:}}
+
+\newtheorem{remark}{Remark}
+\newtheorem{proposition}{Proposition}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\T}{\mathsf{T}}
+\newcommand{\Fnorm}[1]{\left\|#1\right\|_F}
+\newcommand{\rank}{\operatorname{rank}}
+
+\title{A Blocked Randomized Range-Finder Baseline\\
+for Tile Low-Rank GEMM:\\
+GPU Implementation Blueprint}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We give an implementation blueprint for the update of the output tiles of a tile
+low-rank (TLR) matrix product $C\leftarrow\alpha AB+\beta C$ using a blocked
+adaptive randomized range finder (ARA). The contribution of the reduction index
+is never materialized as a dense tile; it is kept as a \emph{factor list} and
+applied implicitly. We motivate the ordering of the contractions, show how the
+existing $\beta C_{ij}$ term is folded into the same range finder as one further
+factor pair, and derive a workspace-driven schedule that traverses the output
+one block row (or block column) at a time. The design targets stock batched
+GPU primitives (batched GEMM, SYRK, POTRF, TRSM, and a batched symmetric
+eigensolver) with no dependence on routines that form Householder $Q$ factors.
+\end{abstract}
+
+\tableofcontents
+
+\section{Setting and notation}
+\label{sec:setting}
+
+Let $A\in\R^{M\times K}$ and $B\in\R^{K\times N}$ be stored in TLR form with
+tiles of size $b_m\times b_k$ and $b_k\times b_n$, and set $q_m=M/b_m$,
+$q_k=K/b_k$, $q_n=N/b_n$. Off-diagonal tiles are stored as outer products,
+diagonal tiles densely. For the low-rank tiles,
 \[
-C \leftarrow \alpha AB+\beta C,
+A_{i\ell}=U^A_{i\ell}\bigl(V^A_{i\ell}\bigr)^{\T},
 \qquad
-A_{i\ell}\approx U_{i\ell}^{A}(V_{i\ell}^{A})^{\mathsf T},\quad
-B_{\ell j}\approx U_{\ell j}^{B}(V_{\ell j}^{B})^{\mathsf T},\quad
-C_{ij}\approx U_{ij}^{C}(V_{ij}^{C})^{\mathsf T},
+B_{\ell j}=U^B_{\ell j}\bigl(V^B_{\ell j}\bigr)^{\T},
+\qquad
+C_{ij}=U^C_{ij}\bigl(V^C_{ij}\bigr)^{\T},
 \]
-with tiles $A_{i\ell}\in\mathbb{R}^{b_m\times b_k}$,
-$B_{\ell j}\in\mathbb{R}^{b_k\times b_n}$,
-$C_{ij}\in\mathbb{R}^{b_m\times b_n}$ on a block grid
-$i=1{:}q_m$, $\ell=1{:}q_k$, $j=1{:}q_n$.
-All left factors are stored with orthonormal columns,
-$(U^{X})^{\mathsf T}U^{X}=I$, so tile norms live in the right factors:
-$\|B_{\ell j}\|_F=\|V_{\ell j}^{B}\|_F$.
-Tile ranks are $r_{A,i\ell}$, $r_{B,\ell j}$, $r_{C,ij}$, and the structural
-widths of a block row of $A$ and a block column of $B$ are
+with ranks $r_{A,i\ell}$, $r_{B,\ell j}$, $r_{C,ij}$. We update one output tile
+\begin{equation}
+\label{eq:update}
+X_{ij}=\alpha\sum_{\ell=1}^{q_k}A_{i\ell}B_{\ell j}+\beta C_{ij}
+\end{equation}
+and return it in low-rank form to the Frobenius tolerance
+\begin{equation}
+\label{eq:tol}
+\Fnorm{X_{ij}-U_{ij}V_{ij}^{\T}}\le\tau_{ij},
+\qquad
+\tau_{ij}=\max\bigl(\varepsilon_{\mathrm{abs}},\,
+\varepsilon_{\mathrm{rel}}\Fnorm{X_{ij}}\bigr).
+\end{equation}
+The absolute floor keeps the criterion well posed when cancellation makes the
+updated tile numerically zero. We write
+$\rho_i=\sum_\ell r_{A,i\ell}$ for the total left rank of block row $i$,
+$\gamma_j=\sum_\ell r_{B,\ell j}$ for the total right rank of block column $j$,
+and
+$\hat\rho_{ij}=r_{C,ij}[\beta\ne0]+\sum_\ell\min(r_{A,i\ell},r_{B,\ell j})$
+for the width of the factor list of \S\ref{sec:factorlist}. All three are known
+from rank metadata alone, at no arithmetic cost, and drive the schedule of
+\S\ref{sec:schedule}.
+
+\section{The tile update as a factor list}
+\label{sec:factorlist}
+
+Introduce the coupling matrices
+\begin{equation}
+\label{eq:coupling}
+S_{i\ell j}:=\bigl(V^A_{i\ell}\bigr)^{\T}U^B_{\ell j}
+\in\R^{r_{A,i\ell}\times r_{B,\ell j}},
+\end{equation}
+so each product term factors as
+$A_{i\ell}B_{\ell j}=U^A_{i\ell}S_{i\ell j}(V^B_{\ell j})^{\T}$. The update
+\eqref{eq:update} is then a sum of $n_f$ outer products,
+\begin{equation}
+\label{eq:list}
+X_{ij}=\sum_{a=1}^{n_f}L_aR_a^{\T},
+\qquad
+L_a\in\R^{b_m\times\nu_a},\quad R_a\in\R^{b_n\times\nu_a},
+\end{equation}
+where the coupling is absorbed into the narrower side so that
+$\nu_\ell=\min(r_{A,i\ell},r_{B,\ell j})$,
+\begin{equation}
+\label{eq:absorb}
+(L_\ell,R_\ell)=
+\begin{cases}
+\bigl(U^A_{i\ell},\;\alpha V^B_{\ell j}S_{i\ell j}^{\T}\bigr),
+& r_{A,i\ell}\le r_{B,\ell j},\\[4pt]
+\bigl(U^A_{i\ell}S_{i\ell j},\;\alpha V^B_{\ell j}\bigr),
+& r_{A,i\ell}>r_{B,\ell j}.
+\end{cases}
+\end{equation}
+The term $(L_C,R_C)=(U^C_{ij},\beta V^C_{ij})$ is included when $\beta\ne0$
+(\S\ref{sec:beta}). The list is never assembled into a dense $b_m\times b_n$
+tile; it is an iterator whose pairs are produced on demand, consumed, and
+discarded. Everything downstream is built from two implicit operators,
+\begin{equation}
+\label{eq:apply}
+\mathrm{ApplyRight}(\Omega)=X_{ij}\Omega=\sum_aL_a\bigl(R_a^{\T}\Omega\bigr),
+\qquad
+\mathrm{ApplyLeft}(Q)=X_{ij}^{\T}Q=\sum_aR_a\bigl(L_a^{\T}Q\bigr).
+\end{equation}
+
+\subsection{Structured evaluation and the ordering that matters}
+\label{sec:ordering}
+
+For the TLR product it is convenient to keep the structured form of
+\eqref{eq:apply}. With a sketch block $\Omega\in\R^{b_n\times s}$, define
+\begin{equation}
+\label{eq:HT}
+H_{\ell j}:=\bigl(V^B_{\ell j}\bigr)^{\T}\Omega\in\R^{r_{B,\ell j}\times s},
+\qquad
+T_{i\ell j}:=\alpha\,S_{i\ell j}H_{\ell j}\in\R^{r_{A,i\ell}\times s},
+\end{equation}
+so the sample is the single fused reduction
+\begin{equation}
+\label{eq:Y}
+Y_{ij}=X_{ij}\Omega=\sum_{\ell=1}^{q_k}U^A_{i\ell}\,T_{i\ell j}
+\;+\;\beta\,U^C_{ij}\bigl((V^C_{ij})^{\T}\Omega\bigr).
+\end{equation}
+The ordering in \eqref{eq:HT}--\eqref{eq:Y} is the whole point. Forming the small
+inner product $R_a^{\T}\Omega$ \emph{before} multiplying by $L_a$ means the long
+dimension $b_m$ is touched only once, by the final GEMM \eqref{eq:Y}, whose
+contraction dimension is $\sum_\ell r_{A,i\ell}$ regardless of $s$. The
+alternative ordering $(\sum_aL_aR_a^{\T})\Omega$ would form a
+$b_m\times b_n$ object. Explicitly, the two are algebraically identical,
 \[
-\rho_i:=\sum_{\ell=1}^{q_k}r_{A,i\ell},
-\qquad
-\gamma_j:=\sum_{\ell=1}^{q_k}r_{B,\ell j}.
+Y=\sum_a L_a\bigl(R_a^{\T}\Omega\bigr)
+\quad\text{(inner size }\nu_a\times s)\qquad\text{versus}\qquad
+Y=\sum_a\bigl(L_aR_a^{\T}\bigr)\Omega
+\quad\text{(inner size }b_m\times b_n),
 \]
+but only the first has cost proportional to $\hat\rho_{ij}s$ rather than
+$b_mb_n$. The transpose apply $X^{\T}Q$ is evaluated symmetrically, eliminating
+$b_m$ first through $(U^A_{i\ell})^{\T}Q$.
 
-The algorithm proceeds in phases. Phase~0 computes product-aware weights from
-rank metadata and stored norms. Phase~1 builds, per block row of $C$, a
-\emph{certified} shared orthonormal basis for the left factors of $A$.
-Phase~2 routes every output tile to one of three paths:
-\begin{itemize}
-\item[\textbf{R1}] retain the basis, accumulate the coefficient matrix
-  explicitly, compress it exactly;
-\item[\textbf{R2}] retain the basis, but the coefficient matrix is itself
-  numerically low rank: compress it by a randomized factor-list sketch before
-  rotating back;
-\item[\textbf{R3}] discard the basis and compress the tile directly from its
-  factor list.
-\end{itemize}
-Phase~3 accumulates in shared coordinates, Phase~4 compresses per tile, and
-Phase~5 merges with $\beta C_{ij}$ and writes back in TLR form
-(R3 fuses Phases~3--5 into a single factor-list compression).
-Algorithm~\ref{alg:driver} is the driver.
+\begin{remark}[Hoisting]
+\label{rem:hoist}
+$S_{i\ell j}$ is independent of $\Omega$ and is computed once per tile, retained
+across all range-finder iterations. Only $H_{\ell j}$ and $T_{i\ell j}$ are
+regenerated per sketch block. Moreover $H_{\ell j}$ carries no row index $i$:
+fixing a block column $j$ and sweeping $i$ computes $H_{\ell j}$ once and reuses
+it across the whole column. This is one of the two reasons the schedule of
+\S\ref{sec:schedule} traverses by column (or, symmetrically, by row).
+\end{remark}
 
-\begin{algorithm}[htbp]
-\caption{\textsc{TlrGemm}: adaptive global row-basis TLR GEMM}
-\label{alg:driver}
+\begin{remark}[Batch shape]
+\label{rem:batch}
+The association order in \eqref{eq:HT} is chosen per term from the ranks: the
+coupling is contracted against whichever operand is cheaper. Because ranks vary
+with $\ell$, the batch over $\ell$ in stages \eqref{eq:HT} is a grouped
+(nonuniform) GEMM. The fused reduction \eqref{eq:Y}, by contrast, is a single
+GEMM per tile with contraction dimension $\rho_i$: it is the large,
+high-arithmetic-intensity kernel that dominates the useful work and that the
+whole factored form exists to expose.
+\end{remark}
+
+\section{Stopping: what is computed, and what it costs}
+\label{sec:energy}
+
+The loop stops on a quantity it has already computed, and it does not verify the
+result afterwards. This section gives the test, then the two reasons --- one
+statistical, one economic --- that no exact residual is formed on the hot path.
+
+\subsection{The sampling stop}
+\label{sec:samplestop}
+
+After a block is projected and orthonormalized, the norms of the freshly
+projected columns are already available: they are the diagonal of the Cholesky
+factor $R$ produced by the intra-block orthonormalization. The classical
+range-finder rule stops when a prescribed number $p$ of consecutive projected
+columns have norm below the tolerance scale, i.e.\ when successive blocks stop
+adding energy to the basis. Concretely, with
+$a_e=\max_{\text{last }p}\|Y_\Delta(:,\cdot)\|$ and $R_{\max}$ the running
+maximum of these norms, the loop stops when $a_e/R_{\max}$ falls below the
+relative tolerance. This costs an $\mathcal O(s)$ reduction over numbers the
+Cholesky QR already produced: no extra GEMM and no extra pass.
+
+The diagonal is the right signal, and column norms are not. At convergence the
+block is a set of random combinations of the few directions that remain, so
+every \emph{column} still has $\mathcal O(1)$ norm while the \emph{block} is
+rank deficient. By contrast $R[j,j]$ is the residual of column $j$ against both
+the existing basis and the earlier columns of the same block, so it collapses
+exactly when there is nothing new left.
+
+An unbiased norm estimate is also free from the first sample: for a Gaussian
+$\Omega\in\R^{b_n\times s}$, $\mathbb E\|X\Omega\|_F^2=s\|X\|_F^2$, so
+\begin{equation}
+\label{eq:normest}
+\widehat{\|X\|}_F=\|Y\|_F/\sqrt{s}
+\end{equation}
+serves the relative tolerance $\varepsilon_{\mathrm{rel}}\|X\|_F$ at the cost of
+one $\mathcal O(b_ms)$ norm.
+
+\subsection{Why no exact verification}
+\label{sec:noverify}
+
+\paragraph{The stop is a bound, not a heuristic.}
+Because each block is drawn from a \emph{fresh} Gaussian, $a_e$ is the
+Halko--Martinsson--Tropp a posteriori estimator of
+$\|(I-QQ^{\T})X\|_2$, whose failure probability decays like $10^{-p}$ in the
+number of consecutive small blocks. The confidence is therefore a tuning knob:
+raising $p$ by one costs a single block and buys an order of magnitude. Any
+scheme that instead \emph{verifies} must beat that exchange rate.
+
+\paragraph{It cannot.}
+Forming $\Fnorm{X}^2$ from the factor list costs $\mathcal O(n_f^2)$ small
+Grams, i.e.\ $\mathcal O(b\,q_k^2r^2)$ for representative rank $r$, whereas one
+further sketch block costs $\mathcal O(b\,q_k r\,\Delta s)$. The ratio is
+$q_k r/\Delta s$, about $32$ at $q_k=16$, $r=32$, $\Delta s=16$: it is far
+cheaper to draw another block than to check whether one was needed. Verification
+would only pay if it usually answered ``stop'', but the only situation that
+would invoke it is one in which the stop already looked doubtful.
+
+\paragraph{And the rank cap needs no residual either.}
+If $r_{\max}$ is reached before convergence, that fact is recorded in the output
+rank vector at no cost --- a tile returned at full rank is self-evidently
+capped. Moreover the \emph{truncation} part of the error is exactly
+$\sum_{k>r}\lambda_k$, available from the eigenvalues already computed for the
+final rotation (\S\ref{sec:ara}); only the range-capture part is unknown, and
+under a cap the truncation term dominates. So the honest error report is free.
+
+\begin{remark}[Verification as a test-only facility]
+\label{rem:verify}
+The exact Frobenius residual is still computable from the factor list without a
+dense tile, via $\Fnorm{X}^2=\sum_{a,b}\langle L_a^{\T}L_b,R_a^{\T}R_b\rangle_F$
+and the analogous cross term. It is worth implementing behind a debug flag, as
+an oracle for tests of the sampling stop. It should not appear on the execution
+path, and it carries a cancellation floor of its own: it subtracts quantities of
+size $\Fnorm{X}^2$ to obtain a residual of size $\tau^2$, so it is meaningful
+only for $\tau^2$ safely above $u_{\mathrm{hi}}\Fnorm{X}^2$.
+\end{remark}
+
+\section{Folding in the existing \texorpdfstring{$\beta C_{ij}$}{beta C} tile}
+\label{sec:beta}
+
+The output tile $C_{ij}$ already exists in the format, as a low-rank pair
+$(U^C_{ij},V^C_{ij})$ (or, on the diagonal, as a dense block). The GEMM
+overwrites it with the accumulated $X_{ij}$ of \eqref{eq:update}. There are two
+ways to include the $\beta C_{ij}$ term; we adopt the first and explain why.
+
+\paragraph{As one further factor pair (adopted).}
+Append $(L_C,R_C)=(U^C_{ij},\,\beta V^C_{ij})$ to the factor list. Then the range
+finder builds a basis for the \emph{entire} update $X_{ij}$, product terms and
+old tile together, and a single compression is performed. Concretely the term
+enters the sample \eqref{eq:Y} as the extra summand
+$\beta U^C_{ij}\bigl((V^C_{ij})^{\T}\Omega\bigr)$, and the transpose apply gains
+$\beta V^C_{ij}\bigl((U^C_{ij})^{\T}Q\bigr)$. Its width $r_{C,ij}$ adds to $\hat\rho_{ij}$. When $C_{ij}$ is a dense diagonal block $D$, the pair is
+replaced by the operators
+$\Omega\mapsto\beta D\Omega$ and $Q\mapsto\beta D^{\T}Q$ directly; no
+factorization of $D$ is needed for the apply.
+
+\paragraph{As a post-merge (rejected).}
+One could instead compress $\alpha\sum_\ell A_{i\ell}B_{\ell j}$ alone to a pair
+$(Q,Z)$ and afterwards merge $[\,U^C_{ij}\ \ Q\,]$, recompressing an object of
+width $r_{C,ij}+s$. This performs two truncations rather than one and introduces
+a second, avoidable approximation of the old tile. Carrying $\beta C_{ij}$ inside
+the range finder makes $Q$ a range basis for the complete update and truncates
+exactly once.
+
+\begin{remark}[Why the format's orthonormality is not enough for a norm]
+\label{rem:betanorm}
+Because the update mixes the product terms with the stored tile, $X_{ij}$ has no
+closed-form Frobenius energy from the format's orthonormal-basis invariant alone.
+This costs nothing here: the sampling estimate \eqref{eq:normest} requires no
+closed form, and it is the only norm the execution path uses.
+\end{remark}
+
+\section{The blocked randomized range finder}
+\label{sec:ara}
+
+A trial basis $Q\in\R^{b_m\times s_Q}$ for the column space of $X_{ij}$ is grown
+one block at a time; the projection $Z=X^{\T}Q$ is accumulated in step. The loop
+stops on the free sampling estimate of \S\ref{sec:samplestop} and does not verify
+afterwards (\S\ref{sec:noverify}). Block orthogonalization is classical block
+Gram--Schmidt with one reorthogonalization step (BCGS2); the intra-block
+orthonormalization is Cholesky QR, with the Gram and its Cholesky factor computed
+in a promoted precision while data is stored in the working precision.
+
+\begin{algorithm}[H]
+\caption{\textsc{RangeFind} --- compress one factor list to tolerance}
+\label{alg:ara}
 \begin{algorithmic}[1]
-\Require TLR $A,B,C$; scalars $\alpha,\beta$; tolerances
-  $\varepsilon_{\mathrm{basis}}$, $\varepsilon_{\mathrm{tile}}$
-\State \textbf{Phase 0:} $c_\ell$, $\rho_i$, $\gamma_j$,
-  $\mathcal E_i^w$ from rank metadata and $\|V_{\ell j}^{B}\|_F$
-\State $\pi\gets$ column order sorting $\gamma_j$ ascending
-  \Comment{once per GEMM; see \S\ref{subsec:scheduling}}
-\For{each block row $i$ (rows bucketed by $t_i^{\mathrm{screen}}$)}
-  \State $(Q_i,\{P_{i\ell}\},t_i)\gets{}$\Call{BuildRowBasis}{$i$}
-    \Comment{Alg.~\ref{alg:rowbasis}}
-  \State $(J_{\mathrm{R2}},J_{\mathrm{R1}},J_{\mathrm{R3}})\gets{}$\Call{PartitionRow}{$i,\pi$}
-    \Comment{Alg.~\ref{alg:route}: three contiguous segments}
-  \State accumulate $W_{i\ell j}$ for all $j\in J_{\mathrm{R1}}\cup J_{\mathrm{R2}}$,
-    and $M_{ij}$ for $j\in J_{\mathrm{R1}}$
-    \Comment{one batch, Alg.~\ref{alg:accumulate}}
-  \ForAll{$g\in\{\mathrm{R1},\mathrm{R2}\}$ with $J_g\neq\emptyset$}
-    \State $(U^{P},V^{P})_{j\in J_g}\gets{}$\Call{CompressTile}{$g$}
-      \Comment{batched over $J_g$, Alg.~\ref{alg:compress}}
+\Procedure{RangeFind}{$\{(L_a,R_a)\},\,\varepsilon_{\mathrm{rel}},\varepsilon_{\mathrm{abs}},r_{\max},s,\Delta s,s_{\max}$}
+  \State $Q\gets[\,]$, $Z\gets[\,]$, $s_Q\gets0$
+  \While{$s_Q<s_{\max}$}
+     \State draw Gaussian $\Omega_\Delta\in\R^{b_n\times d}$,
+            $d=\min(\Delta s,\,s_{\max}-s_Q)$ (or $s$ on the first pass)
+     \State $Y_\Delta\gets\mathrm{ApplyRight}(\Omega_\Delta)$
+        \Comment{fused sample \eqref{eq:Y}}
+     \If{$s_Q=0$}\ $\widehat{\|X\|}_F\gets\|Y_\Delta\|_F/\sqrt d$;\
+        $\tau^2\gets\max(\varepsilon_{\mathrm{abs}}^2,
+        \varepsilon_{\mathrm{rel}}^2\widehat{\|X\|}_F^2)$
+     \EndIf
+        \Comment{norm estimate \eqref{eq:normest}, free}
+     \State $Q_\Delta\gets\Call{OrthAgainst}{Q,Y_\Delta}$
+        \Comment{BCGS2 $+$ Cholesky QR; column norms $=\mathrm{diag}(R)$}
+     \State update $a_e,R_{\max}$ from the projected column norms
+        \Comment{sampling stop, \S\ref{sec:samplestop}}
+     \State $Z_\Delta\gets\mathrm{ApplyLeft}(Q_\Delta)$
+        \Comment{fused $X^{\T}Q$}
+     \State $Q\gets[\,Q\ \ Q_\Delta\,]$;\ $Z\gets[\,Z\ \ Z_\Delta\,]$;\
+            $s_Q\gets\mathrm{cols}(Q)$
+     \If{$p$ consecutive projected columns satisfy $a_e/R_{\max}<\varepsilon_{\mathrm{rel}}$}
+        \State \textbf{break}
+           \Comment{\S\ref{sec:noverify}: no verification pass}
+     \EndIf
+  \EndWhile
+  \State $K\gets Z^{\T}Z$ (promoted);\
+         $(\lambda,W)\gets\textsc{XsyevBatched}(K)$; reverse to descending
+  \State $r\gets\min\bigl(r_{\max},\ \min\{t:\textstyle\sum_{k>t}\lambda_k\le\tau^2\}\bigr)$
+     \Comment{$E_{\mathrm{pred}}$ screen}
+  \State $U\gets QW(:,1{:}r)$;\ $V\gets ZW(:,1{:}r)$
+  \State \Return $(U,\,V,\,\textstyle\sum_{k>r}\lambda_k,\;[\,r=r_{\max}\,])$
+     \Comment{achieved truncation error and the cap flag, both free}
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+There is a single exit. The sampling estimate decides when to stop and the tail
+sum $\sum_{k>r}\lambda_k$ against $\tau^2$ chooses the rank; both are byproducts
+of work already done, so the routine has no branch that costs an extra pass over
+the factor list. Randomness affects the pass count and, at the probability of
+\S\ref{sec:noverify}, the achieved accuracy.
+
+The final eigendecomposition is not a numerical crutch --- $Z$ is not rank
+deficient by construction --- but it does real work: blocked range finders
+overshoot the true rank by a few columns, since sampling proceeds in units of
+$\Delta s$, and rotating into the eigenbasis of $K$ before truncating recovers
+the optimal rank for the basis that was built.
+
+\subsection{Why Cholesky QR is safe here}
+\label{sec:cholqr}
+
+Cholesky QR squares the condition number and is unstable on rank-deficient input.
+It is nonetheless the right orthonormalizer inside this loop, for a structural
+reason. The block handed to it has already been projected against the existing
+basis by BCGS2, so in the normal case it is well conditioned and mixed-precision
+Cholesky QR (Gram and factor in promoted precision, data in working precision)
+suffices. The dangerous case is the final block at convergence, whose columns
+nearly lie in $\mathrm{span}(Q)$; those columns then have small norm and are
+flagged as converged, i.e.\ discarded, rather than trusted as basis vectors. The
+instability therefore lands precisely on the vectors that are thrown away. This
+safety depends on keeping $s$ small: enlarging the block to cut the pass count
+re-exposes it to ill conditioning. The large-GEMM efficiency should be recovered
+from the fused reduction \eqref{eq:Y}, whose contraction dimension is $\rho_i$
+independent of $s$, not from widening $s$.
+
+\subsection{Primitive inventory}
+\label{sec:primitives}
+
+Every kernel in Algorithm~\ref{alg:ara} is a stock batched routine:
+the applies \eqref{eq:HT}--\eqref{eq:Y} and the projections are batched
+(grouped) GEMM; the Gram is batched SYRK in promoted precision; the Cholesky is
+batched POTRF; the back-solve is batched TRSM; the small $s_Q\times s_Q$
+eigenproblem is \texttt{XsyevBatched} (exact, uncapped in the wrapper). No
+routine that forms an explicit Householder $Q$ factor is required, so no
+dependence on a library outside cuBLAS/cuSOLVER is incurred. The only custom kernels are
+small reductions: the projected-column norms feeding the stopping test, and the
+per-member convergence bookkeeping that decides how many columns each tile of a
+batch samples next.
+
+\section{Scheduling and workspace}
+\label{sec:schedule}
+
+The traversal of the output is fixed by two facts and then constrained by a
+memory budget. First, $H_{\ell j}$ is row-index-free (Remark~\ref{rem:hoist}), so
+sweeping a block column reuses it across all $q_m$ tiles of the column;
+symmetrically, sweeping a block row reuses the analogous right-hand quantity.
+Second, the sample and projection GEMMs \eqref{eq:Y} for distinct tiles in the
+same column write disjoint outputs, so a whole column of tiles can be processed
+as one batch. The natural unit of work is therefore a block column (or block
+row), and the only free parameter is how much of it fits in workspace at once.
+
+\subsection{Minimum workspace per unit of work}
+\label{sec:minws}
+
+The working set for one tile in flight, at sketch width $s$, is
+\begin{equation}
+\label{eq:tilews}
+w_{ij}(s)=
+\underbrace{(b_m+b_n)\,s_{\max}}_{\text{accumulators }Q,\,Z}
+\;+\;
+\underbrace{\textstyle\sum_\ell r_{A,i\ell}r_{B,\ell j}}_{\text{retained }S_{i\ell j}}
+\;+\;
+\underbrace{\rho_i\,s}_{\text{applied }T\text{ column}},
+\end{equation}
+sized at the cap $s_{\max}$ for the accumulators, since $Q$ and $Z$ grow to at
+most that width. No $b_m\times b_n$ buffer ever appears. For a block column $j$,
+the coupling matrices $H_{\ell j}$ are shared, adding a one-time
+$\sum_\ell r_{B,\ell j}\,s=\gamma_j s$ that is amortized over the column rather
+than paid per tile. The minimum viable workspace to process a single tile of the
+column is thus $w_{ij}(s_0)$ at the initial width $s_0$; the minimum to run the
+column with maximal accumulator width is $\max_i w_{ij}(s_{\max})+\gamma_j
+s_{\max}$.
+
+These quantities are computable \emph{before any arithmetic} from rank metadata:
+$\rho_i$, $\gamma_j$, and $\sum_\ell r_{A,i\ell}r_{B,\ell j}$ are all read from
+the stored ranks. The scheduler evaluates them to decide the traversal.
+
+\subsection{Workspace-bounded traversal}
+\label{sec:traversal}
+
+Given a memory budget $\mathcal B$ (the workspace the caller is willing to spend
+on intermediates), the scheduler processes the output as the longest contiguous
+run of tiles, in the layout-preferred order, whose combined working set
+\eqref{eq:tilews} fits $\mathcal B$. Because the preferred order is a block
+column (or row), a run is a set of consecutive tiles of a column; when the budget
+exceeds one column it continues into the next, and when it is smaller than one
+column the column is split into segments. The run is one-dimensional in the
+column-major traversal, not a rectangular macrotile: the shape is dictated by the
+layout, and only the run length is free.
+
+\begin{algorithm}[H]
+\caption{\textsc{Schedule} --- workspace-bounded column-major traversal}
+\label{alg:sched}
+\begin{algorithmic}[1]
+\Procedure{Schedule}{ranks,\,$\mathcal B$,\,$s_0,\Delta s,s_{\max}$}
+  \For{each block column $j=1,\dots,q_n$}
+     \State $b_{\mathrm{col}}\gets\gamma_j s_{\max}$
+        \Comment{shared $H_{\ell j}$ reservation}
+     \State $i\gets1$
+     \While{$i\le q_m$}
+        \State grow a run $\{i,i+1,\dots,i'\}$ taking the largest $i'$ with
+               $b_{\mathrm{col}}+\sum_{p=i}^{i'}w_{pj}(s_{\max})\le\mathcal B$
+        \If{run is empty}
+           \State fall back: process tile $i$ alone with reduced accumulator cap
+                  or sub-panel the reduction over $\ell$ (\S\ref{sec:staging})
+           \State $i'\gets i$
+        \EndIf
+        \State compute $H_{\ell j}$ once for the run
+        \State \textbf{batch} over $p\in\{i,\dots,i'\}$:
+               \Call{RangeFind}{list$(p,j)$,\,\dots}
+        \State $i\gets i'+1$
+     \EndWhile
   \EndFor
-  \State $(U^{C},V^{C})_{j\in J_{\mathrm{R1}}\cup J_{\mathrm{R2}}}\gets{}$\Call{MergeTile}{$\cdot,\beta$}
-    \Comment{one batch at padded width, Alg.~\ref{alg:merge}}
-  \State compress $\alpha(AB)_{ij}+\beta C_{ij}$ for $j\in J_{\mathrm{R3}}$
-    \Comment{batched, Alg.~\ref{alg:fallback}}
-\EndFor
+\EndProcedure
 \end{algorithmic}
 \end{algorithm}
 
-\subsection{Building Block: Two-Pass Factor-List Sketch}
-\label{subsec:factor-list-contraction}
+\subsection{Staging the reduction when a single tile does not fit}
+\label{sec:staging}
 
-Every randomized branch compresses a matrix available only as a factor list
-$X=\sum_{k=1}^{p}L_kR_k^{\mathsf T}$. Both sketch passes contract the long
-dimension first,
-\[
-X\Omega=\sum_{k}L_k(R_k^{\mathsf T}\Omega),
-\qquad
-X^{\mathsf T}Q=\sum_{k}R_k(L_k^{\mathsf T}Q),
-\]
-so $X$ is never formed. Working memory is $O\bigl((b_m+b_n)s\bigr)$ rather
-than $O(b_mb_n)$, and the list may be regenerated for the second pass instead
-of stored. Dense materialization pays only when the sketch width approaches a
-tile dimension.
+If even one tile's full-$\ell$ working set exceeds $\mathcal B$ --- a long
+reduction ($q_k$ large) with wide couplings --- the reduction over $\ell$ is
+sub-panelled. Partition $\{1,\dots,q_k\}$ into contiguous panels
+$K_1,K_2,\dots$; for each panel compute the partial sample
+$Y^{(K_t)}=\sum_{\ell\in K_t}U^A_{i\ell}T_{i\ell j}$ and accumulate it into $Y$
+before orthogonalizing. This keeps at most one panel's $T$ resident, at the cost
+of reading the accumulator once per panel. It is the exception, not the main
+path: it is taken only when the metadata check in Algorithm~\ref{alg:sched}
+reports that the single-tile minimum $w_{ij}(s_0)$ does not fit.
 
-\begin{algorithm}[htbp]
-\caption{\textsc{FactorQB}: two-pass randomized QB of a factor list}
-\label{alg:factorqb}
-\begin{algorithmic}[1]
-\Require $\{(L_k,R_k)\}_{k=1}^{p}$ with
-  $X=\sum_kL_kR_k^{\mathsf T}\in\mathbb{R}^{m\times n}$; sketch width $s$
-\State draw $\Omega\in\mathbb{R}^{n\times s}$;\quad
-  $Y\gets\sum_kL_k(R_k^{\mathsf T}\Omega)$
-  \Comment{pass 1, never forms $X$}
-\State $Q\gets\operatorname{CholQR2}(Y)$
-\State $Z\gets\sum_kR_k(L_k^{\mathsf T}Q)$
-  \Comment{pass 2: $X\approx QZ^{\mathsf T}$}
-\State \Return $(Q,Z)$
-  \Comment{caller truncates via a small SVD of $Z$}
-\end{algorithmic}
-\end{algorithm}
+\subsection{Choosing the run length and the sketch schedule}
+\label{sec:choose}
 
-\subsection{Phase 0: Product-Aware Row Weights}
-\label{subsec:product-aware-weights}
+Two knobs remain, both driven by metadata. The sketch width $s$ (and its cap
+$s_{\max}$) is kept small enough that Cholesky QR stays well conditioned
+(\S\ref{sec:cholqr}) and that the accumulators in \eqref{eq:tilews} are modest;
+the run length is then made as long as $\mathcal B$ permits, to maximize the
+number of tiles batched per launch and thus occupancy. When the budget forces a
+choice, shorten the run before shrinking $s_{\max}$: the run length is a pure
+occupancy knob, whereas $s_{\max}$ bounds the achievable output rank and must
+remain above the ranks actually present. The large-GEMM efficiency comes from the
+fused reduction \eqref{eq:Y}, whose contraction dimension $\rho_i$ is set by the
+data, not by these knobs.
 
-For every inner index $\ell$ define the $B$-row weight
-$c_\ell:=\|B_{\ell,:}\|_F=\bigl(\sum_j\|V_{\ell j}^{B}\|_F^2\bigr)^{1/2}$,
-computed once per GEMM and shared by all block rows $i$. The weighted row
-panel
-\[
-\overline U_i^{w}
-:=
-\begin{bmatrix}
-c_1U_{i1}^{A} & \cdots & c_{q_k}U_{iq_k}^{A}
-\end{bmatrix}
-\in\mathbb{R}^{b_m\times\rho_i}
-\]
-has exactly known energy
-$\mathcal E_i^{w}:=\|\overline U_i^{w}\|_F^2=\sum_\ell c_\ell^2\,r_{A,i\ell}$,
-because each block has orthonormal columns. The weights make every
-$U_{i\ell}^{A}$ contribute to the shared basis in proportion to the block row
-of $B$ it will multiply: a direction attached to a negligible $B_{\ell,:}$
-does not force rank into the basis.
+\section{Cost}
+\label{sec:cost}
 
-\subsection{Phase 1: Certified Shared Row Basis}
-\label{subsec:certified-row-basis}
+Per tile, to leading order and excluding the coupling prologue $S_{i\ell j}$
+(common to any method):
 
-The goal is an orthonormal $Q_i\in\mathbb{R}^{b_m\times t_i}$ and coordinates
-$P_{i\ell}\in\mathbb{R}^{t_i\times r_{A,i\ell}}$ with
-$U_{i\ell}^{A}\approx Q_iP_{i\ell}$ --- a column-space factorization
-$\overline U_i^{w}\approx Q_iB_i$. The shape of the panel selects the
-construction, not the mathematical object. When $\rho_i<b_m$ (tall panel) a
-direct $\operatorname{CholQR2}$ at cost $O(b_m\rho_i^2)$ is preferable unless
-the expected numerical rank is much smaller than $\rho_i$; when
-$\rho_i\ge b_m$ the rank is bounded by $b_m$ and a right-sided randomized QB
-is the natural construction.
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Stage & Cost & Note \\
+\midrule
+$H_{\ell j}$ (per sample)        & $2b_n\gamma_j s$ & once per column, $/q_m$ per tile \\
+$Y_{ij}=X\Omega$                 & $2b_m\rho_i s$   & one fused GEMM, contraction $\rho_i$ \\
+$Z_{ij}=X^{\T}Q$                 & $2b_m\rho_i s+2b_n\gamma_j s$ & two fused GEMMs \\
+Gram $+$ eig (\textsc{XsyevBatched}) & $2b_ms_Q^2+O(s_Q^3)$ & promoted Gram, small eig \\
+form $U,V$                       & $2(b_m+b_n)s_QR$ & final lift to output rank $R$ \\
+norm estimate \eqref{eq:normest} & $O(b_ms)$ & free, every tile \\
+\bottomrule
+\end{tabular}
+\end{center}
 
-\paragraph{Blockwise sketch and certificate.}
-The weighted panel is never concatenated. With $\Omega_i$ partitioned
-conformally ($\Omega_{i\ell}\in\mathbb{R}^{r_{A,i\ell}\times s_i}$),
-\[
-Y_i=\overline U_i^{w}\Omega_i=\sum_\ell c_\ell U_{i\ell}^{A}\Omega_{i\ell},
-\qquad
-Q_i=\operatorname{CholQR2}(Y_i),
-\qquad
-P_{i\ell}=Q_i^{\mathsf T}U_{i\ell}^{A},
-\]
-where the projections are of the \emph{unweighted} factors. The weighted
-energy captured so far is $\sum_\ell c_\ell^2\|P_{i\ell}\|_F^2$, so
-\[
-\delta_i
-:=
-\mathcal E_i^{w}-\sum_\ell c_\ell^2\|P_{i\ell}\|_F^2
-\;\ge 0
-\]
-is a deterministic a posteriori certificate of the randomized range
-approximation, available without touching the panel again.
+The number of small dense factorizations is $O(q_mq_n)$ (one eigenproblem per
+tile, of size $s_Q$), and the chain of dependent launches per tile is $O(1)$:
+the reduction over $\ell$ is a single fused GEMM, not a serial recurrence. Batch
+shapes at fixed $s$ are uniform across a run, and the number of range-finder
+passes is the only data-dependent quantity. No term is quadratic in $q_k$: the reduction is never
+revisited once sampled, which is what removing the verification pass buys.
 
-\paragraph{Adaptive extension.}
-While $\delta_i>\varepsilon_{\mathrm{basis}}^2\mathcal E_i^{w}$, the sketch is
-extended, not restarted: draw fresh blocks $\Omega_{i\ell}^{\Delta}$, form
-$Y_i^{\Delta}=\sum_\ell c_\ell U_{i\ell}^{A}\Omega_{i\ell}^{\Delta}$, and
-orthogonalize against the current basis with two-pass block
-Gram--Schmidt,
-\[
-\widehat Y_i^{\Delta}
-= Y_i^{\Delta}-Q_i(Q_i^{\mathsf T}Y_i^{\Delta}),
-\qquad
-\widehat Y_i^{\Delta}
-\leftarrow \widehat Y_i^{\Delta}-Q_i(Q_i^{\mathsf T}\widehat Y_i^{\Delta}),
-\]
-followed by $Q_i^{\Delta}=\operatorname{CholQR2}(\widehat Y_i^{\Delta})$ and
-$Q_i\leftarrow[\,Q_i\;\;Q_i^{\Delta}\,]$. Because the basis is extended
-rather than rotated, existing coordinates remain valid; only the new rows
-$P_{i\ell}^{\Delta}=(Q_i^{\Delta})^{\mathsf T}U_{i\ell}^{A}$ are appended, and
-the captured energy — hence $\delta_i$ — updates additively and decreases
-monotonically. At worst the sketch spans the panel range, of dimension at most
-$\min(b_m,\rho_i)$.
+\section{Summary of the blueprint}
+\label{sec:summary}
 
-\begin{algorithm}[htbp]
-\caption{\textsc{BuildRowBasis}: certified shared basis for block row $i$}
-\label{alg:rowbasis}
-\begin{algorithmic}[1]
-\Require weights $c_\ell$, energy $\mathcal E_i^{w}$, tolerance
-  $\varepsilon_{\mathrm{basis}}$, initial width $s_i$
-\If{$\rho_i<b_m$ and no strong rank deficiency expected}
-  \State $[\,Q_i,\ \cdot\,]\gets\operatorname{CholQR2}(\overline U_i^{w})$;
-    \ $P_{i\ell}\gets Q_i^{\mathsf T}U_{i\ell}^{A}$;
-    \ \Return \Comment{direct path, deterministic}
-\EndIf
-\State $Y_i\gets\sum_\ell c_\ell U_{i\ell}^{A}\Omega_{i\ell}$;\quad
-  $Q_i\gets\operatorname{CholQR2}(Y_i)$
-\State $P_{i\ell}\gets Q_i^{\mathsf T}U_{i\ell}^{A}$ for all $\ell$;\quad
-  $\delta_i\gets\mathcal E_i^{w}-\sum_\ell c_\ell^2\|P_{i\ell}\|_F^2$
-\While{$\delta_i>\varepsilon_{\mathrm{basis}}^2\,\mathcal E_i^{w}$}
-  \State $Y_i^{\Delta}\gets\sum_\ell c_\ell U_{i\ell}^{A}\Omega_{i\ell}^{\Delta}$
-    \Comment{fresh random blocks}
-  \State $\widehat Y_i^{\Delta}\gets$ two-pass BCGS of $Y_i^{\Delta}$
-    against $Q_i$
-  \State $Q_i^{\Delta}\gets\operatorname{CholQR2}(\widehat Y_i^{\Delta})$;\quad
-    $Q_i\gets[\,Q_i\;\;Q_i^{\Delta}\,]$
-  \State append rows
-    $P_{i\ell}^{\Delta}=(Q_i^{\Delta})^{\mathsf T}U_{i\ell}^{A}$;\quad
-    $\delta_i\gets\delta_i-\sum_\ell c_\ell^2\|P_{i\ell}^{\Delta}\|_F^2$
-\EndWhile
-\State \Return $(Q_i,\{P_{i\ell}\},t_i=\text{width}(Q_i))$
-\end{algorithmic}
-\end{algorithm}
+The baseline is a per-tile blocked range finder (Algorithm~\ref{alg:ara}) driven
+by a workspace-bounded column-major scheduler (Algorithm~\ref{alg:sched}). The
+reduction over $\ell$ is folded into a single high-intensity GEMM
+\eqref{eq:Y} by the long-dimension-last ordering; the existing $\beta C_{ij}$
+tile is carried inside the range finder as one further factor pair
+(\S\ref{sec:beta}) so that a single truncation produces the output; the loop
+stops on the free sampling estimate (\S\ref{sec:samplestop}), which is an a
+posteriori bound rather than a heuristic, and never verifies afterwards, because
+drawing another block is roughly $q_kr/\Delta s$ times cheaper than checking
+whether one was needed (\S\ref{sec:noverify}); and every kernel is a
+stock batched cuBLAS/cuSOLVER routine (\S\ref{sec:primitives}), with Cholesky QR
+made safe by the convergence-time discarding of small columns
+(\S\ref{sec:cholqr}). The schedule is computed from rank metadata before any
+arithmetic, so the traversal and the fallback to reduction staging are decided
+without speculative work.
 
-\subsection{Phase 2: Routing}
-\label{subsec:row-basis-decision}
-
-A certified basis is not necessarily an economical one; two different
-questions must be kept apart.
-
-\paragraph{Row-level screening.}
-Applying the panel to a thin $G\in\mathbb{R}^{\rho_i\times s}$ costs
-$2b_m\rho_i s$ directly and $2t_i(b_m+\rho_i)s$ through $Q_i(P_iG)$, so the
-factorized \emph{representation} is cheaper iff
-$t_i<t_i^{\mathrm{screen}}:=b_m\rho_i/(b_m+\rho_i)$.
-This compares two ways of applying the same panel; it is \emph{not} the
-algorithmic crossover, because the retained path never applies the panel to a
-width-$\rho_i$ operand --- accumulation happens in coefficient space, where the
-operand width is $\gamma_j$. Since $t_i^{\mathrm{screen}}$ depends only on
-row-level data, it is used to pre-sort rows into batches of similar shape,
-never to choose the compression path.
-
-\paragraph{Tile-level cost model.}
-Fix $(i,j)$; let $s$ be the sketch width of whichever randomized branch is
-taken, $R$ the final output rank, and
-$r_{M,ij}=\operatorname{rank}(M_{ij})$. Dropping the coupling products
-$S_{i\ell j}$ common to all branches, the three paths cost
-\begin{align}
-\text{(R1) retain, form } M_{ij}:\quad
-&2b_nt_i\gamma_j + 4b_nt_i^2 + 2b_mt_iR,
-\notag\\
-\text{(R2) retain, sketch } M_{ij}:\quad
-&4s\,\gamma_j(b_n+t_i) + 2b_mt_ir_{M,ij},
-\label{eq:tile-costs}\\
-\text{(R3) discard, sketch the tile:}\quad
-&4s\,\rho_i(b_m+b_n).
-\notag
-\end{align}
-The structural point sits in the last two lines: R2's sketch passes traverse
-$\gamma_j$ columns at height $t_i$, R3's traverse $\rho_i$ columns at height
-$b_m$. The retain/discard decision is therefore governed by $\gamma_j$ against
-$\rho_i$ as much as by $t_i$ --- and $\gamma_j$ is not available at row level.
-Equating R2 and R3 with $r_{M,ij}\approx s$ gives the crossover
-\[
-t_i^{\mathrm{tile}}
-:=
-\frac{2\bigl[\rho_i(b_m+b_n)-\gamma_jb_n\bigr]}{2\gamma_j+b_m}
-\;\xrightarrow[\;b_m=b_n=b,\ \gamma_j\approx\rho_i=\rho\;]{}\;
-\frac{2(\rho+b)}{2\rho+b}\,t_i^{\mathrm{screen}},
-\]
-with $2(\rho+b)/(2\rho+b)\in[1,2]$: the representation-level comparison is
-uniformly conservative, discarding the basis up to a factor of two in $t_i$
-earlier than cost justifies. A safety factor $\eta_{\mathrm{row}}$ on
-$t_i^{\mathrm{screen}}$ should accordingly be tuned \emph{above} unity.
-
-\paragraph{Coefficient-compression crossover.}
-Forming $M_{ij}$ explicitly costs $\simeq 2b_nt_i\gamma_j$ plus an exact
-compression at $4b_nt_i^2$; a two-pass factor-list sketch of width $s_{M,ij}$
-costs $\simeq 4\gamma_js_{M,ij}(b_n+t_i)$, and both branches pay the rotation
-$2b_mt_ir_{M,ij}$. With $t_i\ll b_n$ the sketch wins when
-\[
-s_{M,ij}
-\;\lesssim\;
-\eta_M\,\frac{b_nt_i}{b_n+t_i},
-\qquad
-\eta_M\approx\tfrac12 .
-\]
-Combined with $s_{M,ij}\approx\hat r_{M,ij}+p$ and $\hat r_{M,ij}\le\gamma_j$,
-the condition $\gamma_j\lesssim t_i/2$ is sufficient and decidable from rank
-metadata alone.
-
-\paragraph{Decision tree.}
-The coefficient-rank test is free, so it is evaluated first, using the
-metadata bound
-$\hat r_{M,ij}:=\min(t_i,\,b_n,\,\gamma_j)\ \ge\ r_{M,ij}$:
-\begin{enumerate}
-\item if $\hat r_{M,ij}+p\lesssim\tfrac12t_i$, take \textbf{R2};
-\item else if $t_i\le\eta_{\mathrm{row}}\,t_i^{\mathrm{tile}}$, take \textbf{R1};
-\item else take \textbf{R3}.
-\end{enumerate}
-Because $\hat r_{M,ij}$ is a guarantee, condition~1 \emph{certifies} that
-coefficient sketching wins; above the threshold the rank is unknown and
-forming $M_{ij}$ is the safe default. Two properties keep the ordering cheap.
-First, the couplings $S_{i\ell j}$ are shared by all branches --- they enter R1
-and R2 through $W_{i\ell j}$ and R3 through $R_{i\ell j}^{A}$ --- so a late
-switch to R3 wastes nothing. Second, R1 needs no sketch at all: with $Q_i$
-orthonormal, $M_{ij}$ is compressed exactly by a $\operatorname{CholQR2}$ and
-a $t_i\times t_i$ SVD, with no sampling error; exactness is a positive reason
-to prefer R1 near the boundary. Finally, since $t_i\le b_m$ always, R2's
-passes are never taller than R3's, and the only real cost of retaining the
-basis is the rotation $2b_mt_ir_{M,ij}$; R3 is warranted mainly when
-$\gamma_j\gg\rho_i$ or when $t_i\to b_m$ and $Q_i$ degenerates into a
-near-complete rotation. Implementations should not provision R3 as the common
-case.
-
-\begin{algorithm}[htbp]
-\caption{\textsc{PartitionRow}: route selection for a whole block row
-  (metadata only, no device reads)}
-\label{alg:route}
-\begin{algorithmic}[1]
-\Require $t_i$, $\rho_i$, $\gamma$-sorted column order $\pi$, oversampling
-  $p$, safety $\eta_{\mathrm{row}}>1$, minimum group size $g_{\min}$
-\Function{Route}{$j$} \Comment{per-tile predicate, evaluated on the host}
-  \State $\hat r\gets\min(t_i,b_n,\gamma_j)$
-  \If{$\hat r+p\le t_i/2$} \Return R2
-    \Comment{certified: coefficient sketch wins}
-  \ElsIf{$t_i\le\eta_{\mathrm{row}}\,
-    \dfrac{2[\rho_i(b_m+b_n)-\gamma_jb_n]}{2\gamma_j+b_m}$} \Return R1
-    \Comment{basis economical: form $M_{ij}$, exact}
-  \Else{} \Return R3 \Comment{basis uneconomical for this tile}
-  \EndIf
-\EndFunction
-\State both predicates are monotone in $\gamma_j$, so locate the two
-  boundaries in $\pi$ by binary search
-\State $J_{\mathrm{R2}},J_{\mathrm{R1}},J_{\mathrm{R3}}\gets$ the three
-  resulting contiguous segments
-\State fold any segment with $|J_g|<g_{\min}$ into an adjacent route
-  (prefer R1)
-\State \Return $(J_{\mathrm{R2}},J_{\mathrm{R1}},J_{\mathrm{R3}})$
-\end{algorithmic}
-\end{algorithm}
-
-\subsection{Scheduling: Routing Without Losing Batching}
-\label{subsec:scheduling}
-
-Per-tile routing must not become per-tile \emph{execution}. On a throughput
-device the cost of a tile-at-a-time inner loop is dominated by kernel launch
-latency and by any host synchronization inside it, not by arithmetic; the
-correct pattern is \emph{route, partition, then batch each group}. Two
-properties of the decision rule make this possible.
-
-\paragraph{Routing is metadata-only.}
-Algorithm~\ref{alg:route} reads $t_i,\rho_i,\gamma_j,b_m,b_n,p$ and nothing
-else: no factor data, hence no device reads and no synchronization. The routing
-map for an entire block row --- indeed for the entire product --- is therefore
-computed on the host before any tile work begins.
-
-\paragraph{Routes are monotone in $\gamma_j$.}
-Within a block row, $t_i$ and $\rho_i$ are fixed and only $\gamma_j$ varies.
-The R2 test requires $\min(t_i,b_n,\gamma_j)+p\lesssim t_i/2$, hence
-$\gamma_j\lesssim t_i/2$; and since
-\[
-\frac{\partial t_i^{\mathrm{tile}}}{\partial\gamma_j}
-=
--\,\frac{2b_mb_n+4\rho_i(b_m+b_n)}{(2\gamma_j+b_m)^2}
-\;<\;0
-\]
-strictly, the R1 test $t_i\le\eta_{\mathrm{row}}t_i^{\mathrm{tile}}$ holds for
-small $\gamma_j$ and fails monotonically as $\gamma_j$ grows. The three routes
-therefore partition each block row into \emph{contiguous segments} ordered by
-$\gamma_j$,
-\[
-\underbrace{\text{R2}}_{\gamma_j\text{ small}}
-\;\longrightarrow\;
-\underbrace{\text{R1}}_{\gamma_j\text{ medium}}
-\;\longrightarrow\;
-\underbrace{\text{R3}}_{\gamma_j\text{ large}},
-\]
-separated by two boundaries. Because $\gamma_j$ depends only on block column
-$j$ of $B$, the ordering is row-independent: it is computed once per GEMM at
-cost $O(q_n\log q_n)$ on the host and reused by every row, with only the two
-boundaries moving as $t_i$ and $\rho_i$ change. The permutation governs the
-order in which columns are \emph{processed}, not how they are stored, so
-panel accessors remain zero-copy.
-
-\paragraph{Consequences for the executor.}
-\begin{enumerate}
-\item \emph{Group-wise execution.} A row issues at most three batched groups
-instead of $q_n$ singletons; when a row is uniform in $\gamma_j$ it issues
-one, recovering the fully batched schedule exactly. The couplings
-$S_{i\ell j}$ and the coefficients $W_{i\ell j}$ are shared by all routes and
-are accumulated in a single batch spanning the whole row.
-\item \emph{Minimum group size.} A segment shorter than a device-dependent
-threshold is folded into an adjacent route rather than launched on its own;
-all three routes are correct for every tile, so this trades a known small
-arithmetic overhead for a launch. R1 is the natural absorber, being exact and
-requiring no sketch.
-\item \emph{Padding within a group.} Sketch widths $s_{M,ij}$ and output
-widths vary with $\gamma_j$ inside a group. Since the segments are already
-$\gamma$-contiguous the spread is small, so groups are padded to their
-maximum width rather than sub-bucketed; padded columns are exactly zero and
-do not perturb the result.
-\item \emph{Merge across routes.} R1 and R2 tiles reach Phase~5 with different
-$U_{ij}^{P}$ widths. Padding those to a common width leaves the merge algebra
-unchanged, so the whole row merges in one batch. R3 tiles bypass Phase~5,
-having already absorbed $\beta C_{ij}$.
-\item \emph{Cross-row batching.} Rows are additionally bucketed by
-$t_i^{\mathrm{screen}}$, which is the purpose of that row-level quantity:
-rows of similar shape execute their groups together, so basis application and
-merge batches span several rows.
-\end{enumerate}
-
-\subsection{Phase 3: Accumulation in Shared Coordinates}
-\label{subsec:shared-coordinate-accumulation}
-
-With $U_{i\ell}^{A}\approx Q_iP_{i\ell}$,
-\[
-A_{i\ell}B_{\ell j}
-\approx
-Q_i\,P_{i\ell}(V_{i\ell}^{A})^{\mathsf T}U_{\ell j}^{B}(V_{\ell j}^{B})^{\mathsf T},
-\]
-so with
-$W_{i\ell j}
-:= (U_{\ell j}^{B})^{\mathsf T}V_{i\ell}^{A}P_{i\ell}^{\mathsf T}
-\in\mathbb{R}^{r_{B,\ell j}\times t_i}$
-the product contribution is
-\[
-\alpha(AB)_{ij}\approx Q_iM_{ij}^{\mathsf T},
-\qquad
-M_{ij}
-:=\alpha\sum_{\ell=1}^{q_k}V_{\ell j}^{B}W_{i\ell j}
-\in\mathbb{R}^{b_n\times t_i}.
-\]
-The product defining $W_{i\ell j}$ is parenthesized by the smaller of $t_i$
-and $r_{A,i\ell}$: if $t_i\le r_{A,i\ell}$, precompute
-$T_{i\ell}:=V_{i\ell}^{A}P_{i\ell}^{\mathsf T}\in\mathbb{R}^{b_k\times t_i}$
-once per $(i,\ell)$ and evaluate
-$W_{i\ell j}=(U_{\ell j}^{B})^{\mathsf T}T_{i\ell}$; otherwise form
-$S_{i\ell j}:=(V_{i\ell}^{A})^{\mathsf T}U_{\ell j}^{B}$ and
-$W_{i\ell j}=S_{i\ell j}^{\mathsf T}P_{i\ell}^{\mathsf T}$.
-No recompression is performed inside the $\ell$-sum; all contributions
-accumulate in the common coordinates of $Q_i$.
-
-\begin{algorithm}[htbp]
-\caption{\textsc{Accumulate}: coefficients for row $i$, column $j$}
-\label{alg:accumulate}
-\begin{algorithmic}[1]
-\If{$t_i\le r_{A,i\ell}$ for the row's typical rank}
-  \State $T_{i\ell}\gets V_{i\ell}^{A}P_{i\ell}^{\mathsf T}$ once per
-    $(i,\ell)$;\quad
-    $W_{i\ell j}\gets(U_{\ell j}^{B})^{\mathsf T}T_{i\ell}$
-\Else
-  \State $S_{i\ell j}\gets(V_{i\ell}^{A})^{\mathsf T}U_{\ell j}^{B}$;\quad
-    $W_{i\ell j}\gets S_{i\ell j}^{\mathsf T}P_{i\ell}^{\mathsf T}$
-\EndIf
-\If{route $=$ R1}
-  \State $M_{ij}\gets\alpha\sum_\ell V_{\ell j}^{B}W_{i\ell j}$
-    \Comment{explicit $b_n\times t_i$ accumulation}
-\Else
-  \State keep the factor list
-    $M_{ij}=\sum_\ell(\alpha V_{\ell j}^{B})(W_{i\ell j}^{\mathsf T})^{\mathsf T}$
-    \Comment{R2: never form $M_{ij}$}
-\EndIf
-\end{algorithmic}
-\end{algorithm}
-
-\subsection{Phase 4: Per-Tile Compression}
-\label{subsec:coefficient-compression}
-
-Since $Q_i$ has orthonormal columns,
-$\operatorname{rank}(Q_iM_{ij}^{\mathsf T})=\operatorname{rank}(M_{ij})$: a
-wide basis does not force a high-rank tile. $M_{ij}$ is numerically low rank
-whenever the $B$-side activates only a small subspace of $Q_i$ or the
-contributions across $\ell$ are strongly correlated --- this is what R2
-exploits.
-
-\paragraph{R1 (exact).}
-Compress the explicit $M_{ij}$ by $\operatorname{CholQR2}$ plus a
-$t_i\times t_i$ SVD:
-$M_{ij}\approx V_{ij}^{M}\Sigma_{ij}^{M}(P_{ij}^{M})^{\mathsf T}$ with
-$P_{ij}^{M}$ orthonormal.
-
-\paragraph{R2 (factor-list sketch).}
-Apply Algorithm~\ref{alg:factorqb} to the list
-$\{(\alpha V_{\ell j}^{B},\,W_{i\ell j}^{\mathsf T})\}_\ell$ with width
-$s_{M,ij}\approx\hat r_{M,ij}+p$; a small SVD of $Z^{\mathsf T}$ then yields
-the same three factors.
-
-\medskip
-In both cases the tile is reduced from width $t_i$ to $r_{M,ij}$ entirely in
-coefficient space, and the basis is applied once at the end:
-\[
-Q_iM_{ij}^{\mathsf T}
-\approx
-\underbrace{(Q_iP_{ij}^{M})}_{U_{ij}^{P}}
-\underbrace{\bigl(V_{ij}^{M}\Sigma_{ij}^{M}\bigr)^{\mathsf T}}_{(V_{ij}^{P})^{\mathsf T}},
-\qquad
-(Q_iP_{ij}^{M})^{\mathsf T}(Q_iP_{ij}^{M})=I,
-\]
-the orthonormality following from that of $Q_i$ and $P_{ij}^{M}$. On the
-plain R1 path with no truncation one simply takes $U_{ij}^{P}=Q_i$,
-$V_{ij}^{P}=M_{ij}$.
-
-\begin{algorithm}[htbp]
-\caption{\textsc{CompressTile}: product tile in factored form}
-\label{alg:compress}
-\begin{algorithmic}[1]
-\If{route $=$ R1}
-  \State $(V^{M},\Sigma^{M},P^{M})\gets$ CholQR2 $+$ small SVD of $M_{ij}$
-    \Comment{exact, no sampling}
-\ElsIf{route $=$ R2}
-  \State $(Q^{M},Z^{M})\gets{}$\Call{FactorQB}{$\{(\alpha V_{\ell j}^{B},W_{i\ell j}^{\mathsf T})\}_\ell$, $s_{M,ij}$}
-  \State $(V^{M},\Sigma^{M},P^{M})\gets$ small SVD of $(Z^{M})^{\mathsf T}$
-\EndIf
-\State \Return $U_{ij}^{P}=Q_iP^{M}$,\quad $V_{ij}^{P}=V^{M}\Sigma^{M}$
-  \Comment{one rotation through $Q_i$}
-\end{algorithmic}
-\end{algorithm}
-
-\subsection{Phase 5: Merge with the Existing Output Tile}
-\label{subsec:merge-output-tile}
-
-Let the product contribution be
-$\alpha(AB)_{ij}\approx U_{ij}^{P}(V_{ij}^{P})^{\mathsf T}$ with
-$U_{ij}^{P}$ orthonormal. The updated tile
-$X_{ij}:=\alpha(AB)_{ij}+\beta C_{ij}$ is merged by splitting the old basis
-across the new one:
-\[
-D_{ij}:=(U_{ij}^{P})^{\mathsf T}U_{ij}^{C},
-\qquad
-U_{ij}^{\perp}:=U_{ij}^{C}-U_{ij}^{P}D_{ij}
-\approx Q_{ij}^{\perp}R_{ij}^{\perp},
-\]
-the last factorization via a stable two-pass orthogonalization with
-$(U_{ij}^{P})^{\mathsf T}Q_{ij}^{\perp}\approx0$. Then
-\[
-X_{ij}\approx\widetilde Q_{ij}\widetilde M_{ij}^{\mathsf T},
-\qquad
-\widetilde Q_{ij}
-:=\bigl[\,U_{ij}^{P}\;\;Q_{ij}^{\perp}\,\bigr],
-\qquad
-\widetilde M_{ij}
-:=\bigl[\,V_{ij}^{P}+\beta V_{ij}^{C}D_{ij}^{\mathsf T}
-   \;\;\;\beta V_{ij}^{C}(R_{ij}^{\perp})^{\mathsf T}\,\bigr].
-\]
-Because $\widetilde Q_{ij}$ is orthonormal, compressing the tile reduces to
-compressing coordinates:
-$\|\widetilde Q_{ij}\widetilde M_{ij}^{\mathsf T}
-   -\widetilde Q_{ij}PN^{\mathsf T}\|_F
- =\|\widetilde M_{ij}^{\mathsf T}-PN^{\mathsf T}\|_F$.
-With $\widetilde M_{ij}^{\mathsf T}\approx P_{ij}N_{ij}^{\mathsf T}$
-($P_{ij}$ orthonormal), the stored factors are
-$U_{ij}^{C}=\widetilde Q_{ij}P_{ij}$ and $V_{ij}^{C}=N_{ij}$. When
-$\widetilde Q_{ij}$ is narrow this compression is done deterministically
-(CholQR2 $+$ small SVD); when moderate, the tile may instead be compressed
-from the two-term factor list
-$\{(U_{ij}^{P},V_{ij}^{P}),(U_{ij}^{C},\beta V_{ij}^{C})\}$ without forming
-$\widetilde Q_{ij}$ or $\widetilde M_{ij}$.
-
-\begin{algorithm}[htbp]
-\caption{\textsc{MergeTile}: fold $\beta C_{ij}$ into the product}
-\label{alg:merge}
-\begin{algorithmic}[1]
-\If{$\beta=0$ or $r_{C,ij}=0$}
-  \State \Return $(U_{ij}^{P},V_{ij}^{P})$ after rank truncation
-\EndIf
-\State $D\gets(U_{ij}^{P})^{\mathsf T}U_{ij}^{C}$;\quad
-  $U^{\perp}\gets U_{ij}^{C}-U_{ij}^{P}D$
-\State $(Q^{\perp},R^{\perp})\gets$ two-pass orthogonalization of $U^{\perp}$
-  against $U_{ij}^{P}$
-\State $\widetilde Q\gets[\,U_{ij}^{P}\;\;Q^{\perp}\,]$;\quad
-  $\widetilde M\gets[\,V_{ij}^{P}+\beta V_{ij}^{C}D^{\mathsf T}
-    \;\;\beta V_{ij}^{C}(R^{\perp})^{\mathsf T}\,]$
-\State $(P,N)\gets$ compress $\widetilde M^{\mathsf T}$
-  \Comment{CholQR2 $+$ small SVD, or two-term \textsc{FactorQB}}
-\State \Return $U_{ij}^{C}=\widetilde QP$,\quad $V_{ij}^{C}=N$
-\end{algorithmic}
-\end{algorithm}
-
-\subsection{The Discard Route (R3): Direct Factor-List Compression}
-\label{subsec:direct-factor-list-fallback}
-
-When the shared basis is uneconomical for a tile, the tile is compressed
-directly from its original factors. With
-$S_{i\ell j}:=(V_{i\ell}^{A})^{\mathsf T}U_{\ell j}^{B}$ and
-$R_{i\ell j}^{A}:=\alpha V_{\ell j}^{B}S_{i\ell j}^{\mathsf T}$, each product
-term is $\alpha A_{i\ell}B_{\ell j}\approx
-U_{i\ell}^{A}(R_{i\ell j}^{A})^{\mathsf T}$, so the complete updated tile has
-the factor list
-\[
-X_{ij}
-\approx
-\sum_{\ell=1}^{q_k}U_{i\ell}^{A}(R_{i\ell j}^{A})^{\mathsf T}
-+
-U_{ij}^{C}(\beta V_{ij}^{C})^{\mathsf T},
-\]
-to which Algorithm~\ref{alg:factorqb} applies verbatim with
-$L=\{U_{i\ell}^{A}\}\cup\{U_{ij}^{C}\}$ and
-$R=\{R_{i\ell j}^{A}\}\cup\{\beta V_{ij}^{C}\}$, followed by a small SVD.
-The compressor acts on the \emph{complete} updated tile
-$\alpha(AB)_{ij}+\beta C_{ij}$, never on the product alone followed by a
-second merge compression; for $\beta=0$ the distinction disappears.
-
-\begin{algorithm}[htbp]
-\caption{\textsc{DirectTile} (R3): compress the updated tile from factors}
-\label{alg:fallback}
-\begin{algorithmic}[1]
-\State $R_{i\ell j}^{A}\gets\alpha V_{\ell j}^{B}S_{i\ell j}^{\mathsf T}$
-  for all $\ell$ \Comment{$S_{i\ell j}$ shared with the retained routes}
-\State $(Q^{\mathrm{out}},Z)\gets{}$\Call{FactorQB}{$\{(U_{i\ell}^{A},R_{i\ell j}^{A})\}_\ell\cup\{(U_{ij}^{C},\beta V_{ij}^{C})\}$, $s_{ij}$}
-\State small SVD of $Z$; truncate; store
-  $U_{ij}^{C}\gets Q^{\mathrm{out}}(\cdot)$, $V_{ij}^{C}\gets(\cdot)$
-\end{algorithmic}
-\end{algorithm}
-
-% #####################################################################
-%  The column-side dual and the two-sided construction
-% #####################################################################
-
-\section{The Column-Side Dual and the Two-Sided Construction}
-\label{sec:dual}
-
-Everything above shares a basis across the tiles of a block \emph{row} of
-$C$, built from the left factors of $A$. The mirror construction shares a
-basis across a block \emph{column} of $C$, built from the right factors of
-$B$. The two are mathematically symmetric; the useful questions are which
-asymmetries are real and whether the constructions compose.
-
-\subsection{The Dual Construction}
-
-For fixed $j$, define the weighted column panel
-\[
-\overline V_j^{\,d}
-:=
-\begin{bmatrix}
-d_1V_{1j}^{B} & \cdots & d_{q_k}V_{q_kj}^{B}
-\end{bmatrix}
-\in\mathbb{R}^{b_n\times\gamma_j},
-\qquad
-d_\ell:=\|A_{:,\ell}\|_F
-=\Bigl(\sum_i\|V_{i\ell}^{A}\|_F^2\Bigr)^{1/2},
-\]
-the norm identity following from orthonormality of $U_{i\ell}^{A}$ exactly as
-$c_\ell$ followed from that of $U_{\ell j}^{B}$. One seeks orthonormal
-$G_j\in\mathbb{R}^{b_n\times u_j}$ and coordinates $N_{\ell j}$ with
-$V_{\ell j}^{B}\approx G_jN_{\ell j}$; the sketch, the BCGS2 extension, and
-the certificate are identical in form to Phase~1. The product contribution
-becomes
-\[
-\alpha(AB)_{ij}
-\approx
-\widetilde M_{ij}G_j^{\mathsf T},
-\qquad
-\widetilde M_{ij}
-:=\alpha\sum_{\ell}U_{i\ell}^{A}S_{i\ell j}N_{\ell j}^{\mathsf T}
-\in\mathbb{R}^{b_m\times u_j},
-\]
-and since $G_j$ is orthonormal, tile compression again reduces to compressing
-the coordinate matrix.
-
-\subsection{A Priori Side Selection}
-\label{subsec:side-selection}
-
-The two constructions solve the same problem in different spaces, and for a
-one-sided algorithm exactly one of them must be chosen --- ideally from tile
-shapes and rank metadata alone, before any factor is touched. Write the
-structural widths and the \emph{a priori basis capacities} as
-\[
-\rho=q_kr_A,\qquad \gamma=q_kr_B,
-\qquad
-\bar t:=\min(b_m,\rho),
-\qquad
-\bar u:=\min(b_n,\gamma),
-\]
-$\bar t$ and $\bar u$ being the widths reached when the panel carries no
-exploitable structure (the pessimistic case; $q_k=k/b_k$). Amortizing each
-basis over the tiles it serves, the per-tile cost of the two sides is
-\begin{align}
-\text{primal (row basis, $b_m$-space):}\quad
-&\underbrace{2b_n\gamma\bar t}_{\text{accumulate}}
-+\underbrace{4b_m\rho\bar t/q_n}_{\text{build}}
-+\underbrace{2b_m\bar tR}_{\text{expand}},
-\notag\\
-\text{dual (column basis, $b_n$-space):}\quad
-&\underbrace{2b_m\rho\bar u}_{\text{accumulate}}
-+\underbrace{4b_n\gamma\bar u/q_m}_{\text{build}}
-+\underbrace{2b_n\bar uR}_{\text{expand}}.
-\notag
-\end{align}
-The build terms carry a factor $1/q_n$ (resp.\ $1/q_m$) and are negligible
-once the grid exceeds a few blocks in each direction, so the choice is
-governed by the accumulation terms. Their comparison gives the selection rule
-\[
-\boxed{\;
-\mathcal R_{\mathrm{side}}
-:=
-\frac{b_n\gamma\bar t}{b_m\rho\bar u}
-=
-\underbrace{\frac{b_n}{b_m}}_{\text{tile aspect}}
-\cdot
-\underbrace{\frac{r_B}{r_A}}_{\text{rank ratio}}
-\cdot
-\underbrace{\frac{\bar t}{\bar u}}_{\text{capacity ratio}}
-\;<\;1
-\;\Longrightarrow\;
-\text{use the row (primal) basis.}
-\;}
-\]
-The essential asymmetry is that \emph{each side accumulates against the other
-operand}: the primal contracts over $\gamma$ at height $b_n$, the dual over
-$\rho$ at height $b_m$. Two limits make the rule concrete.
-
-\paragraph{Unsaturated panels ($q_kr_A<b_m$ and $q_kr_B<b_n$).}
-Then $\bar t=\rho$, $\bar u=\gamma$, the capacity ratio is $r_A/r_B$, and
-$\mathcal R_{\mathrm{side}}=b_n/b_m$: choose the basis in the \emph{longer}
-tile dimension, so that accumulation runs over the shorter one. For a tall
-output ($b_m>b_n$) the row basis wins; for a wide output the column basis
-does. Ranks cancel entirely.
-
-\paragraph{Saturated panels ($q_kr_A\geq b_m$ and $q_kr_B\geq b_n$).}
-Then $\bar t=b_m$, $\bar u=b_n$, the capacity ratio is $b_m/b_n$, and
-$\mathcal R_{\mathrm{side}}=r_B/r_A$: tile shape cancels and the choice is
-made by rank alone --- build the basis on the side facing the \emph{lower-rank}
-operand, since that operand sets the accumulation width. In the mixed regimes
-the boxed formula interpolates between the two.
-
-\paragraph{Scope and tie-breakers.}
-Because $\mathcal R_{\mathrm{side}}$ is built from capacities, it is a
-worst-case ranking: if one side possesses genuine shared structure its
-achieved $t_i\ll\bar t$ and it wins irrespective of the estimate. The rule
-should therefore select which side to \emph{attempt first}, with the Phase-1
-certificate $\delta$ confirming the choice or triggering a switch on a sample
-of rows and columns. Two considerations sit outside the cost model and
-override it when they apply: the conditioning of the dual panel (below), and
-which side is coherent at all (Section~\ref{subsec:dual-coherence}). For
-small grids, where the build terms survive, the comparison additionally
-favours the side with fewer panels --- $q_m$ for the primal against $q_n$ for
-the dual.
-
-\subsection{Genuine Asymmetries}
-
-\paragraph{Certificate cost.}
-The row-side energy $\|\overline U_i\|_F^2=\rho_i$ is pure rank metadata; the
-column-side energy needs the block norms of $B$, which Phase~0 computes
-anyway. The practical difference is that the row-side quantity exists before
-any data is touched, which is what allows $\rho_i$ to drive scheduling and
-batching.
-
-\paragraph{Conditioning.}
-The row panel concatenates blocks with orthonormal columns, so its
-conditioning is set by subspace geometry alone. The column panel inherits the
-dynamic range of the block norms $\|B_{\ell j}\|_F$ --- orders of magnitude in
-a hierarchical matrix --- and $\operatorname{CholQR2}$ squares the condition
-number; the dual should use a shifted variant or block-normalized sketching.
-
-\paragraph{Coherence.}
-\label{subsec:dual-coherence}
-The deciding factor is usually neither. A shared row basis exists when the
-block row of $A$ has a common range; a shared column basis when the block
-column of $B$ does. For a symmetric kernel matrix squared, both hold; for
-$A$ from an $\mathcal H^2$ discretization times a general TLR correction
-$B$, only one side succeeds, and the matrices decide. Since Phase~1 returns
-$t_i$ (resp.\ $u_j$) with a certificate, both sides can be probed on a sample
-of rows and columns and the distributions of $t_i/\rho_i$ and $u_j/\gamma_j$
-compared directly.
-
-\subsection{The Two-Sided Construction}
-
-If both bases are available they compose:
-\[
-\alpha(AB)_{ij}
-\approx
-Q_i\Gamma_{ij}G_j^{\mathsf T},
-\qquad
-\Gamma_{ij}
-:=\alpha\sum_{\ell}P_{i\ell}S_{i\ell j}N_{\ell j}^{\mathsf T}
-\in\mathbb{R}^{t_i\times u_j}.
-\]
-The accumulation now costs $2q_kt_ir_A(r_B+u_j)$ per tile and contains no
-tile dimension at all; against the primal $2b_n\gamma_jt_i$ the saving is of
-order $b_n/u_j$. Recovering flat TLR storage takes an SVD of the
-$t_i\times u_j$ matrix $\Gamma_{ij}$ and two rotations
-$U_{ij}^{C}=Q_i\Theta_{ij}$, $V_{ij}^{C}=G_j\Xi_{ij}\Sigma_{ij}$ at cost
-$2R(b_mt_i+b_nu_j)$ --- paid once per tile, not once per inner index, so the
-saving survives whenever $\gamma_jb_n\gg Rb_m$, the normal regime.
-
-The form $Q_i\Gamma_{ij}G_j^{\mathsf T}$, with $Q_i$ shared down a block row
-and $G_j$ along a block column, is precisely an $\mathcal H^2$/BLR$^2$
-representation: the algorithm reconstructs at run time, with a certificate,
-the structure the flat format discards. If the output may retain that form,
-the final expansion is skipped and per-tile storage falls from $(b_m+b_n)R$
-to $t_iu_j$. The price is that both Phase-1 constructions must succeed for
-the tile; the routing of Section~\ref{subsec:row-basis-decision} applies to
-each side independently, with the two-sided path taken on the intersection.
+\end{document}

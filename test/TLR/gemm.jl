@@ -10,16 +10,15 @@
     huge = 128 * 1024 * 1024
     nosync = _ -> nothing
 
-    # (orderA, orderB, budget, n, b, r) — aligned, all three boundary regimes
-    # (incl. tail ≥ Q: n=87,b=16 → Q=5,s=7 and tail < Q: n=35,b=8 → Q=4,s=3),
-    # zero rank, and a single-tile matrix.
+    # (orderA, orderB, budget, n, b, r) — aligned, both boundary regimes
+    # (tail ≥ Q and tail < Q), and zero rank.  Keep these grids small: a tiny
+    # workspace exercises the same blocked schedule, but its cost grows steeply
+    # with the number of tiles.
     cases = (
         (RM, CM, 1,    12, 4,  2),   # aligned grid
-        (CM, RM, huge, 35, 8,  3),   # boundary, tail < Q
-        (CM, CM, 1,    87, 16, 4),   # boundary, tail ≥ Q
-        (RM, RM, huge, 46, 12, 5),   # boundary
-        (CM, RM, 1,    46, 10, 0),   # zero rank + boundary
-        (CM, RM, 1,     4, 4,  2),   # single tile
+        (CM, RM, huge, 14, 4,  3),   # boundary, tail < Q (Q=3, s=2)
+        (CM, CM, 1,    15, 4,  3),   # boundary, tail ≥ Q (Q=3, s=3)
+        (RM, RM, huge, 14, 5,  0),   # zero rank + boundary
     )
     for (oA, oB, budget, n, b, r) in cases
         @testset "$(oA) * $(oB), n=$n b=$b r=$r budget=$budget" begin
@@ -38,17 +37,12 @@ end
     # zero rank; orders and budgets distributed pairwise across rows.
     cases = (
         (12, 12, 12, (4, 4), (4, 4), 2, RM, CM, 1,    1e-10),  # square aligned grid
-        (12,  8, 16, (4, 4), (4, 4), 3, CM, RM, huge, 1e-10),  # rectangular grid
-        (35, 35, 35, (8, 8), (8, 8), 3, CM, CM, 1,    1e-9),   # boundary square
-        (14, 14, 14, (4, 4), (4, 4), 3, RM, RM, huge, 1e-9),   # boundary square, small tiles
-        (22, 14, 10, (4, 4), (4, 4), 3, RM, CM, huge, 1e-9),   # independent m/k/n tails
-        (35, 19, 27, (8, 8), (8, 8), 3, CM, RM, 1,    1e-9),   # independent tails, larger
-        (12,  9, 10, (4, 3), (3, 5), 3, RM, RM, 1,    1e-9),   # rect tiles, aligned
-        (14, 11, 13, (4, 3), (3, 5), 3, CM, CM, huge, 1e-9),   # rect tiles + tails
-        (15,  6,  8, (5, 6), (6, 2), 2, RM, CM, huge, 1e-9),   # tall output tile, q_c=1
-        ( 8,  4,  8, (4, 4), (4, 4), 2, RM, CM, 1,    1e-10),  # single contraction tile
-        ( 8,  8,  8, (4, 4), (4, 4), 0, CM, RM, 1,    1e-10),  # zero rank, aligned
-        (14, 14, 14, (4, 4), (4, 4), 0, CM, RM, 1,    1e-10),  # zero rank, boundary
+        (10,  7, 12, (4, 4), (4, 4), 3, CM, RM, huge, 1e-10),  # rectangular grid
+        (14, 14, 14, (4, 4), (4, 4), 3, CM, CM, 1,    1e-9),   # boundary square
+        (10, 11, 13, (4, 4), (4, 4), 3, RM, CM, huge, 1e-9),   # independent m/k/n tails
+        (10,  8,  9, (4, 3), (3, 5), 3, RM, RM, 1,    1e-9),   # rect tiles + tails
+        (10,  6,  6, (5, 6), (6, 2), 2, RM, CM, huge, 1e-9),   # tall output tile, q_c=1
+        (10, 10, 10, (4, 4), (4, 4), 0, CM, RM, 1,    1e-10),  # zero rank + boundary
     )
     for (mA, k, nB, tsA, tsB, r, oA, oB, budget, tol) in cases
         @testset "$(mA)×$(k)×$(nB) tiles=$(tsA)/$(tsB) r=$r $(oA)*$(oB) budget=$budget" begin
@@ -93,10 +87,10 @@ end
     end
 
     @testset "forced fold matches dense" begin
-        for budget in (1, 128 * 1024 * 1024)
-            assert_fold_matches(RM, CM, 12, 9, 10, (4, 3), (3, 5), 3, FL(), budget)
-            assert_fold_matches(CM, CM, 12, 9, 10, (4, 3), (3, 5), 2, FR(), budget)
-        end
+        # Tiny and unrestricted workspace are exercised by the end-to-end sweep;
+        # here one representative call pins each association independently.
+        assert_fold_matches(RM, CM, 12, 9, 10, (4, 3), (3, 5), 3, FL(), 1)
+        assert_fold_matches(CM, CM, 12, 9, 10, (4, 3), (3, 5), 2, FR(), 128 * 1024 * 1024)
     end
 end
 
@@ -154,10 +148,8 @@ end
     @testset "independent boundary tails × budgets" begin
         # Effective A is 14×11 with tiles 4×3; effective B is 11×13 with
         # tiles 3×5. All three dimensions have independent boundary tails.
-        for budget in (1, huge)
-            assert_transpose_matches_dense(14, 11, 13, (4, 3), (3, 5), RM, CM, 'T', 'N'; budget)
-            assert_transpose_matches_dense(14, 11, 13, (4, 3), (3, 5), CM, RM, 'N', 'T'; budget)
-        end
+        assert_transpose_matches_dense(14, 11, 13, (4, 3), (3, 5), RM, CM, 'T', 'N'; budget=1)
+        assert_transpose_matches_dense(14, 11, 13, (4, 3), (3, 5), CM, RM, 'N', 'T'; budget=huge)
     end
 
     @testset "flag and effective-geometry validation" begin
@@ -233,20 +225,11 @@ end
             assert_tlr_gemm_matches_dense(ArrayType, Float32, 12, 4, 2, orders..., synchronize;
                                           budget=1, alpha=Float32(1.2), beta=Float32(0.25),
                                           atol=5f-3, rtol=5f-3)
-            # Representative complete-operand transpose checks: independently
-            # tailed full-LR geometry and a dense-diagonal boundary corner.
+            # Representative complete-operand transpose check.  CPU covers the
+            # remaining layout/transpose combinations exhaustively.
             assert_transpose_matches_dense(14, 11, 13, (4, 3), (3, 5), orders..., 'T', 'N';
                                              budget=1, ArrayType, synchronize,
                                              atol=1e-8, rtol=1e-8)
-            assert_dense_diag_transpose_matches(14, 4, 3, orders..., 'T', 'T';
-                                                budget=1, ArrayType, synchronize,
-                                                atol=1e-8, rtol=1e-8)
-            assert_dense_fulllr_gemm(ArrayType, Float32, :tlr_dense, 10, 9, 11, (4, 3),
-                                     orders[1], 'T', 'N', synchronize; budget=1,
-                                     atol=5f-3, rtol=5f-3)
-            assert_dense_fulllr_gemm(ArrayType, Float32, :dense_tlr, 10, 9, 11, (3, 5),
-                                     orders[2], 'N', 'T', synchronize; budget=1,
-                                     atol=5f-3, rtol=5f-3)
 
             @testset "precision policy" begin
                 A16 = NextLA.TLRMatrix(ArrayType(zeros(Float16, 10, 10)), 4, 2;

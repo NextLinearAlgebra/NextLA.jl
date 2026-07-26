@@ -1,135 +1,281 @@
-# TLR GEMM — roadmap to the adaptive one-sided algorithm
+# TLR GEMM — worklog and roadmap
 
-Target design: [algorithm.tex](algorithm.tex) — product-aware weights, a
-*certified* shared basis built by adaptive extension, per-tile routing
-(R1/R2/R3) executed group-wise, and a factor-list fallback that never
-materializes a dense tile. Architecture notes: [DESIGN.md](DESIGN.md).
-The older [alg.md](alg.md) describes the **currently implemented** design and
-is superseded by `algorithm.tex`; keep it until M3 lands, then delete.
+The design is [algorithm.tex](algorithm.tex): a blocked **adaptive randomized
+range finder (ARA)** applied per output tile, where the contribution of the
+reduction index is kept as an implicit *factor list* rather than a dense tile.
 
-Scope for now: **one-sided** (row or column basis, chosen a priori per
-`algorithm.tex` §A Priori Side Selection). Two-sided/BLR² is out of scope
-until the one-sided path is complete.
+This file is the hand-off document. It records **why** the current design was
+chosen — including several directions that were tried and abandoned with
+evidence — so the next person does not re-derive them. Read
+[algorithm.tex](algorithm.tex) first for the algorithm; read this for the
+rationale, the traps, and what is left.
+
+Reference: Boukaram, Turkiyyah & Keyes, *Randomized GPU algorithms for the
+construction of hierarchical matrices from matrix-vector operations*, SIAM J.
+Sci. Comput. 41(4):C339–C366, 2019. Algorithm 2.3 is the batched ARA loop we
+are implementing; §2.3.1 is the Cholesky-QR argument.
 
 Legend: `[ ]` todo · `[~]` in progress · `[x]` done.
 
-## What survives, what goes
+---
 
-The current implementation (all green: 85/85 row-basis, 22/22 output,
-596/596 full TLR, CPU+CUDA) maps onto the new design as follows.
+## Worklog — decisions and the evidence behind them
 
-**Keep as-is — these are the building blocks the new algorithm needs:**
-- `mixed_cholqr2_factor!` / `mixed_cholqr2_compress!` and the batched CholQR2
-  workspace — used by every phase.
-- `prune_orthogonal_columns!` / `prune_cholqr_coordinates!` and the
-  **zero-tail invariant** (padded columns are exactly zero) — this invariant
-  is load-bearing for all group padding in the new scheduler.
-- `_accumulate_row_block!` — *is* Phase 3, including both parenthesizations
-  (`t≤rA` → `T_{iℓ}` precompute; else `S_{iℓj}`) and batching over `j`.
-- `merge_row_block!` + `BatchedMergeWorkspace` (C2a) — *is* Phase 5.
-- Operand accessors (`rowpanel`/`colpanel`/`tilefactor`), precision policy,
-  `precision_gemm_batched!`, arena/`_take` pattern, test helpers and the
-  batched-vs-reference oracle pattern.
+### 1. Shifted CholQR2 is not rank-revealing (and that turned out to be fine)
 
-**Rewrite:**
-- `build_row_basis!` — replace eigenvalue-based rank selection with the
-  certificate `δ_i = E_i^w − Σ c_ℓ²‖P_{iℓ}‖²` plus adaptive BCGS2 extension.
-  Keeps the blockwise sketch, CholQR2 and the workspace arena.
-- `_row_basis_gemm!` — restructure from "loop tiles" to
-  route → partition → batch per group.
+**Observed.** `mixed_cholqr2_compress!` was measured on panels of prescribed
+rank (`Y = U·diag([1×40, g×24])·Wᵀ`, `b=256, s=64`, 5 seeds, fp64). At
+`g ≤ 1e-12` it returned a nearly correct *rank* (41–43 vs. the true 40) but
+`‖QᵀQ − I‖ = 1.0`. The basis, not the count, is what breaks.
 
-**Scrapped (done 2026-07-25):**
-- [x] `row_basis/workspace.jl` planner (`RowBasisWorkspaceShape/Plan`,
-  `workspace_fits`) + `test/TLR/row_basis_workspace.jl` — dead code modelling
-  per-tile shapes that no longer exist.
-- [x] The A1 saturation guard: `_m4_row_context`, `_m4_row!`,
-  `SAT_STREAK_CUTOFF`, the `sat_threshold` kwarg on `gemm!`/`_row_basis_gemm!`,
-  the `tguard` kwarg on `build_row_basis!`, and the guard testset.
-  **R3 subsumes it** — routing to a factor-list compressor beats routing to a
-  dense-slab sink (`4sρ(b_m+b_n)` vs forming a `b_m×b_n` tile), and it is a
-  per-tile decision rather than per-row.
-  *Known regression until M2 lands:* saturated rows are no longer diverted, so
-  they run the (correct but slower) row-basis path — up to ~1.9× slower than
-  the dense sink in the deeply saturated regime. This is the gap R3 closes.
+**Mechanism.** The shift (Fukaya et al., shifted CholeskyQR) exists to guarantee
+`potrf` completes — [cholqr2.jl](../../../numerics/cholqr2.jl) even doubles it
+until every batch member succeeds. That is correct for robustness, but it means
+breakdown can no longer *signal* deficiency: the factorization returns silently
+and `Q = Y R₁⁻¹` amplifies noise through the `O(δ^{-1/2})` trailing block of
+`R₁⁻¹`. Because `κ(R₁)` is global, the damage is **not** confined to the
+deficient columns.
 
-**Still to scrap, but not yet (they have live dependents):**
-- `tlr_output.jl` (dense-slab sink) and `_compress_run_into_factors!` — still
-  the only route for transposed operands; delete at M2 once R3 covers them.
-- `_row_basis_eigh!` and its CUSOLVER extension method — `build_row_basis!`
-  still uses the eigensolve for rank selection; delete at M1 when the
-  certificate + adaptive extension replaces it. That also removes a per-row
-  host sync (`Array(values)`) and the only CUSOLVER dependency in this path.
+**Two fixes were tried and rejected on measurement:**
 
-## Milestones
+| Route | Result at true rank 40 |
+|---|---|
+| Threshold the unpivoted Cholesky diagonal | 51–54 at *every* gap; `‖QᵀQ−I‖` up to 2.7e-2 |
+| Gram eigendecomposition with `τ = √u` | 46–52 (noise eigenvalues sit at `u·λ_max`) |
+| Gram eigendecomposition with `τ = √(C·s·u)`, `C≈10` | **40**, matching the SVD oracle exactly |
 
-- [ ] **M1 — Phase 0 weights + certified basis.**
-  Compute `c_ℓ = ‖B_{ℓ,:}‖_F` once per GEMM from `‖V^B_{ℓj}‖_F` (the
-  orthonormal-`U` invariant makes this exact), and `ρ_i`, `γ_j`, `E_i^w`
-  from rank metadata. Rewrite `build_row_basis!` per Alg. 3: weighted
-  blockwise sketch, CholQR2, `P_{iℓ} = Q_iᵀU^A_{iℓ}` (unweighted), certificate
-  `δ_i`, then extend-by-BCGS2 until `δ_i ≤ ε²E_i^w`. `gamma` is already a
-  parameter of the current kernel, so Phase 0 mostly fills in real values.
-  *Gate:* certificate is a true upper bound on the achieved basis error
-  (compare against explicit `‖Ū − QP‖_F`); rank vs the current eigh-based
-  selection measured on structured and random inputs — **expect some rank
-  regression**, since extension does not rotate to the optimal subspace;
-  `@inferred` clean; CPU+CUDA.
+The unpivoted-diagonal route fails because Cholesky does not order its diagonal
+by significance, and pivoting is unavailable at batch scale (data-dependent).
+The calibration constant `C` is *not* cosmetic — it is the difference between
+46–52 and 40.
 
-- [ ] **M2 — R3: factor-list tile compressor.**
-  Implement `FactorQB` (Alg. 2) and `DirectTile` (Alg. 8) — two-pass sketch
-  over `{(U^A_{iℓ}, R^A_{iℓj})} ∪ {(U^C_{ij}, βV^C_{ij})}`, batched over a
-  tile group, never forming the tile. Then delete the A1 guard and route
-  saturated/uneconomical tiles here instead.
-  *Gate:* accuracy matches the dense-slab sink on the cases it replaces;
-  faster than it in the saturated regime (where dense currently ties/wins);
-  transposed operands covered so `tlr_output.jl` can be deleted.
+**Why this ultimately did not gate the design.** That experiment was
+*monolithic*: one wide panel, deficiency spread across all columns by a Gaussian
+`W`, and severity pushed to `κ = 1e14`. None of that holds in blocked ARA, where
+(a) blocks are small and already BCGS2-projected, (b) deficiency appears only at
+convergence and sits at the *stopping tolerance*, so `κ(Y_Δ) ≈ 1/ε` rather than
+`1/u`, and (c) since `R` is triangular, column `j` of `Q_Δ = Y_Δ R⁻¹` depends
+only on the leading `j×j` block of `R` — contamination flows *forward only*, so
+if the small pivots appear at positions `br+1…bs`, columns `1…br` are clean.
 
-- [ ] **M3 — Routing + scheduling.**
-  `PartitionRow` (Alg. 4) on the host; global `γ`-sort once per GEMM;
-  three contiguous segments per row; min-group fold into R1; padding to
-  group max; batched execution per group (Alg. 1). Keep Phase 3 and Phase 5
-  batched across the whole row as today.
-  *Gate:* **launch count and D2H copies per call must not exceed the current
-  batched implementation by more than the number of non-empty groups** — this
-  is the regression the whole scheduling section exists to prevent (measure
-  with `CUDA.@profile`, as in the C2a gate); no accuracy change vs M2.
+So **`RangeFind` needs no rank-revealing orthogonalizer inside its loop.** The
+monolithic result still applies to any wide one-shot sketch — see item 3.
 
-- [ ] **M4 — R2: coefficient-space sketch.**
-  `CompressTile` R2 branch: `FactorQB` on the `M_{ij}` factor list
-  `{(αV^B_{ℓj}, W_{iℓj}ᵀ)}`, small SVD, then one rotation through `Q_i`.
-  *Gate:* on inputs where `γ_j ≪ t_i`, R2 beats R1 in time at equal accuracy;
-  the metadata bound `r̂ = min(t_i,b_n,γ_j)` is never violated by the
-  achieved rank.
+Harness: `rankprobe.jl` / `rankprobe_gpu.jl` (scratch). Worth promoting to
+`test/TLR/` as a characterization test for the wide-panel paths and to pin the
+`ε ≳ √u_hi` boundary, but it is **not** a gate on the ARA loop.
 
-- [ ] **M5 — Side selection + column basis.**
-  Implement `R_side = (b_n/b_m)(r_B/r_A)(t̄/ū)` and the dual construction
-  (mirror of M1 with `d_ℓ = ‖A_{:,ℓ}‖_F`), including the shifted/normalized
-  CholQR2 the dual's conditioning requires. Optional sample-probe to confirm
-  the a priori choice with the certificate.
-  *Gate:* on a wide output (`b_n > b_m`) the dual is selected and is faster;
-  round-trip accuracy equals the primal; conditioning test with block norms
-  spanning several orders of magnitude.
+### 2. The shift is removed from ARA (derived, not tuned)
 
-- [ ] **M6 — Acceptance.**
-  Four layout pairs, structured vs random inputs, tiny/full budgets, CPU+CUDA;
-  warmed allocations; no unexplained regression >15% against the pre-rewrite
-  baseline. Retire `alg.md`.
+`_cholqr_shift_kernel!` adds `coeff · max_i G[i,i] · multiplier`, and
+`max_i G[i,i]` is the largest squared column norm. So every triangular diagonal
+entry is bounded below by `√(coeff·multiplier)` **relative to the panel scale,
+independent of the data** — at `b_m=256, s=32` in fp64, `√coeff = 3.4e-6`.
 
-## Deferred (unchanged in intent, re-sequenced after M6)
+Since `R[j,j]` is the residual of column `j` against the basis and the earlier
+columns of the block, that floor sits directly under the stopping test
+`R[j,j]/R_max < ε_rel`. **A tolerance below `3.4e-6` is unsatisfiable for any
+input**: the loop never converges, every tile returns at `maxrank`, nothing
+errors. That is the trap A0 was built to expose.
 
-- **Ragged ranks (per-row/per-col maxrank).** Note that `algorithm.tex` is
-  already written in terms of true per-tile ranks `r_{A,iℓ}` and their sums
-  `ρ_i`, `γ_j` — so the new algorithm *assumes* ragged ranks conceptually and
-  merely tolerates the padded uniform contract. Migration plan (container +
-  offset tables → run-max-padded compute + arena/budget → compression with
-  per-slab caps + two-pass C allocation → grouped GEMM) is unchanged; the
-  earlier analysis is preserved in git history.
-- **Basis-build batching across rows / two-slot pipeline** — basis build was
-  ~28% of GPU time and is latency-bound; M1 removes the eigensolve, so
-  re-measure before scheduling this.
-- **Two-sided (BLR²) construction** — requires a container that can retain
-  `Q_i Γ_{ij} G_jᵀ`; out of scope until the one-sided path is complete.
-- **Boundary / non-regular-grid tiling** — still rejected by
-  `_validate_tlr_output`; a whole matrix class remains unsupported.
-- **Transposed operands with `β≠0`** — currently throws (M4 sink is β=0
-  only); M2 should remove the restriction.
+**The policy follows from two theorems, with nothing to tune.**
+
+- *Yamamoto, Nakatsukasa, Yanagisawa & Fukaya*, ETNA 44:306–326, 2015:
+  CholeskyQR2 attains `‖QᵀQ − I‖ = O(u)` provided `κ(Y) ≤ u^{-1/2}`.
+- *Fukaya, Nakatsukasa, Yanagisawa & Yamamoto*, SIAM J. Sci. Comput. 42(1),
+  2020: the shift `11(ms + s(s+1))·u·‖Y‖²` provably prevents breakdown. That is
+  the constant `_cholqr_shift_coeff` implements — the shift was never a magic
+  number, and neither is the floor it implies.
+
+Comparing the tolerance range each policy *provably* supports settles it on
+paper:
+
+| Policy | Proven condition | Smallest usable `ε_rel` (fp64 Gram) |
+| --- | --- | --- |
+| Keep the Fukaya shift | `ε_rel > √coeff` | 3.4e-6 |
+| **No shift** | `κ(Y_Δ) ≤ u^{-1/2}`, and `κ(Y_Δ) ≈ 1/ε_rel` at the stopping block | **1.05e-8** |
+
+The shift costs ~320× of usable range and buys nothing, because **breakdown and
+loss of the CholeskyQR2 guarantee coincide**: `potrf` fails exactly when `G` is
+numerically singular, i.e. `κ(Y_Δ) ≳ u^{-1/2}`, which is precisely the boundary
+of the first theorem. So the unshifted loop is self-certifying — success
+certifies `O(u)` orthogonality, failure certifies rank deficiency.
+
+**Breakdown delimits the pass; it does not destroy it.** `potrf` returns
+`info = k` meaning the leading minor of order `k` is not positive definite, so
+columns `1..k-1` were validly factored. Because `R` is upper triangular, column
+`j` of `Y R⁻¹` depends only on the leading `j×j` block of `R`, so the valid
+prefix is untouched by the failed tail — contamination is forward-only.
+Measured on a rank-10 operator sampled at width 16, `cond(Y) = 1.7e12`,
+`info = 12`, and `diag(R1) = [3.14, …, 1.64, 0.062, 8.2e-7, 1.2e-14, …]`: the
+rank is legible in the valid prefix. `ara_mask_breakdown!` zeroes columns
+`k..width` of the basis block and their `dR` entries; the zeros then read as
+"no new content", which is what they are.
+
+Finally, breakdown implies **convergence**, and this too is derived rather than
+assumed: `Y_Δ = (I-QQᵀ)XΩ_Δ` with Gaussian `Ω_Δ` puts the samples in general
+position, so `rank(Y_Δ) = rank((I-QQᵀ)X)` almost surely. A block that yields
+only `k-1 < width` independent directions has therefore captured the entire
+residual range, and the member is done.
+
+`cholqr2_relative_shift_floor` survives as the guard for paths that *do* shift —
+the wide one-shot panels of item 3.
+
+### 3. `compress!` (dense → TLR) is in the bad regime and must move to ARA
+
+[compress.jl](../../compression/compress.jl) sketches **one-shot at full
+`maxrank`** — its docstring: *"`maxrank` is both the output capacity and the
+sketch capacity."* For a tile of true rank `r ≪ maxrank` that is a monolithic,
+wide, rank-deficient panel with no blocking and no BCGS2: precisely the setup of
+item 1, where `κ(R₁)` pollutes the basis before the greedy V-column-norm prune
+ever runs. **That prune has no guarantees there.**
+
+Moving it to ARA fixes the numerics and pays twice: the reference takes the
+sampler as a black box (§2.3.2), so one loop serves both `compress!` (dense tile
+GEMM sampler) and the GEMM output (factor-list sampler); and tiles stop at their
+actual rank instead of always paying full `maxrank` width.
+
+### 4. The exact residual was removed from the hot path
+
+`algorithm.tex` previously verified the Frobenius residual when convergence was
+marginal or the rank cap was hit. Both branches were dropped:
+
+- **Rank cap.** Saturation is already visible in `ranks(C)` at zero cost — the
+  same convention `compress!` documents. And the *truncation* error is exactly
+  `Σ_{k>r} λ_k` from the eigenvalues already computed for the final rotation, so
+  no `E_X` is needed to report it. Only the *capture* error is unknown, and
+  under a cap the truncation term dominates.
+- **Marginal stop.** Economically dominated. `E_X` costs `O(b·q_k²·r²)`; one
+  more sketch block costs `O(b·q_k·r·Δs)`. The ratio is `q_k·r/Δs ≈ 32` at
+  `q_k=16, r=32, Δs=16` — **it is ~32× cheaper to draw another block than to
+  check whether you needed to.** Verification only pays if it usually says
+  "stop", but this branch is reached only when the stop looked doubtful.
+
+Also, the sampling stop is not merely a heuristic: with *fresh* Gaussian blocks
+it is the Halko–Martinsson–Tropp a posteriori estimator, failure probability
+decaying like `10^{-p}` in the consecutive-small count. Raising `p` costs one
+block and buys an order of magnitude — far cheaper than `E_X`.
+
+`FactorEnergy`/`ResidualEnergy` should exist only behind a `verify=true` debug
+flag used by tests.
+
+### 5. Known accuracy limits (document, do not fight)
+
+- **`ε ≳ √u_hi`.** At the stopping block `κ(Y_Δ) ≈ 1/ε`, and CholQR2 needs
+  `κ ≲ u_hi^{-1/2}`. With a Float64 Gram that is `ε ≳ 1e-8`. The reference says
+  the same (§2.3.1: *"If greater accuracy is required, quad precision may be
+  needed to stabilize the double precision Cholesky QR"*). Notably this is the
+  **same `√u` barrier** as the Gram-route resolution limit in item 1, reached
+  from the opposite direction.
+- **ARA overshoots rank** by 1–4.5 on average (their Fig. 3(b)), growing with
+  rank, and *"the batch may contain some matrices with a relatively large rank
+  difference."* Their suggested remedy (§2.1) is an SVD of the small `k×k`
+  factor — which is exactly the final `K = ZᵀZ` eigensolve in `algorithm.tex`.
+  So the blueprint already closes their noted weakness; keep that step.
+
+### 6. Batched factorization survey (measured on this machine)
+
+| API | Batched | Notes |
+| --- | --- | --- |
+| `cublasXgeqrfBatched` | yes | **no batched `orgqr` exists** — Q must be formed by hand |
+| `gesvdaStridedBatched` | yes | tall-skinny; `U` is **not** orthonormal unless truncated (`‖QᵀQ−I‖ = 8e-4` at gap 1e-6) |
+| `gesvdjBatched` | yes | hard cap `m,n ≤ 32` |
+| `syevjBatched` | yes | no size cap; used for the final `K` eigensolve |
+| `Xgesvdr!` / `Xgesvdp!` | no | single-matrix only |
+
+Cost, `b=256`, `nb=128`, fp64, ms/batch — `s=16`: gesvda 16.2 / syrk+syevj 7.1;
+`s=32`: 35.5 / 32.5; `s=64`: 27.1 / 95.7. Crossover at `s≈32`. Householder QR
+(`geqrf_batched!`: 10.6 ms at `s=64`) is the fastest and would make the existing
+row-norm pruning valid unchanged, but needs a batched `orgqr` built from the
+repo's `larfb`/`larfg` kernels. Parked.
+
+---
+
+## Current state
+
+`row_basis/*` is the **currently shipped** TLR-output path (`gemm.jl:299`) and
+stays until the ARA path is green. The uncommitted M1 shared-basis work was
+reverted — the design it served no longer exists.
+
+- [x] **A0 — convergence bookkeeping.** [numerics/ara.jl](../../../numerics/ara.jl),
+  tests [test/TLR/ara.jl](../../../../../test/TLR/ara.jl), 40/40 CPU + 12/12 CUDA.
+  Provides `cholqr2_relative_shift_floor`, `ara_column_norms_sq!`,
+  `ara_block_norms!` (shift-corrected `dR`), `ARAConvergenceState`,
+  `ara_reset!`, `ara_update_convergence!`.
+
+  Two design points worth knowing:
+  - **`dR`, not column norms.** At convergence the block is a set of random
+    combinations of the few remaining directions, so every *column* still has
+    `O(1)` norm while the *block* is rank-deficient. `R[j,j]` is the residual
+    against both the basis and the earlier columns of the same block, so it
+    collapses exactly when nothing new is left. There is a regression test
+    asserting column norms are blind in precisely this case.
+  - **Convergence is judged per block, not mid-block.** A late significant
+    column resets the consecutive-small run. This is the false-early-stop guard;
+    do not "optimize" it into a short-circuit.
+
+  `ara_column_norms_sq!` must be called on the panel **after BCGS2, before the
+  Gram** — the factorization overwrites the quantity it reproduces.
+
+## Next
+
+- [x] **A1 — batched ARA core.** `ARAWorkspace`, `ara_build_basis!`,
+  `ara_stopping_floor`, `ara_mask_breakdown!` in
+  [numerics/ara.jl](../../../numerics/ara.jl). 24/24 CPU + 20/20 CUDA.
+  `mixed_cholqr2_factor!` gained `shift_coeff` / `escalate` / `status`, and
+  `coeff == 0` now means genuinely unshifted (it previously floored at
+  `eps(RT)` *absolutely*, which is a large relative shift for a small-norm
+  panel).
+
+  The loop rejects `eps_rel < √u_hi` with an `ArgumentError` rather than running
+  to `maxrank` — the failure mode of item 2 is now impossible to hit silently.
+
+  `block` is a keyword and is a **performance knob only**: there is a test
+  asserting the recovered rank and the achieved accuracy are unchanged across
+  `block ∈ {2, 5, 16}`. The reference uses 32 (warp size).
+
+  Deliberately *not* done here: `Z = XᵀQ` is left to A2 as a single apply after
+  the loop (the reference does the same, its line 32), rather than accumulated
+  per pass as `algorithm.tex` draws it. Same total work, fewer launches.
+
+- [ ] **A2 — final truncation.** `K = ZᵀZ`, batched syev, rank from the tail sum
+  `Σ_{k>r} λ_k ≤ τ²`, lift `U = QW`, `V = ZW`. Note `ext/NextLACUDAExt.jl` has
+  `_row_basis_eigh!` = `syevd!`, **non-batched**; a batched `syevj` binding is
+  needed. Gate: recovers the optimal rank on prescribed spectra, closing the
+  overshoot of item 5.
+
+- [ ] **A3 — `compress!` on ARA.** Dense-tile sampler; retire the one-shot
+  `maxrank`-width sketch and its unguarded prune (item 3). Gate: existing
+  `test/TLR/compress.jl` green; ranks at or below the current ones; no
+  regression on tiles that genuinely need full rank.
+
+- [ ] **R1 — factor-list sampler.** `S`/`H`/`T` prologue and the fused
+  `ApplyRight`/`ApplyLeft` over the zero-copy `rowpanel`/`colpanel` views in
+  [operands.jl](../operands.jl). β=0 and β≠0 (the old tile rides inside the
+  sketch as one further factor pair). Gate: matches a dense reference; dependent
+  launches per tile are `O(1)` in `q_k`.
+
+- [ ] **R2 — `RangeFind` on one tile.** A1 + R1. No exact residual (item 4).
+
+- [ ] **R3 — batch across a run.** Tiles converge at different pass counts. The
+  reference solves this with per-member sample counts (`batchSetSamples`), which
+  A0 already implements: a converged member has `samples == 0` and is skipped.
+  What remains is **packing active members contiguously** so a converged member
+  does not keep occupying a batch slot. `H_ℓj` hoisted per column.
+
+- [ ] **R4 — scheduler + arena.** `w_ij(s)` from rank metadata, budget-bounded
+  run growth, sub-panel fallback for long reductions. Gate: a tiny budget runs
+  correctly and never exceeds it.
+
+- [ ] **R5 — integration.** `gemm!` TLR-output dispatch, boundary regions, all
+  layout pairs.
+
+- [ ] **R6 — acceptance, then deletion** of `row_basis/`, `tlr_output.jl`,
+  `docs/alg.md`.
+
+## Deferred
+
+Ragged per-row/per-column ranks · boundary (non-regular-grid) tiles ·
+transposed operands with β≠0 · two-sided/BLR² output · batched `orgqr` from
+`larfb`/`larfg` (item 6) · treating shift escalation as a convergence signal
+(item 2).

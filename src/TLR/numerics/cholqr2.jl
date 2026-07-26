@@ -71,8 +71,15 @@ end
     if NT >   1 && tid == 1;   @inbounds smax[1]   = max(smax[1],   smax[2]);       end
     @synchronize
 
+    # `coeff == 0` requests a genuinely unshifted factorization: `potrf` is then
+    # allowed to break down, and that breakdown is the caller's rank signal
+    # (breakdown coincides with `κ(Y) > u^{-1/2}`, exactly where CholeskyQR2
+    # loses its `O(u)` orthogonality guarantee). With a nonzero coefficient an
+    # all-zero panel would regularize to nothing, so the eps floor is kept there.
     reg = coeff * (@inbounds smax[1]) * RT(real(@inbounds multipliers[b]))
-    shift = Thi(ifelse(reg > zero(RT), reg, eps(RT)))
+    shift = Thi(ifelse(coeff > zero(RT),
+                       ifelse(reg > zero(RT), reg, eps(RT)),
+                       zero(RT)))
 
     rr = size(G, 1)
     i = tid
@@ -95,6 +102,7 @@ end
                                     coeff,
                                     nt_shift;
                                     escalate::Bool,
+                                    status_out=nothing,
 ) where {Thi}
     backend = get_backend(G_hi)
     count = size(G_hi, 3)
@@ -133,6 +141,11 @@ end
             throw(LinearAlgebra.PosDefException(findfirst(!iszero, status)))
     end
 
+    # Per-member `potrf` status, for callers that read breakdown as information
+    # rather than as an error (see the `coeff == 0` note above).
+    if status_out !== nothing && result isa Tuple
+        copyto!(status_out, result[2])
+    end
     return G_hi
 end
 
@@ -240,8 +253,33 @@ stored in `ws.Q`, computes
 where `ws.Q` is the final basis and `ws.V' = R₂R₁` is the composite triangular
 factor from both CholQR passes. The hot path uses prebuilt concrete batch
 vectors and does not allocate an intermediate energy array.
+
+## Keywords
+
+`shift_coeff` — relative Cholesky shift, as a multiple of the panel's largest
+squared column norm. Defaults to the value of Fukaya, Nakatsukasa, Yanagisawa &
+Yamamoto (SIAM J. Sci. Comput. 42(1), 2020), which provably prevents breakdown
+for any conditioning. Pass `0` for an unshifted factorization, which is the
+right choice when the caller reads breakdown as a rank signal rather than an
+error: `potrf` fails exactly when `κ(Y) ≳ u^{-1/2}`, which is precisely where
+CholeskyQR2 loses its `O(u)` orthogonality guarantee (Yamamoto, Nakatsukasa,
+Yanagisawa & Fukaya, ETNA 44, 2015), so success certifies the result and failure
+certifies rank deficiency. A nonzero shift instead places a floor of
+`√shift_coeff` under every `diag(R)` entry relative to the panel scale, which
+silently defeats any rank or convergence test finer than that.
+
+`escalate` — when `true` (default), double the shift until every member's
+`potrf` succeeds and throw `PosDefException` if it never does. Set `false` to
+let breakdown stand.
+
+`status` — optional vector receiving the per-member `potrf` info from the first
+pass. Only meaningful with `escalate=false`.
 """
-function mixed_cholqr2_factor!(ws::CholQR2FactorWorkspace)
+function mixed_cholqr2_factor!(ws::CholQR2FactorWorkspace;
+                               shift_coeff=nothing,
+                               escalate::Bool=true,
+                               status=nothing,
+)
     Q = ws.Q
     count = size(Q, 3)
     count == 0 && return ws
@@ -250,14 +288,16 @@ function mixed_cholqr2_factor!(ws::CholQR2FactorWorkspace)
     Thi = eltype(ws.Y_hi)
     RT = real(Thi)
     m, r = size(Q, 1), size(Q, 2)
-    coeff = _cholqr_shift_coeff(Thi, m, r)
+    coeff = shift_coeff === nothing ? _cholqr_shift_coeff(Thi, m, r) :
+            RT(shift_coeff)
     nt_shift = _reduce_threads(r)
     backend = get_backend(Q)
     fill!(ws.multipliers, one(RT))
 
     ws.Y_hi .= Q
     _shifted_cholesky!(ws.G_hi,
-                       ws.Y_hi, ws.multipliers, coeff, nt_shift; escalate=true,
+                       ws.Y_hi, ws.multipliers, coeff, nt_shift;
+                       escalate, status_out=status,
     )
     _copy_upper_triangle_kernel!(backend)(
         ws.R1, ws.G_hi; ndrange=size(ws.R1),

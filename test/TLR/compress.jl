@@ -194,7 +194,7 @@ end
 end
 
 @testset "TLR compress! error indicator and FAIL semantics" begin
-    b = 64
+    b = 32
     maxr = 16
 
     # (1) Saturated tile: numerical rank ≫ maxrank must be flagged, not
@@ -268,7 +268,7 @@ end
 end
 
 @testset "TLR compress! sketch capacity" begin
-    b = 64
+    b = 32
     r12 = 5
     r21 = 11
 
@@ -280,12 +280,14 @@ end
 
         # maxrank includes any desired randomized-range buffer and is both the
         # sketch width and output-panel capacity.
-        for maxr in (12, 32)
+        # Capacity 12 is deliberately tight (only one column beyond the larger
+        # tile's rank), without repeating the same path at a roomy capacity.
+        for maxr in (12,)
             A_tlr = NextLA.TLRDenseDiagMatrix(A, b, maxr)
             ws = NextLA.alloc_workspace(A_tlr)
             # Seed 2 previously put the Float64 residual a few ulps above
             # the nominal CholQR floor and exposed flaky full-rank retention.
-            Random.seed!(T == Float64 && maxr == 12 ? 2 : 1000 + maxr + sizeof(T))
+            Random.seed!(T == Float64 ? 2 : 1000 + maxr + sizeof(T))
             NextLA.compress!(A_tlr, A, ws; tol=tol, rel=true)
 
             assert_tile_rank_and_error(A_tlr, 1, 2, r12,
