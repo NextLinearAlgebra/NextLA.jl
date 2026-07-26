@@ -5,14 +5,15 @@ compiler. The public call graph is intentionally short:
 
 ```text
 gemm! API
-  -> dense or TLR-output driver
+  -> dense-output driver
   -> row/column traversal
   -> precision-aware batched kernels
 ```
 
-The same canonical factor accessors and regular Stage 1 are shared by dense output and
-the current M4 dense-slab/recompression fallback. Boundary and dense-diagonal work is
-expressed by direct helpers for the actual operand combination.
+Canonical factor accessors and regular Stage 1 are shared by the dense-output
+paths and the ARA factor-list implementation under development. Boundary and
+dense-diagonal work is expressed by direct helpers for the actual operand
+combination.
 
 ## Canonical operands
 
@@ -84,17 +85,6 @@ The top-level dense driver keeps four disjoint output regions (interior, right, 
 corner). CPU executes them in order. GPU backends use four independent streams and one
 final synchronization.
 
-## TLR-output fallback (M4)
-
-The currently supported TLR-output path is intentionally narrow: full-low-rank input,
-regular grids, `beta == 0`, and row-family layouts. Each row run writes to a bounded
-dense slab through `execute_slab_stage3!`; completed slab tiles are immediately
-compressed and scattered into the output factors.
-
-The path owns its terminal stage and compression workspace. It does not construct a
-placeholder dense output or route through a generic sink abstraction. Stage 1 and Stage
-2 are shared directly with dense output.
-
 ## Workspace contract
 
 `gemm_workspace_bytes(A, B; transA, transB)` returns the smallest per-operation budget
@@ -113,15 +103,9 @@ follows `C`. GEMM scalars use the selected compute precision. `precision_gemm_ba
 is the sole backend dispatch point for ordinary GEMM, CUDA GEMMEx/TF32, and capability
 validation.
 
-## M5 extension boundary
+## TLR result integration boundary
 
-The M5 global-row-basis implementation depends only on:
-
-- `LogicalTLROperand` and factor accessors;
-- `RegularGeometry`, row/column runs, and workspace utilities;
-- its explicit standalone row-basis builder;
-- precision dispatch.
-
-It owns factor accumulation, numerical rank decisions, and fallback behavior. The
-preferred CPU path is explicit row basis → coefficient accumulation → one orthogonal
-merge/prune; M4 remains the CUDA/transpose fallback while those schedules are completed.
+TLR-result GEMM is intentionally absent from the public dispatch until the ARA
+factor-list implementation is complete. That implementation reuses logical
+operands, factor accessors, run geometry, workspace utilities, and precision
+dispatch, while owning sampling, convergence, truncation, and output scatter.

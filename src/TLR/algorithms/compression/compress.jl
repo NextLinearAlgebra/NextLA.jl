@@ -91,16 +91,25 @@ end
 # apply the tiles to it. Freshness per pass is required -- the stopping rule is
 # the Halko-Martinsson-Tropp a posteriori bound, whose failure probability
 # decays only for independent samples.
-function _ara_tile_sampler(src::TileSource{T}, cat::CompressCategoryWorkspace) where {T}
-    return function (Y, width)
-        Om = view(cat.omega, :, 1:width, :)
-        Random.randn!(Om)
-        gemm_batched!('N', 'N', one(T), src.tiles,
-                      _batch_views(Om, width), zero(T),
-                      _batch_views(view(Y, :, 1:width, :), width))
-        return Y
-    end
+struct ARATileSampler{S,C}
+    src::S
+    cat::C
 end
+
+function (sampler::ARATileSampler)(Y, width)
+    src, cat = sampler.src, sampler.cat
+    T = eltype(cat.omega)
+    # Always draw/apply the allocated block. On the final partial pass the ARA
+    # driver zeroes columns `width+1:block` before orthogonalization. Keeping
+    # one fixed batch shape lets the operand vectors be built once with the
+    # workspace instead of allocated on every pass.
+    Random.randn!(cat.omega)
+    gemm_batched!('N', 'N', one(T), src.tiles,
+                  cat.omega_tiles, zero(T), cat.Y_tiles)
+    return Y
+end
+
+@inline _ara_tile_sampler(src, cat) = ARATileSampler(src, cat)
 
 """
     compress_tiles!(src, cat; eps_sq, rel) -> cat
@@ -114,7 +123,7 @@ Input-agnostic — see [`TileSource`](@ref). Degenerates to rank 0 when
 Sampling is adaptive: each tile stops once its own range is captured, rather
 than every tile paying a single sketch at the full `maxrank` width. That earlier
 scheme produced a panel that was rank deficient by construction on any tile of
-true rank below capacity, which is precisely where shifted CholQR2 stops
+true rank below capacity, which is precisely where a one-shot wide sketch stops
 revealing rank (`docs/TODO.md` in the GEMM tree, worklog items 1 and 3); the
 prune then decided on a basis that `κ(R₁)` had already destroyed.
 
@@ -142,12 +151,12 @@ function compress_tiles!(src::TileSource{T}, cat::CompressCategoryWorkspace; eps
                      eps_rel, r_required=_ARA_CONSECUTIVE)
 
     # Step 2: co-range Z = Aᴴ·Q, into the output V panel's sketch-width view.
-    _cosketch!(cat.V_tiles, src, _batch_views(cat.Qbuf, cat.S))
+    _cosketch!(cat.V_tiles, src, cat.Q_tiles)
 
     # Step 3: optimal (Eckart-Young) truncation, charging the range-capture
     # error against the same budget.
     ara_truncate!(view(cat.U, :, 1:cat.R_keep, :), view(cat.V, :, 1:cat.R_keep, :),
-                  cat.ranks_local, cat.norm_err_sq, cat.Qbuf, cat.V_T;
+                  cat.ranks_local, cat.norm_err_sq, cat.ara.Q, cat.Z;
                   tol=sqrt(eps_sq), relative=rel, maxrank=cat.R_keep,
                   energy=cat.norm_err_sq)
     return cat
@@ -171,7 +180,8 @@ function _compress_category!(
     n = size(cat.U, 3)
     n == 0 && return cat
     tiles = [_dense_tile_view(A, A_tlr, region_tile_coords(A_tlr, cat.region, k)...) for k in 1:n]
-    src = DenseTiles(A, tiles, cat.p0s, cat.q0s, size(cat.Q_T, 1), size(cat.V_T, 1))
+    src = DenseTiles(A, tiles, cat.p0s, cat.q0s,
+                     size(cat.U, 1), size(cat.V, 1))
     return compress_tiles!(src, cat; eps_sq, rel)
 end
 
@@ -249,7 +259,7 @@ device allocations across repeated calls:
 ## Keywords
 
 `tol` — per-tile Frobenius error budget (default `0.0`). The squared budget is
-floored at the orthogonality floor of the shifted high-precision CholQR basis.
+floored at the orthogonality limit of the promoted Cholesky-QR basis.
 
 `rel` — when `true`, the budget for each tile is `tol * ‖A_tile‖_F` instead of
 the absolute `tol`.

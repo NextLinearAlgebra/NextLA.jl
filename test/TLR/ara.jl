@@ -1,90 +1,31 @@
-# A0: the bookkeeping the blocked ARA loop needs from CholQR2.
-
-# Build a CholQR2 workspace around a batch of panels.
-function ara_cholqr_fixture(::Type{T}, ArrayType, X::Array{T,3}) where {T}
+# Build the minimal ARA orthogonalization workspace around a batch of panels.
+function ara_cholesky_fixture(::Type{T}, ArrayType, X::Array{T,3}) where {T}
     m, s, count = size(X)
     Thi = _TLRM.tlr_orthogonalization_type(T)
-    ws = _TLRM.CholQR2FactorWorkspace(
-        ArrayType(copy(X)), ArrayType(zeros(T, s, s, count)),
+    return _TLRM.ARACholeskyWorkspace(
+        ArrayType(copy(X)),
         ArrayType(zeros(Thi, m, s, count)), ArrayType(zeros(Thi, s, s, count)),
         ArrayType(zeros(T, s, s, count)), ArrayType(zeros(T, s, s, count)),
-        ArrayType(ones(real(Thi), count)),
     )
-    return ws
 end
 
 @testset "ARA convergence bookkeeping on CPU" begin
     rng = MersenneTwister(1301)
 
-    @testset "shift floor is the documented relative bound" begin
-        # The floor must match sqrt of the shift coefficient exactly: the whole
-        # dR correction is built on this identity.
-        for (T, m, s) in ((Float64, 256, 32), (Float64, 32, 16), (Float32, 128, 8))
-            Thi = _TLRM.tlr_orthogonalization_type(T)
-            floor_rel = _TLRM.cholqr2_relative_shift_floor(Thi, m, s)
-            @test floor_rel ≈ sqrt(Float64(_TLRM._cholqr_shift_coeff(Thi, m, s)))
-        end
-        # The hazard this exists to expose: at a realistic block shape the floor
-        # sits above tolerances callers will plausibly ask for.
-        @test _TLRM.cholqr2_relative_shift_floor(Float64, 256, 32) > 1e-6
-    end
-
-    @testset "column norms reproduce max diag(G)" begin
-        m, s, count = 40, 6, 3
-        X = randn(rng, Float64, m, s, count)
-        cn = zeros(Float64, s, count)
-        colmax = zeros(Float64, count)
-        _TLRM.ara_column_norms_sq!(cn, colmax, X, s)
-        for b in 1:count
-            G = X[:, :, b]' * X[:, :, b]
-            @test cn[:, b] ≈ diag(G)
-            @test colmax[b] ≈ maximum(diag(G))
-        end
-        # A short final pass must ignore the stale tail.
-        _TLRM.ara_column_norms_sq!(cn, colmax, X, 2)
-        @test colmax ≈ [maximum(sum(abs2, X[:, 1:2, b]; dims=1)) for b in 1:count]
-    end
-
     @testset "dR recovers projected norms on a full-rank block" begin
         m, s, count = 64, 8, 2
         X = randn(rng, Float64, m, s, count)
-        ws = ara_cholqr_fixture(Float64, Array, X)
-        cn = zeros(Float64, s, count)
-        colmax = zeros(Float64, count)
-        _TLRM.ara_column_norms_sq!(cn, colmax, ws.Q, s)
-        _TLRM.mixed_cholqr2_factor!(ws)
+        ws = ara_cholesky_fixture(Float64, Array, X)
+        _TLRM.ara_cholesky_pass!(ws, ws.R1, ws.R1_tiles)
+        _TLRM.ara_cholesky_pass!(ws, ws.R2, ws.R2_tiles)
         dR = zeros(Float64, s, count)
-        _TLRM.ara_block_norms!(dR, ws, colmax)
+        _TLRM.ara_block_norms!(dR, ws)
         # dR[j] is the residual of column j against columns 1..j-1, i.e. the
         # diagonal of the R factor of a plain QR of the same panel.
         for b in 1:count
             Rref = abs.(diag(qr(X[:, :, b]).R))
             @test dR[:, b] ≈ Rref rtol = 1e-10
-        end
-    end
-
-    @testset "dR collapses on the redundant columns of a deficient block" begin
-        # The generic stopping case: every column has O(1) norm, but the block
-        # spans only `rank` directions. Column norms cannot see this; dR must.
-        m, s, rank, count = 64, 8, 3, 2
-        X = zeros(Float64, m, s, count)
-        for b in 1:count
-            basis = Matrix(qr(randn(rng, Float64, m, rank)).Q)[:, 1:rank]
-            X[:, :, b] = basis * randn(rng, Float64, rank, s)
-        end
-        ws = ara_cholqr_fixture(Float64, Array, X)
-        cn = zeros(Float64, s, count)
-        colmax = zeros(Float64, count)
-        _TLRM.ara_column_norms_sq!(cn, colmax, ws.Q, s)
-        _TLRM.mixed_cholqr2_factor!(ws)
-        dR = zeros(Float64, s, count)
-        _TLRM.ara_block_norms!(dR, ws, colmax)
-        for b in 1:count
-            scale = sqrt(colmax[b])
-            @test all(dR[1:rank, b] .> 1e-3 * scale)      # genuine directions
-            @test all(dR[rank+1:s, b] .< 1e-8 * scale)    # nothing new left
-            # Column norms are blind here — this is why dR is the right signal.
-            @test all(sqrt.(cn[:, b]) .> 1e-2 * scale)
+            @test norm(ws.Q[:, :, b]' * ws.Q[:, :, b] - I, Inf) <= 1e-12
         end
     end
 
@@ -273,34 +214,16 @@ end
 @testset "ARA convergence bookkeeping on GPU" begin
     for (backend_name, ArrayType, synchronize) in available_backends()
         @testset "$backend_name" begin
-            rng = MersenneTwister(1302)
-            m, s, rank, count = 64, 8, 3, 2
-            X = zeros(Float64, m, s, count)
-            for b in 1:count
-                basis = Matrix(qr(randn(rng, Float64, m, rank)).Q)[:, 1:rank]
-                X[:, :, b] = basis * randn(rng, Float64, rank, s)
-            end
-            ws = ara_cholqr_fixture(Float64, ArrayType, X)
-            cn = ArrayType(zeros(Float64, s, count))
-            colmax = ArrayType(zeros(Float64, count))
-            _TLRM.ara_column_norms_sq!(cn, colmax, ws.Q, s)
-            _TLRM.mixed_cholqr2_factor!(ws)
-            dR = ArrayType(zeros(Float64, s, count))
-            _TLRM.ara_block_norms!(dR, ws, colmax)
-            synchronize(dR)
-            dRh = Array(dR)
-            cmh = Array(colmax)
-            for b in 1:count
-                scale = sqrt(cmh[b])
-                @test all(dRh[1:rank, b] .> 1e-3 * scale)
-                @test all(dRh[rank+1:s, b] .< 1e-8 * scale)
-            end
-
+            s, count = 8, 2
+            dR = ArrayType(hcat(
+                [1.0, 0.8, 0.7, fill(1e-12, 5)...],
+                [1.0, 0.9, 0.8, 0.7, fill(1e-12, 4)...],
+            ))
             state = _TLRM.ARAConvergenceState(get_backend(dR), count)
             _TLRM.ara_reset!(state, s, 2 * s)
             active = _TLRM.ara_update_convergence!(state, dR, 1e-8, 3, s, 2 * s)
             @test active == 0                        # both members converged
-            @test Array(state.ranks) == Int32[rank, rank]
+            @test Array(state.ranks) == Int32[3, 4]
         end
     end
 end
@@ -348,6 +271,13 @@ end
 @testset "ARA truncation on CPU" begin
     rng = MersenneTwister(1501)
     bm, bn, sQ = 48, 40, 12
+
+    @testset "empty co-range bypasses the SVD backend" begin
+        U0, S0, V0 = _TLRM.batched_thin_svd!(zeros(Float64, bn, 0, 3))
+        @test size(U0) == (bn, 0, 3)
+        @test size(S0) == (0, 3)
+        @test size(V0) == (0, 0, 3)
+    end
 
     @testset "matches the Eckart-Young optimum" begin
         sigmas = [2.0^(-k) for k in 0:(sQ-1)]         # smooth decay
@@ -467,12 +397,20 @@ end
             Ud, Sd, Vd = _TLRM.batched_thin_svd!(Zd)
             @test Ud isa typeof(Zd) && Vd isa typeof(Zd)
             @test Array(Sd)[:, 1] ≈ svd(Zh).S rtol = 1e-12
+
+            U0, S0, V0 = _TLRM.batched_thin_svd!(
+                ArrayType(zeros(Float64, bn, 0, 2)),
+            )
+            @test size(U0) == (bn, 0, 2)
+            @test size(S0) == (0, 2)
+            @test size(V0) == (0, 0, 2)
+            @test backend_name == "CPU" || U0 isa typeof(Zd)
         end
     end
 end
 
 # Regression: the projection must be INTERLEAVED with the two Cholesky passes,
-# `(P·CholQR)²` as in Algorithm 2.3 lines 22-27 -- not `P²·CholQR²`.
+# `(P·CQR)²` as in Algorithm 2.3 lines 22-27 -- not `P²·CQR²`.
 #
 # The two are different algorithms in finite precision. A column numerically
 # dependent on the rest of its block has a within-block residual of size

@@ -1,65 +1,5 @@
-# Compression: CholQR2 policy, compress!/uncompress! roundtrips, error/FAIL
-# semantics, sketch capacity, and the packed tile-batch path.
-
-@testset "shifted CholQR2 policy" begin
-    for Tgram in (Float64, ComplexF64)
-        m, s = 37, 9
-        expected = 11 * (m * s + s * (s + 1)) * (eps(Float64) / 2)
-        @test _TLRM._cholqr_shift_coeff(Tgram, m, s) == expected
-    end
-
-    rng = MersenneTwister(901)
-    for Thi in (Float64, ComplexF64)
-        m, s, batch = 48, 8, 3
-        Y = randn(rng, Thi, m, s, batch)
-        Q = copy(Y)
-        G = zeros(Thi, s, s, batch)
-        R = zeros(Thi, s, s, batch)
-        multipliers = ones(Float64, batch)
-        _TLRM.cholqr2!(Q, Y, G, R, _TLRM._batch_views(R), _TLRM._batch_views(Q), multipliers)
-        floor = _TLRM._cholqr_shift_coeff(Thi, m, s)
-        for k in 1:batch
-            @test norm(Q[:, :, k]' * Q[:, :, k] - I, Inf) <= 2floor
-        end
-
-        Z = zeros(Thi, m, s, 1)
-        Qz = copy(Z)
-        Gz = zeros(Thi, s, s, 1)
-        Rz = zeros(Thi, s, s, 1)
-        _TLRM.cholqr2!(Qz, Z, Gz, Rz, _TLRM._batch_views(Rz), _TLRM._batch_views(Qz),
-            ones(Float64, 1))
-        @test all(iszero, Qz)
-        @test all(isfinite, Gz)
-    end
-
-    # Throughput path: Gram/POTRF are Float64 while both triangular solves and
-    # the stored basis remain Float32.
-    Q32 = randn(rng, Float32, 48, 8, 2)
-    Y64 = zeros(Float64, 48, 8, 2)
-    G64 = zeros(Float64, 8, 8, 2)
-    R32 = zeros(Float32, 8, 8, 2)
-    _TLRM.cholqr2!(Q32, Y64, G64, R32, _TLRM._batch_views(R32), _TLRM._batch_views(Q32),
-        ones(Float64, 2))
-    @test eltype(Q32) == Float32
-    @test all(isfinite, Q32)
-    for k in axes(Q32, 3)
-        @test norm(Q32[:, :, k]' * Q32[:, :, k] - I, Inf) <= 20eps(Float32)
-    end
-
-    # Rank-deficient inputs must remain finite; dependent directions are damped
-    # and subsequently removed by energy pruning.
-    Y = zeros(Float64, 32, 6, 1)
-    Y[:, 1:3, 1] .= randn(rng, 32, 3)
-    Y[:, 4:6, 1] .= Y[:, 1:3, 1]
-    Q = copy(Y)
-    G = zeros(Float64, 6, 6, 1)
-    R = zeros(Float64, 6, 6, 1)
-    _TLRM.cholqr2!(Q, Y, G, R, _TLRM._batch_views(R), _TLRM._batch_views(Q), ones(Float64, 1))
-    @test all(isfinite, Q)
-    singular_values = svdvals(Q[:, :, 1])
-    @test singular_values[3] > 0.99
-    @test singular_values[4] < 1e-3
-end
+# Compression: compress!/uncompress! roundtrips, error/FAIL semantics, sketch
+# capacity, and the packed tile-batch path.
 
 # Every tile low-rank over a rectangular grid with tails on both axes; known
 # per-tile ranks.
@@ -226,8 +166,7 @@ end
     easy_err = norm(easy - Matrix(U_easy) * Matrix(adjoint(V_easy)))
     @test easy_err < 1e-10
 
-    # (2) Tiny-scale tiles: the relative cholqr shift keeps rank detection
-    # working at scale 1e-7 (an absolute shift swamps the Gram matrix here).
+    # (2) Tiny-scale tiles preserve rank detection at scale 1e-7.
     tiny12 = 1e-7 .* make_lowrank_tile(Float64, b, 3; seed=5)
     tiny21 = 1e-7 .* make_lowrank_tile(Float64, b, 5; seed=6)
     At = assemble_block_matrix(
@@ -285,8 +224,7 @@ end
         for maxr in (12,)
             A_tlr = NextLA.TLRDenseDiagMatrix(A, b, maxr)
             ws = NextLA.alloc_workspace(A_tlr)
-            # Seed 2 previously put the Float64 residual a few ulps above
-            # the nominal CholQR floor and exposed flaky full-rank retention.
+            # Keep the seed fixed to make the capacity-bound case reproducible.
             Random.seed!(T == Float64 ? 2 : 1000 + maxr + sizeof(T))
             NextLA.compress!(A_tlr, A, ws; tol=tol, rel=true)
 
@@ -347,10 +285,10 @@ end
     U = zeros(Float64, b, kout, n)
     V = zeros(Float64, b, kout, n)
     ws = _TLRM.alloc_tile_workspace(U, V, b, b, kout, n)
-    @test parent(ws.Q_T) === U
-    @test parent(ws.V_T) === V
-    @test parent(ws.norm_err_sq) === ws.G_hi
-    @test parent(ws.shift_mult) === parent(ws.V_T)
+    @test parent(ws.Z) === V
+    @test ws.ara.Q !== U
+    @test size(ws.ara.Yblk, 2) == _TLRM.compress_ara_block(kout)
+    @test size(ws.ara.dR) == (ws.ara.block, n)
     _TLRM.compress_tiles!(_TLRM.PackedTiles(P), ws; eps_sq=1e-12, rel=false)
 
     ranks = Array(ws.ranks_local)
@@ -360,44 +298,6 @@ end
         recon = U[:, 1:r, k] * V[:, 1:r, k]'
         @test norm(recon - refs[k]) / norm(refs[k]) <= 1e-6
     end
-end
-
-@testset "in-place fused truncation and compaction" begin
-    # Hard-cap pruning keeps columns 1, 3, and 5. The minimum-move map fills
-    # hole 2 from source 5, so the compact deterministic order is [1, 5, 3].
-    energies = [9.0, 0.01, 4.0, 0.04, 1.0, 0.09]
-    S = length(energies)
-    U = zeros(Float64, S, S, 1)
-    V = zeros(Float64, S, S, 1)
-    for j in 1:S
-        U[j, j, 1] = j
-        V[j, j, 1] = sqrt(energies[j])
-    end
-    rk = zeros(Int32, 1)
-    norm_err_sq = [sum(energies)]
-
-    _TLRM.prune_ranks!(U, V, rk, norm_err_sq, S, 3, 0.0, false, 0.0)
-
-    @test rk == Int32[3]
-    @test [findfirst(!iszero, U[:, j, 1]) for j in 1:3] == [1, 5, 3]
-    @test all(iszero, view(U, :, 4:S, 1))
-    @test all(iszero, view(V, :, 4:S, 1))
-    @test norm_err_sq[1] ≈ sum(energies[[2, 4, 6]])
-
-    # Equal energies are ordered by source index during pruning. Dropping 1 and
-    # 2 leaves sources 3 and 4, compacted reproducibly as [4, 3].
-    U .= 0
-    V .= 0
-    for j in 1:4
-        U[j, j, 1] = j
-        V[j, j, 1] = 1
-    end
-    fill!(rk, 0)
-    norm_err_sq[1] = 4
-    _TLRM.prune_ranks!(U, V, rk, norm_err_sq, 4, 2, 0.0, false, 0.0)
-    @test rk == Int32[2]
-    @test [findfirst(!iszero, U[:, j, 1]) for j in 1:2] == [4, 3]
-    @test all(iszero, view(U, :, 3:S, 1))
 end
 
 # What moving `compress!` onto ARA actually buys: sampling is adaptive, so a
@@ -432,12 +332,8 @@ end
     # The sampling block width is a performance knob: same ranks, same accuracy.
     for blk in (4, 8, 32)
         U1 = zeros(Float64, b, 32, ntiles); V1 = zeros(Float64, b, 32, ntiles)
-        c = _TLRM.alloc_tile_workspace(U1, V1, b, b, 32, ntiles)
-        ara = _TLRM.ARAWorkspace(c.Qbuf; block=blk)
-        c2 = typeof(c)(c.region, c.rank_indices, c.S, c.R_keep, c.U, c.V, c.Q_T,
-                       c.V_T, c.Q_tiles, c.V_tiles, c.R_tiles, c.Y_hi, c.G_hi,
-                       c.ranks_local, c.norm_err_sq, c.shift_mult, c.p0s, c.q0s,
-                       ara, c.Qbuf, c.omega)
+        c2 = _TLRM.alloc_tile_workspace(
+            U1, V1, b, b, 32, ntiles; block=blk)
         _TLRM.compress_tiles!(_TLRM.PackedTiles(copy(tiles)), c2;
                               eps_sq=1e-12, rel=true)
         @test Array(c2.ranks_local) == collect(ranks)

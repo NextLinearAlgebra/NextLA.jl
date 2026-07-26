@@ -191,9 +191,6 @@ function mixed_cholqr2_basis!(Q::AbstractArray{T,3},
     return Q
 end
 
-# Existing internal callers and downstream experiments used this name.
-const cholqr2! = mixed_cholqr2_basis!
-
 """
     CholQR2FactorWorkspace(Q, V, Y_hi, G_hi, R1, R2, multipliers)
 

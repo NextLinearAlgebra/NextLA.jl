@@ -6,7 +6,6 @@ function _launch_prune_columns!(U::AbstractArray{T,3},
                                 maxrank::Int,
                                 tol_sq::Float64,
                                 relative::Bool,
-                                orthogonality_floor::Float64,
                                 mode,
 ) where {T}
     count = size(U, 3)
@@ -33,40 +32,11 @@ function _launch_prune_columns!(U::AbstractArray{T,3},
     nthreads = W * min(active_columns, 8)
     _prune_columns_kernel(backend, nthreads)(
         U, V, ranks, error_sq, tol_sq, relative, maxrank,
-        orthogonality_floor, mode, Val{active_columns}(), Val{W}();
+        mode, Val{active_columns}(), Val{W}();
         ndrange=(nthreads * count,), workgroupsize=nthreads,
     )
     return U
 end
-
-"""
-    prune_randqb_columns!(
-        U, V, ranks, norm_error_sq, active_columns, maxrank,
-        tol_sq, relative, orthogonality_floor,
-    ) -> U
-
-Fused randQB error-indicator pruning. `norm_error_sq` contains `‖A‖²` on entry
-and the achieved squared approximation error on return. Column energies,
-stable selection, factor compaction, and tail clearing occur in one kernel.
-"""
-function prune_randqb_columns!(U::AbstractArray{T,3},
-                               V,
-                               ranks,
-                               norm_error_sq,
-                               active_columns::Int,
-                               maxrank::Int,
-                               tol_sq::Float64,
-                               relative::Bool,
-                               orthogonality_floor::Float64,
-) where {T}
-    return _launch_prune_columns!(
-        U, V, ranks, norm_error_sq, active_columns, maxrank, tol_sq,
-        relative, orthogonality_floor, Val(:randqb),
-    )
-end
-
-# Compatibility with the compression-internal name.
-const prune_ranks! = prune_randqb_columns!
 
 """
     prune_orthogonal_columns!(
@@ -91,31 +61,7 @@ function prune_orthogonal_columns!(Q::AbstractArray{T,3},
 ) where {T}
     return _launch_prune_columns!(
         Q, V, ranks, error_sq, active_columns, maxrank, tol_sq,
-        relative, 0.0, Val(:orthogonal),
-    )
-end
-
-"""
-    prune_new_orthogonal_columns!(
-        Q, V, ranks, error_sq, active_columns, maxrank, tol_sq, relative,
-    ) -> Q
-
-Like [`prune_orthogonal_columns!`](@ref), but treats the incoming factorization
-as having zero base error. The fused kernel overwrites `error_sq` directly, so
-callers do not need a separate device `fill!` launch.
-"""
-function prune_new_orthogonal_columns!(Q::AbstractArray{T,3},
-                                       V,
-                                       ranks,
-                                       error_sq,
-                                       active_columns::Int,
-                                       maxrank::Int,
-                                       tol_sq::Float64,
-                                       relative::Bool,
-) where {T}
-    return _launch_prune_columns!(
-        Q, V, ranks, error_sq, active_columns, maxrank, tol_sq,
-        relative, 0.0, Val(:orthogonal_zero),
+        relative, Val(:orthogonal),
     )
 end
 
@@ -141,7 +87,7 @@ function prune_cholqr_coordinates!(Q::AbstractArray{T,3},
 ) where {T}
     return _launch_prune_columns!(
         Q, V, ranks, discarded_coefficient_sq, active_columns, maxrank,
-        rank_tol_sq, relative, 0.0, Val(:cholqr_rank),
+        rank_tol_sq, relative, Val(:cholqr_rank),
     )
 end
 
@@ -174,9 +120,9 @@ end
 """
     _prune_columns_kernel(...)
 
-One workgroup handles one factor pair. The policy mode is a compile-time `Val`,
-so the randQB and exact-coordinate paths are separately compiled while sharing
-the same fused energy/selection/compaction implementation.
+One workgroup handles one factor pair. The policy mode is a compile-time `Val`
+distinguishing exact orthogonal-coordinate pruning from the shifted-CholQR
+numerical-rank diagnostic.
 """
 @kernel function _prune_columns_kernel(U::AbstractArray{T,3},
                                        V::AbstractArray{T,3},
@@ -185,7 +131,6 @@ the same fused energy/selection/compaction implementation.
                                        tol_sq::Float64,
                                        relative::Bool,
                                        maxrank::Int,
-                                       orthogonality_floor::Float64,
                                        ::Val{Mode},
                                        ::Val{S},
                                        ::Val{W},
@@ -243,25 +188,9 @@ the same fused energy/selection/compaction implementation.
         base_error = supplied_error
         budget = 0.0
 
-        if Mode === :randqb
-            reference_sq = supplied_error
-            base_error = max(reference_sq - total, 0.0)
-
-            # Suppress cancellation noise in ‖A‖² - ‖V‖².
-            epsT = Float64(eps(real(T)))
-            residual_floor = Float64(size(U, 1)) * epsT * reference_sq
-            base_error = ifelse(base_error < residual_floor, 0.0, base_error)
-
-            target = relative ? tol_sq * reference_sq : tol_sq
-            budget =
-                max(target, 2.0 * orthogonality_floor * reference_sq) -
-                base_error
-        else
-            base_error =
-                Mode === :orthogonal ? max(base_error, 0.0) : 0.0
-            target = relative ? tol_sq * reference_sq : tol_sq
-            budget = target - base_error
-        end
+        base_error = Mode === :orthogonal ? max(base_error, 0.0) : 0.0
+        target = relative ? tol_sq * reference_sq : tol_sq
+        budget = target - base_error
 
         retained = S
         dropped = 0.0

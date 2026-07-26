@@ -4,12 +4,12 @@
 # 41(4):C339–C366, 2019 (Algorithm 2.3).
 #
 # The loop samples a block, orthogonalizes it against the existing basis with
-# BCGS2, orthonormalizes it with mixed-precision CholQR2, and stops once
+# BCGS2, normalizes it with two mixed-precision Cholesky-QR passes, and stops once
 # `r_required` consecutive projected columns have negligible norm. Two pieces of
 # bookkeeping make that possible and live here:
 #
-#   * `ara_block_norms!` recovers the projected column norms from the triangular
-#     factors that CholQR2 already produced (`dR` in the reference), and
+#   * `ara_block_norms!` recovers the projected column norms from the two
+#     triangular factors (`dR` in the reference), and
 #   * `ara_update_convergence!` maintains, per batch member, the running maximum
 #     norm, the consecutive-small-vector count, the detected rank, and how many
 #     columns that member should sample next.
@@ -21,134 +21,118 @@
 # and the earlier columns of the same block, so it collapses exactly when there
 # is nothing new left. Column norms alone would miss the generic stopping case.
 
+"""Minimal reusable workspace for ARA's Cholesky-QR passes."""
+struct ARACholeskyWorkspace{QT,YT,GT,RT,QViews,RViews}
+    Q::QT
+    Y_hi::YT
+    G_hi::GT
+    R1::RT
+    R2::RT
+    Q_tiles::QViews
+    R1_tiles::RViews
+    R2_tiles::RViews
+end
+
+function ARACholeskyWorkspace(Q::AbstractArray{T,3},
+                              Y_hi::AbstractArray{Thi,3},
+                              G_hi::AbstractArray{Thi,3},
+                              R1::AbstractArray{T,3},
+                              R2::AbstractArray{T,3}) where {T,Thi}
+    _, width, count = size(Q)
+    size(Y_hi) == size(Q) ||
+        throw(DimensionMismatch("Y_hi must have the same dimensions as Q"))
+    size(G_hi) == (width, width, count) ||
+        throw(DimensionMismatch("G_hi must have size ($width, $width, $count)"))
+    size(R1) == size(G_hi) == size(R2) ||
+        throw(DimensionMismatch("R1 and R2 must match G_hi"))
+    return ARACholeskyWorkspace(
+        Q, Y_hi, G_hi, R1, R2,
+        _batch_views(Q), _batch_views(R1), _batch_views(R2),
+    )
+end
+
+@kernel function _ara_copy_upper_triangle_kernel!(dest::AbstractArray{T,3},
+                                                  src::AbstractArray{Thi,3}) where {T,Thi}
+    row, col, batch = @index(Global, NTuple)
+    @inbounds dest[row, col, batch] =
+        row <= col ? T(src[row, col, batch]) : zero(T)
+end
+
 """
-    cholqr2_relative_shift_floor(Tgram, m, s) -> Float64
+    ara_cholesky_pass!(ws, R, R_tiles; status=nothing, count=size(ws.Q, 3))
 
-Smallest value `R[j,j] / max_j‖y_j‖` that shifted CholQR2 can produce.
+Apply one mixed-precision Cholesky-QR pass to the first `count`
+members of `ws.Q`. The Gram matrix and Cholesky factorization use the promoted
+type; the triangular solve and stored factor use the basis storage type.
 
-`_shifted_cholesky!` adds `coeff · max_i G[i,i] · multiplier` to the Gram
-diagonal, and `max_i G[i,i]` is the largest squared column norm of the panel, so
-every triangular diagonal entry is bounded below by `√(coeff·multiplier)`
-*relative to that column norm* — independent of the data.
-
-This is a hard floor under any rank or convergence test built on `diag(R)`: a
-relative tolerance below it can never be met, and a stopping loop would run to
-`maxrank` on every tile with no error raised. At `m=256, s=32` in `Float64` it
-is `3.4e-6` — well inside the range callers ask for.
-
-The ARA loop therefore factors **unshifted**, which removes the floor entirely
-and extends the usable range to `√u ≈ 1.05e-8` (see [`ara_stopping_floor`](@ref)).
-This function remains the guard for paths that do shift, such as the wide
-one-shot panels in the compression code. The value assumes `multiplier == 1`;
-escalation raises the true floor further.
+ARA deliberately treats a failed Cholesky factorization as a rank signal.
+When provided, `status` receives the per-member factorization status.
 """
-@inline cholqr2_relative_shift_floor(::Type{Tgram}, m::Int, s::Int) where {Tgram} =
-    sqrt(Float64(_cholqr_shift_coeff(Tgram, m, s)))
+function ara_cholesky_pass!(ws::ARACholeskyWorkspace, Rdest, Rdest_tiles;
+                            status=nothing,
+                            count::Int=size(ws.Q, 3))
+    total = size(ws.Q, 3)
+    0 <= count <= total ||
+        throw(ArgumentError("count must lie in 0:$total"))
+    status === nothing || length(status) >= count ||
+        throw(DimensionMismatch("status must have at least $count entries"))
+    count == 0 && return ws
 
-# `dR[j,b] = √(max(R1[j,j]² − δ_b, 0)) · |R2[j,j]|`, the shift-corrected diagonal
-# of the composite factor `R₂R₁`. One thread per (column, batch member): no
-# barriers, so this is safe on the KA CPU backend.
+    Q = count == total ? ws.Q : view(ws.Q, :, :, 1:count)
+    Y_hi = count == total ? ws.Y_hi : view(ws.Y_hi, :, :, 1:count)
+    G_hi = count == total ? ws.G_hi : view(ws.G_hi, :, :, 1:count)
+    R = count == total ? Rdest : view(Rdest, :, :, 1:count)
+    Q_tiles = count == total ? ws.Q_tiles : view(ws.Q_tiles, 1:count)
+    R_tiles = count == total ? Rdest_tiles : view(Rdest_tiles, 1:count)
+
+    Y_hi .= Q
+    Thi = eltype(Y_hi)
+    gemm_batched!(_adjoint_blas_char(Thi), 'N',
+                  one(Thi), Y_hi, Y_hi, zero(Thi), G_hi)
+    result = potrf_batched!('U', G_hi)
+    if status !== nothing && result isa Tuple
+        copyto!(view(status, 1:count), result[2])
+    end
+    _ara_copy_upper_triangle_kernel!(get_backend(Q))(
+        R, G_hi; ndrange=size(R),
+    )
+    trsm_batched!('R', 'U', 'N', 'N', R_tiles, Q_tiles, one(eltype(Q)))
+    return ws
+end
+
+# Diagonal of the composite factor R₂R₁. One thread per (column, member):
+# no barriers, so this is safe on the KernelAbstractions CPU backend.
 @kernel function _ara_block_norms_kernel!(dR,
                                           R1::AbstractArray{T,3},
-                                          R2::AbstractArray{T,3},
-                                          colmax_sq,
-                                          coeff::Float64,
-) where {T}
+                                          R2::AbstractArray{T,3}) where {T}
     j, b = @index(Global, NTuple)
     @inbounds begin
-        delta = coeff * Float64(colmax_sq[b])
-        d1_sq = _abs2_f64(R1[j, j, b]) - delta
-        d1 = d1_sq > 0.0 ? sqrt(d1_sq) : 0.0
-        dR[j, b] = d1 * sqrt(_abs2_f64(R2[j, j, b]))
+        dR[j, b] = sqrt(_abs2_f64(R1[j, j, b])) *
+                   sqrt(_abs2_f64(R2[j, j, b]))
     end
 end
 
 """
-    ara_block_norms!(dR, ws::CholQR2FactorWorkspace, colmax_sq;
-                     shift_coeff=nothing) -> dR
+    ara_block_norms!(dR, ws::ARACholeskyWorkspace) -> dR
 
-Projected column norms of the block just orthonormalized by
-[`mixed_cholqr2_factor!`](@ref): `dR[j,b] = |R[j,j]|` for the composite factor
-`R₂R₁`, which is the residual of column `j` against both the existing basis and
-the earlier columns of the same block.
-
-`shift_coeff` must be the coefficient passed to `mixed_cholqr2_factor!`. The ARA
-loop factors unshifted (`0`), so no correction is applied and `dR` is exact. For
-a shifted factorization the shift is subtracted, but note the subtraction is
-*conservative rather than exact*: the shift also perturbs the off-diagonal
-entries, and working the recurrence through gives
-`R[j,j]² = R̃[j,j]² + δ(1 + G₁₂²/(G₁₁(G₁₁+δ)) + …) ≥ R̃[j,j]² + δ`, so removing
-`δ` leaves `dR` slightly too large — which costs at most an extra pass and never
-an early stop.
-
-`colmax_sq[b]` must be the largest squared column norm of member `b`'s panel
-*as handed to* CholQR2 (after BCGS2, before the Gram); it reproduces the
-`max_i G[i,i]` that scaled the shift, which the factorization has overwritten.
-It is ignored when `shift_coeff == 0`.
+Projected column norms after two Cholesky-QR passes:
+`dR[j,b] = |R₁[j,j]R₂[j,j]|`. This is the residual of column `j` against both
+the existing basis and the earlier columns of the same block.
 """
-function ara_block_norms!(dR, ws::CholQR2FactorWorkspace, colmax_sq;
-                          shift_coeff=nothing)
-    R1 = ws.R1
-    s, _, count = size(R1)
+function ara_block_norms!(dR, ws::ARACholeskyWorkspace;
+                          count::Int=size(ws.R1, 3))
+    s, _, total = size(ws.R1)
+    0 <= count <= total ||
+        throw(ArgumentError("count must lie in 0:$total"))
     size(dR) == (s, count) ||
         throw(DimensionMismatch("dR must have size ($s, $count)"))
-    length(colmax_sq) == count ||
-        throw(DimensionMismatch("colmax_sq must have length $count"))
     count == 0 && return dR
-    coeff = shift_coeff === nothing ?
-            Float64(_cholqr_shift_coeff(eltype(ws.G_hi), size(ws.Q, 1), s)) :
-            Float64(shift_coeff)
+    R1 = count == total ? ws.R1 : view(ws.R1, :, :, 1:count)
+    R2 = count == total ? ws.R2 : view(ws.R2, :, :, 1:count)
     _ara_block_norms_kernel!(get_backend(R1))(
-        dR, R1, ws.R2, colmax_sq, coeff; ndrange=(s, count),
+        dR, R1, R2; ndrange=(s, count),
     )
     return dR
-end
-
-# `cn[j,b] = ‖Y[:,j,b]‖²`. One thread walks one column, so the reads are
-# contiguous per thread but not coalesced across threads; the panel is narrow
-# and this runs once per pass, so it has not been worth a tiled variant yet.
-@kernel function _ara_colnorms_sq_kernel!(cn, Y::AbstractArray{T,3}) where {T}
-    j, b = @index(Global, NTuple)
-    acc = 0.0
-    @inbounds for i in axes(Y, 1)
-        acc += _abs2_f64(Y[i, j, b])
-    end
-    @inbounds cn[j, b] = acc
-end
-
-@kernel function _ara_colmax_kernel!(colmax_sq, cn, width::Int)
-    b = @index(Global, Linear)
-    mx = 0.0
-    @inbounds for j in 1:width
-        v = cn[j, b]
-        mx = ifelse(v > mx, v, mx)
-    end
-    @inbounds colmax_sq[b] = mx
-end
-
-"""
-    ara_column_norms_sq!(cn, colmax_sq, Y, width) -> (cn, colmax_sq)
-
-Squared column norms of the first `width` columns of each panel in `Y`, and
-their per-member maximum.
-
-`colmax_sq` is what [`ara_block_norms!`](@ref) needs to undo the Cholesky
-shift, so this must be called on the panel *as handed to* CholQR2 — after
-BCGS2, before the Gram, which overwrites it.
-"""
-function ara_column_norms_sq!(cn, colmax_sq, Y::AbstractArray{T,3}, width::Int) where {T}
-    s, count = size(cn)
-    count == length(colmax_sq) == size(Y, 3) ||
-        throw(DimensionMismatch("cn, colmax_sq and Y disagree on the batch count"))
-    0 <= width <= min(s, size(Y, 2)) ||
-        throw(ArgumentError("width must satisfy 0 <= width <= $(min(s, size(Y, 2)))"))
-    count == 0 && return (cn, colmax_sq)
-    backend = get_backend(Y)
-    if width > 0
-        _ara_colnorms_sq_kernel!(backend)(cn, Y; ndrange=(width, count))
-    end
-    _ara_colmax_kernel!(backend)(colmax_sq, cn, width; ndrange=count)
-    return (cn, colmax_sq)
 end
 
 """
@@ -288,10 +272,10 @@ end
 """
     ara_stopping_floor(Tgram) -> Float64
 
-Smallest relative tolerance the unshifted loop can honour, `√u_hi`.
+Smallest relative tolerance the loop can honour, `√u_hi`.
 
 At the stopping block the projected panel has `κ(Y_Δ) ≈ 1/ε_rel`, and
-CholeskyQR2 attains `O(u)` orthogonality only for `κ ≤ u^{-1/2}` (Yamamoto,
+two-pass Cholesky-QR attains `O(u)` orthogonality only for `κ ≤ u^{-1/2}` (Yamamoto,
 Nakatsukasa, Yanagisawa & Fukaya, ETNA 44:306–326, 2015). Equating the two gives
 `ε_rel ≥ √u_hi` — about `1.05e-8` for a `Float64` Gram. Boukaram, Turkiyyah &
 Keyes report the same limit empirically (§2.3.1: below it, quad precision is
@@ -305,16 +289,13 @@ sound convergence signal rather than a failure.
     sqrt(Float64(eps(real(Tgram))) / 2)
 
 """Scratch for [`ara_build_basis!`](@ref) over a batch of `count` panels."""
-struct ARAWorkspace{QT,YT,DT,CT,FM,FV,IV,SV}
+struct ARAWorkspace{QT,YT,DT,CT,FM,IV,SV}
     Q::QT                  # m × maxrank × count: the basis, grown in place
     Yblk::YT               # m × block × count: current sample block
     Dproj::DT              # maxrank × block × count: BCGS2 coefficients
-    chol::CT               # CholQR2 over `Yblk`
-    cn::FM                 # block × count: squared column norms
-    colmax::FV             # count: max squared column norm (undoes nothing here,
-                           #        but pins the scale the shift would have used)
+    chol::CT               # two-pass Cholesky-QR workspace over `Yblk`
     dR::FM
-    status::IV             # per-member potrf info from the first CholQR pass
+    status::IV             # per-member potrf info from the first Cholesky-QR pass
     status_host::Vector{Int32}
     kcut::IV               # per-member first numerically invalid column
     kcut_host::Vector{Int32}
@@ -352,17 +333,16 @@ function ARAWorkspace(Q::AbstractArray{T,3}; block::Int=32) where {T}
     Thi = tlr_orthogonalization_type(T)
     Yblk = allocate(backend, T, m, blk, count)
     Dproj = allocate(backend, T, max(maxrank, 1), blk, count)
-    chol = CholQR2FactorWorkspace(
-        Yblk, allocate(backend, T, blk, blk, count),
+    R1 = allocate(backend, T, blk, blk, count)
+    R2 = allocate(backend, T, blk, blk, count)
+    chol = ARACholeskyWorkspace(
+        Yblk,
         allocate(backend, Thi, m, blk, count),
         allocate(backend, Thi, blk, blk, count),
-        allocate(backend, T, blk, blk, count),
-        allocate(backend, T, blk, blk, count),
-        allocate(backend, real(Thi), count),
+        R1, R2,
     )
     return ARAWorkspace(
         Q, Yblk, Dproj, chol,
-        allocate(backend, Float64, blk, count), allocate(backend, Float64, count),
         allocate(backend, Float64, blk, count),
         allocate(backend, Int32, count), Vector{Int32}(undef, count),
         allocate(backend, Int32, count), Vector{Int32}(undef, count),
@@ -384,8 +364,8 @@ stopping rule is the Halko–Martinsson–Tropp a posteriori bound, whose failur
 probability decays like `10^{-r_required}` only for independent samples.
 
 Each pass projects the block against the existing basis with two-pass block
-classical Gram–Schmidt, orthonormalizes it with **unshifted** mixed-precision
-CholQR2, and folds `diag(R)` into the convergence state. A member stops when
+classical Gram–Schmidt, normalizes it with two mixed-precision
+Cholesky-QR passes, and folds `diag(R)` into the convergence state. A member stops when
 `r_required` consecutive columns are negligible, when `potrf` breaks down (its
 block is numerically singular, so nothing new remains), or at `maxrank`.
 
@@ -407,7 +387,7 @@ function ara_build_basis!(ws::ARAWorkspace, sample_right!;
     eps_rel > 0 || throw(ArgumentError("eps_rel must be positive"))
     floor_rel = ara_stopping_floor(Thi)
     eps_rel >= floor_rel || throw(ArgumentError(
-        "eps_rel = $eps_rel is below the CholeskyQR2 orthogonality limit " *
+        "eps_rel = $eps_rel is below the Cholesky-QR orthogonality limit " *
         "√u = $floor_rel for Gram type $Thi; the stopping test cannot be met " *
         "and the loop would run to maxrank. Use a coarser tolerance or a " *
         "higher-precision Gram."))
@@ -426,10 +406,10 @@ function ara_build_basis!(ws::ARAWorkspace, sample_right!;
         width < blk && fill!(view(ws.Yblk, :, (width + 1):blk, :), zero(T))
 
         # Block Gram-Schmidt with one reorthogonalization, INTERLEAVED with the
-        # two Cholesky-QR passes: `(P·CholQR)²`, exactly as Algorithm 2.3 lines
+        # two Cholesky-QR passes: `(P·CQR)²`, exactly as Algorithm 2.3 lines
         # 22-27 (the Gram/potrf/trsm sit inside the `for i = 1:2` loop).
         #
-        # The interleaving is load-bearing, not stylistic. `P²·CholQR²` -- both
+        # The interleaving is load-bearing, not stylistic. `P²·CQR²` -- both
         # projections, then both normalizations -- is a different algorithm in
         # finite precision. A column that is numerically dependent on the rest
         # of the block has a within-block residual of size `O(u‖Y‖)`, the same
@@ -440,13 +420,13 @@ function ara_build_basis!(ws::ARAWorkspace, sample_right!;
         # that amplification and removes it; batched together, both projections
         # happen before it and nothing ever does.
         #
-        # Measured on a rank-6 operator at block width 4: `P²CholQR²` produced
-        # `‖QᵀQ−I‖ > 1e-10` on 97/300 seeds (worst 0.998); `(P·CholQR)²` on
+        # Measured on a rank-6 operator at block width 4: `P²CQR²` produced
+        # `‖QᵀQ−I‖ > 1e-10` on 97/300 seeds (worst 0.998); `(P·CQR)²` on
         # 0/300 (worst 3.7e-12). See docs/TODO.md worklog item 9.
         Qc = grown > 0 ? view(ws.Q, :, 1:grown, :) : nothing
         D = grown > 0 ? view(ws.Dproj, 1:grown, :, :) : nothing
         fill!(ws.status, Int32(0))
-        for pass in 1:2
+        @unroll for pass in 1:2
             if Qc !== nothing
                 precision_gemm_batched!(adj, 'N', one(T), Qc, ws.Yblk,
                                         zero(T), D, mode)
@@ -454,21 +434,15 @@ function ara_build_basis!(ws::ARAWorkspace, sample_right!;
                                         one(T), ws.Yblk, mode)
             end
             if pass == 1
-                # The scale the stopping test is relative to, captured before
-                # the Gram overwrites the panel.
-                ara_column_norms_sq!(ws.cn, ws.colmax, ws.Yblk, width)
-                # Unshifted: `potrf` breakdown is the rank signal, not an error.
-                mixed_cholqr_pass!(ws.chol, ws.chol.R1, ws.chol.R1_tiles;
-                                   shift_coeff=0, escalate=false,
+                ara_cholesky_pass!(ws.chol, ws.chol.R1, ws.chol.R1_tiles;
                                    status=ws.status)
             else
-                mixed_cholqr_pass!(ws.chol, ws.chol.R2, ws.chol.R2_tiles;
-                                   shift_coeff=0, escalate=false)
+                ara_cholesky_pass!(ws.chol, ws.chol.R2, ws.chol.R2_tiles)
             end
         end
         copyto!(ws.status_host, ws.status)
 
-        ara_block_norms!(ws.dR, ws.chol, ws.colmax; shift_coeff=0)
+        ara_block_norms!(ws.dR, ws.chol)
         ara_mask_breakdown!(ws.Yblk, ws.dR, ws.kcut, ws.chol.R1, ws.status,
                             width, floor_rel)
         copyto!(ws.kcut_host, ws.kcut)
@@ -509,7 +483,7 @@ end
 # triangular, so column `j` of `Y R⁻¹` is built from the leading `j×j` block,
 # and once a pivot is invalid every later column inherits it. The zeros then
 # read as "no new content", which is what they are.
-# The cut must be read off the **first** CholQR pass. `dR` is the composite
+# The cut must be read off the **first** Cholesky-QR pass. `dR` is the composite
 # `R₂R₁` diagonal, and once pass 1's triangular solve has produced garbage
 # columns, pass 2's Gram is computed from them — so a contaminated `R₂` can drag
 # the composite below threshold on columns that were perfectly valid. Measured:
@@ -660,7 +634,7 @@ function ara_build_basis_packed!(ws::ARAWorkspace, sample_right!,
     eps_rel > 0 || throw(ArgumentError("eps_rel must be positive"))
     floor_rel = ara_stopping_floor(Thi)
     eps_rel >= floor_rel || throw(ArgumentError(
-        "eps_rel = $eps_rel is below the CholeskyQR2 orthogonality limit " *
+        "eps_rel = $eps_rel is below the Cholesky-QR orthogonality limit " *
         "√u = $floor_rel for Gram type $Thi"))
     (count == 0 || maxrank == 0) &&
         return (; Q=view(ws.Q, :, 1:0, :), ranks=ws.state.ranks,
@@ -683,15 +657,6 @@ function ara_build_basis_packed!(ws::ARAWorkspace, sample_right!,
 
         Qc = grown > 0 ? view(ws.Q, :, 1:grown, 1:nactive) : nothing
         D = grown > 0 ? view(ws.Dproj, 1:grown, :, 1:nactive) : nothing
-        chol = CholQR2FactorWorkspace(
-            Y,
-            view(ws.chol.V, :, :, 1:nactive),
-            view(ws.chol.Y_hi, :, :, 1:nactive),
-            view(ws.chol.G_hi, :, :, 1:nactive),
-            view(ws.chol.R1, :, :, 1:nactive),
-            view(ws.chol.R2, :, :, 1:nactive),
-            view(ws.chol.multipliers, 1:nactive),
-        )
         status = view(ws.status, 1:nactive)
         fill!(status, Int32(0))
         for pass in 1:2
@@ -702,23 +667,22 @@ function ara_build_basis_packed!(ws::ARAWorkspace, sample_right!,
                                         one(T), Y, mode)
             end
             if pass == 1
-                ara_column_norms_sq!(
-                    view(ws.cn, :, 1:nactive), view(ws.colmax, 1:nactive),
-                    Y, width,
+                ara_cholesky_pass!(
+                    ws.chol, ws.chol.R1, ws.chol.R1_tiles;
+                    status, count=nactive,
                 )
-                mixed_cholqr_pass!(chol, chol.R1, chol.R1_tiles;
-                                   shift_coeff=0, escalate=false, status)
             else
-                mixed_cholqr_pass!(chol, chol.R2, chol.R2_tiles;
-                                   shift_coeff=0, escalate=false)
+                ara_cholesky_pass!(
+                    ws.chol, ws.chol.R2, ws.chol.R2_tiles; count=nactive,
+                )
             end
         end
         copyto!(ws.status_host, ws.status)
 
         dR = view(ws.dR, :, 1:nactive)
-        ara_block_norms!(dR, chol, view(ws.colmax, 1:nactive); shift_coeff=0)
+        ara_block_norms!(dR, ws.chol; count=nactive)
         kcut = view(ws.kcut, 1:nactive)
-        ara_mask_breakdown!(Y, dR, kcut, chol.R1, status, width, floor_rel)
+        ara_mask_breakdown!(Y, dR, kcut, ws.chol.R1, status, width, floor_rel)
         copyto!(ws.kcut_host, ws.kcut)
 
         view(ws.Q, :, (grown + 1):(grown + width), 1:nactive) .=
@@ -804,6 +768,11 @@ function batched_thin_svd!(A::AbstractArray{T,3}) where {T}
     m, n, count = size(A)
     m >= n || throw(ArgumentError("batched_thin_svd! requires size(A,1) >= size(A,2)"))
     RT = real(T)
+    n == 0 && return (
+        similar(A, T, m, 0, count),
+        similar(A, RT, 0, count),
+        similar(A, T, 0, 0, count),
+    )
     Ah = A isa Array ? A : Array(A)
     U = Array{T,3}(undef, m, n, count)
     S = Array{RT,2}(undef, n, count)

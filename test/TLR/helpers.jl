@@ -209,24 +209,6 @@ function assert_fulllr_gemm_matches_dense(ArrayType::Type, T::Type, mA::Int, k::
                               budget, alpha, beta, atol, rtol)
 end
 
-# Fully low-rank TLR × TLR → TLR (milestone 4). Reconstructs the compressed output and
-# compares to `alpha * A * B`; at full capacity (`maxrankC = min(bm, bn)`) the product
-# tiles fit exactly, so the reconstruction is near-exact.
-function assert_tlr_output_matches_dense(ArrayType::Type, ::Type{T}, mA::Int, k::Int, nB::Int,
-        tsA::Tuple, tsB::Tuple, r::Int, orderA, orderB, synchronize;
-        maxrankC::Int, budget::Int, alpha=T(1.3), tol::Real=0.0, atol=1e-9, rtol=atol) where {T}
-    tsA[2] == tsB[1] || throw(ArgumentError("contraction tile sizes must agree"))
-    A = NextLA.TLRMatrix(ArrayType(zeros(T, mA, k)), tsA, r; tile_order=orderA)
-    B = NextLA.TLRMatrix(ArrayType(zeros(T, k, nB)), tsB, r; tile_order=orderB)
-    fill_random_tlr!(A, ArrayType; seed=101)
-    fill_random_tlr!(B, ArrayType; seed=202)
-    C = NextLA.TLRMatrix(ArrayType(zeros(T, mA, nB)), (tsA[1], tsB[2]), maxrankC)
-    NextLA.TLRmodule.gemm!(C, A, B; alpha=alpha, beta=0, tol=tol, max_workspace=budget)
-    synchronize(C.int_U)
-    ref = alpha * reconstruct_tlr(A) * reconstruct_tlr(B)
-    @test isapprox(reconstruct_tlr(C), ref; atol=atol, rtol=rtol)
-end
-
 function assert_dense_fulllr_gemm(ArrayType::Type, ::Type{T}, side::Symbol,
                                   m, k, n, tiles, order, transA, transB, synchronize;
                                   budget, atol=1e-9, rtol=1e-9) where {T}

@@ -4,13 +4,9 @@ include("lowering/strategy.jl")
 include("operands.jl")
 include("ara/tile_apply.jl")
 include("ara/range_find.jl")
-include("row_basis/basis.jl")
 include("lowering/schedule.jl")
-include("row_basis/merge.jl")
-include("row_basis/driver.jl")
 include("lowering/stages.jl")
 include("direct.jl")
-include("tlr_output.jl")
 include("regions/interior.jl")
 include("regions/corner.jl")
 include("regions/right.jl")
@@ -230,88 +226,4 @@ function gemm!(C::AbstractMatrix, A::AbstractMatrix{T}, B::TLRMatrix{BackendT,T}
     ScalarT = gemm_compute_type(mode)
     return _dense_tlr_gemm!(C, LA, LB, ScalarT(alpha), ScalarT(beta),
                             max_workspace, mode)
-end
-
-# ─── TLR × TLR → TLR (milestone 4) ────────────────────────────────────────────
-
-@inline function _validate_tlr_output(C::TLRMatrix, LA::LogicalTLROperand, LB::LogicalTLROperand)
-    size(LA, 2) == size(LB, 1) ||
-        throw(DimensionMismatch("inner dimensions must match: size(op(A),2) == size(op(B),1)"))
-    size(C) == (size(LA, 1), size(LB, 2)) ||
-        throw(DimensionMismatch("C must be size(op(A),1) × size(op(B),2)"))
-    nominal_tile_size(LA, 2) == nominal_tile_size(LB, 1) ||
-        throw(DimensionMismatch("op(A)'s column tile size must equal op(B)'s row tile size (contraction tiling)"))
-    (nominal_tile_size(C, 1) == nominal_tile_size(LA, 1) &&
-     nominal_tile_size(C, 2) == nominal_tile_size(LB, 2)) ||
-        throw(DimensionMismatch("C's tile size must be (op(A) row tile, op(B) col tile)"))
-    (tail_tile_size(LA, 1) == 0 && tail_tile_size(LA, 2) == 0 &&
-     tail_tile_size(LB, 2) == 0 && tail_tile_size(C, 1) == 0 && tail_tile_size(C, 2) == 0) ||
-        throw(ArgumentError("TLR-output GEMM currently requires aligned (regular-grid) tiling on all axes"))
-    return nothing
-end
-
-function _run_tlr_output!(C::TLRMatrix, ops, geom, placement::KAsGemmK,
-                          fold, alpha, budget, compute;
-                          eps_sq::Float64, rel::Bool)
-    ws = _alloc_tlr_output_workspace(C, geom, placement, ops, budget, fold)
-    return _tlr_gemm_rowfamily!(C, ops, geom, placement, fold, alpha, budget,
-                                compute, ws; eps_sq, rel)
-end
-
-_run_tlr_output!(::TLRMatrix, ops, geom, ::KAsSerialLoop, fold, alpha, budget, compute;
-                 eps_sq::Float64, rel::Bool) =
-    throw(ArgumentError("TLR-output GEMM for the column-family layout " *
-                        "(A tile-column-major × B tile-row-major) is not yet supported"))
-
-"""
-    gemm!(C::TLRMatrix, A::TLRMatrix, B::TLRMatrix; alpha=true, beta=false,
-          tol=0.0, rel=false, max_workspace, transA='N', transB='N', compute=nothing) -> C
-
-Fully low-rank `C := alpha·op(A)·op(B) + beta·C` compressed in place into the TLR
-container `C`. Currently restricted to regular-grid tiling (no boundary tiles).
-
-Non-transposed operands run the global row-basis path: a shared orthogonal left basis
-per output row, batched coefficient accumulation, and a one-merge/one-prune tile update
-(this path supports `beta != 0`). Transposed operands use the dense-slab sink
-(`beta == 0` only).
-
-`tol`/`rel` are the per-tile approximation budget (distinct from the `max_workspace`
-byte budget). `residuals(C)` reports the achieved per-tile error — a tile whose true
-rank exceeds `maxrank(C)` keeps full rank and reports a residual above `tol`.
-"""
-function gemm!(C::TLRMatrix{BackendT,T}, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T};
-    alpha=true, beta=false, max_workspace::Int=DEFAULT_GEMM_BUDGET,
-    transA::Char='N', transB::Char='N', compute=nothing,
-    tol::Real=0.0, rel::Bool=false) where {BackendT,T}
-    LA = logical_operand(A, transA)
-    LB = logical_operand(B, transB)
-    _validate_tlr_output(C, LA, LB)
-    tol >= 0 || throw(ArgumentError("tol must be >= 0"))
-    mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
-    backend = get_backend(C)
-    validate_tlr_gemm_precision(backend, T, T, mode)
-    ScalarT = gemm_compute_type(mode)
-
-    α = ScalarT(alpha)
-    # The row-basis path handles every non-transposed layout on both the CPU and
-    # CUDA backends (the shared A row basis and B Z stack are contiguous for the
-    # preferred layout, packed otherwise). Transposed operands fall through to the
-    # M4 dense fallback, which does not support beta.
-    if !_istrans(LA) && !_istrans(LB)
-        return _row_basis_gemm!(C, A, B; alpha=α, beta=ScalarT(beta), tol, rel,
-                                compute=mode)
-    end
-    if maxrank(A) == 0 || maxrank(B) == 0
-        fill!(C.ranks, zero(eltype(C.ranks)))
-        fill!(C.resid, 0.0)
-        return C
-    end
-    iszero(beta) || throw(ArgumentError("TLR-output GEMM with transposed operands (M4 fallback) does not support beta != 0"))
-    ops = logical_operands(LA, LB)
-    geom = interior_geometry(LA, LB)
-    fold = choose_fold(ops)
-    placement = placement_for_fold(fold, ops)
-    _run_tlr_output!(C, ops, geom, placement, fold, α, max_workspace, mode;
-                     eps_sq=Float64(tol)^2, rel)
-    return C
 end

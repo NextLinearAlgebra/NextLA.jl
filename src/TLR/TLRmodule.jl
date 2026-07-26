@@ -34,8 +34,6 @@ include("container/full_tlr_matrix.jl")
 
 include("numerics/precision.jl")
 include("numerics/norms.jl")
-include("numerics/cholqr2.jl")
-include("numerics/rank_pruning.jl")
 include("numerics/ara.jl")
 
 include("algorithms/compression/compress.jl")

@@ -186,7 +186,7 @@ end
 
 The caller must select this accessor only when the logical operand is
 tile-column-major.  Keeping that decision at the scheduler makes the returned
-view zero-copy and avoids a gather for the preferred row-basis B-side Z stack.
+view zero-copy and avoids a gather for fixed-row factor stacks.
 """
 @inline function colpanel(p::InteriorOperand, c::Integer)
     npc = tiles_per_col(p)

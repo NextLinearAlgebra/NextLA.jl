@@ -106,7 +106,7 @@
         @test sqrt(err_sq[1]) < 1e-6 * norm(Xref)
     end
 
-    @testset "eps_rel below the CholeskyQR2 floor is rejected" begin
+    @testset "eps_rel below the Cholesky-QR floor is rejected" begin
         A_tlr, B_tlr = _tile_apply_fixture(T, Array; qm=1, qn=1, qk=1,
                                            bm=10, bk=4, bn=10, rA=3, rB=3)
         LA, LB = _TLRM.logical_operand(A_tlr), _TLRM.logical_operand(B_tlr)
