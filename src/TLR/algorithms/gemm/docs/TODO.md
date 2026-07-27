@@ -82,6 +82,54 @@ Making truncation consume caller-owned storage is part of R4.
 An empty co-range returns empty factors directly and never enters LAPACK or a
 GPU solver.
 
+The factor-application layer (`ColumnRunCoupling`, `RowRightRunCoupling`,
+`RowLeftRunCoupling` in `ara/tile_apply.jl`) extends the same contract to the
+couplings and their applies, on the run's hot per-pass sampler specifically.
+No sampling pass allocates numeric storage: `S`, the per-column/row coupling
+stacks, and the `H`/`T`/`G`/`W` scratch are sized once at run construction
+and reused for every pass, restricted to the active prefix by view rather
+than resized. No sampling pass allocates a device pointer list either for
+its ragged operands: a batched GEMM whose operand cannot be expressed as a
+single strided-batched view (because active-prefix packing permutes it, or
+because it is a run-owned scratch buffer sharing that same call) goes
+through a `BatchPtrDescriptor` built once per run at construction; a
+converged member's swap-removal into the retired suffix updates only the
+tiny device address table (`swap_batch_ptrs!`), never the numeric buffers a
+stable-address field points into. Run output (`U`, `V`) and diagnostic
+buffers (`ranks`, `err_sq`) are likewise driver-owned and reused across the
+traversal's outer loop in `gemm!(C::TLRMatrix,...)`, not reallocated per
+output row/column.
+
+This contract stops at the sampler. Three things it does not cover, by
+deliberate choice, each documented at its own site:
+
+- The co-range apply (called once per run after convergence, not once per
+  pass) is left entirely on the pre-existing `Vector`-of-views path. Its
+  cost does not compound with pass count the way the sampler's did, and in
+  `RowRightRunCoupling`/`ColumnRunCoupling` its ragged operand is batched
+  over member × contraction-tile rather than member-only, which would need
+  a second, `q_k`-times-larger descriptor purely to cover a call that runs
+  `O(q_m)`/`O(q_n)` times total across a `gemm!` call, not once per pass.
+- Within the sampler, a call whose operands are all run-owned and
+  non-ragged (`ColumnRunCoupling`'s and `RowLeftRunCoupling`'s T/W-formation
+  in `RowRightRunCoupling`) is left on the `Vector`-of-views path too when
+  it is not reshape-representable as a true strided batch in the operands'
+  current memory layout. These calls were never the source of the
+  allocation this contract targets — only ragged operands force pointer
+  form — so descriptor fields were not added for them.
+- `Y` (the ARA basis being grown) is owned by the caller's `ARAWorkspace`,
+  not the run, so a sampler call that mixes it with a ragged operand builds
+  its pointer array fresh each pass (once per `apply_*_run!` call, reused
+  across every GEMM within that call, not rebuilt per GEMM). Caching it
+  would require threading a descriptor through `numerics/ara.jl` itself;
+  R4's "reusable run workspaces" item is the natural place for that.
+
+Separately, `ara_cholesky_pass!`'s `trsm_batched!`/`potrfBatched!` calls
+allocate a transient device pointer array internally on every ARA pass,
+independent of anything above — a pre-existing cost this contract does not
+touch. Extending `BatchPtrDescriptor` to those primitives is a candidate
+follow-up, not started here.
+
 ## Cleanup before R3/R4 — 2026-07-27
 
 The unsupported shared-basis TLR-result implementation and dense-slab
@@ -141,6 +189,61 @@ Focused verification:
   reconstruction and rank-cap checks: 6/6.
 - The GPU test also verifies compact active-rank panel packing; full-rank
   canonical panels remain views.
+
+## R3 performance closure — 2026-07-27
+
+An audit of `ara/tile_apply.jl` found the R3 sampling couplers rebuilding
+`Vector`-of-views batch-pointer lists from scratch on every ARA sampling
+pass — on CUDA/AMDGPU each such call allocates and frees a fresh device
+pointer array (`_unsafe_batch_strided`/`_device_batch_strided`), several
+times per pass, contradicting the workspace contract above (which the
+basis-growth side, `ARAWorkspace`, already honoured). This entry closes that
+gap on the run's hot per-pass sampler; the scoping choices and the residuals
+left in place are documented inline where they occur and summarized in the
+"Workspace contract" section above.
+
+Three pieces landed:
+
+1. Reshape fixes in `RowRightRunCoupling`/`RowLeftRunCoupling` that made two
+   already-strided-eligible calls (the final reduction and, for
+   `RowLeftRunCoupling`, the G-formation) fully strided with no pointer
+   array at all — no new infrastructure, just removing a redundant `Aouter`
+   field and a no-op `_batch_views` wrapper.
+2. `BatchPtrDescriptor`/`swap_batch_ptrs!` (`src/gemm_batched.jl`) and
+   `precision_gemm_batched_ptrs!` (`src/gemm_precision.jl`): a build-once,
+   swap-maintained device pointer table, plugging onto the pre-existing
+   `gemm_batched_ptrs!`/`gemmEx_batched_ptrs!` entry points. CPU never
+   constructs one (`_build_batch_ptrs` has no CPU method), so CPU call sites
+   keep the original `Vector`-of-views path unconditionally.
+3. Wiring the descriptor into all three `RunCoupling` structs' hot sampler,
+   per the scoping documented in "Workspace contract" above (co-range and
+   non-ragged same-call operands left as-is; `Y`'s pointer array is the one
+   per-run-call residual, built once and reused across the GEMMs within a
+   single `apply_*_run!` call rather than rebuilt per GEMM).
+
+Also hoisted `gemm!(C::TLRMatrix,...)`'s per-output-row/column `U`, `V`,
+`rr`, `ee`, and `_store_tlr_run!`'s `slots_dev` scratch, previously
+reallocated on every iteration of the traversal despite being loop-invariant
+in shape.
+
+Focused verification (added two new permanent regression tests along the
+way: `RangeFind packed row run (R3)`, a fixed-row analogue of the existing
+fixed-column swap-heavy fixture, since neither the pre-existing row-run
+tests nor the end-to-end `gemm!` tests used deliberately graded ranks to
+force real active-prefix swaps for `RowRightRunCoupling`/
+`RowLeftRunCoupling` specifically):
+
+- CPU: full TLR suite through `gemm_tlr_r3.jl`, 674/674 including the new
+  swap-heavy row-run fixture (with and without beta) for both sampling
+  sides.
+- CUDA through `../gpuenv`: same suite, 674/674, including the new
+  `BatchPtrDescriptor` unit tests (build, single-slot swap, block swap,
+  CPU-throws) in `test/gemm_batched.jl`.
+
+Not done: extending `BatchPtrDescriptor` to `ara_cholesky_pass!`'s
+`trsm_batched!`/`potrfBatched!` calls (the residual noted in "Workspace
+contract"); the allocation-regression test itself (`test/TLR/gemm_r3_alloc.jl`,
+tracked separately below).
 
 ## Roadmap
 

@@ -294,19 +294,29 @@ end
     end
 end
 
+"""
+    _store_tlr_run!(C, U, V, ranks_run, err_run, slots, ranks_dev, err_dev, slots_dev)
+
+Scatter one run's factors and diagnostics into `C`'s canonical storage.
+`slots_dev` is caller-owned scratch (sized to at least `length(slots)`,
+reused across the driver's traversal of `C`'s rows/columns) rather than
+allocated here, since every run in that traversal needs an identically-sized
+buffer.
+"""
 function _store_tlr_run!(C::TLRMatrix, U, V, ranks_run, err_run,
-                         slots::Vector{Int}, ranks_dev, err_dev)
+                         slots::Vector{Int}, ranks_dev, err_dev, slots_dev)
     backend = get_backend(C)
     count = length(slots)
-    slots_dev = copyto!(allocate(backend, Int32, count), Int32.(slots))
+    copyto!(view(slots_dev, 1:count), Int32.(slots))
+    sd = view(slots_dev, 1:count)
     _store_tlr_run_factor_kernel!(backend)(
-        C.int_U, U, slots_dev; ndrange=size(U),
+        C.int_U, U, sd; ndrange=size(U),
     )
     _store_tlr_run_factor_kernel!(backend)(
-        C.int_V, V, slots_dev; ndrange=size(V),
+        C.int_V, V, sd; ndrange=size(V),
     )
     _store_tlr_run_diagnostic_kernel!(backend)(
-        ranks_dev, err_dev, ranks_run, err_run, slots_dev; ndrange=count,
+        ranks_dev, err_dev, ranks_run, err_run, sd; ndrange=count,
     )
     return nothing
 end
@@ -390,27 +400,32 @@ function gemm!(C::TLRMatrix{BackendT,T},
     err_dev = allocate(backend, Float64, qm * qn)
 
     if side === :right && tile_order(LB) isa TileColMajor
-        # NT, right choice: fixed columns share H.
+        # NT, right choice: fixed columns share H. U/V/rr/ee/slots_dev are
+        # loop-invariant in shape (every column run has qm members), so they
+        # are allocated once and reused; range_find_column_run! and
+        # _store_tlr_run! both overwrite every slot they use on every call.
+        U = allocate(backend, T, nominal_tile_size(C, 1), maxrank(C), qm)
+        V = allocate(backend, T, nominal_tile_size(C, 2), maxrank(C), qm)
+        rr = allocate(backend, eltype(C.ranks), qm)
+        ee = allocate(backend, Float64, qm)
+        slots_dev = allocate(backend, Int32, qm)
         for j in 1:qn
-            U = allocate(backend, T, nominal_tile_size(C, 1), maxrank(C), qm)
-            V = allocate(backend, T, nominal_tile_size(C, 2), maxrank(C), qm)
-            rr = allocate(backend, eltype(C.ranks), qm)
-            ee = allocate(backend, Float64, qm)
             range_find_column_run!(
                 U, V, rr, ee, ops, 1:qm, j;
                 alpha=α, beta=β, C=LC, eps_rel=sample_tol, r_required,
                 tol, rel, block=blk, rankA=rA, rankB=rB, compute=mode,
             )
             slots = [j + (i - 1) * qn for i in 1:qm]
-            _store_tlr_run!(C, U, V, rr, ee, slots, ranks_dev, err_dev)
+            _store_tlr_run!(C, U, V, rr, ee, slots, ranks_dev, err_dev, slots_dev)
         end
     else
         # NN right sampling, or NT/TT left sampling: fixed output rows.
+        U = allocate(backend, T, nominal_tile_size(C, 1), maxrank(C), qn)
+        V = allocate(backend, T, nominal_tile_size(C, 2), maxrank(C), qn)
+        rr = allocate(backend, eltype(C.ranks), qn)
+        ee = allocate(backend, Float64, qn)
+        slots_dev = allocate(backend, Int32, qn)
         for i in 1:qm
-            U = allocate(backend, T, nominal_tile_size(C, 1), maxrank(C), qn)
-            V = allocate(backend, T, nominal_tile_size(C, 2), maxrank(C), qn)
-            rr = allocate(backend, eltype(C.ranks), qn)
-            ee = allocate(backend, Float64, qn)
             if side === :right
                 range_find_row_right_run!(
                     U, V, rr, ee, ops, i, 1:qn;
@@ -425,7 +440,7 @@ function gemm!(C::TLRMatrix{BackendT,T},
                 )
             end
             slots = collect(((i - 1) * qn + 1):(i * qn))
-            _store_tlr_run!(C, U, V, rr, ee, slots, ranks_dev, err_dev)
+            _store_tlr_run!(C, U, V, rr, ee, slots, ranks_dev, err_dev, slots_dev)
         end
     end
 
