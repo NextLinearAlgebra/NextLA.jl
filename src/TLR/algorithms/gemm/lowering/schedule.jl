@@ -103,8 +103,8 @@ end
 
 """Geometry of the interior contraction of `op(A)` × `op(B)`."""
 @inline function interior_geometry(A::LogicalTLROperand, B::LogicalTLROperand)
-    qm, qk = regular_tilegrid_size(A)
-    qkB, qn = regular_tilegrid_size(B)
+    qm, qk = regular_grid_size(A)
+    qkB, qn = regular_grid_size(B)
     qk == qkB || throw(DimensionMismatch("interior contraction grids do not match"))
     return regular_geometry(qm, qk, qn, logical_operands(A, B))
 end

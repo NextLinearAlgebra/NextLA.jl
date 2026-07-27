@@ -22,25 +22,25 @@ First writer of C_right, so it folds β.  No-op when `n_B % b == 0`.
 function tlr_gemm_int_by_rpanel(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha; beta=one(alpha), budget::Int, compute=default_gemm_compute_mode(T), arena=nothing) where {T}
     qkB = region_tile_count(B, _RIGHT)
     qkB == 0 && return C                         # no right panel (n_B % b == 0)
-    qmA, _ = regular_tilegrid_size(A)
+    qmA, _ = regular_grid_size(A)
     qmA == qkB || return C                       # non-square
 
-    _, nt = tilegrid_size(B)                    # output boundary tile-column index
+    _, nt = grid_size(B)                    # output boundary tile-column index
     bm = nominal_tile_size(A, 1)
     rB = maxrank(B)
-    BU = outer_factors(B, _RIGHT)
-    BV = inner_factors(B, _RIGHT)
+    b_outer_factors = outer_factors(B, _RIGHT)
+    b_inner_factors = inner_factors(B, _RIGHT)
 
     # diagonal j=i:  C_right[i] = β·C_right + α·(A_ii W_i) Z_iᵀ   (folds β).
     _arena_reset!(arena)
-    ADWdiag = _workspace_array!(arena, get_backend(A), T, bm, rB, qmA)
+    a_diag_b_outer_work = _workspace_array!(arena, get_backend(A), T, bm, rB, qmA)
     precision_gemm_batched!(_opchar(A), 'N', one(T),
         [_dense_data(_diag_tile_ref(A, i)) for i in 1:qmA],
-        [view(BU, :, :, i) for i in 1:qmA],
-        zero(T), [view(ADWdiag, :, :, i) for i in 1:qmA], compute)
+        [view(b_outer_factors, :, :, i) for i in 1:qmA],
+        zero(T), [view(a_diag_b_outer_work, :, :, i) for i in 1:qmA], compute)
     precision_gemm_batched!('N', 'T', alpha,
-        [view(ADWdiag, :, :, i) for i in 1:qmA],
-        [view(BV, :, :, i) for i in 1:qmA],
+        [view(a_diag_b_outer_work, :, :, i) for i in 1:qmA],
+        [view(b_inner_factors, :, :, i) for i in 1:qmA],
         beta, [_output_tile_view(C, A, B, i, nt) for i in 1:qmA], compute)
 
     # The dense diagonal above is the first writer. The budgeted `SkipDiag` low-rank
@@ -60,7 +60,7 @@ Accumulate `α · u_A γ_B` into the right region of `C`.  A's right-panel tiles
   Stage 2 (batched over i):          C_{i,Q+1} += α · U_i M_i   (b×s_n)
 No-op when `n_A % b == 0`, `A.maxrank == 0`, or B has no corner.
 """
-# Budget blocks the free row axis `i` (scratch was `O(qm)` with no knob). `γ_B` is a
+# Budget blocks the free row axis `i` (workspace was `O(qm)` with no knob). `γ_B` is a
 # dense corner uses a direct two-stage helper — no identity factor is formed — and the
 # corner tile is broadcast across the batch.
 function tlr_gemm_rpanel_by_corner(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha;
@@ -68,10 +68,10 @@ function tlr_gemm_rpanel_by_corner(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagM
     qmA = region_tile_count(A, _RIGHT)
     qmA == 0 && return C                      # no right panel (n_A % b == 0)
     size(physical(B).D_corner, 3) == 0 && return C
-    _, nt = tilegrid_size(B)
-    outer, inner = _right_pair(A)
-    dense = _diag_tile_ref(B, ndiag_tiles(B))
-    return execute_lowrank_dense_term!(C, A, B, outer, inner, dense,
+    _, nt = grid_size(B)
+    a_outer_factors, a_inner_factors = _right_pair(A)
+    b_dense_corner = _diag_tile_ref(B, ndiag_tiles(B))
+    return execute_lowrank_dense_term!(C, A, B, a_outer_factors, a_inner_factors, b_dense_corner,
                                        qmA, 1, nt;
                                        alpha, beta, budget, compute, arena)
 end
@@ -85,10 +85,10 @@ end
 # its single local output column directly to B's physical tail tile-column.
 function tlr_gemm_int_by_rpanel(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRMatrix}, alpha;
     beta=one(alpha), budget::Int, compute=default_gemm_compute_mode(T), arena=nothing) where {T}
-    qm, qk = regular_tilegrid_size(A)
+    qm, qk = regular_grid_size(A)
     qk == region_tile_count(B, _RIGHT) || return C
-    _, nt = tilegrid_size(B)
-    nt > regular_tilegrid_size(B)[2] || return C
+    _, nt = grid_size(B)
+    nt > regular_grid_size(B)[2] || return C
     return execute_lowrank_term!(C, A, B, _interior_pair(A), _right_pair(B),
                                  qm, qk, 1, 1, nt;
                                  alpha, beta, budget, compute, arena)
@@ -105,8 +105,8 @@ function tlr_gemm_rpanel_by_corner(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:A
     beta=one(alpha), budget::Int, compute=default_gemm_compute_mode(T), arena=nothing) where {T}
     qm = region_tile_count(A, _RIGHT)
     qm == 0 && return C
-    _, nt = tilegrid_size(B)
-    nt > regular_tilegrid_size(B)[2] || return C
+    _, nt = grid_size(B)
+    nt > regular_grid_size(B)[2] || return C
     return execute_lowrank_term!(C, A, B, _right_pair(A), _corner_pair(B),
                                  qm, 1, 1, 1, nt;
                                  alpha, beta, budget, compute, arena)

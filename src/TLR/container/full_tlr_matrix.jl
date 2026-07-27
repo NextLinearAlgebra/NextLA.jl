@@ -43,19 +43,19 @@ struct TLRMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},RankT<:Integer,Or
 end
 
 @inline function _tile_index(A::TLRMatrix, i::Integer, j::Integer)
-    mt, nt = tilegrid_size(A)
+    mt, nt = grid_size(A)
     return tile_linear_index(A.order, mt, nt, Int(i), Int(j))
 end
 
 @inline function region_tile_coords(A::TLRMatrix, ::InteriorRegion, k::Int)
-    q_m, q_n = regular_tilegrid_size(A)
+    q_m, q_n = regular_grid_size(A)
     return inverse_tile_index(A.order, q_m, q_n, k)
 end
 
 @inline function region_slot(A::TLRMatrix, i::Int, j::Int)
-    mt, nt = tilegrid_size(A)
+    mt, nt = grid_size(A)
     checkbounds_tile(mt, nt, i, j)
-    q_m, q_n = regular_tilegrid_size(A)
+    q_m, q_n = regular_grid_size(A)
     if i <= q_m && j <= q_n
         return _INTERIOR, tile_linear_index(A.order, q_m, q_n, i, j)
     elseif j == nt && tail_tile_size(A, 2) != 0 && i <= q_m

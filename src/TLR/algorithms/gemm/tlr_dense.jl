@@ -7,7 +7,7 @@ function _tlr_dense_gemm!(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}},
     _scale_output!(C, beta)
     r = maxrank(A)
     (isempty(C) || r == 0) && return C
-    mt, kt = tilegrid_size(A)
+    mt, kt = grid_size(A)
     n = size(B, 2)
     batch_width = clamp(div(budget, max(r * sizeof(T), 1)), 1, n)
     _arena_reset!(arena)
@@ -34,7 +34,7 @@ function _dense_tlr_gemm!(C, A::LogicalDenseOperand,
     _scale_output!(C, beta)
     r = maxrank(B)
     (isempty(C) || r == 0) && return C
-    kt, nt = tilegrid_size(B)
+    kt, nt = grid_size(B)
     m = size(A, 1)
     height = clamp(div(budget, max(r * sizeof(T), 1)), 1, m)
     _arena_reset!(arena)

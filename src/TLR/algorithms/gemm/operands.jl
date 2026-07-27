@@ -55,10 +55,13 @@ Base.size(A::LogicalTLROperand, d::Int) = size(A)[d]
 @inline tail_tile_size(A::LogicalTLROperand) =
     _orient_axes(A, tail_tile_size(physical(A)))
 @inline tail_tile_size(A::LogicalTLROperand, d::Integer) = tail_tile_size(A)[Int(d)]
-@inline tilegrid_size(A::LogicalTLROperand) =
-    _orient_axes(A, tilegrid_size(physical(A)))
-@inline regular_tilegrid_size(A::LogicalTLROperand) =
-    _orient_axes(A, regular_tilegrid_size(physical(A)))
+@inline grid_size(A::LogicalTLROperand) =
+    _orient_axes(A, grid_size(physical(A)))
+@inline regular_grid_size(A::LogicalTLROperand) =
+    _orient_axes(A, regular_grid_size(physical(A)))
+# Compatibility spellings for logical operand callers.
+@inline tilegrid_size(A::LogicalTLROperand) = grid_size(A)
+@inline regular_tilegrid_size(A::LogicalTLROperand) = regular_grid_size(A)
 @inline tile_order(A::LogicalTLROperand{:N}) = tile_order(physical(A))
 @inline tile_order(A::LogicalTLROperand{:T}) = _transpose_order(tile_order(physical(A)))
 @inline maxrank(A::LogicalTLROperand) = maxrank(physical(A))
@@ -112,7 +115,7 @@ end
 
 """Canonical full-rank-column factor views of logical full-LR tile `(i,j)`."""
 @inline function logical_tile_factors(A::LogicalTLROperand{<:Any,<:TLRMatrix}, i::Int, j::Int)
-    qm, qn = regular_tilegrid_size(A)
+    qm, qn = regular_grid_size(A)
     region, slot = if i <= qm && j <= qn
         (_INTERIOR, tile_linear_index(tile_order(A), qm, qn, i, j))
     elseif i <= qm
@@ -316,8 +319,8 @@ logical_operands(A::AbstractTLRMatrix, B::AbstractTLRMatrix) =
 
 function logical_operands(A::LogicalTLROperand{<:Any,<:TLRMatrix},
                           B::LogicalTLROperand{<:Any,<:TLRMatrix})
-    qmA, qnA = regular_tilegrid_size(A)
-    qmB, qnB = regular_tilegrid_size(B)
+    qmA, qnA = regular_grid_size(A)
+    qmB, qnB = regular_grid_size(B)
     ordA = tile_order(A)
     ordB = tile_order(B)
     return LogicalTLROperands(
@@ -330,8 +333,8 @@ end
 
 function logical_operands(A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix},
                           B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix})
-    qmA, qnA = regular_tilegrid_size(A)
-    qmB, qnB = regular_tilegrid_size(B)
+    qmA, qnA = regular_grid_size(A)
+    qmB, qnB = regular_grid_size(B)
     ordA = tile_order(A)
     ordB = tile_order(B)
     return LogicalTLROperands(

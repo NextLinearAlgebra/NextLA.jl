@@ -278,8 +278,8 @@ function choose_tlr_sampling_side(LA::LogicalTLROperand,
     can_right && !can_left && return :right
     can_left && !can_right && return :left
 
-    qm, qk = tilegrid_size(LA)
-    _, qn = tilegrid_size(LB)
+    qm, qk = grid_size(LA)
+    _, qn = grid_size(LB)
     right = _right_sampling_workspace_elems(
         qm, qk, rA, rB, block, rmaxC)
     left = _left_sampling_workspace_elems(
@@ -398,8 +398,8 @@ function gemm!(C::TLRMatrix{BackendT,T},
 
     ops = logical_operands(LA, LB)
     LC = logical_operand(C)
-    qm, qk = tilegrid_size(LA)
-    _, qn = tilegrid_size(LB)
+    qm, qk = grid_size(LA)
+    _, qn = grid_size(LB)
     rA, rB = _active_rank_cap(A), _active_rank_cap(B)
     blk = min(block, max(maxrank(C), 1))
     side = choose_tlr_sampling_side(LA, LB, maxrank(C), blk, rA, rB)

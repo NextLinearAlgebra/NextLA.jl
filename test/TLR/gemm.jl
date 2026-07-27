@@ -103,7 +103,7 @@ end
     @test size(At) == (14, 11)
     @test NextLA.TLRmodule.nominal_tile_size(At) == (3, 4)
     @test NextLA.TLRmodule.tail_tile_size(At) == (2, 3)
-    @test NextLA.TLRmodule.tilegrid_size(At) == reverse(NextLA.tilegrid_size(A))
+    @test NextLA.TLRmodule.grid_size(At) == reverse(NextLA.grid_size(A))
     @test NextLA.TLRmodule.tile_order(At) isa typeof(CM)
     interior = NextLA.TLRmodule.InteriorRegion()
     right = NextLA.TLRmodule.RightRegion()

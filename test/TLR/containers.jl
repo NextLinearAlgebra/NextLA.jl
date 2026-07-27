@@ -19,22 +19,22 @@
         ]
 
         for (i, j, linear, p0, q0, tile_m, tile_n) in expected
-            @test NextLA.TLRmodule.tile_linear_index(A.order, NextLA.tilegrid_size(A)..., i, j) == linear
-            @test NextLA.TLRmodule.inverse_tile_index(A.order, NextLA.tilegrid_size(A)..., linear) == (i, j)
+            @test NextLA.TLRmodule.tile_linear_index(A.order, NextLA.grid_size(A)..., i, j) == linear
+            @test NextLA.TLRmodule.inverse_tile_index(A.order, NextLA.grid_size(A)..., linear) == (i, j)
             @test NextLA.tile_origin_coords(A, i, j) == (p0, q0)
             @test NextLA.tile_size(A, i, j) == (tile_m, tile_n)
         end
 
-        @test NextLA.tilegrid_size(A) == (3, 3)
-        @test NextLA.TLRmodule._offdiag_index(A.order, NextLA.tilegrid_size(A)..., 2, 1) == 1
-        @test NextLA.TLRmodule._offdiag_index(A.order, NextLA.tilegrid_size(A)..., 1, 3) == 5
-        @test NextLA.TLRmodule._offdiag_coords(A.order, NextLA.tilegrid_size(A)..., 1) == (2, 1)
-        @test NextLA.TLRmodule._offdiag_coords(A.order, NextLA.tilegrid_size(A)..., 5) == (1, 3)
+        @test NextLA.grid_size(A) == (3, 3)
+        @test NextLA.TLRmodule._offdiag_index(A.order, NextLA.grid_size(A)..., 2, 1) == 1
+        @test NextLA.TLRmodule._offdiag_index(A.order, NextLA.grid_size(A)..., 1, 3) == 5
+        @test NextLA.TLRmodule._offdiag_coords(A.order, NextLA.grid_size(A)..., 1) == (2, 1)
+        @test NextLA.TLRmodule._offdiag_coords(A.order, NextLA.grid_size(A)..., 5) == (1, 3)
     end
 
     @testset "row-major round trip and offdiag slots" begin
         A = NextLA.TLRDenseDiagMatrix(zeros(Float32, 10, 9), 4, 4; tile_order=NextLA.TileRowMajor)
-        gs = NextLA.tilegrid_size(A)
+        gs = NextLA.grid_size(A)
         @test gs == (3, 3)
 
         for linear in 1:prod(gs)
@@ -68,7 +68,7 @@ end
         @test NextLA.tail_tile_size(A, 1) == 2
         @test NextLA.tail_tile_size(A, 2) == 1
         @test NextLA.maxrank(A) == 3
-        @test NextLA.tilegrid_size(A) == (3, 3)
+        @test NextLA.grid_size(A) == (3, 3)
         @test NextLA.tile_origin_coords(A, 3, 3) == (9, 11)
         @test NextLA.tile_size(A, 1, 1) == (4, 5)
         @test NextLA.tile_size(A, 3, 3) == (2, 1)
@@ -92,7 +92,7 @@ end
                 A = NextLA.TLRDenseDiagMatrix(prototype, 16, 16)
 
                 @test size(A) == (32, 32)
-                @test NextLA.tilegrid_size(A) == (2, 2)
+                @test NextLA.grid_size(A) == (2, 2)
                 @test size(A.int_U) == (16, 16, 2)
                 @test size(A.right_U, 3) == 0   # no right boundary
                 @test size(A.bottom_U, 3) == 0  # no bottom boundary
@@ -117,8 +117,8 @@ end
         @test_throws ArgumentError NextLA.TLRDenseDiagMatrix(zeros(Float64, 5, 5), 2, -1)
 
         A = NextLA.TLRDenseDiagMatrix(zeros(Float64, 8, 8), 4, 2)
-        @test_throws BoundsError  NextLA.TLRmodule.tile_linear_index(A.order, NextLA.tilegrid_size(A)..., 3, 1)
-        @test_throws BoundsError  NextLA.TLRmodule.tile_linear_index(A.order, NextLA.tilegrid_size(A)..., 1, 3)
+        @test_throws BoundsError  NextLA.TLRmodule.tile_linear_index(A.order, NextLA.grid_size(A)..., 3, 1)
+        @test_throws BoundsError  NextLA.TLRmodule.tile_linear_index(A.order, NextLA.grid_size(A)..., 1, 3)
         @test_throws ArgumentError NextLA.TLRmodule.region_slot(A, 1, 1)
 
         # Smaller than one tile: the whole matrix is the dense corner.
@@ -133,7 +133,7 @@ end
 
     @test !ismutable(A)
     @test size(A) == (10, 14)
-    @test NextLA.tilegrid_size(A) == (3, 3)
+    @test NextLA.grid_size(A) == (3, 3)
     @test NextLA.nominal_tile_size(A) == (4, 5)
     @test NextLA.tail_tile_size(A) == (2, 4)
     @test NextLA.maxrank(A) == 3
@@ -150,10 +150,10 @@ end
     @test size(A.corner_U) == (2, 3, 1)
     @test size(A.corner_V) == (4, 3, 1)
 
-    A.ranks[NextLA.TLRmodule.tile_linear_index(A.order, NextLA.tilegrid_size(A)..., 1, 1)] = 1
-    A.ranks[NextLA.TLRmodule.tile_linear_index(A.order, NextLA.tilegrid_size(A)..., 1, 3)] = 2
-    A.ranks[NextLA.TLRmodule.tile_linear_index(A.order, NextLA.tilegrid_size(A)..., 3, 1)] = 3
-    A.ranks[NextLA.TLRmodule.tile_linear_index(A.order, NextLA.tilegrid_size(A)..., 3, 3)] = 2
+    A.ranks[NextLA.TLRmodule.tile_linear_index(A.order, NextLA.grid_size(A)..., 1, 1)] = 1
+    A.ranks[NextLA.TLRmodule.tile_linear_index(A.order, NextLA.grid_size(A)..., 1, 3)] = 2
+    A.ranks[NextLA.TLRmodule.tile_linear_index(A.order, NextLA.grid_size(A)..., 3, 1)] = 3
+    A.ranks[NextLA.TLRmodule.tile_linear_index(A.order, NextLA.grid_size(A)..., 3, 3)] = 2
 
     U_diag, V_diag = NextLA.get_factors(A, 1, 1)
     @test size(U_diag) == (4, 1)
@@ -173,7 +173,7 @@ end
 
     # Tile-aligned row-major variant: boundary storage is empty.
     B = NextLA.TLRMatrix(zeros(Float32, 8, 10), (4, 5), 2; tile_order=NextLA.TileRowMajor)
-    @test NextLA.tilegrid_size(B) == (2, 2)
+    @test NextLA.grid_size(B) == (2, 2)
     @test NextLA.TLRmodule.tile_order(B) isa NextLA.TileRowMajor
     @test size(B.int_U) == (4, 2, 4)
     @test size(B.right_U, 3) == 0

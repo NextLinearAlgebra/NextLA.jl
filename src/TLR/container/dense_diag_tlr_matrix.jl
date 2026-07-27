@@ -56,7 +56,7 @@ end
 @inline inner_factors(A::TLRDenseDiagMatrix, ::BottomRegion) = A.bottom_V
 @inline lowrank_regions(::TLRDenseDiagMatrix) = (_INTERIOR, _RIGHT, _BOTTOM)
 
-@inline ndiag_tiles(A::TLRDenseDiagMatrix) = min(tilegrid_size(A)...)
+@inline ndiag_tiles(A::TLRDenseDiagMatrix) = min(grid_size(A)...)
 @inline dense_diag(A::TLRDenseDiagMatrix) = A.D
 @inline dense_diag_corner(A::TLRDenseDiagMatrix) = A.D_corner
 @inline _nfull_diag_tiles(A::TLRDenseDiagMatrix) = size(A.D, 3)
@@ -101,7 +101,7 @@ indexed by row `i`, bottom boundary slots by column `j`, and regular interior
 slots use the requested tile order on the full-size interior grid.
 """
 @inline function region_slot(A::TLRDenseDiagMatrix, i::Int, j::Int)
-    mt, nt = tilegrid_size(A)
+    mt, nt = grid_size(A)
     checkbounds_tile(mt, nt, i, j)
     i == j && throw(ArgumentError("tile ($i, $j) is diagonal and stored densely"))
     if tail_tile_size(A, 2) != 0 && j == nt
@@ -109,7 +109,7 @@ slots use the requested tile order on the full-size interior grid.
     elseif tail_tile_size(A, 1) != 0 && i == mt
         return _BOTTOM, j
     else
-        q_m, q_n = regular_tilegrid_size(A)
+        q_m, q_n = regular_grid_size(A)
         return _INTERIOR, _offdiag_index(A.order, q_m, q_n, i, j)
     end
 end
@@ -120,7 +120,7 @@ end
 Inverse of the dense-diagonal region mapping for region-local slot `k`.
 """
 @inline function region_tile_coords(A::TLRDenseDiagMatrix, ::InteriorRegion, k::Int)
-    q_m, q_n = regular_tilegrid_size(A)
+    q_m, q_n = regular_grid_size(A)
     return _offdiag_coords(A.order, q_m, q_n, k)
 end
 

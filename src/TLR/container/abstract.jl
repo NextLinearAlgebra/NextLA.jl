@@ -45,17 +45,25 @@ end
     return iszero(tail) ? nominal_tile_size(A, axis) : tail
 end
 
-@inline tilegrid_size(A::AbstractTLRMatrix) = (cld(A.m, nominal_tile_size(A, 1)), cld(A.n, nominal_tile_size(A, 2)))
+"""Full tile grid including partial boundary tiles: `(n_tile_rows, n_tile_cols)`."""
+@inline grid_size(A::AbstractTLRMatrix) =
+    (cld(A.m, nominal_tile_size(A, 1)), cld(A.n, nominal_tile_size(A, 2)))
+
+# Compatibility spelling retained for callers outside the TLR implementation.
+@inline tilegrid_size(A::AbstractTLRMatrix) = grid_size(A)
 
 """
-    regular_tilegrid_size(A) -> (q_m, q_n)
+    regular_grid_size(A) -> (q_m, q_n)
 
-Sub-grid of full-size regular tiles, `(⌊m/bm⌋, ⌊n/bn⌋)` — `tilegrid_size` minus
-any partial boundary row/column. Equals `tilegrid_size` when the matrix tiles
+Sub-grid of full-size regular tiles, `(⌊m/bm⌋, ⌊n/bn⌋)` — `grid_size` minus
+any partial boundary row/column. Equals `grid_size` when the matrix tiles
 evenly. This is the interior grid the gemm hard term operates over.
 """
-@inline regular_tilegrid_size(A::AbstractTLRMatrix) =
+@inline regular_grid_size(A::AbstractTLRMatrix) =
     (fld(A.m, nominal_tile_size(A, 1)), fld(A.n, nominal_tile_size(A, 2)))
+
+# Compatibility spelling retained for callers outside the TLR implementation.
+@inline regular_tilegrid_size(A::AbstractTLRMatrix) = regular_grid_size(A)
 
 """Number and factor dimensions of the low-rank tiles stored in `region`."""
 @inline region_tile_count(A, region::TLRRegion) = size(outer_factors(A, region), 3)
@@ -64,14 +72,14 @@ evenly. This is the interior grid the gemm hard term operates over.
 
 """Global tile coordinates of region-local storage slot `k`."""
 @inline region_tile_coords(A::AbstractTLRMatrix, ::RightRegion, k::Int) =
-    (k, tilegrid_size(A)[2])
+    (k, grid_size(A)[2])
 @inline region_tile_coords(A::AbstractTLRMatrix, ::BottomRegion, k::Int) =
-    (tilegrid_size(A)[1], k)
+    (grid_size(A)[1], k)
 @inline region_tile_coords(A::AbstractTLRMatrix, ::CornerRegion, ::Int) =
-    tilegrid_size(A)
+    grid_size(A)
 
 @inline function tile_size(A, tile_i::Int, tile_j::Int)
-    mt, nt = tilegrid_size(A)
+    mt, nt = grid_size(A)
     bm, bn = nominal_tile_size(A)
 
     row_size = tile_i == mt ? _last_tile_size(A, 1) : bm
@@ -97,7 +105,7 @@ slot; their values describe the represented tile, not necessarily low-rank
 factor storage.
 """
 @inline function _rank_index(A::AbstractTLRMatrix, i::Int, j::Int)
-    mt, nt = tilegrid_size(A)
+    mt, nt = grid_size(A)
     return tile_linear_index(A.order, mt, nt, i, j)
 end
 

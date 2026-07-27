@@ -117,9 +117,9 @@ end
         dense_zero_rank = fill(-3.0, size(boundary.A))
         NextLA.uncompress!(dense_zero_rank, zero_rank)
 
-        for linear in 1:prod(NextLA.tilegrid_size(zero_rank))
+        for linear in 1:prod(NextLA.grid_size(zero_rank))
             tile_i, tile_j = _TLRM.inverse_tile_index(
-                zero_rank.order, NextLA.tilegrid_size(zero_rank)..., linear)
+                zero_rank.order, NextLA.grid_size(zero_rank)..., linear)
             p0, q0 = NextLA.tile_origin_coords(zero_rank, tile_i, tile_j)
             tm, tn = NextLA.tile_size(zero_rank, tile_i, tile_j)
             rows = p0:(p0 + tm - 1)
@@ -234,7 +234,7 @@ end
                 make_lowrank_tile(T, b, r21; seed=43); rtol_error=2 * tol)
 
             # Stored rank never exceeds the shared sketch/output capacity.
-            mt, nt = NextLA.tilegrid_size(A_tlr)
+            mt, nt = NextLA.grid_size(A_tlr)
             for tile_i in 1:mt, tile_j in 1:nt
                 tile_i == tile_j && continue
                 rank_idx = _TLRM._rank_index(A_tlr, tile_i, tile_j)

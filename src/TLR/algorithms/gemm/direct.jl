@@ -8,7 +8,7 @@
     LogicalTLROperands(left_inner, right_outer, right_inner, left_outer)
 
 @inline function _interior_pair(A::LogicalTLROperand)
-    qm, qn = regular_tilegrid_size(A)
+    qm, qn = regular_grid_size(A)
     kind = interior_grid_kind(A)
     order = tile_order(A)
     return (interior_operand(kind, outer_factors(A, _INTERIOR), order, qm, qn),
@@ -299,8 +299,8 @@ end
     return sizing(geom, ops; fold, placement)
 end
 
-@inline _has_row_tail(A) = tilegrid_size(A)[1] > regular_tilegrid_size(A)[1]
-@inline _has_col_tail(A) = tilegrid_size(A)[2] > regular_tilegrid_size(A)[2]
+@inline _has_row_tail(A) = grid_size(A)[1] > regular_grid_size(A)[1]
+@inline _has_col_tail(A) = grid_size(A)[2] > regular_grid_size(A)[2]
 
 function _gemm_region_workspace_bound(A::AbstractTLRMatrix, B::AbstractTLRMatrix,
                                       sizing, lowrank_dense_sizing,
@@ -313,8 +313,8 @@ function _gemm_region_workspace_bound(A::AbstractTLRMatrix, B::AbstractTLRMatrix
     nominal_tile_size(LA, 2) == nominal_tile_size(LB, 1) ||
         throw(DimensionMismatch("op(A)'s column tile size must equal op(B)'s row tile size (contraction tiling)"))
 
-    qm, qk = regular_tilegrid_size(LA)
-    qkB, qn = regular_tilegrid_size(LB)
+    qm, qk = regular_grid_size(LA)
+    qkB, qn = regular_grid_size(LB)
     qk == qkB ||
         throw(DimensionMismatch("op(A)'s column tile grid must equal op(B)'s row tile grid"))
     has_i = _has_row_tail(LA)
