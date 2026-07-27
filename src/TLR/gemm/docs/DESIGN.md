@@ -156,11 +156,22 @@ output scatter. A full-capacity row/column panel is consumed as a view. A
 rank-trimmed prefix is packed once into a contiguous run-local panel because a
 strided rank slice cannot be reshaped into a valid terminal GPU GEMM operand.
 
-Canonical execution can use a reusable `TLRGemmWorkspace`, whose exact
-numerical size is returned by `tlr_gemm_workspace_bytes`. Persistent run state
-(`Q`, `S`, packed factor stacks) is separated from one phase arena shared by
-constructor packing, sampling, and finalization, giving
-`persistent + max(construction, sampling, finalization)` storage. Traversal
-outputs and scatter diagnostics are workspace-owned as well. Arbitrary
-physical layouts, boundary tiles, `TN`, and budget-driven rolling admission
-remain the R4-R5 boundary.
+Canonical execution can use a reusable `TLRGemmWorkspace`.
+`tlr_gemm_minimum_workspace_bytes` provides one scheduler slot and
+`tlr_gemm_maximum_workspace_bytes` provides the widest complete fixed-axis
+lane. An intermediate byte budget selects the largest slot count whose
+monotonic bound fits, while excess bytes are capped at the maximum.
+
+Each row or column is scheduled as one lane. A complete full-`k` ARA pass runs
+over its active prefix; converged slots are finalized as one wave and pending
+members are admitted into the released suffix. Progress and rank exhaustion
+are slot-local, so a late member receives its full `maxrank` budget. A mixed
+full/terminal block is compacted into at most two orthogonalization groups.
+Persistent slot state (`Q`, `S`, packed factor stacks) is separated from one
+phase arena shared by admission, sampling, and finalization, giving
+`persistent + max(admission, sampling, finalization)` storage. ARA state,
+traversal outputs, host mirrors, member maps, and scatter diagnostics are
+workspace-owned.
+
+Arbitrary physical layouts, boundary tiles, `TN`, cross-lane batching,
+mixed-tile cohorts, streams, and chunked-`k` reduction remain deferred.

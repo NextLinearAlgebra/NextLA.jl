@@ -168,6 +168,16 @@ function ARAConvergenceState(backend, count::Int)
     )
 end
 
+function ARAConvergenceState(samples, ranks, svec, jcount, rmax, samples_host)
+    count = length(samples)
+    all(length(x) == count for x in (ranks, svec, jcount, rmax)) ||
+        throw(DimensionMismatch("ARA convergence arrays must have equal length"))
+    length(samples_host) == count ||
+        throw(DimensionMismatch("ARA samples host mirror must have length $count"))
+    return ARAConvergenceState(
+        samples, ranks, svec, jcount, rmax, samples_host)
+end
+
 """
     ara_reset!(state, block, maxrank) -> state
 
@@ -311,12 +321,13 @@ pass; it trades kernel efficiency against oversampling and does not affect
 correctness. The reference uses 32 (the warp size).
 """
 function ARAWorkspace(::Type{T}, backend, m::Int, maxrank::Int, count::Int;
-                      block::Int=32, arena=nothing) where {T}
+                      block::Int=32, arena=nothing,
+                      state_storage=nothing) where {T}
     maxrank >= 0 && count >= 0 && m >= 0 ||
         throw(ArgumentError("m, maxrank and count must be nonnegative"))
     Q = _workspace_array!(
         _run_persistent_t_arena(arena), backend, T, m, maxrank, count)
-    return ARAWorkspace(Q; block, arena)
+    return ARAWorkspace(Q; block, arena, state_storage)
 end
 
 """
@@ -328,7 +339,8 @@ inside the output factor panels this way. Everything else is allocated on `Q`'s
 backend, drawn from `arena` when one is supplied (see `ARARunArena` in
 `algorithms/gemm/tlr_result/workspace.jl`) and via plain `allocate` otherwise.
 """
-function ARAWorkspace(Q::AbstractArray{T,3}; block::Int=32, arena=nothing) where {T}
+function ARAWorkspace(Q::AbstractArray{T,3}; block::Int=32, arena=nothing,
+                      state_storage=nothing) where {T}
     block >= 1 || throw(ArgumentError("block must be positive"))
     m, maxrank, count = size(Q)
     backend = get_backend(Q)
@@ -346,12 +358,61 @@ function ARAWorkspace(Q::AbstractArray{T,3}; block::Int=32, arena=nothing) where
         _workspace_array!(thi_arena, backend, Thi, blk, blk, count),
         R1, R2,
     )
+    if state_storage === nothing
+        dR = allocate(backend, Float64, blk, count)
+        status = allocate(backend, Int32, count)
+        status_host = Vector{Int32}(undef, count)
+        kcut = allocate(backend, Int32, count)
+        kcut_host = Vector{Int32}(undef, count)
+        state = ARAConvergenceState(backend, count)
+    else
+        size(state_storage.dR) == (blk, count) ||
+            throw(DimensionMismatch("ARA dR storage must have size ($blk, $count)"))
+        dR = state_storage.dR
+        status = state_storage.status
+        status_host = state_storage.status_host
+        kcut = state_storage.kcut
+        kcut_host = state_storage.kcut_host
+        state = ARAConvergenceState(
+            state_storage.samples, state_storage.ranks, state_storage.svec,
+            state_storage.jcount, state_storage.rmax,
+            state_storage.samples_host)
+    end
     return ARAWorkspace(
-        Q, Yblk, Dproj, chol,
-        allocate(backend, Float64, blk, count),
-        allocate(backend, Int32, count), Vector{Int32}(undef, count),
-        allocate(backend, Int32, count), Vector{Int32}(undef, count),
-        ARAConvergenceState(backend, count), blk,
+        Q, Yblk, Dproj, chol, dR, status, status_host, kcut, kcut_host,
+        state, blk,
+    )
+end
+
+"""
+    rebind_ara_phase(ws, arena)
+
+Recreate only the phase-backed sampling/orthogonalization views after a rolling
+scheduler has reused the phase arena for admission or retirement. Persistent
+`Q` and every convergence/status buffer retain their identities and contents.
+"""
+function rebind_ara_phase(ws::ARAWorkspace, arena)
+    _arena_reset_phase!(arena)
+    T = eltype(ws.Q)
+    backend = get_backend(ws.Q)
+    m, maxrank, count = size(ws.Q)
+    blk = ws.block
+    Thi = tlr_orthogonalization_type(T)
+    a = _run_t_arena(arena)
+    ahi = _run_thi_arena(arena)
+    Yblk = _workspace_array!(a, backend, T, m, blk, count)
+    Dproj = _workspace_array!(a, backend, T, max(maxrank, 1), blk, count)
+    R1 = _workspace_array!(a, backend, T, blk, blk, count)
+    R2 = _workspace_array!(a, backend, T, blk, blk, count)
+    chol = ARACholeskyWorkspace(
+        Yblk,
+        _workspace_array!(ahi, backend, Thi, m, blk, count),
+        _workspace_array!(ahi, backend, Thi, blk, blk, count),
+        R1, R2,
+    )
+    return ARAWorkspace(
+        ws.Q, Yblk, Dproj, chol, ws.dR, ws.status, ws.status_host,
+        ws.kcut, ws.kcut_host, ws.state, ws.block,
     )
 end
 
@@ -605,123 +666,219 @@ function _ara_swap_members!(ws::ARAWorkspace, p::Int, q::Int)
     return ws
 end
 
-"""
-    ara_build_basis_packed!(ws, sample_right!, member_ids;
-                            eps_rel, r_required=10, compute,
-                            swap_member! = (p,q)->nothing)
+@kernel function _ara_append_local_kernel!(Q, Y, samples, jcount)
+    i, j, b = @index(Global, NTuple)
+    @inbounds begin
+        drawn = Int(samples[b])
+        if j <= drawn
+            Q[i, Int(jcount[b]) + j, b] = Y[i, j, b]
+        end
+    end
+end
 
-Packed-active variant of [`ara_build_basis!`](@ref). `member_ids[slot]` records
-which logical operator occupies a physical batch slot. After every pass,
-converged members are swap-removed into a retired suffix, so all subsequent
-GEMM/SYRK/POTRF/TRSM calls operate on the contiguous prefix `1:nactive`.
-
-`sample_right!(Y, width, active_ids)` overwrites the active prefix of `Y`.
-`swap_member!(p,q)` lets an implicit-operator implementation apply the same
-slot permutation to retained run-local data such as coupling matrices.
-
-The returned `member_ids` is the final slot-to-logical-member permutation.
-"""
-function ara_build_basis_packed!(ws::ARAWorkspace, sample_right!,
-                                 member_ids::Vector{Int};
-                                 eps_rel::Real,
-                                 r_required::Int=10,
-                                 compute=nothing,
-                                 swap_member!::Function=(p, q) -> nothing)
-    T = eltype(ws.Q)
-    Thi = tlr_orthogonalization_type(T)
-    maxrank, count = size(ws.Q, 2), size(ws.Q, 3)
-    length(member_ids) == count ||
-        throw(DimensionMismatch("member_ids must have length $count"))
-    mode = compute === nothing ? default_gemm_compute_mode(T) :
-           gemm_compute_mode(compute)
-    blk = ws.block
-
-    eps_rel > 0 || throw(ArgumentError("eps_rel must be positive"))
-    floor_rel = ara_stopping_floor(Thi)
-    eps_rel >= floor_rel || throw(ArgumentError(
-        "eps_rel = $eps_rel is below the Cholesky-QR orthogonality limit " *
-        "√u = $floor_rel for Gram type $Thi"))
-    (count == 0 || maxrank == 0) &&
-        return (; Q=view(ws.Q, :, 1:0, :), ranks=ws.state.ranks,
-                passes=0, member_ids, active_counts=Int[])
-
-    adj = _adjoint_blas_char(T)
-    ara_reset!(ws.state, blk, maxrank)
-    fill!(ws.Q, zero(T))
-    passes = 0
-    grown = 0
-    nactive = count
-    active_counts = Int[]
-
-    while grown < maxrank && nactive > 0
-        push!(active_counts, nactive)
-        width = min(blk, maxrank - grown)
-        Y = view(ws.Yblk, :, :, 1:nactive)
-        sample_right!(Y, width, view(member_ids, 1:nactive))
-        width < blk && fill!(view(Y, :, (width + 1):blk, :), zero(T))
-
-        Qc = grown > 0 ? view(ws.Q, :, 1:grown, 1:nactive) : nothing
-        D = grown > 0 ? view(ws.Dproj, 1:grown, :, 1:nactive) : nothing
-        status = view(ws.status, 1:nactive)
-        fill!(status, Int32(0))
-        for pass in 1:2
-            if Qc !== nothing
-                precision_gemm_batched!(adj, 'N', one(T), Qc, Y,
-                                        zero(T), D, mode)
-                precision_gemm_batched!('N', 'N', -one(T), Qc, D,
-                                        one(T), Y, mode)
-            end
-            if pass == 1
-                ara_cholesky_pass!(
-                    ws.chol, ws.chol.R1, ws.chol.R1_tiles;
-                    status, count=nactive,
-                )
-            else
-                ara_cholesky_pass!(
-                    ws.chol, ws.chol.R2, ws.chol.R2_tiles; count=nactive,
-                )
+@kernel function _ara_reset_slot_kernel!(Q, samples, ranks, svec, jcount, rmax,
+                                         firstslot::Int, count::Int,
+                                         first_width::Int)
+    i, j, slotlocal = @index(Global, NTuple)
+    if slotlocal <= count
+        slot = firstslot + slotlocal - 1
+        @inbounds Q[i, j, slot] = zero(eltype(Q))
+        if i == 1 && j == 1
+            @inbounds begin
+                samples[slot] = Int32(first_width)
+                ranks[slot] = Int32(0)
+                svec[slot] = Int32(0)
+                jcount[slot] = Int32(0)
+                rmax[slot] = 0.0
             end
         end
-        copyto!(ws.status_host, ws.status)
+    end
+end
 
-        dR = view(ws.dR, :, 1:nactive)
-        ara_block_norms!(dR, ws.chol; count=nactive)
-        kcut = view(ws.kcut, 1:nactive)
-        ara_mask_breakdown!(Y, dR, kcut, ws.chol.R1, status, width, floor_rel)
-        copyto!(ws.kcut_host, ws.kcut)
+"""
+    ara_reset_slots!(ws, firstslot, count, maxrank)
 
-        view(ws.Q, :, (grown + 1):(grown + width), 1:nactive) .=
-            view(Y, :, 1:width, :)
-        grown += width
-        passes += 1
+Reset a contiguous slot range for rolling admission without disturbing basis
+or convergence state retained by older active slots.
+"""
+function ara_reset_slots!(ws::ARAWorkspace, firstslot::Int, count::Int,
+                          maxrank::Int=size(ws.Q, 2))
+    count == 0 && return ws
+    1 <= firstslot <= size(ws.Q, 3) &&
+        firstslot + count - 1 <= size(ws.Q, 3) ||
+        throw(BoundsError(ws.Q, (:, :, firstslot:(firstslot + count - 1))))
+    first_width = min(ws.block, maxrank)
+    _ara_reset_slot_kernel!(get_backend(ws.Q))(
+        ws.Q, ws.state.samples, ws.state.ranks, ws.state.svec,
+        ws.state.jcount, ws.state.rmax, firstslot, count, first_width;
+        ndrange=(size(ws.Q, 1), size(ws.Q, 2), count),
+    )
+    @inbounds fill!(
+        view(ws.state.samples_host, firstslot:(firstslot + count - 1)),
+        Int32(first_width),
+    )
+    return ws
+end
 
-        ara_update_convergence!(ws.state, ws.dR, eps_rel, r_required,
-                                width, maxrank, nactive)
-        _ara_retire_broken!(ws.state, view(ws.kcut_host, 1:nactive), width)
+function _ara_orthogonalize_group!(ws::ARAWorkspace, slots::UnitRange{Int},
+                                   width::Int, projection_width::Int,
+                                   mode, floor_rel)
+    isempty(slots) && return
+    T = eltype(ws.Q)
+    adj = _adjoint_blas_char(T)
+    Y = view(ws.Yblk, :, 1:width, slots)
+    Qc = projection_width > 0 ?
+        view(ws.Q, :, 1:projection_width, slots) : nothing
+    D = projection_width > 0 ?
+        view(ws.Dproj, 1:projection_width, 1:width, slots) : nothing
+    status = view(ws.status, slots)
+    fill!(status, Int32(0))
+    chol = ARACholeskyWorkspace(
+        Y,
+        view(ws.chol.Y_hi, :, 1:width, slots),
+        view(ws.chol.G_hi, 1:width, 1:width, slots),
+        view(ws.chol.R1, 1:width, 1:width, slots),
+        view(ws.chol.R2, 1:width, 1:width, slots),
+    )
+    for pass in 1:2
+        if Qc !== nothing
+            precision_gemm_batched!(adj, 'N', one(T), Qc, Y,
+                                    zero(T), D, mode)
+            precision_gemm_batched!('N', 'N', -one(T), Qc, D,
+                                    one(T), Y, mode)
+        end
+        if pass == 1
+            ara_cholesky_pass!(
+                chol, chol.R1, chol.R1_tiles; status, count=length(slots))
+        else
+            ara_cholesky_pass!(
+                chol, chol.R2, chol.R2_tiles; count=length(slots))
+        end
+    end
+    dR = view(ws.dR, 1:width, slots)
+    ara_block_norms!(dR, chol)
+    kcut = view(ws.kcut, slots)
+    ara_mask_breakdown!(Y, dR, kcut, chol.R1, status, width, floor_rel)
+    return
+end
 
-        # Partition in place: active prefix, retired suffix. Targets are chosen
-        # from the shrinking tail, so swap pairs are disjoint within a pass.
-        p = 1
-        while p <= nactive
-            if ws.state.samples_host[p] > 0
+"""
+    ara_packed_pass!(ws, sample_right!, nactive, progress_host; ...)
+
+Execute one complete rolling-ARA pass on the active prefix. Basis progress is
+slot-local: projection uses the largest active prefix (younger slots contain
+zeros beyond their own progress), and each normalized block is appended at
+that slot's `jcount`. The returned retired suffix has already been
+swap-compacted through `swap_member!`.
+"""
+function ara_packed_pass!(ws::ARAWorkspace, sample_right!, nactive::Int,
+                          member_ids::Vector{Int}, progress_host::Vector{Int};
+                          eps_rel::Real, r_required::Int=10,
+                          compute=nothing,
+                          swap_member!::Function=(p, q) -> nothing)
+    nactive == 0 && return (; nactive=0, retired=1:0, width=0,
+                            projection_width=0, discarded=0)
+    nactive <= size(ws.Q, 3) ||
+        throw(DimensionMismatch("active count exceeds workspace capacity"))
+    T = eltype(ws.Q)
+    Thi = tlr_orthogonalization_type(T)
+    mode = compute === nothing ? default_gemm_compute_mode(T) :
+           gemm_compute_mode(compute)
+    floor_rel = ara_stopping_floor(Thi)
+    eps_rel >= floor_rel || throw(ArgumentError(
+        "eps_rel = $eps_rel is below the Cholesky-QR limit $floor_rel"))
+    drawn = collect(Int, view(ws.state.samples_host, 1:nactive))
+    width = maximum(drawn)
+    width > 0 || return (; nactive=0, retired=1:nactive, width=0,
+                         projection_width=maximum(view(progress_host, 1:nactive)),
+                         discarded=0)
+    projection_width = maximum(view(progress_host, 1:nactive))
+
+    # Keep the common full block in front and the final partial block in one
+    # suffix. They share the fused full-k sampling launch below, but use
+    # separate Cholesky-QR batches so padded terminal columns never enter a
+    # factorization.
+    nfull = count(==(width), drawn)
+    if nfull < nactive
+        p, q = 1, nactive
+        while p <= nfull
+            if drawn[p] == width
                 p += 1
                 continue
             end
-            while nactive > p && ws.state.samples_host[nactive] == 0
-                nactive -= 1
+            while q > nfull && drawn[q] != width
+                q -= 1
             end
-            if p < nactive
-                _ara_swap_members!(ws, p, nactive)
-                swap_member!(p, nactive)
-                member_ids[p], member_ids[nactive] =
-                    member_ids[nactive], member_ids[p]
-            end
-            nactive -= 1
+            q <= nfull && break
+            _ara_swap_members!(ws, p, q)
+            swap_member!(p, q)
+            member_ids[p], member_ids[q] = member_ids[q], member_ids[p]
+            progress_host[p], progress_host[q] =
+                progress_host[q], progress_host[p]
+            drawn[p], drawn[q] = drawn[q], drawn[p]
+            p += 1
+            q -= 1
         end
     end
+    Y = view(ws.Yblk, :, :, 1:nactive)
+    sample_right!(Y, width, view(member_ids, 1:nactive))
+    width < ws.block && fill!(view(Y, :, (width + 1):ws.block, :), zero(T))
 
-    return (; Q=view(ws.Q, :, 1:grown, :), ranks=ws.state.ranks,
-            passes, member_ids, active_counts)
+    nfull > 0 && _ara_orthogonalize_group!(
+        ws, 1:nfull, width, projection_width, mode, floor_rel)
+    if nfull < nactive
+        terminal_width = drawn[nfull + 1]
+        _ara_orthogonalize_group!(
+            ws, (nfull + 1):nactive, terminal_width, projection_width,
+            mode, floor_rel)
+    end
+    copyto!(ws.status_host, ws.status)
+    copyto!(ws.kcut_host, ws.kcut)
+
+    _ara_append_local_kernel!(get_backend(ws.Q))(
+        ws.Q, Y, ws.state.samples, ws.state.jcount;
+        ndrange=(size(ws.Q, 1), width, nactive),
+    )
+    @inbounds for p in 1:nactive
+        progress_host[p] += drawn[p]
+    end
+    discarded = sum(width - d for d in drawn)
+    ara_update_convergence!(
+        ws.state, ws.dR, eps_rel, r_required, width, size(ws.Q, 2), nactive)
+
+    # Breakdown is terminal only when it occurs inside the member's valid
+    # prefix; a terminal member's deliberately discarded tail is irrelevant.
+    samples = ws.state.samples_host
+    copyto!(samples, ws.state.samples)
+    @inbounds for p in 1:nactive
+        if ws.kcut_host[p] <= drawn[p]
+            samples[p] = Int32(0)
+        end
+    end
+    copyto!(ws.state.samples, samples)
+
+    oldactive = nactive
+    p = 1
+    while p <= nactive
+        if samples[p] > 0
+            p += 1
+            continue
+        end
+        while nactive > p && samples[nactive] == 0
+            nactive -= 1
+        end
+        if p < nactive
+            _ara_swap_members!(ws, p, nactive)
+            swap_member!(p, nactive)
+            member_ids[p], member_ids[nactive] =
+                member_ids[nactive], member_ids[p]
+            progress_host[p], progress_host[nactive] =
+                progress_host[nactive], progress_host[p]
+        end
+        nactive -= 1
+    end
+    return (; nactive, retired=(nactive + 1):oldactive, width,
+            projection_width, discarded)
 end
 
 # ---------------------------------------------------------------------------

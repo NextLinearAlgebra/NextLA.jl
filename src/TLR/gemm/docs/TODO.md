@@ -308,7 +308,7 @@ is orthogonal and remains off by default because `c` accumulating terminal
 GEMMs move approximately `(2c-1) * b_m * s` sample elements instead of
 `b_m * s`, where `c` is the number of chunks.
 
-### R4a — rolling admission within one lane
+### R4a — rolling admission within one lane (implemented)
 
 The lane owns a fixed-capacity slot arena and a pending queue. At an ARA
 convergence boundary, members that finish are swap-compacted as in R3, but
@@ -344,6 +344,18 @@ the wave before recycling its slots. This bounds co-range launch growth by
 the number of convergence boundaries rather than the number of output tiles.
 The initial implementation should retain a packed retirement-wave descriptor
 so that rank variation does not force one launch per member.
+
+The implementation keeps basis progress per slot, batches admission-time
+`S` formation over the admitted wave and full contraction range, and batches
+co-range/truncation/scatter over each retirement wave. Full-width members are
+kept in front of a terminal-width suffix, so a pass uses no more than two
+orthogonalization groups while retaining one fused full-`k` contraction.
+`TLRGemmScheduleStats` records active/pending widths, admissions, retirement
+waves, passes, padded projection columns, discarded terminal columns, and
+synchronized phase timings. The internal
+`_tlr_gemm_schedule_stats!` entry point and
+`scripts/benchmark_tlr_rolling_scheduler.jl` expose these measurements without
+adding profiling keywords to public `gemm!`.
 
 R4a measurements are: active and pending width per pass; underfilled tail
 passes and time after pending-lane exhaustion; admission-time `S` cost;
@@ -392,44 +404,46 @@ full-`k` transient storage, rather than lane tails, is the occupancy limit.
 
 Completed before scheduling. `ARARunArena` separates whole-run persistent
 storage (`Q`, `S`, and packed factor stacks) from rewound phase storage.
-Constructor-only `S` packing is released before sampling; after
-`ara_build_basis_packed!` completes, sampling/orthogonalization scratch is
-released and the same phase storage is reused for co-range application and
-truncation. The bound is therefore
+Admission-time `S` packing is released before sampling; after each sampling
+pass, the same phase storage is reused for co-range application and truncation
+of the retirement wave. The bound is therefore
 
 ```text
-persistent + max(S-construction, sampling, finalization)
+persistent_slots + max(admission, sampling, retirement)
 ```
 
 rather than the sum of all three phases. `ara_run_workspace_bytes` computes
 the three typed components analytically and arena exhaustion remains a hard
 error.
 
-The canonical driver also hoists truncation ranks/errors, member maps, output
-panels, and global scatter diagnostics. `TLRGemmWorkspace` owns all of this
-numerical storage and can be reused across complete `gemm!` calls;
-`tlr_gemm_workspace_bytes` is its allocation-free exact byte query. Passing
-an integer validates the available byte count and constructs temporary
-storage; omitting `workspace` retains the convenience path. Workspace objects
-are tied to one backend, element/rank type, operation geometry, sampling
-family, block width, and active rank caps and reject incompatible reuse.
+The canonical driver also hoists ARA convergence/status arrays and host
+mirrors, per-slot progress and member maps, truncation ranks/errors, output
+panels, and global scatter diagnostics. `TLRGemmWorkspace` owns this storage
+and can be reused across complete `gemm!` calls.
+`tlr_gemm_minimum_workspace_bytes` returns the one-slot bound and
+`tlr_gemm_maximum_workspace_bytes` the complete-lane bound. Passing an
+intermediate integer selects the largest fitting slot capacity; excess is
+capped and a sub-minimum budget is rejected. Omitting `workspace` retains the
+maximum-capacity convenience path. The capacity is part of the workspace
+compatibility key.
 
-This gives R4a's `admit_member!` the required allocation-free numerical
-foundation, including trimmed-rank factor packing used to form a newly
-admitted member's `S`. Pointer descriptors and backend-library solver
-workspace remain metadata/library storage outside this numerical contract,
-as already scoped in "Workspace contract." The scheduler itself is still
-untouched.
+Family-specific `admit_wave!` primitives replace stable slot contents, form
+all newly admitted `S` cores as one member-times-`q_k` batch, reset slot-local
+ARA state, and update preallocated descriptors. Pointer descriptor metadata
+and backend-library solver workspace remain outside the numerical contract.
 
 Focused verification:
 
-- CPU canonical TLR-result GEMM: 19/19; reusable workspace byte accounting,
-  repeated backing-storage identity, numerical reuse, undersized integer
-  rejection, and incompatible-operation rejection: 7/7.
-- CUDA through `../gpuenv`: canonical right/left sampling families 6/6;
+- CPU canonical TLR-result GEMM: 19/19; reusable workspace accounting,
+  capacity selection/capping, repeated storage identity, undersized integer
+  rejection, and incompatible-operation rejection: 14/14; minimum-capacity
+  rolling across all supported operation families: 8/8.
+- CUDA through `../gpuenv`: canonical right/left sampling families 14/14,
+  including minimum-capacity rolling for every supported operation;
   reusable workspaces for `NN`, both `NT` choices, and `TT`, each used twice
   with exact byte accounting: 12/12; hot-pass allocation regression 4/4 and
-  traversal-count arena-reuse regression 1/1.
+  admission-wave allocation regression 1/1; traversal-count arena-reuse
+  regression 1/1.
 
 ## Roadmap
 
@@ -447,9 +461,10 @@ Focused verification:
 - [x] **R3 — canonical TLR-result GEMM.** Fixed-column and fixed-row
   packed-active runs, right and left sampling, operation-level rank-based side
   selection, output scatter, and the regular-grid row-major `gemm!` contract.
-- [ ] **R4 — scheduler and arena.** Rank-metadata workspace estimates,
-  budget-bounded run growth, reduction sub-panelling, reusable run workspaces,
-  and caller-owned truncation scratch where supported.
+- [x] **R4 — single-lane scheduler and arena.** Minimum/maximum workspace
+  bounds, budget-derived slot capacity, slot-local ARA progress, wave-batched
+  admission/finalization, reusable run storage, and FullK rolling admission.
+  Cross-lane growth and reduction sub-panelling remain benchmark-gated.
 - [ ] **R5 — general-storage integration.** Boundary regions, arbitrary
   physical layout descriptors, the packed/reduced `TN` path, and measured
   scheduling across those cases.

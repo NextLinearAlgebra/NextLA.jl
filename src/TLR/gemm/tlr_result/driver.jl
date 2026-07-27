@@ -1,6 +1,6 @@
 # gemm! entry point for the canonical TLR-output GEMM: produces a
 # compressed TLR C via ARA sampling (single_tile_coupling.jl/run_coupling.jl,
-# single_tile_sampling.jl/run_sampling.jl). Sampling-side selection, run
+# single_tile_sampling.jl/rolling_schedule.jl). Sampling-side selection, run
 # scatter, and the reusable-workspace-driven traversal loop live here.
 
 @inline _active_rank_cap(A::TLRMatrix) =
@@ -68,7 +68,8 @@ end
 end
 
 """
-    _store_tlr_run!(C, U, V, ranks_run, err_run, slots, ranks_dev, err_dev, slots_dev)
+    _store_tlr_run!(C, U, V, ranks_run, err_run, slots, ranks_dev, err_dev,
+                    slots_dev, slots_host)
 
 Scatter one run's factors and diagnostics into `C`'s canonical storage.
 `slots_dev` is caller-owned scratch (sized to at least `length(slots)`,
@@ -77,10 +78,14 @@ allocated here, since every run in that traversal needs an identically-sized
 buffer.
 """
 function _store_tlr_run!(C::TLRMatrix, U, V, ranks_run, err_run,
-                         slots::Vector{Int}, ranks_dev, err_dev, slots_dev)
+                         slots::AbstractVector{Int}, ranks_dev, err_dev,
+                         slots_dev, slots_host)
     backend = get_backend(C)
     count = length(slots)
-    copyto!(view(slots_dev, 1:count), Int32.(slots))
+    @inbounds for p in 1:count
+        slots_host[p] = Int32(slots[p])
+    end
+    copyto!(slots_dev, slots_host)
     sd = view(slots_dev, 1:count)
     _store_tlr_run_factor_kernel!(backend)(
         C.int_U, U, sd; ndrange=size(U),
@@ -154,13 +159,15 @@ function _prepare_tlr_gemm_workspace(C, A, B, workspace;
     elseif workspace isa Integer
         workspace >= 0 ||
             throw(ArgumentError("workspace bytes must be nonnegative"))
-        required = tlr_gemm_workspace_bytes(C, A, B; transA, transB, block)
+        required = tlr_gemm_minimum_workspace_bytes(
+            C, A, B; transA, transB, block)
         workspace >= required || throw(ArgumentError(
             "workspace has $workspace bytes; at least $required bytes are required"))
-        ws = TLRGemmWorkspace(C, A, B; transA, transB, block)
+        ws = TLRGemmWorkspace(
+            C, A, B; bytes=Int(workspace), transA, transB, block)
         return ws, spec
     elseif workspace isa TLRGemmWorkspace
-        workspace.key == spec.key || throw(ArgumentError(
+        workspace.key.operation == spec.key || throw(ArgumentError(
             "TLRGemmWorkspace geometry, backend, or element type does not match this operation"))
         return workspace, spec
     end
@@ -188,14 +195,15 @@ capture and defaults to `max(tol, ara_stopping_floor(promoted_type))`.
 `workspace` accepts a byte count or a reusable `TLRGemmWorkspace`; omitting
 it constructs one temporary workspace for convenience.
 """
-function gemm!(C::TLRMatrix{BackendT,T},
-               A::TLRMatrix{BackendT,T},
-               B::TLRMatrix{BackendT,T};
+function _gemm_tlr!(C::TLRMatrix{BackendT,T},
+                    A::TLRMatrix{BackendT,T},
+                    B::TLRMatrix{BackendT,T};
                alpha=true, beta=false,
                transA::Char='N', transB::Char='N',
                tol::Real=0.0, rel::Bool=false,
                eps_rel=nothing, r_required::Int=10, block::Int=32,
-               compute=nothing, workspace=nothing) where {BackendT,T}
+               compute=nothing, workspace=nothing,
+               stats=nothing) where {BackendT,T}
     LA = logical_operand(A, transA)
     LB = logical_operand(B, transB)
     _validate_canonical_tlr_gemm(C, A, B, LA, LB)
@@ -230,56 +238,61 @@ function gemm!(C::TLRMatrix{BackendT,T},
     bn_tile = nominal_tile_size(C, 2)
 
     if side === :right && tile_order(LB) isa TileColMajor
-        # NT, right choice: fixed columns share H. U/V/rr/ee/slots_dev are
-        # loop-invariant in shape (every column run has qm members), so they
-        # are allocated once and reused; range_find_column_run! and
-        # _store_tlr_run! both overwrite every slot they use on every call.
-        # `arena` is sized once for this family/shape and reused (reset)
-        # across every iteration below, replacing each run's own fresh
-        # device allocation with a single persistent bump allocator.
-        U, V = ws_owner.U, ws_owner.V
-        rr, ee = ws_owner.ranks, ws_owner.errors
-        rr_slot, ee_slot = ws_owner.ranks_slot, ws_owner.errors_slot
-        slots_dev = ws_owner.indices
+        # NT, right choice: fixed columns share H. `arena` and `ws_owner`'s
+        # traversal/diagnostic buffers are sized once for this family/shape
+        # and reused (reset) across every column below; each iteration
+        # constructs a fresh `ColumnRunCoupling`/`ARAWorkspace` from the
+        # arena and drives it to convergence via `_rolling_lane_loop!`,
+        # which rolls pending members into released slots as active ones
+        # retire instead of running the whole column as one fixed batch.
         arena = ws_owner.arena
+        cap = ws_owner.key.capacity
         for j in 1:qn
-            range_find_column_run!(
-                U, V, rr, ee, ops, 1:qm, j;
-                alpha=α, beta=β, C=LC, eps_rel=sample_tol, r_required,
-                tol, rel, block=blk, rA=rA, rB=rB, compute=mode, arena,
-                ranks_slot=rr_slot, err_slot=ee_slot,
-                slot_to_member=slots_dev,
+            _arena_reset!(arena)
+            initial = 1:min(cap, qm)
+            run = ColumnRunCoupling(
+                ops, initial, j; alpha=α, beta=β, C=LC,
+                block=blk, maxrank=maxrank(C), rA, rB, compute=mode, arena)
+            ara_ws = ARAWorkspace(
+                T, backend, bm_tile, maxrank(C), cap; block=blk, arena,
+                state_storage=ws_owner.ara_state)
+            _rolling_lane_loop!(
+                C, run, ara_ws, 1:qm, j, ops, arena, ws_owner;
+                beta=β, eps_rel=sample_tol, r_required, tol, rel,
+                compute=mode, side=:right, stats,
             )
-            slots = [j + (i - 1) * qn for i in 1:qm]
-            _store_tlr_run!(C, U, V, rr, ee, slots, ranks_dev, err_dev, slots_dev)
         end
     else
         # NN right sampling, or NT/TT left sampling: fixed output rows.
-        U, V = ws_owner.U, ws_owner.V
-        rr, ee = ws_owner.ranks, ws_owner.errors
-        rr_slot, ee_slot = ws_owner.ranks_slot, ws_owner.errors_slot
-        slots_dev = ws_owner.indices
         arena = ws_owner.arena
+        cap = ws_owner.key.capacity
         for i in 1:qm
+            _arena_reset!(arena)
+            initial = 1:min(cap, qn)
             if side === :right
-                range_find_row_right_run!(
-                    U, V, rr, ee, ops, i, 1:qn;
-                    alpha=α, beta=β, C=LC, eps_rel=sample_tol, r_required,
-                    tol, rel, block=blk, rA=rA, rB=rB, compute=mode, arena,
-                    ranks_slot=rr_slot, err_slot=ee_slot,
-                    slot_to_member=slots_dev,
+                run = RowRightRunCoupling(
+                    ops, i, initial; alpha=α, beta=β, C=LC,
+                    block=blk, maxrank=maxrank(C), rA, rB, compute=mode,
+                    arena, index_scratch=ws_owner.indices,
                 )
+                ara_ws = ARAWorkspace(
+                    T, backend, bm_tile, maxrank(C), cap; block=blk, arena,
+                    state_storage=ws_owner.ara_state)
             else
-                range_find_row_left_run!(
-                    U, V, rr, ee, ops, i, 1:qn;
-                    alpha=α, beta=β, C=LC, eps_rel=sample_tol, r_required,
-                    tol, rel, block=blk, rA=rA, rB=rB, compute=mode, arena,
-                    ranks_slot=rr_slot, err_slot=ee_slot,
-                    slot_to_member=slots_dev,
+                run = RowLeftRunCoupling(
+                    ops, i, initial; alpha=α, beta=β, C=LC,
+                    block=blk, maxrank=maxrank(C), rA, rB, compute=mode,
+                    arena,
                 )
+                ara_ws = ARAWorkspace(
+                    T, backend, bn_tile, maxrank(C), cap; block=blk, arena,
+                    state_storage=ws_owner.ara_state)
             end
-            slots = collect(((i - 1) * qn + 1):(i * qn))
-            _store_tlr_run!(C, U, V, rr, ee, slots, ranks_dev, err_dev, slots_dev)
+            _rolling_lane_loop!(
+                C, run, ara_ws, 1:qn, i, ops, arena, ws_owner;
+                beta=β, eps_rel=sample_tol, r_required, tol, rel,
+                compute=mode, side, stats,
+            )
         end
     end
 
@@ -290,4 +303,30 @@ function gemm!(C::TLRMatrix{BackendT,T},
         C.resid[k] = sqrt(max(err_host[k], 0.0))
     end
     return C
+end
+
+function gemm!(C::TLRMatrix{BackendT,T},
+               A::TLRMatrix{BackendT,T},
+               B::TLRMatrix{BackendT,T};
+               alpha=true, beta=false,
+               transA::Char='N', transB::Char='N',
+               tol::Real=0.0, rel::Bool=false,
+               eps_rel=nothing, r_required::Int=10, block::Int=32,
+               compute=nothing, workspace=nothing) where {BackendT,T}
+    return _gemm_tlr!(
+        C, A, B; alpha, beta, transA, transB, tol, rel, eps_rel,
+        r_required, block, compute, workspace)
+end
+
+"""
+    _tlr_gemm_schedule_stats!(C, A, B; kwargs...) -> TLRGemmScheduleStats
+
+Internal profiling entry point for the R4a scheduler. It intentionally keeps
+instrumentation out of the public `gemm!` keyword contract.
+"""
+function _tlr_gemm_schedule_stats!(C::TLRMatrix, A::TLRMatrix, B::TLRMatrix;
+                                   kwargs...)
+    stats = TLRGemmScheduleStats()
+    _gemm_tlr!(C, A, B; kwargs..., stats)
+    return stats
 end

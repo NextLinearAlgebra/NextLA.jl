@@ -17,7 +17,8 @@ using ..NextLA: precision_gemm!, precision_gemm_batched!, gemm_compute_mode, gem
 using ..NextLA: GEMMCompute, validate_gemm_signature
 using ..NextLA: create_streams, with_stream, sync_stream, sync_streams_with_default
 using ..NextLA: SUBGROUP_SIZE, unwrap
-using ..NextLA: BatchPtrDescriptor, swap_batch_ptrs!, precision_gemm_batched_ptrs!
+using ..NextLA: BatchPtrDescriptor, swap_batch_ptrs!, set_batch_ptrs!
+using ..NextLA: precision_gemm_batched_ptrs!
 using ..NextLA: supports_pointer_batched
 
 export TileColMajor, TileRowMajor
@@ -30,7 +31,8 @@ export nominal_tile_size, tail_tile_size
 export ndiag_tiles, tile_origin_coords, tile_size
 export gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes
 export DenseGemmWorkspace, InteriorFirstWorkspace
-export TLRGemmWorkspace, tlr_gemm_workspace_bytes
+export TLRGemmWorkspace
+export tlr_gemm_minimum_workspace_bytes, tlr_gemm_maximum_workspace_bytes
 
 include("container/order.jl")
 include("container/abstract.jl")

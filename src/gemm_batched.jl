@@ -267,7 +267,7 @@ end
 # `swap_batch_ptrs!`) when which logical member occupies which physical slot
 # changes, rather than rebuilding the table or moving the numeric data itself.
 
-export BatchPtrDescriptor, swap_batch_ptrs!
+export BatchPtrDescriptor, swap_batch_ptrs!, set_batch_ptrs!
 
 """
     BatchPtrDescriptor(ptrs)
@@ -291,12 +291,19 @@ storage alive for as long as the descriptor is used; unlike the transient
 pointer arrays built by the `Vector`-of-matrix methods, nothing frees a
 `BatchPtrDescriptor`'s pointer array automatically.
 """
-struct BatchPtrDescriptor{PT<:AbstractVector}
+struct BatchPtrDescriptor{PT<:AbstractVector,H<:AbstractVector}
     ptrs::PT
+    host::H
 end
 
-BatchPtrDescriptor(batch::AbstractVector{<:AbstractMatrix}) =
-    BatchPtrDescriptor(_build_batch_ptrs(batch))
+function BatchPtrDescriptor(batch::AbstractVector{<:AbstractMatrix})
+    ptrs = _build_batch_ptrs(batch)
+    host = Vector{eltype(ptrs)}(undef, length(ptrs))
+    @inbounds for k in eachindex(batch)
+        host[k] = eltype(ptrs)(pointer(batch[k]))
+    end
+    return BatchPtrDescriptor(ptrs, host)
+end
 
 Base.length(d::BatchPtrDescriptor) = length(d.ptrs)
 KernelAbstractions.get_backend(d::BatchPtrDescriptor) = get_backend(d.ptrs)
@@ -362,5 +369,26 @@ function swap_batch_ptrs!(d::BatchPtrDescriptor, p::Int, q::Int, blocklen::Int)
     _swap_batch_ptr_block_kernel!(get_backend(d))(
         d.ptrs, p, q, blocklen; ndrange=(blocklen,),
     )
+    return d
+end
+
+"""
+    set_batch_ptrs!(d, first, matrices)
+
+Replace a contiguous descriptor range with the base addresses of `matrices`.
+The descriptor storage is retained; only its small address table is updated.
+This is used when a rolling scheduler admits a new logical member into an
+existing physical slot.
+"""
+function set_batch_ptrs!(d::BatchPtrDescriptor, first::Int,
+                         matrices::AbstractVector{<:AbstractMatrix})
+    last = first + length(matrices) - 1
+    1 <= first <= last + 1 && last <= length(d) ||
+        throw(BoundsError(d.ptrs, first:last))
+    isempty(matrices) && return d
+    @inbounds for k in eachindex(matrices)
+        d.host[first + k - 1] = eltype(d.ptrs)(pointer(matrices[k]))
+    end
+    copyto!(d.ptrs, d.host)
     return d
 end

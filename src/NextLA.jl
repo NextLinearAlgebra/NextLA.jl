@@ -104,8 +104,10 @@ using .TLRmodule: compress!, uncompress!, alloc_workspace
 using .TLRmodule: get_factors
 using .TLRmodule: gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes
 using .TLRmodule: DenseGemmWorkspace, InteriorFirstWorkspace
-using .TLRmodule: TLRGemmWorkspace, tlr_gemm_workspace_bytes
+using .TLRmodule: TLRGemmWorkspace
+using .TLRmodule: tlr_gemm_minimum_workspace_bytes, tlr_gemm_maximum_workspace_bytes
 export gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes
 export DenseGemmWorkspace, InteriorFirstWorkspace
-export TLRGemmWorkspace, tlr_gemm_workspace_bytes
+export TLRGemmWorkspace
+export tlr_gemm_minimum_workspace_bytes, tlr_gemm_maximum_workspace_bytes
 end

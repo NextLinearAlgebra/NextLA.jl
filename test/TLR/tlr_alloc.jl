@@ -76,6 +76,41 @@ end
     end
 end
 
+if isdefined(@__MODULE__, :CUDA)
+    function _tlr_alloc_bytes_capacity(ArrayType, synchronize; minimum::Bool)
+        T = Float64
+        A, B, C = _canonical_tlr_fixture(
+            T, ArrayType; rA=2, rB=6, seed=1380)
+        bytes = minimum ?
+            NextLA.tlr_gemm_minimum_workspace_bytes(
+                C, A, B; transA='N', transB='T', block=4) :
+            NextLA.tlr_gemm_maximum_workspace_bytes(
+                C, A, B; transA='N', transB='T', block=4)
+        workspace = NextLA.TLRGemmWorkspace(
+            C, A, B; bytes, transA='N', transB='T', block=4)
+        f = () -> NextLA.TLRmodule.gemm!(
+            C, A, B; transA='N', transB='T', tol=1e-7, rel=true,
+            eps_rel=1e-7, r_required=3, block=4, workspace)
+        f()
+        synchronize(C.int_U)
+        allocated = CUDA.@allocated f()
+        synchronize(C.int_U)
+        return allocated
+    end
+end
+
+@testset "rolling admission does not allocate per wave on CUDA" begin
+    for (backend_name, ArrayType, synchronize) in available_backends()
+        backend_name == "CUDA" || continue
+        full = _tlr_alloc_bytes_capacity(ArrayType, synchronize; minimum=false)
+        rolling = _tlr_alloc_bytes_capacity(ArrayType, synchronize; minimum=true)
+        # Capacity one performs three admission/finalization waves per lane.
+        # Its device allocation remains within the same fixed residual budget
+        # as a complete-lane run rather than scaling with those waves.
+        @test rolling <= full + _TLR_ALLOC_BUDGET
+    end
+end
+
 # Cross-run arena reuse (docs/TODO.md's dated worklog, "R4 arena -- reusable
 # run/ARA workspace"): the canonical driver now builds one ARARunArena before
 # its traversal loop and resets it once per row/column run instead of letting

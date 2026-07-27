@@ -211,6 +211,63 @@ end
     end
 end
 
+@testset "rolling ARA slot-local progress on CPU" begin
+    rng = MersenneTwister(1477)
+    m = n = 16
+    maxrank, block = 10, 4
+    X = cat(
+        Matrix(qr(randn(rng, Float64, m, n)).Q),
+        Matrix(qr(randn(rng, Float64, m, n)).Q);
+        dims=3,
+    )
+    ws = _TLRM.ARAWorkspace(
+        Float64, CPU(), m, maxrank, 2; block)
+    member_ids = [1, 2]
+    progress = [0, 0]
+    sampler = function (Y, width, ids)
+        for p in eachindex(ids)
+            Ω = randn(rng, Float64, n, width)
+            view(Y, :, 1:width, p) .= view(X, :, :, ids[p]) * Ω
+        end
+        return Y
+    end
+
+    _TLRM.ara_reset_slots!(ws, 1, 1)
+    for _ in 1:2
+        info = _TLRM.ara_packed_pass!(
+            ws, sampler, 1, member_ids, progress;
+            eps_rel=1e-7, r_required=3)
+        @test info.nactive == 1
+    end
+    @test progress[1] == 8
+
+    # A late member starts at offset zero while the older member enters its
+    # terminal width. This exercises the full-prefix/terminal-suffix split.
+    _TLRM.ara_reset_slots!(ws, 2, 1)
+    progress[2] = 0
+    info = _TLRM.ara_packed_pass!(
+        ws, sampler, 2, member_ids, progress;
+        eps_rel=1e-7, r_required=3)
+    @test info.discarded == block - (maxrank % block)
+    @test progress[findfirst(==(1), member_ids)] == maxrank
+    @test progress[findfirst(==(2), member_ids)] == block
+
+    # Recycle the retired slot for another hard member: admission resets its
+    # local offset, so it retains the complete rank budget.
+    retired_slot = first(info.retired)
+    _TLRM.ara_reset_slots!(ws, retired_slot, 1)
+    member_ids[retired_slot] = 2
+    progress[retired_slot] = 0
+    nactive = info.nactive + 1
+    while nactive > 0
+        info = _TLRM.ara_packed_pass!(
+            ws, sampler, nactive, member_ids, progress;
+            eps_rel=1e-7, r_required=3)
+        nactive = info.nactive
+    end
+    @test maximum(progress) == maxrank
+end
+
 @testset "ARA convergence bookkeeping on GPU" begin
     for (backend_name, ArrayType, synchronize) in available_backends()
         @testset "$backend_name" begin

@@ -11,7 +11,8 @@ end
 
 function _check_canonical_tlr_gemm(ArrayType, synchronize;
                                    transA='N', transB='N',
-                                   rA=3, rB=4, beta=0.0, seed=1200)
+                                   rA=3, rB=4, beta=0.0, seed=1200,
+                                   workspace=nothing)
     T = Float64
     A, B, C = _canonical_tlr_fixture(T, ArrayType; rA, rB, seed)
     if !iszero(beta)
@@ -21,10 +22,14 @@ function _check_canonical_tlr_gemm(ArrayType, synchronize;
     op(X, t) = uppercase(t) == 'T' ? transpose(X) : X
     alpha = T(1.2)
     ref = alpha * op(Ad, transA) * op(Bd, transB) + T(beta) * C0
+    actual_workspace = workspace === :minimum ?
+        NextLA.tlr_gemm_minimum_workspace_bytes(
+            C, A, B; transA, transB, block=4) : workspace
 
     NextLA.TLRmodule.gemm!(
         C, A, B; alpha, beta=T(beta), transA, transB,
         tol=1e-7, rel=true, eps_rel=1e-7, r_required=3, block=4,
+        workspace=actual_workspace,
     )
     synchronize(C.int_U)
     got = reconstruct_tlr(C)
@@ -68,9 +73,11 @@ end
     T = Float64
     A, B, C = _canonical_tlr_fixture(T, Array; rA=3, rB=4, seed=1248)
     ref = T(1.2) * reconstruct_tlr(A) * reconstruct_tlr(B)
-    bytes = NextLA.tlr_gemm_workspace_bytes(C, A, B; block=4)
+    minimum = NextLA.tlr_gemm_minimum_workspace_bytes(C, A, B; block=4)
+    maximum = NextLA.tlr_gemm_maximum_workspace_bytes(C, A, B; block=4)
     workspace = NextLA.TLRGemmWorkspace(C, A, B; block=4)
-    @test sizeof(workspace) == bytes
+    @test sizeof(workspace) == maximum
+    @test workspace.key.capacity == 3
     storage = (
         workspace.arena.persistent_t.storage,
         workspace.arena.phase_t.storage,
@@ -89,10 +96,49 @@ end
             workspace.U, workspace.V,
         )))
     end
+    minimum_ws = NextLA.TLRGemmWorkspace(
+        C, A, B; bytes=minimum, block=4)
+    @test sizeof(minimum_ws) == minimum
+    @test minimum_ws.key.capacity == 1
+    _TLRM.gemm!(
+        C, A, B; alpha=1.2, tol=1e-7, rel=true, eps_rel=1e-7,
+        r_required=3, block=4, workspace=minimum_ws)
+    @test norm(reconstruct_tlr(C) - ref) / norm(ref) <= 2e-6
+
+    middle = minimum
+    while middle < maximum &&
+          NextLA.TLRGemmWorkspace(C, A, B; bytes=middle, block=4).key.capacity == 1
+        middle += max((maximum - minimum) ÷ 16, 1)
+    end
+    middle_ws = NextLA.TLRGemmWorkspace(
+        C, A, B; bytes=min(middle, maximum), block=4)
+    @test 1 <= middle_ws.key.capacity <= 3
+
+    capped = NextLA.TLRGemmWorkspace(
+        C, A, B; bytes=maximum + 1_000_000, block=4)
+    @test capped.key.capacity == 3
+    @test sizeof(capped) == maximum
     @test_throws ArgumentError _TLRM.gemm!(
-        C, A, B; block=4, workspace=bytes - 1)
+        C, A, B; block=4, workspace=minimum - 1)
     @test_throws ArgumentError _TLRM.gemm!(
         C, A, B; transA='N', transB='T', block=4, workspace)
+end
+
+@testset "rolling capacity preserves canonical operations" begin
+    cases = [
+        (transA='N', transB='N', rA=3, rB=4, beta=-0.2, seed=1280),
+        (transA='N', transB='T', rA=2, rB=6, beta=0.0, seed=1290),
+        (transA='N', transB='T', rA=6, rB=2, beta=0.15, seed=1300),
+        (transA='T', transB='T', rA=3, rB=4, beta=-0.1, seed=1310),
+    ]
+    for kw in cases
+        A, B, C = _canonical_tlr_fixture(
+            Float64, Array; rA=kw.rA, rB=kw.rB, seed=kw.seed)
+        minimum = NextLA.tlr_gemm_minimum_workspace_bytes(
+            C, A, B; transA=kw.transA, transB=kw.transB, block=4)
+        _check_canonical_tlr_gemm(
+            Array, _ -> nothing; kw..., workspace=minimum)
+    end
 end
 
 @testset "canonical row-major TLR-result gemm! on CUDA" begin
@@ -106,6 +152,18 @@ end
                 rA=2, rB=6, seed=1260)
             _check_canonical_tlr_gemm(
                 ArrayType, synchronize; transA='T', transB='T', seed=1270)
+            _check_canonical_tlr_gemm(
+                ArrayType, synchronize; transA='N', transB='N', seed=1320,
+                workspace=:minimum)
+            _check_canonical_tlr_gemm(
+                ArrayType, synchronize; transA='N', transB='T',
+                rA=2, rB=6, seed=1330, workspace=:minimum)
+            _check_canonical_tlr_gemm(
+                ArrayType, synchronize; transA='N', transB='T',
+                rA=6, rB=2, seed=1340, workspace=:minimum)
+            _check_canonical_tlr_gemm(
+                ArrayType, synchronize; transA='T', transB='T', seed=1350,
+                workspace=:minimum)
         end
     end
 end
