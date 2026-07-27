@@ -91,7 +91,7 @@ end
 @inline lowrank_regions(::TLRMatrix) = (_INTERIOR, _RIGHT, _BOTTOM, _CORNER)
 
 """
-    TLRMatrix(backend, T, m, n, tile_size, maxrank; rank_type=Int32, tile_order=TileColMajor)
+    TLRMatrix(backend, T, m, n, tile_size, maxrank; rank_type=Int32, tile_order=TileRowMajor)
 
 Allocate an empty fully low-rank TLR container for an `m×n` matrix with nominal
 tile size `tile_size == (bm, bn)` and maximum per-tile rank `maxrank`.
@@ -100,7 +100,7 @@ function TLRMatrix(
     backend::Backend, ::Type{T},
     m::Int, n::Int, tile_size::NTuple{2,Int}, maxrank::Int;
     rank_type::Type{<:Integer}=Int32,
-    tile_order=TileColMajor,
+    tile_order=TileRowMajor,
 ) where {T}
     bm, bn = tile_size
     m > 0 && n > 0 && bm > 0 && bn > 0 && maxrank >= 0 ||

@@ -61,6 +61,7 @@ include("TLR/range_find.jl")
 include("TLR/range_find_run.jl")
 include("TLR/compress.jl")
 include("TLR/gemm.jl")
+include("TLR/gemm_tlr_r3.jl")
 include("TLR/gemm_budget.jl")
 include("TLR/gemm_core.jl")
 

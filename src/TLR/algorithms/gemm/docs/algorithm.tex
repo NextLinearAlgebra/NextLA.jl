@@ -176,6 +176,39 @@ high-arithmetic-intensity kernel that dominates the useful work and that the
 whole factored form exists to expose.
 \end{remark}
 
+\subsection{Canonical storage and sampling contract}
+\label{sec:canonicalcontract}
+
+The first implementation deliberately exposes a predictable restricted API:
+$C$, $A$, and $B$ are all stored physically tile-row-major, while the transpose
+flags define only their logical orientations.  On a regular tile grid this
+gives the following operation-level schedule:
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+$\operatorname{op}(A)$ & $\operatorname{op}(B)$ & repeated sample & run family \\
+\midrule
+$N$ & $N$ & $X\Omega$ & fixed output row \\
+$N$ & $T$ & $X\Omega$ or $X^{\T}\Omega$ & fixed column or fixed row \\
+$T$ & $T$ & $X^{\T}\Omega$ & fixed output row \\
+$T$ & $N$ & deferred & packed/reduced general-storage path \\
+\bottomrule
+\end{tabular}
+\end{center}
+In the $NT$ case both terminal contraction stacks are natural.  Their retained
+workspace is estimated from the active rank caps of the two operands, and one
+side is selected for the complete operation.  Selection is not made per tile:
+one run family preserves uniform batches and permits converged members to be
+swap-removed into a dense active prefix.
+
+``Natural'' here concerns both tile order and rank extent.  A panel at its
+physical rank capacity is a zero-copy view.  If metadata trims that capacity,
+the active rank prefix has gaps between adjacent tiles and cannot be reshaped
+into the terminal GPU GEMM.  It is therefore packed once into compact
+run-local storage and reused by all range-finder passes.  The more general
+$TN$ packing/reduction problem is intentionally postponed rather than hidden
+inside this canonical contract.
+
 \section{Stopping: what is computed, and what it costs}
 \label{sec:energy}
 

@@ -105,7 +105,26 @@ validation.
 
 ## TLR result integration boundary
 
-TLR-result GEMM is intentionally absent from the public dispatch until the ARA
-factor-list implementation is complete. That implementation reuses logical
-operands, factor accessors, run geometry, workspace utilities, and precision
-dispatch, while owning sampling, convergence, truncation, and output scatter.
+The predictable TLR-result API requires physical `TileRowMajor` storage for
+`C`, `A`, and `B`. `TLRMatrix` therefore defaults to that order. Transpose flags
+change the logical order but never reinterpret the physical contract.
+
+For a regular tile grid, the supported sampling table is:
+
+| `transA` | `transB` | natural sample | run |
+|---|---|---|---|
+| `N` | `N` | right, `XΩ` | fixed output row |
+| `N` | `T` | right or left | fixed column or row, selected once from active ranks |
+| `T` | `T` | left, `XᵀΩ` | fixed output row |
+| `T` | `N` | deferred | requires packed/reduced general-storage execution |
+
+When both sides are natural, the implementation compares retained workspace
+for the two run families using the active operand rank caps. It does not choose
+per tile, which keeps the ARA batch uniform and swap-compactable.
+
+The ARA path owns sampling, convergence, one co-range apply, truncation, and
+output scatter. A full-capacity row/column panel is consumed as a view. A
+rank-trimmed prefix is packed once into a contiguous run-local panel because a
+strided rank slice cannot be reshaped into a valid terminal GPU GEMM operand.
+Arbitrary physical layouts, boundary tiles, `TN`, budgeted scheduling, and a
+reusable run arena remain the general-storage/R4-R5 boundary.
