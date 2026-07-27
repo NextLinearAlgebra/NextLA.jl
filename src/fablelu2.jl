@@ -168,15 +168,15 @@ end
 # CUSOLVER nonpivoting base case
 # =============================================================================
 
-"""
-    getrf_nopiv!(A::StridedCuMatrix)
+# """
+#     getrf_nopiv!(A::StridedCuMatrix)
 
-Performs an in-place, nonpivoting LU factorization of `A` using CUSOLVER.
-Calls `cusolverDn<T>getrf` with a null pivot array (`CU_NULL`), which per the
-CUSOLVER documentation disables partial pivoting entirely. On return, the strictly
-lower triangle of `A` holds the unit-lower-triangular factor `L` (implicit unit
-diagonal) and the upper triangle holds `U`.
-"""
+# Performs an in-place, nonpivoting LU factorization of `A` using CUSOLVER.
+# Calls `cusolverDn<T>getrf` with a null pivot array (`CU_NULL`), which per the
+# CUSOLVER documentation disables partial pivoting entirely. On return, the strictly
+# lower triangle of `A` holds the unit-lower-triangular factor `L` (implicit unit
+# diagonal) and the upper triangle holds `U`.
+# """
 for (bname, fname, elty) in ((:cusolverDnSgetrf_bufferSize, :cusolverDnSgetrf, :Float32),
                              (:cusolverDnDgetrf_bufferSize, :cusolverDnDgetrf, :Float64))
     @eval begin
