@@ -36,7 +36,7 @@ m = nt * b + tail
 A = make_tlr(backend, m, b, r, M.TileRowMajor)   # (k,j): row family, fused Stage 1
 B = make_tlr(backend, m, b, r, M.TileRowMajor)
 C = CUDA.CuArray(randn(T, m, m))
-budget = M.gemm_workspace_bytes(A, B)
+budget = M.gemm_maximum_workspace_bytes(A, B)
 
 # warmup (compile + caches), untraced
 for _ in 1:3

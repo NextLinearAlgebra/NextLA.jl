@@ -138,3 +138,37 @@ end
         compute=_TLRM.default_gemm_compute_mode(T))
     @test all(C .== -one(T))
 end
+
+@testset "dense-output GEMM minimum and maximum workspace" begin
+    T = Float64
+    b, r = 8, 3
+    qm, qk, qn = 32, 4, 2
+    A = NextLA.TLRMatrix(zeros(T, b * qm, b * qk), b, r)
+    B = NextLA.TLRMatrix(zeros(T, b * qk, b * qn), b, r)
+    fill_random_tlr!(A, Array; seed=71)
+    fill_random_tlr!(B, Array; seed=72)
+
+    wmin = NextLA.gemm_minimum_workspace_bytes(A, B)
+    wmax = NextLA.gemm_maximum_workspace_bytes(A, B)
+    @test 0 < wmin <= wmax
+    @test wmax == qm * qn * wmin
+
+    reference = reconstruct_tlr(A) * reconstruct_tlr(B)
+    for workspace in (wmin, wmax)
+        C = zeros(T, size(A, 1), size(B, 2))
+        _TLRM.gemm!(C, A, B; max_workspace=workspace)
+        @test C ≈ reference
+    end
+
+    for MatrixType in (NextLA.TLRMatrix, NextLA.TLRDenseDiagMatrix)
+        X = MatrixType(zeros(T, 35, 35), b, r)
+        Y = MatrixType(zeros(T, 35, 35), b, r)
+        for (transA, transB) in (('N', 'N'), ('N', 'T'), ('T', 'N'), ('T', 'T'))
+            lo = NextLA.gemm_minimum_workspace_bytes(
+                X, Y; transA, transB)
+            hi = NextLA.gemm_maximum_workspace_bytes(
+                X, Y; transA, transB)
+            @test 0 < lo <= hi
+        end
+    end
+end

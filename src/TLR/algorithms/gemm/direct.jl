@@ -182,6 +182,20 @@ end
     return per_slice * _full_run_tiles(chosen_placement, geom)
 end
 
+@inline function minimum_workspace_bytes(geom::RegularGeometry, ops;
+        fold::Union{Nothing,FoldSide}=nothing,
+        placement::Union{Nothing,KAxisSchedule}=nothing)
+    (geom.q_m == 0 || geom.q_c == 0 || geom.q_n == 0 ||
+     geom.rA == 0 || geom.rB == 0) && return 0
+    chosen_fold = fold === nothing ? _default_fold(ops) : fold
+    chosen_placement = placement === nothing ? placement_for_fold(chosen_fold, ops) : placement
+    per = chosen_placement isa KAsGemmK ? geom.perA_row : geom.perA_col
+    per == 0 && return 0
+    return chosen_placement isa KAsGemmK ?
+           _row_slice_bytes(geom, chosen_fold) :
+           _slice_bytes(geom.rA, geom.perA_col, geom.rB, geom.bn, eltype(geom))
+end
+
 function execute_lowrank_dense_term!(C, A, B, left_outer, left_inner,
         dense::LogicalDenseTile, q_m::Int, i0::Int, j0::Int;
         alpha, beta, budget::Int, compute)
@@ -264,19 +278,27 @@ end
 @inline full_workspace_bytes_dense_lowrank(q_n::Int, bm::Int, rB::Int, ::Type{T}) where {T} =
     q_n == 0 || rB == 0 ? 0 : q_n * bm * rB * sizeof(T)
 
-@inline function _lowrank_term_workspace(Apair, Bpair, q_m, q_c, q_n;
+@inline minimum_workspace_bytes_lowrank_dense(q_m::Int, rA::Int, bn::Int, ::Type{T}) where {T} =
+    q_m == 0 || rA == 0 ? 0 : rA * bn * sizeof(T)
+
+@inline minimum_workspace_bytes_dense_lowrank(q_n::Int, bm::Int, rB::Int, ::Type{T}) where {T} =
+    q_n == 0 || rB == 0 ? 0 : bm * rB * sizeof(T)
+
+@inline function _lowrank_term_workspace(Apair, Bpair, q_m, q_c, q_n, sizing;
                                          fold=nothing, placement=nothing)
     (q_m == 0 || q_c == 0 || q_n == 0) && return 0
     ops = _lowrank_term_operands(Apair, Bpair)
     geom = regular_geometry(q_m, q_c, q_n, ops)
-    return full_workspace_bytes(geom, ops; fold, placement)
+    return sizing(geom, ops; fold, placement)
 end
 
 @inline _has_row_tail(A) = tilegrid_size(A)[1] > regular_tilegrid_size(A)[1]
 @inline _has_col_tail(A) = tilegrid_size(A)[2] > regular_tilegrid_size(A)[2]
 
-function gemm_workspace_bytes(A::AbstractTLRMatrix, B::AbstractTLRMatrix;
-                              transA::Char='N', transB::Char='N')
+function _gemm_workspace_bound(A::AbstractTLRMatrix, B::AbstractTLRMatrix,
+                               sizing, lowrank_dense_sizing,
+                               dense_lowrank_sizing;
+                               transA::Char='N', transB::Char='N')
     LA = logical_operand(A, transA)
     LB = logical_operand(B, transB)
     size(LA, 2) == size(LB, 1) ||
@@ -300,36 +322,68 @@ function gemm_workspace_bytes(A::AbstractTLRMatrix, B::AbstractTLRMatrix;
     Bbottom = _bottom_pair(LB)
 
     requirements = Int[
-        _lowrank_term_workspace(Aint, Bint, q_m, q_c, q_n),
-        has_j ? _lowrank_term_workspace(Aint, Bright, q_m, q_c, 1) : 0,
-        has_i ? _lowrank_term_workspace(Abottom, Bint, 1, q_c, q_n) : 0,
-        has_k ? _lowrank_term_workspace(Aright, Bbottom, q_m, 1, q_n) : 0,
+        _lowrank_term_workspace(Aint, Bint, q_m, q_c, q_n, sizing),
+        has_j ? _lowrank_term_workspace(Aint, Bright, q_m, q_c, 1, sizing) : 0,
+        has_i ? _lowrank_term_workspace(Abottom, Bint, 1, q_c, q_n, sizing) : 0,
+        has_k ? _lowrank_term_workspace(Aright, Bbottom, q_m, 1, q_n, sizing) : 0,
         (has_i && has_j) ? _lowrank_term_workspace(
-            Abottom, Bright, 1, q_c, 1;
+            Abottom, Bright, 1, q_c, 1, sizing;
             fold=FoldRight(), placement=KAsSerialLoop{:k}()) : 0,
     ]
 
     if has_k && has_j
         if physical(LB) isa TLRMatrix
             push!(requirements, _lowrank_term_workspace(Aright, _corner_pair(LB),
-                                                        q_m, 1, 1))
+                                                        q_m, 1, 1, sizing))
         else
-            push!(requirements, full_workspace_bytes_lowrank_dense(
+            push!(requirements, lowrank_dense_sizing(
                 q_m, maxrank(LA), tail_tile_size(LB, 2), eltype(LA)))
         end
     end
     if has_i && has_k
         if physical(LA) isa TLRMatrix
             push!(requirements, _lowrank_term_workspace(_corner_pair(LA), Bbottom,
-                                                        1, 1, q_n))
+                                                        1, 1, q_n, sizing))
         else
-            push!(requirements, full_workspace_bytes_dense_lowrank(
+            push!(requirements, dense_lowrank_sizing(
                 q_n, tail_tile_size(LA, 1), maxrank(LB), eltype(LB)))
         end
     end
     if has_i && has_k && has_j && physical(LA) isa TLRMatrix && physical(LB) isa TLRMatrix
         push!(requirements, _lowrank_term_workspace(_corner_pair(LA), _corner_pair(LB),
-                                                    1, 1, 1))
+                                                    1, 1, 1, sizing))
     end
     return maximum(requirements; init=0)
 end
+
+"""
+    gemm_minimum_workspace_bytes(A, B; transA='N', transB='N') -> Int
+
+Return the smallest dense-output TLR GEMM scheduler budget that can hold one
+complete run slice for every term in `op(A) * op(B)`. Passing this value as
+`max_workspace` gives the maximally partitioned execution.
+"""
+gemm_minimum_workspace_bytes(A::AbstractTLRMatrix, B::AbstractTLRMatrix;
+                             transA::Char='N', transB::Char='N') =
+    _gemm_workspace_bound(
+        A, B, minimum_workspace_bytes,
+        minimum_workspace_bytes_lowrank_dense,
+        minimum_workspace_bytes_dense_lowrank;
+        transA, transB,
+    )
+
+"""
+    gemm_maximum_workspace_bytes(A, B; transA='N', transB='N') -> Int
+
+Return the smallest dense-output TLR GEMM scheduler budget for which every
+term in `op(A) * op(B)` executes at its full run width. Larger values cannot
+increase any run dimension.
+"""
+gemm_maximum_workspace_bytes(A::AbstractTLRMatrix, B::AbstractTLRMatrix;
+                             transA::Char='N', transB::Char='N') =
+    _gemm_workspace_bound(
+        A, B, full_workspace_bytes,
+        full_workspace_bytes_lowrank_dense,
+        full_workspace_bytes_dense_lowrank;
+        transA, transB,
+    )

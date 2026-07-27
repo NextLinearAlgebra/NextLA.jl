@@ -87,14 +87,25 @@ final synchronization.
 
 ## Workspace contract
 
-`gemm_workspace_bytes(A, B; transA, transB)` returns the smallest per-operation budget
-at which every direct kernel used by dense-output `gemm!` runs at full width. It is the
-maximum of the actual requirements of the eight possible region terms, including
-transpose-aware tails and the specialized dense-boundary kernels. Smaller budgets remain
-correct and partition budgeted work into more runs.
+Dense-output GEMM exposes two exact scheduler bounds:
+
+- `gemm_minimum_workspace_bytes(A, B; transA, transB)` is the smallest budget
+  that holds one complete run slice for every live term. It produces the most
+  partitioned valid schedule.
+- `gemm_maximum_workspace_bytes(A, B; transA, transB)` is the smallest budget
+  at which every live term runs at full width. Increasing the budget beyond
+  this value cannot enlarge a run.
+
+Every query includes transpose-aware tails and specialized dense-boundary
+kernels. Any budget between the two bounds is correct, making policies such as
+a multiple of the minimum or a fraction of the maximum explicit without
+claiming an unmeasured performance optimum.
 
 The bound covers promoted contraction scratch. Output storage, persistent TLR factors,
 and backend-library internal allocations are outside that public budget, as before.
+The current `max_workspace` argument is the scheduler budget supplied to each
+region term; because disjoint output regions may execute on concurrent streams,
+it is not yet a strict bound on their summed instantaneous storage.
 
 ## Precision
 

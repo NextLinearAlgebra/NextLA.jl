@@ -190,6 +190,17 @@ Focused verification:
 - The GPU test also verifies compact active-rank panel packing; full-rank
   canonical panels remain views.
 
+## Dense-output workspace bounds — 2026-07-27
+
+The dense-output scheduler now exposes exact minimum and maximum budget
+queries. The minimum holds one complete slice for each possible contraction
+term; the maximum is the first budget at which every term has full run width.
+No saturation heuristic is claimed yet. Callers can select an explicit point
+between the bounds—for example, a multiple of the minimum or a fraction of the
+maximum—while later benchmarking determines a backend-specific performance
+knee. A tall-and-skinny test fixes the expected large separation between the
+two bounds and verifies correctness at both endpoints.
+
 ## R3 performance closure — 2026-07-27
 
 An audit of `ara/tile_apply.jl` found the R3 sampling couplers rebuilding

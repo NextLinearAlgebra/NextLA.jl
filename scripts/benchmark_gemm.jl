@@ -90,7 +90,7 @@ function time_gemm(backend, b, nt, r, tail, oA, oB)
     B = make_tlr(backend, m, b, r, oB)
     C = backend isa CPU ? randn(T, m, m) : CUDA.CuArray(randn(T, m, m))
     # Full-width budget for every direct regular and boundary kernel.
-    budget = M.gemm_workspace_bytes(A, B)
+    budget = M.gemm_maximum_workspace_bytes(A, B)
     for _ in 1:WARMUP
         M.gemm!(C, A, B; alpha=1.0, beta=0.5, max_workspace=budget); gpu_sync()
     end

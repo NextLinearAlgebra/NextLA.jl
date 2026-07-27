@@ -102,4 +102,6 @@ using .TLRmodule: ndiag_tiles, tile_origin_coords, tile_size
 using .TLRmodule: maxrank, ranks, residuals, dense_diag, dense_diag_corner, tilegrid_size, nominal_tile_size, tail_tile_size
 using .TLRmodule: compress!, uncompress!, alloc_workspace
 using .TLRmodule: get_factors
+using .TLRmodule: gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes
+export gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes
 end
