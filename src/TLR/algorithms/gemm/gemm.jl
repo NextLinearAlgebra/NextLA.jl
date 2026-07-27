@@ -352,11 +352,111 @@ function _validate_canonical_tlr_gemm(C::TLRMatrix,
     return nothing
 end
 
+function _tlr_gemm_workspace_spec(C::TLRMatrix{BackendT,T},
+                                  A::TLRMatrix{BackendT,T},
+                                  B::TLRMatrix{BackendT,T};
+                                  transA::Char='N', transB::Char='N',
+                                  block::Int=32) where {BackendT,T}
+    LA = logical_operand(A, transA)
+    LB = logical_operand(B, transB)
+    _validate_canonical_tlr_gemm(C, A, B, LA, LB)
+    qm, qk = grid_size(LA)
+    _, qn = grid_size(LB)
+    rA, rB = _active_rank_cap(A), _active_rank_cap(B)
+    blk = min(block, max(maxrank(C), 1))
+    side = choose_tlr_sampling_side(LA, LB, maxrank(C), blk, rA, rB)
+    family = side === :right && tile_order(LB) isa TileColMajor ?
+        :column : (side === :right ? :row_right : :row_left)
+    nmember = family === :column ? qm : qn
+    bm = nominal_tile_size(C, 1)
+    bn = nominal_tile_size(C, 2)
+    Thi = tlr_orthogonalization_type(T)
+    arena_bytes = ara_run_workspace_bytes(
+        family, rA, rB, qk, nmember, blk, maxrank(C), bm, bn, T, Thi)
+    key = (
+        backend=typeof(get_backend(C)), T=T, rankT=eltype(C.ranks),
+        family=family, qm=qm, qk=qk, qn=qn, nmember=nmember,
+        rA=rA, rB=rB, block=blk, maxrank=maxrank(C), bm=bm, bn=bn,
+    )
+    return (; LA, LB, side, family, nmember, arena_bytes, key, Thi)
+end
+
+function TLRGemmWorkspace(C::TLRMatrix{BackendT,T},
+                          A::TLRMatrix{BackendT,T},
+                          B::TLRMatrix{BackendT,T};
+                          transA::Char='N', transB::Char='N',
+                          block::Int=32) where {BackendT,T}
+    spec = _tlr_gemm_workspace_spec(C, A, B; transA, transB, block)
+    backend = get_backend(C)
+    ab = spec.arena_bytes
+    arena = ARARunArena(
+        backend, T, spec.Thi, ab.persistent_t_bytes,
+        ab.phase_t_bytes, ab.phase_thi_bytes)
+    n = spec.nmember
+    key = spec.key
+    return TLRGemmWorkspace(
+        arena,
+        allocate(backend, T, key.bm, key.maxrank, n),
+        allocate(backend, T, key.bn, key.maxrank, n),
+        allocate(backend, key.rankT, n),
+        allocate(backend, Float64, n),
+        allocate(backend, key.rankT, n),
+        allocate(backend, Float64, n),
+        allocate(backend, Int32, n),
+        allocate(backend, key.rankT, key.qm * key.qn),
+        allocate(backend, Float64, key.qm * key.qn),
+        key,
+    )
+end
+
+"""
+    tlr_gemm_workspace_bytes(C, A, B; transA='N', transB='N', block=32)
+
+Exact numerical storage owned by a reusable `TLRGemmWorkspace` for the
+canonical TLR-output operation and sampling choice.
+"""
+function tlr_gemm_workspace_bytes(C::TLRMatrix, A::TLRMatrix, B::TLRMatrix;
+                                  transA::Char='N', transB::Char='N',
+                                  block::Int=32)
+    spec = _tlr_gemm_workspace_spec(C, A, B; transA, transB, block)
+    k = spec.key
+    ab = spec.arena_bytes
+    arena = ab.persistent_t_bytes + ab.phase_t_bytes + ab.phase_thi_bytes
+    traversal_t = (k.bm + k.bn) * k.maxrank * k.nmember * sizeof(k.T)
+    diagnostics = 2 * k.nmember * sizeof(k.rankT) +
+                  2 * k.nmember * sizeof(Float64) +
+                  k.nmember * sizeof(Int32) +
+                  k.qm * k.qn * (sizeof(k.rankT) + sizeof(Float64))
+    return arena + traversal_t + diagnostics
+end
+
+function _prepare_tlr_gemm_workspace(C, A, B, workspace;
+                                     transA::Char, transB::Char, block::Int)
+    spec = _tlr_gemm_workspace_spec(C, A, B; transA, transB, block)
+    if workspace === nothing
+        return TLRGemmWorkspace(C, A, B; transA, transB, block), spec
+    elseif workspace isa Integer
+        workspace >= 0 ||
+            throw(ArgumentError("workspace bytes must be nonnegative"))
+        required = tlr_gemm_workspace_bytes(C, A, B; transA, transB, block)
+        workspace >= required || throw(ArgumentError(
+            "workspace has $workspace bytes; at least $required bytes are required"))
+        ws = TLRGemmWorkspace(C, A, B; transA, transB, block)
+        return ws, spec
+    elseif workspace isa TLRGemmWorkspace
+        workspace.key == spec.key || throw(ArgumentError(
+            "TLRGemmWorkspace geometry, backend, or element type does not match this operation"))
+        return workspace, spec
+    end
+    throw(ArgumentError(
+        "workspace must be nothing, an integer byte count, or TLRGemmWorkspace"))
+end
+
 """
     gemm!(C::TLRMatrix, A::TLRMatrix, B::TLRMatrix;
           alpha=true, beta=false, transA='N', transB='N',
           tol=0, rel=false, eps_rel=nothing, r_required=10, block=32,
-          compute=nothing) -> C
+          compute=nothing, workspace=nothing) -> C
 
 Canonical physical-row-major TLR result GEMM:
 
@@ -369,6 +469,8 @@ unsupported until the general-storage packing/reduction path is implemented.
 
 `tol` controls final Frobenius truncation. `eps_rel` controls adaptive range
 capture and defaults to `max(tol, ara_stopping_floor(promoted_type))`.
+`workspace` accepts a byte count or a reusable `TLRGemmWorkspace`; omitting
+it constructs one temporary workspace for convenience.
 """
 function gemm!(C::TLRMatrix{BackendT,T},
                A::TLRMatrix{BackendT,T},
@@ -377,7 +479,7 @@ function gemm!(C::TLRMatrix{BackendT,T},
                transA::Char='N', transB::Char='N',
                tol::Real=0.0, rel::Bool=false,
                eps_rel=nothing, r_required::Int=10, block::Int=32,
-               compute=nothing) where {BackendT,T}
+               compute=nothing, workspace=nothing) where {BackendT,T}
     LA = logical_operand(A, transA)
     LB = logical_operand(B, transB)
     _validate_canonical_tlr_gemm(C, A, B, LA, LB)
@@ -396,55 +498,68 @@ function gemm!(C::TLRMatrix{BackendT,T},
     sample_tol >= floor_rel || throw(ArgumentError(
         "eps_rel=$sample_tol is below the supported floor $floor_rel"))
 
+    ws_owner, workspace_spec = _prepare_tlr_gemm_workspace(
+        C, A, B, workspace; transA, transB, block)
     ops = logical_operands(LA, LB)
     LC = logical_operand(C)
     qm, qk = grid_size(LA)
     _, qn = grid_size(LB)
     rA, rB = _active_rank_cap(A), _active_rank_cap(B)
     blk = min(block, max(maxrank(C), 1))
-    side = choose_tlr_sampling_side(LA, LB, maxrank(C), blk, rA, rB)
+    side = workspace_spec.side
     backend = get_backend(C)
-    ranks_dev = allocate(backend, eltype(C.ranks), qm * qn)
-    err_dev = allocate(backend, Float64, qm * qn)
+    ranks_dev = ws_owner.ranks_global
+    err_dev = ws_owner.errors_global
+    bm_tile = nominal_tile_size(C, 1)
+    bn_tile = nominal_tile_size(C, 2)
 
     if side === :right && tile_order(LB) isa TileColMajor
         # NT, right choice: fixed columns share H. U/V/rr/ee/slots_dev are
         # loop-invariant in shape (every column run has qm members), so they
         # are allocated once and reused; range_find_column_run! and
         # _store_tlr_run! both overwrite every slot they use on every call.
-        U = allocate(backend, T, nominal_tile_size(C, 1), maxrank(C), qm)
-        V = allocate(backend, T, nominal_tile_size(C, 2), maxrank(C), qm)
-        rr = allocate(backend, eltype(C.ranks), qm)
-        ee = allocate(backend, Float64, qm)
-        slots_dev = allocate(backend, Int32, qm)
+        # `arena` is sized once for this family/shape and reused (reset)
+        # across every iteration below, replacing each run's own fresh
+        # device allocation with a single persistent bump allocator.
+        U, V = ws_owner.U, ws_owner.V
+        rr, ee = ws_owner.ranks, ws_owner.errors
+        rr_slot, ee_slot = ws_owner.ranks_slot, ws_owner.errors_slot
+        slots_dev = ws_owner.indices
+        arena = ws_owner.arena
         for j in 1:qn
             range_find_column_run!(
                 U, V, rr, ee, ops, 1:qm, j;
                 alpha=α, beta=β, C=LC, eps_rel=sample_tol, r_required,
-                tol, rel, block=blk, rA=rA, rB=rB, compute=mode,
+                tol, rel, block=blk, rA=rA, rB=rB, compute=mode, arena,
+                ranks_slot=rr_slot, err_slot=ee_slot,
+                slot_to_member=slots_dev,
             )
             slots = [j + (i - 1) * qn for i in 1:qm]
             _store_tlr_run!(C, U, V, rr, ee, slots, ranks_dev, err_dev, slots_dev)
         end
     else
         # NN right sampling, or NT/TT left sampling: fixed output rows.
-        U = allocate(backend, T, nominal_tile_size(C, 1), maxrank(C), qn)
-        V = allocate(backend, T, nominal_tile_size(C, 2), maxrank(C), qn)
-        rr = allocate(backend, eltype(C.ranks), qn)
-        ee = allocate(backend, Float64, qn)
-        slots_dev = allocate(backend, Int32, qn)
+        U, V = ws_owner.U, ws_owner.V
+        rr, ee = ws_owner.ranks, ws_owner.errors
+        rr_slot, ee_slot = ws_owner.ranks_slot, ws_owner.errors_slot
+        slots_dev = ws_owner.indices
+        arena = ws_owner.arena
         for i in 1:qm
             if side === :right
                 range_find_row_right_run!(
                     U, V, rr, ee, ops, i, 1:qn;
                     alpha=α, beta=β, C=LC, eps_rel=sample_tol, r_required,
-                    tol, rel, block=blk, rA=rA, rB=rB, compute=mode,
+                    tol, rel, block=blk, rA=rA, rB=rB, compute=mode, arena,
+                    ranks_slot=rr_slot, err_slot=ee_slot,
+                    slot_to_member=slots_dev,
                 )
             else
                 range_find_row_left_run!(
                     U, V, rr, ee, ops, i, 1:qn;
                     alpha=α, beta=β, C=LC, eps_rel=sample_tol, r_required,
-                    tol, rel, block=blk, rA=rA, rB=rB, compute=mode,
+                    tol, rel, block=blk, rA=rA, rB=rB, compute=mode, arena,
+                    ranks_slot=rr_slot, err_slot=ee_slot,
+                    slot_to_member=slots_dev,
                 )
             end
             slots = collect(((i - 1) * qn + 1):(i * qn))

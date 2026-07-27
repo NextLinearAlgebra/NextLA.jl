@@ -311,34 +311,39 @@ pass; it trades kernel efficiency against oversampling and does not affect
 correctness. The reference uses 32 (the warp size).
 """
 function ARAWorkspace(::Type{T}, backend, m::Int, maxrank::Int, count::Int;
-                      block::Int=32) where {T}
+                      block::Int=32, arena=nothing) where {T}
     maxrank >= 0 && count >= 0 && m >= 0 ||
         throw(ArgumentError("m, maxrank and count must be nonnegative"))
-    return ARAWorkspace(allocate(backend, T, m, maxrank, count); block)
+    Q = _workspace_array!(
+        _run_persistent_t_arena(arena), backend, T, m, maxrank, count)
+    return ARAWorkspace(Q; block, arena)
 end
 
 """
-    ARAWorkspace(Q; block=32)
+    ARAWorkspace(Q; block=32, arena=nothing)
 
 Wrap a caller-owned basis panel `Q` (`m × maxrank × count`), so the loop can
 write straight into storage the caller already has — `compress!` keeps its basis
 inside the output factor panels this way. Everything else is allocated on `Q`'s
-backend.
+backend, drawn from `arena` when one is supplied (see `ARARunArena` in
+`algorithms/gemm/workspace.jl`) and via plain `allocate` otherwise.
 """
-function ARAWorkspace(Q::AbstractArray{T,3}; block::Int=32) where {T}
+function ARAWorkspace(Q::AbstractArray{T,3}; block::Int=32, arena=nothing) where {T}
     block >= 1 || throw(ArgumentError("block must be positive"))
     m, maxrank, count = size(Q)
     backend = get_backend(Q)
     blk = min(block, max(maxrank, 1))
     Thi = tlr_orthogonalization_type(T)
-    Yblk = allocate(backend, T, m, blk, count)
-    Dproj = allocate(backend, T, max(maxrank, 1), blk, count)
-    R1 = allocate(backend, T, blk, blk, count)
-    R2 = allocate(backend, T, blk, blk, count)
+    tarena = _run_t_arena(arena)
+    thi_arena = _run_thi_arena(arena)
+    Yblk = _workspace_array!(tarena, backend, T, m, blk, count)
+    Dproj = _workspace_array!(tarena, backend, T, max(maxrank, 1), blk, count)
+    R1 = _workspace_array!(tarena, backend, T, blk, blk, count)
+    R2 = _workspace_array!(tarena, backend, T, blk, blk, count)
     chol = ARACholeskyWorkspace(
         Yblk,
-        allocate(backend, Thi, m, blk, count),
-        allocate(backend, Thi, blk, blk, count),
+        _workspace_array!(thi_arena, backend, Thi, m, blk, count),
+        _workspace_array!(thi_arena, backend, Thi, blk, blk, count),
         R1, R2,
     )
     return ARAWorkspace(

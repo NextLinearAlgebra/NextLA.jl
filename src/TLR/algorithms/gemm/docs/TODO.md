@@ -287,6 +287,150 @@ Not done: extending `BatchPtrDescriptor` to `ara_cholesky_pass!`'s
 contract"); the allocation-regression test itself (`test/TLR/gemm_r3_alloc.jl`,
 tracked separately below).
 
+## R4 scheduler scope — 2026-07-27
+
+R4 treats three scheduling choices as independent:
+
+1. admission scope: one fixed-axis lane, several independent fixed-axis
+   lanes, or an arbitrary cross-axis tile pool;
+2. execution scope: the existing lane-local couplings or a new mixed-tile
+   coupling;
+3. reduction granularity: one full-`k` contraction or accumulating
+   `k`-chunks.
+
+The first implementation is deliberately
+`SingleLane + LaneLocal + FullK`. It preserves the sharing encoded by the
+existing couplings: a fixed-column `ColumnRunCoupling` forms one shared
+`H`, while fixed-row couplings retain their corresponding shared operand.
+Cross-axis admission is not a larger instance of this scheduler: it loses
+that sharing and requires a new arbitrary-tile coupling. Reduction chunking
+is orthogonal and remains off by default because `c` accumulating terminal
+GEMMs move approximately `(2c-1) * b_m * s` sample elements instead of
+`b_m * s`, where `c` is the number of chunks.
+
+### R4a — rolling admission within one lane
+
+The lane owns a fixed-capacity slot arena and a pending queue. At an ARA
+convergence boundary, members that finish are swap-compacted as in R3, but
+filling the released slots requires a new admission primitive rather than
+another swap:
+
+```text
+admit_member!(slot, pending_member)
+    install/update that member's coupling descriptors
+    form its one-time S core over the full contraction range
+    clear Q, rank/error, convergence, and sample-count state
+    make the slot active for the next complete ARA pass
+```
+
+Stable-address descriptor fields may be updated in place, but no numerical
+buffer is allocated during admission. A slot is not eligible for admission
+until its retired member has completed co-range application, truncation, and
+output scatter.
+
+Sampling parameters are cohort-global. A newly admitted member starts with
+fresh basis and convergence state, but joins the lane's current pass/block
+schedule; it does not replay earlier sketch widths or run a private narrower
+schedule. This is correct because its future random blocks still define a
+valid range finder, but can oversample an easy late arrival relative to an
+independent run. Phase-one profiling must therefore report wasted sampled
+columns/FLOPs per admitted member in addition to occupancy and active width.
+
+Retirement is wave-batched, not member-at-a-time. After one complete
+full-`k` sampling pass and its convergence test, all members retired by that
+test form one retirement wave. The scheduler batches co-range application
+over the wave using the existing lane coupling, then truncates and scatters
+the wave before recycling its slots. This bounds co-range launch growth by
+the number of convergence boundaries rather than the number of output tiles.
+The initial implementation should retain a packed retirement-wave descriptor
+so that rank variation does not force one launch per member.
+
+R4a measurements are: active and pending width per pass; underfilled tail
+passes and time after pending-lane exhaustion; admission-time `S` cost;
+retirement-wave sizes and co-range launch time; sampled columns/FLOPs per
+member relative to a standalone run; rank/pass distribution; and time split
+among contraction, orthogonalization, and finalization.
+
+### R4a.5 — multi-lane batch growth
+
+Before implementing shared cross-lane slot ownership, recover cross-lane
+occupancy by growing a single batched-GEMM call's batch count rather than by
+running several lane schedulers on independent streams. `direct.jl`'s
+`execute_dense_stage3!(::KAsSerialLoop, ::FoldRight, run::ColumnRun, ...)`
+already does exactly this for the dense-output path: for one fixed
+contraction tile `k`, it folds every row-panel × column-panel pair in the run
+into one `precision_gemm_batched!` call (the shared operand's pointer is
+simply pushed once per pairing, not broadcast) rather than issuing one launch
+per pairing. The same mechanism — one bigger pointer-batched call spanning
+several lanes' pending/active members — applies here: it needs no stream
+primitive, no shared free-list, and no cross-stream ordering, only a larger
+batch built from whichever lanes have members ready. It gives up the
+same-axis sharing those members would have had in a purely lane-local batch
+(each entry becomes an independent multiply-accumulate, matching how
+`RowRightRunCoupling`'s already-ragged `Bouter` is handled today), which is
+the same structural cost cross-axis admission always pays — this section is
+about the mechanism for combining lanes, not about avoiding that cost.
+
+Growing the batch this way is also why a shared, phase-reset arena (see "R4
+arena — reusable run/ARA workspace" below) works cleanly here where
+independent streams would not: one bigger single-launch batch keeps every
+buffer's lifetime sequential and deterministic, so an arena can be sized to
+the *max* of what's concurrently live and reset between phases. Independent
+streams need their buffers simultaneously resident by construction, which
+would force summing arenas instead of maxing them — the two ideas are in
+tension, not complementary, so this plan drops streams in favor of batch
+growth wherever the two would otherwise compete for the same lane.
+
+R4b (a shared arena with several lane-local cohorts) is gated on profiling
+showing a material utilization gap after R4a.5. R4c (one arbitrary mixed-tile
+cohort) is gated separately because it needs a new coupling and forfeits
+fixed-axis sharing. Full-`k` reduction remains the baseline at every stage;
+`ChunkedKReduction(kappa)` is introduced only if measurements show that
+full-`k` transient storage, rather than lane tails, is the occupancy limit.
+
+### R4 arena — reusable run/ARA workspace
+
+Completed before scheduling. `ARARunArena` separates whole-run persistent
+storage (`Q`, `S`, and packed factor stacks) from rewound phase storage.
+Constructor-only `S` packing is released before sampling; after
+`ara_build_basis_packed!` completes, sampling/orthogonalization scratch is
+released and the same phase storage is reused for co-range application and
+truncation. The bound is therefore
+
+```text
+persistent + max(S-construction, sampling, finalization)
+```
+
+rather than the sum of all three phases. `ara_run_workspace_bytes` computes
+the three typed components analytically and arena exhaustion remains a hard
+error.
+
+The canonical driver also hoists truncation ranks/errors, member maps, output
+panels, and global scatter diagnostics. `TLRGemmWorkspace` owns all of this
+numerical storage and can be reused across complete `gemm!` calls;
+`tlr_gemm_workspace_bytes` is its allocation-free exact byte query. Passing
+an integer validates the available byte count and constructs temporary
+storage; omitting `workspace` retains the convenience path. Workspace objects
+are tied to one backend, element/rank type, operation geometry, sampling
+family, block width, and active rank caps and reject incompatible reuse.
+
+This gives R4a's `admit_member!` the required allocation-free numerical
+foundation, including trimmed-rank factor packing used to form a newly
+admitted member's `S`. Pointer descriptors and backend-library solver
+workspace remain metadata/library storage outside this numerical contract,
+as already scoped in "Workspace contract." The scheduler itself is still
+untouched.
+
+Focused verification:
+
+- CPU canonical TLR-result GEMM: 19/19; reusable workspace byte accounting,
+  repeated backing-storage identity, numerical reuse, undersized integer
+  rejection, and incompatible-operation rejection: 7/7.
+- CUDA through `../gpuenv`: canonical right/left sampling families 6/6;
+  reusable workspaces for `NN`, both `NT` choices, and `TT`, each used twice
+  with exact byte accounting: 12/12; hot-pass allocation regression 4/4 and
+  traversal-count arena-reuse regression 1/1.
+
 ## Roadmap
 
 - [x] **A0 — convergence bookkeeping.** Per-member sample counts, running

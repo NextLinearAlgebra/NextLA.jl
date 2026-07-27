@@ -160,7 +160,9 @@ function range_find_column_run!(U::AbstractArray{T,3}, V::AbstractArray{T,3},
                                 block::Int=32,
                                 rA::Int=rankdim(ops.au),
                                 rB::Int=rankdim(ops.bv),
-                                compute=nothing) where {T}
+                                compute=nothing, arena=nothing,
+                                ranks_slot=nothing, err_slot=nothing,
+                                slot_to_member=nothing) where {T}
     row_ids = collect(Int, rows)
     nmember = length(row_ids)
     bm, maxrank, countU = size(U)
@@ -178,11 +180,13 @@ function range_find_column_run!(U::AbstractArray{T,3}, V::AbstractArray{T,3},
         return (; passes=0, active_counts=Int[], member_ids=collect(1:nmember))
     end
 
+    _arena_reset!(arena)
     backend = get_backend(U)
-    ws = ARAWorkspace(T, backend, bm, maxrank, nmember; block)
+    blk = min(block, max(maxrank, 1))
     run = ColumnRunCoupling(ops, row_ids, j;
-                            alpha, beta, C, block=ws.block, maxrank,
-                            rA, rB, compute)
+                            alpha, beta, C, block=blk, maxrank,
+                            rA, rB, compute, arena)
+    ws = ARAWorkspace(T, backend, bm, maxrank, nmember; block=blk, arena)
     member_ids = collect(1:nmember)
     sampler = function (Y, sketch_width, active_ids)
         apply_right_run!(Y, run, sketch_width, length(active_ids); beta, compute)
@@ -200,17 +204,27 @@ function range_find_column_run!(U::AbstractArray{T,3}, V::AbstractArray{T,3},
                 member_ids=basis.member_ids)
     end
 
-    Z = allocate(backend, T, bn, sQ, nmember)
-    apply_left_run!(Z, run, basis.Q, sQ; beta, compute)
-    Uh = allocate(backend, T, bm, sQ, nmember)
-    Vh = allocate(backend, T, bn, sQ, nmember)
-    ranks_slot = allocate(backend, eltype(ranks), nmember)
-    err_slot = allocate(backend, eltype(err_sq), nmember)
+    _arena_reset_phase!(arena)
+    tarena = _run_t_arena(arena)
+    G = _workspace_array!(tarena, backend, T, rA, sQ, run.qk, nmember)
+    Wbuf = _workspace_array!(tarena, backend, T, rB, run.qk, sQ, nmember)
+    rC = run.betaV === nothing ? 0 : size(first(run.betaV), 2)
+    beta_tmp = _workspace_array!(tarena, backend, T, rC, sQ, nmember)
+    Z = _workspace_array!(tarena, backend, T, bn, sQ, nmember)
+    apply_left_run!(
+        Z, run, basis.Q, sQ; beta, compute, G, Wbuf, beta_tmp)
+    Uh = _workspace_array!(tarena, backend, T, bm, sQ, nmember)
+    Vh = _workspace_array!(tarena, backend, T, bn, sQ, nmember)
+    ranks_slot === nothing &&
+        (ranks_slot = allocate(backend, eltype(ranks), nmember))
+    err_slot === nothing &&
+        (err_slot = allocate(backend, eltype(err_sq), nmember))
     ara_truncate!(Uh, Vh, ranks_slot, err_slot, basis.Q, Z;
                   tol, relative=rel, maxrank=sQ, compute)
 
-    slot_to_member = copyto!(allocate(backend, Int32, nmember),
-                             Int32.(basis.member_ids))
+    slot_to_member === nothing &&
+        (slot_to_member = allocate(backend, Int32, nmember))
+    copyto!(view(slot_to_member, 1:nmember), Int32.(basis.member_ids))
     _scatter_run_factor_kernel!(backend)(
         view(U, :, 1:sQ, :), Uh, ranks_slot, slot_to_member;
         ndrange=(bm, sQ, nmember),
@@ -236,10 +250,12 @@ end
 end
 
 function _scatter_range_run!(U, V, ranks, err_sq, Uh, Vh, ranks_slot, err_slot,
-                             member_ids, sQ)
+                             member_ids, sQ, slot_to_member=nothing)
     backend = get_backend(U)
     nmember = length(member_ids)
-    slot_to_member = copyto!(allocate(backend, Int32, nmember), Int32.(member_ids))
+    slot_to_member === nothing &&
+        (slot_to_member = allocate(backend, Int32, nmember))
+    copyto!(view(slot_to_member, 1:nmember), Int32.(member_ids))
     _scatter_run_factor_kernel!(backend)(
         view(U, :, 1:sQ, :), Uh, ranks_slot, slot_to_member;
         ndrange=(size(U, 1), sQ, nmember),
@@ -269,7 +285,9 @@ function range_find_row_right_run!(U::AbstractArray{T,3}, V::AbstractArray{T,3},
                                    block::Int=32,
                                    rA::Int=rankdim(ops.au),
                                    rB::Int=rankdim(ops.bv),
-                                   compute=nothing) where {T}
+                                   compute=nothing, arena=nothing,
+                                   ranks_slot=nothing, err_slot=nothing,
+                                   slot_to_member=nothing) where {T}
     col_ids = collect(Int, cols)
     nmember = _validate_row_run_outputs(U, V, ranks, err_sq, col_ids)
     nmember == 0 &&
@@ -282,12 +300,15 @@ function range_find_row_right_run!(U::AbstractArray{T,3}, V::AbstractArray{T,3},
                 side=:right)
     end
 
+    _arena_reset!(arena)
     backend = get_backend(U)
-    ws = ARAWorkspace(T, backend, size(U, 1), maxrank, nmember; block)
+    blk = min(block, max(maxrank, 1))
     run = RowRightRunCoupling(
-        ops, i, col_ids; alpha, beta, C, block=ws.block, maxrank,
-        rA, rB, compute,
+        ops, i, col_ids; alpha, beta, C, block=blk, maxrank,
+        rA, rB, compute, arena, index_scratch=slot_to_member,
     )
+    ws = ARAWorkspace(
+        T, backend, size(U, 1), maxrank, nmember; block=blk, arena)
     member_ids = collect(1:nmember)
     sampler = function (Y, sketch_width, active_ids)
         apply_right_row_run!(Y, run, sketch_width, length(active_ids); beta, compute)
@@ -301,16 +322,25 @@ function range_find_row_right_run!(U::AbstractArray{T,3}, V::AbstractArray{T,3},
         return (; passes=basis.passes, active_counts=basis.active_counts,
                 member_ids=basis.member_ids, side=:right)
 
-    Z = allocate(backend, T, size(V, 1), sQ, nmember)
-    apply_left_row_run!(Z, run, basis.Q, sQ; beta, compute)
-    Uh = allocate(backend, T, size(U, 1), sQ, nmember)
-    Vh = allocate(backend, T, size(V, 1), sQ, nmember)
-    ranks_slot = allocate(backend, eltype(ranks), nmember)
-    err_slot = allocate(backend, eltype(err_sq), nmember)
+    _arena_reset_phase!(arena)
+    tarena = _run_t_arena(arena)
+    G = _workspace_array!(tarena, backend, T, rA, sQ, run.qk, nmember)
+    Wbuf = _workspace_array!(tarena, backend, T, rB, run.qk, sQ, nmember)
+    rC = run.betaV === nothing ? 0 : size(first(run.betaV), 2)
+    beta_tmp = _workspace_array!(tarena, backend, T, rC, sQ, nmember)
+    Z = _workspace_array!(tarena, backend, T, size(V, 1), sQ, nmember)
+    apply_left_row_run!(
+        Z, run, basis.Q, sQ; beta, compute, G, Wbuf, beta_tmp)
+    Uh = _workspace_array!(tarena, backend, T, size(U, 1), sQ, nmember)
+    Vh = _workspace_array!(tarena, backend, T, size(V, 1), sQ, nmember)
+    ranks_slot === nothing &&
+        (ranks_slot = allocate(backend, eltype(ranks), nmember))
+    err_slot === nothing &&
+        (err_slot = allocate(backend, eltype(err_sq), nmember))
     ara_truncate!(Uh, Vh, ranks_slot, err_slot, basis.Q, Z;
                   tol, relative=rel, maxrank=sQ, compute)
     _scatter_range_run!(U, V, ranks, err_sq, Uh, Vh, ranks_slot, err_slot,
-                        basis.member_ids, sQ)
+                        basis.member_ids, sQ, slot_to_member)
     return (; passes=basis.passes, active_counts=basis.active_counts,
             member_ids=basis.member_ids, side=:right)
 end
@@ -331,7 +361,9 @@ function range_find_row_left_run!(U::AbstractArray{T,3}, V::AbstractArray{T,3},
                                   block::Int=32,
                                   rA::Int=rankdim(ops.au),
                                   rB::Int=rankdim(ops.bv),
-                                  compute=nothing) where {T}
+                                  compute=nothing, arena=nothing,
+                                  ranks_slot=nothing, err_slot=nothing,
+                                  slot_to_member=nothing) where {T}
     col_ids = collect(Int, cols)
     nmember = _validate_row_run_outputs(U, V, ranks, err_sq, col_ids)
     nmember == 0 &&
@@ -344,12 +376,15 @@ function range_find_row_left_run!(U::AbstractArray{T,3}, V::AbstractArray{T,3},
                 side=:left)
     end
 
+    _arena_reset!(arena)
     backend = get_backend(U)
-    ws = ARAWorkspace(T, backend, size(V, 1), maxrank, nmember; block)
+    blk = min(block, max(maxrank, 1))
     run = RowLeftRunCoupling(
-        ops, i, col_ids; alpha, beta, C, block=ws.block, maxrank,
-        rA, rB, compute,
+        ops, i, col_ids; alpha, beta, C, block=blk, maxrank,
+        rA, rB, compute, arena,
     )
+    ws = ARAWorkspace(
+        T, backend, size(V, 1), maxrank, nmember; block=blk, arena)
     member_ids = collect(1:nmember)
     sampler = function (Y, sketch_width, active_ids)
         apply_left_row_run!(Y, run, sketch_width, length(active_ids); beta, compute)
@@ -363,17 +398,26 @@ function range_find_row_left_run!(U::AbstractArray{T,3}, V::AbstractArray{T,3},
         return (; passes=basis.passes, active_counts=basis.active_counts,
                 member_ids=basis.member_ids, side=:left)
 
-    L = allocate(backend, T, size(U, 1), sQ, nmember)
-    apply_right_row_run!(L, run, basis.Q, sQ; beta, compute)
-    Uh = allocate(backend, T, size(U, 1), sQ, nmember)
-    Vh = allocate(backend, T, size(V, 1), sQ, nmember)
-    ranks_slot = allocate(backend, eltype(ranks), nmember)
-    err_slot = allocate(backend, eltype(err_sq), nmember)
+    _arena_reset_phase!(arena)
+    tarena = _run_t_arena(arena)
+    H = _workspace_array!(tarena, backend, T, rB, sQ, run.qk, nmember)
+    Tbuf = _workspace_array!(tarena, backend, T, rA, run.qk, sQ, nmember)
+    rC = run.betaU === nothing ? 0 : size(first(run.betaU), 2)
+    beta_tmp = _workspace_array!(tarena, backend, T, rC, sQ, nmember)
+    L = _workspace_array!(tarena, backend, T, size(U, 1), sQ, nmember)
+    apply_right_row_run!(
+        L, run, basis.Q, sQ; beta, compute, H, Tbuf, beta_tmp)
+    Uh = _workspace_array!(tarena, backend, T, size(U, 1), sQ, nmember)
+    Vh = _workspace_array!(tarena, backend, T, size(V, 1), sQ, nmember)
+    ranks_slot === nothing &&
+        (ranks_slot = allocate(backend, eltype(ranks), nmember))
+    err_slot === nothing &&
+        (err_slot = allocate(backend, eltype(err_sq), nmember))
     # Xᵀ ≈ Q_R Lᵀ. Truncating the transpose returns (V, U).
     ara_truncate!(Vh, Uh, ranks_slot, err_slot, basis.Q, L;
                   tol, relative=rel, maxrank=sQ, compute)
     _scatter_range_run!(U, V, ranks, err_sq, Uh, Vh, ranks_slot, err_slot,
-                        basis.member_ids, sQ)
+                        basis.member_ids, sQ, slot_to_member)
     return (; passes=basis.passes, active_counts=basis.active_counts,
             member_ids=basis.member_ids, side=:left)
 end

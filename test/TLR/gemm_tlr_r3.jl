@@ -64,6 +64,37 @@ end
     @test_throws ArgumentError _TLRM.gemm!(C, Acol, B; tol=1e-6)
 end
 
+@testset "canonical TLR-result reusable workspace" begin
+    T = Float64
+    A, B, C = _canonical_tlr_fixture(T, Array; rA=3, rB=4, seed=1248)
+    ref = T(1.2) * reconstruct_tlr(A) * reconstruct_tlr(B)
+    bytes = NextLA.tlr_gemm_workspace_bytes(C, A, B; block=4)
+    workspace = NextLA.TLRGemmWorkspace(C, A, B; block=4)
+    @test sizeof(workspace) == bytes
+    storage = (
+        workspace.arena.persistent_t.storage,
+        workspace.arena.phase_t.storage,
+        workspace.arena.phase_thi.storage,
+        workspace.U, workspace.V,
+    )
+    for _ in 1:2
+        _TLRM.gemm!(
+            C, A, B; alpha=1.2, tol=1e-7, rel=true, eps_rel=1e-7,
+            r_required=3, block=4, workspace)
+        @test norm(reconstruct_tlr(C) - ref) / norm(ref) <= 2e-6
+        @test all(a === b for (a, b) in zip(storage, (
+            workspace.arena.persistent_t.storage,
+            workspace.arena.phase_t.storage,
+            workspace.arena.phase_thi.storage,
+            workspace.U, workspace.V,
+        )))
+    end
+    @test_throws ArgumentError _TLRM.gemm!(
+        C, A, B; block=4, workspace=bytes - 1)
+    @test_throws ArgumentError _TLRM.gemm!(
+        C, A, B; transA='N', transB='T', block=4, workspace)
+end
+
 @testset "canonical row-major TLR-result gemm! on CUDA (R3)" begin
     for (backend_name, ArrayType, synchronize) in available_backends()
         backend_name == "CUDA" || continue

@@ -155,5 +155,12 @@ The ARA path owns sampling, convergence, one co-range apply, truncation, and
 output scatter. A full-capacity row/column panel is consumed as a view. A
 rank-trimmed prefix is packed once into a contiguous run-local panel because a
 strided rank slice cannot be reshaped into a valid terminal GPU GEMM operand.
-Arbitrary physical layouts, boundary tiles, `TN`, budgeted scheduling, and a
-reusable run arena remain the general-storage/R4-R5 boundary.
+
+Canonical execution can use a reusable `TLRGemmWorkspace`, whose exact
+numerical size is returned by `tlr_gemm_workspace_bytes`. Persistent run state
+(`Q`, `S`, packed factor stacks) is separated from one phase arena shared by
+constructor packing, sampling, and finalization, giving
+`persistent + max(construction, sampling, finalization)` storage. Traversal
+outputs and scatter diagnostics are workspace-owned as well. Arbitrary
+physical layouts, boundary tiles, `TN`, and budget-driven rolling admission
+remain the R4-R5 boundary.

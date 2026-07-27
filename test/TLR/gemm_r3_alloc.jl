@@ -75,3 +75,60 @@ end
         end
     end
 end
+
+# Cross-run arena reuse (R4 foundation, docs/TODO.md "R4 arena -- reusable
+# run/ARA workspace"): the canonical driver now builds one ARARunArena before
+# its traversal loop and resets it once per row/column run instead of letting
+# every run's ColumnRunCoupling/RowRightRunCoupling/RowLeftRunCoupling and
+# ARAWorkspace allocate fresh device storage.
+#
+# A naive "grow the whole grid" comparison can't isolate this: for a square
+# matrix, growing n grows both the per-run size (nmember, scales with the
+# arena's own budget -- expected to grow) and the loop trip count together,
+# so a bigger allocation total doesn't distinguish "the arena legitimately
+# grew because a run holds more members" from "a regression reintroduced
+# per-iteration allocation." This uses a rectangular A (more row-tiles, same
+# column-tile count) instead: for the NN family the driver's loop runs once
+# per row-tile (`for i in 1:qm`) with a *fixed* per-run shape (nmember=qn,
+# qk both held constant), so only the number of loop iterations changes.
+# With reuse intact, allocated bytes should stay close to flat as qm grows;
+# a regression back to per-run allocation would scale with qm instead.
+if isdefined(@__MODULE__, :CUDA)
+    function _r3_alloc_bytes_tall(ArrayType, synchronize; qm::Int, rA=3, rB=4, seed=1200)
+        T = Float64
+        b = 16
+        qk = qn = 3
+        A = NextLA.TLRMatrix(ArrayType(zeros(T, qm * b, qk * b)), b, rA)
+        B = NextLA.TLRMatrix(ArrayType(zeros(T, qk * b, qn * b)), b, rB)
+        C = NextLA.TLRMatrix(ArrayType(zeros(T, qm * b, qn * b)), b, 16)
+        fill_random_tlr!(A, ArrayType; seed=seed + 1)
+        fill_random_tlr!(B, ArrayType; seed=seed + 2)
+        workspace = NextLA.TLRGemmWorkspace(C, A, B; block=4)
+        f = () -> NextLA.TLRmodule.gemm!(
+            C, A, B; alpha=1.2, beta=0.0, transA='N', transB='N',
+            tol=1e-7, rel=true, eps_rel=1e-7, r_required=3, block=4,
+            workspace,
+        )
+        f()
+        synchronize(C.int_U)
+        bytes = CUDA.@allocated f()
+        synchronize(C.int_U)
+        return bytes
+    end
+end
+
+@testset "canonical row-major TLR-result gemm! cross-run arena reuse (R4)" begin
+    for (backend_name, ArrayType, synchronize) in available_backends()
+        backend_name == "CUDA" || continue
+        @testset "$backend_name" begin
+            few = _r3_alloc_bytes_tall(ArrayType, synchronize; qm=3)
+            many = _r3_alloc_bytes_tall(ArrayType, synchronize; qm=9)
+            # Same per-run shape (nmember=qn=3, qk=3) both times; only the
+            # number of loop iterations (qm) triples. A per-run-allocating
+            # driver would scale allocated bytes with qm; with the arena
+            # reused across the loop, it should stay within one run's budget
+            # of the qm=3 measurement regardless of qm.
+            @test many <= few + _R3_ALLOC_BUDGET
+        end
+    end
+end

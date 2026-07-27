@@ -270,7 +270,7 @@ pointers, needing a `qk`-blocked swap) rather than member-only, which would
 need a second, larger descriptor. See `docs/TODO.md` for this scoping
 decision.
 """
-struct ColumnRunCoupling{ST,RU,CZ,BUT,BVT,HT,TT,GT,WT,OT,BT,T}
+struct ColumnRunCoupling{ST,RU,CZ,BUT,BVT,HT,TT,OT,BT,T}
     S::ST
     rowU::RU
     colZ::CZ
@@ -284,8 +284,6 @@ struct ColumnRunCoupling{ST,RU,CZ,BUT,BVT,HT,TT,GT,WT,OT,BT,T}
     beta_tmp_ptrs::Union{Nothing,BatchPtrDescriptor}
     H::HT
     Tbuf::TT
-    G::GT
-    Wbuf::WT
     Omega::OT
     beta_tmp::BT
     alpha::T
@@ -297,13 +295,18 @@ function ColumnRunCoupling(ops::LogicalTLROperands, rows, j::Integer;
                            block::Int, maxrank::Int,
                            rA::Int=rankdim(ops.au),
                            rB::Int=rankdim(ops.bv),
-                           compute=nothing)
+                           compute=nothing, arena=nothing)
     ids = collect(Int, rows)
     nmember = length(ids)
-    rowU = [_factor_row_stack(ops.au, i, rA) for i in ids]
-    rowV = [_factor_row_stack(ops.av, i, rA) for i in ids]
-    colW = _factor_column_stack(ops.bu, Int(j), rB)
-    colZ = _factor_column_stack(ops.bv, Int(j), rB)
+    # rowU/colZ are persistent struct fields. rowV/colW are constructor
+    # temporaries consumed only while forming S, but still draw from the run
+    # arena so trimmed-rank packing never allocates per traversal iteration.
+    parena = _run_persistent_t_arena(arena)
+    tarena = _run_t_arena(arena)
+    rowU = [_factor_row_stack(ops.au, i, rA; arena=parena) for i in ids]
+    rowV = [_factor_row_stack(ops.av, i, rA; arena=tarena) for i in ids]
+    colW = _factor_column_stack(ops.bu, Int(j), rB; arena=tarena)
+    colZ = _factor_column_stack(ops.bv, Int(j), rB; arena=parena)
     T = eltype(colZ)
     mode = compute === nothing ? default_gemm_compute_mode(T) :
            gemm_compute_mode(compute)
@@ -314,7 +317,7 @@ function ColumnRunCoupling(ops::LogicalTLROperands, rows, j::Integer;
     bn = size(colZ, 1)
     backend = get_backend(colZ)
 
-    S = allocate(backend, T, rA, rB, qk, nmember)
+    S = _workspace_array!(parena, backend, T, rA, rB, qk, nmember)
     if nmember > 0 && qk > 0 && rA > 0 && rB > 0
         left_factor_views = [view(rowV[p], :, :, kidx) for p in 1:nmember for kidx in 1:qk]
         right_factor_views = [view(colW, :, :, kidx) for p in 1:nmember for kidx in 1:qk]
@@ -331,12 +334,13 @@ function ColumnRunCoupling(ops::LogicalTLROperands, rows, j::Integer;
         ([x[1] for x in uv], [x[2] for x in uv])
     end
 
-    Hbuf = allocate(backend, T, rB, block, qk)
-    Tbuf = allocate(backend, T, rA, qk, block, nmember)
-    Gbuf = allocate(backend, T, rA, maxrank, qk, nmember)
-    Wbuf = allocate(backend, T, rB, qk, maxrank, nmember)
-    Omega = allocate(backend, T, bn, block, 1)
-    beta_tmp = allocate(backend, T,
+    # S-construction packing is dead here. Rewind only phase scratch; the
+    # persistent S/factor stacks remain intact.
+    _arena_reset_phase!(arena)
+    Hbuf = _workspace_array!(tarena, backend, T, rB, block, qk)
+    Tbuf = _workspace_array!(tarena, backend, T, rA, qk, block, nmember)
+    Omega = _workspace_array!(tarena, backend, T, bn, block, 1)
+    beta_tmp = _workspace_array!(tarena, backend, T,
                         betaV === nothing ? 0 : size(first(betaV), 2),
                         max(block, maxrank), nmember)
 
@@ -359,7 +363,7 @@ function ColumnRunCoupling(ops::LogicalTLROperands, rows, j::Integer;
     return ColumnRunCoupling(
         S, rowU, colZ, betaU, betaV,
         rowU_ptrs, Tstack_ptrs, betaU_ptrs, betaV_ptrs, Om_ptrs, beta_tmp_ptrs,
-        Hbuf, Tbuf, Gbuf, Wbuf, Omega, beta_tmp,
+        Hbuf, Tbuf, Omega, beta_tmp,
         T(alpha), qk,
     )
 end
@@ -474,7 +478,8 @@ one grouped apply. Run-local `S` and `Q` are in the same final packed order.
 """
 function apply_left_run!(Z::AbstractArray{T,3}, run::ColumnRunCoupling,
                          Q::AbstractArray{T,3}, sketch_width::Int;
-                         beta=false, compute=nothing) where {T}
+                         beta=false, compute=nothing,
+                         G, Wbuf, beta_tmp) where {T}
     mode = compute === nothing ? default_gemm_compute_mode(T) :
            gemm_compute_mode(compute)
     adj = _adjoint_blas_char(T)
@@ -486,16 +491,16 @@ function apply_left_run!(Z::AbstractArray{T,3}, run::ColumnRunCoupling,
     if qk > 0 && rA > 0 && rB > 0
         outer_factor_views = [view(run.rowU[p], :, :, kidx) for p in 1:nmember for kidx in 1:qk]
         input_sketch_views = [view(Q, :, 1:sketch_width, p) for p in 1:nmember for kidx in 1:qk]
-        projected_views = [view(run.G, :, 1:sketch_width, kidx, p) for p in 1:nmember for kidx in 1:qk]
+        projected_views = [view(G, :, 1:sketch_width, kidx, p) for p in 1:nmember for kidx in 1:qk]
         precision_gemm_batched!(adj, 'N', one(T), outer_factor_views, input_sketch_views,
                                 zero(T), projected_views, mode)
         coupling_views = [view(run.S, :, :, kidx, p) for p in 1:nmember for kidx in 1:qk]
-        coupling_sketch_views = [view(run.Wbuf, :, kidx, 1:sketch_width, p)
+        coupling_sketch_views = [view(Wbuf, :, kidx, 1:sketch_width, p)
                 for p in 1:nmember for kidx in 1:qk]
         precision_gemm_batched!(adj, 'N', run.alpha, coupling_views, projected_views,
                                 zero(T), coupling_sketch_views, mode)
         right_factor_stacks = [reshape(run.colZ, bn, rB * qk) for _ in 1:nmember]
-        coupling_sketch_stacks = [reshape(view(run.Wbuf, :, :, 1:sketch_width, p), rB * qk, sketch_width)
+        coupling_sketch_stacks = [reshape(view(Wbuf, :, :, 1:sketch_width, p), rB * qk, sketch_width)
                   for p in 1:nmember]
         sketch_views = [view(Z, :, 1:sketch_width, p) for p in 1:nmember]
         precision_gemm_batched!('N', 'N', one(T), right_factor_stacks, coupling_sketch_stacks,
@@ -505,7 +510,7 @@ function apply_left_run!(Z::AbstractArray{T,3}, run::ColumnRunCoupling,
     end
 
     if run.betaU !== nothing
-        tmp = [view(run.beta_tmp, :, 1:sketch_width, p) for p in 1:nmember]
+        tmp = [view(beta_tmp, :, 1:sketch_width, p) for p in 1:nmember]
         input_sketch_views = [view(Q, :, 1:sketch_width, p) for p in 1:nmember]
         sketch_views = [view(Z, :, 1:sketch_width, p) for p in 1:nmember]
         precision_gemm_batched!(adj, 'N', one(T), run.betaU, input_sketch_views,
@@ -542,12 +547,12 @@ end
 
 @inline _is_row_major(order) = order isa TileRowMajor
 
-function _factor_row_stack(p::InteriorOperand, row::Int, rank::Int)
+function _factor_row_stack(p::InteriorOperand, row::Int, rank::Int; arena=nothing)
     if p.order isa TileRowMajor && rank == rankdim(p)
         return rowpanel(p, row)
     end
     backend = get_backend(p.data)
-    dest = allocate(backend, eltype(p.data), size(p.data, 1), rank, p.qn)
+    dest = _workspace_array!(arena, backend, eltype(p.data), size(p.data, 1), rank, p.qn)
     rank == 0 && return dest
     _pack_factor_row_kernel!(backend)(
         dest, p.data, row, p.qm, p.qn, _is_row_major(p.order);
@@ -556,12 +561,12 @@ function _factor_row_stack(p::InteriorOperand, row::Int, rank::Int)
     return dest
 end
 
-function _factor_column_stack(p::InteriorOperand, col::Int, rank::Int)
+function _factor_column_stack(p::InteriorOperand, col::Int, rank::Int; arena=nothing)
     if p.order isa TileColMajor && rank == rankdim(p)
         return colpanel(p, col)
     end
     backend = get_backend(p.data)
-    dest = allocate(backend, eltype(p.data), size(p.data, 1), rank, p.qm)
+    dest = _workspace_array!(arena, backend, eltype(p.data), size(p.data, 1), rank, p.qm)
     rank == 0 && return dest
     _pack_factor_column_kernel!(backend)(
         dest, p.data, col, p.qm, p.qn, _is_row_major(p.order);
@@ -570,12 +575,16 @@ function _factor_column_stack(p::InteriorOperand, col::Int, rank::Int)
     return dest
 end
 
-function _factor_column_stacks(p::InteriorOperand, cols::Vector{Int}, rank::Int)
+function _factor_column_stacks(p::InteriorOperand, cols::Vector{Int}, rank::Int;
+                               arena=nothing, index_scratch=nothing)
     backend = get_backend(p.data)
     nmember = length(cols)
-    dest = allocate(backend, eltype(p.data), size(p.data, 1), rank, p.qm, nmember)
+    dest = _workspace_array!(arena, backend, eltype(p.data), size(p.data, 1), rank, p.qm, nmember)
     (rank == 0 || nmember == 0) && return dest
-    cols_dev = copyto!(allocate(backend, Int32, nmember), Int32.(cols))
+    cols_dev = index_scratch === nothing ?
+        allocate(backend, Int32, nmember) :
+        view(index_scratch, 1:nmember)
+    copyto!(cols_dev, Int32.(cols))
     _pack_factor_columns_kernel!(backend)(
         dest, p.data, cols_dev, p.qm, p.qn, _is_row_major(p.order);
         ndrange=size(dest),
@@ -616,7 +625,7 @@ per-pass cost (see [`ColumnRunCoupling`](@ref)'s docstring for why).
 The co-range apply (`apply_left_row_run!`, once per run, not once per pass)
 is intentionally left on the `Vector`-of-views path; see `docs/TODO.md`.
 """
-struct RowRightRunCoupling{ST,AStackT,BOT,BStackT,BUT,BVT,HT,TT,GT,WT,OT,BT,T}
+struct RowRightRunCoupling{ST,AStackT,BOT,BStackT,BUT,BVT,HT,TT,OT,BT,T}
     S::ST
     Astack::AStackT
     Bouter::BOT
@@ -632,8 +641,6 @@ struct RowRightRunCoupling{ST,AStackT,BOT,BStackT,BUT,BVT,HT,TT,GT,WT,OT,BT,T}
     beta_tmp_ptrs::Union{Nothing,BatchPtrDescriptor}
     H::HT
     Tbuf::TT
-    G::GT
-    Wbuf::WT
     Omega::OT
     beta_tmp::BT
     alpha::T
@@ -645,7 +652,8 @@ function RowRightRunCoupling(ops::LogicalTLROperands, i::Integer, cols;
                              block::Int, maxrank::Int,
                              rA::Int=rankdim(ops.au),
                              rB::Int=rankdim(ops.bv),
-                             compute=nothing)
+                             compute=nothing, arena=nothing,
+                             index_scratch=nothing)
     ids = collect(Int, cols)
     nmember = length(ids)
     qk = ops.au.qn
@@ -655,14 +663,17 @@ function RowRightRunCoupling(ops::LogicalTLROperands, i::Integer, cols;
     backend = get_backend(ops.au.data)
     bm = size(ops.au.data, 1)
     bn = size(ops.bv.data, 1)
+    parena = _run_persistent_t_arena(arena)
+    tarena = _run_t_arena(arena)
 
     Ainner = [_trimmed_tile(ops.av, Int(i), kidx, rA) for kidx in 1:qk]
     Bouter = [[_trimmed_tile(ops.bu, kidx, j, rB) for kidx in 1:qk] for j in ids]
     Binner = [[_trimmed_tile(ops.bv, kidx, j, rB) for kidx in 1:qk] for j in ids]
-    Astack = _factor_row_stack(ops.au, Int(i), rA)
-    Bstack = _factor_column_stacks(ops.bv, ids, rB)
+    Astack = _factor_row_stack(ops.au, Int(i), rA; arena=parena)
+    Bstack = _factor_column_stacks(
+        ops.bv, ids, rB; arena=parena, index_scratch)
 
-    S = allocate(backend, T, rA, rB, qk, nmember)
+    S = _workspace_array!(parena, backend, T, rA, rB, qk, nmember)
     if nmember > 0 && qk > 0 && rA > 0 && rB > 0
         left_factor_views = [Ainner[kidx] for p in 1:nmember for kidx in 1:qk]
         right_factor_views = [Bouter[p][kidx] for p in 1:nmember for kidx in 1:qk]
@@ -680,12 +691,11 @@ function RowRightRunCoupling(ops::LogicalTLROperands, i::Integer, cols;
     end
     rC = betaV === nothing ? 0 : size(first(betaV), 2)
 
-    Hbuf = allocate(backend, T, rB, block, qk, nmember)
-    Tbuf = allocate(backend, T, rA, qk, block, nmember)
-    Gbuf = allocate(backend, T, rA, maxrank, qk, nmember)
-    Wbuf = allocate(backend, T, rB, qk, maxrank, nmember)
-    Omega = allocate(backend, T, bn, block, nmember)
-    beta_tmp = allocate(backend, T, rC, max(block, maxrank), nmember)
+    _arena_reset_phase!(arena)
+    Hbuf = _workspace_array!(tarena, backend, T, rB, block, qk, nmember)
+    Tbuf = _workspace_array!(tarena, backend, T, rA, qk, block, nmember)
+    Omega = _workspace_array!(tarena, backend, T, bn, block, nmember)
+    beta_tmp = _workspace_array!(tarena, backend, T, rC, max(block, maxrank), nmember)
 
     ptrs_ok = nmember > 0 && qk > 0 && supports_pointer_batched(backend)
     # The struct field `Bouter` is populated from `Binner` below (matching
@@ -713,7 +723,7 @@ function RowRightRunCoupling(ops::LogicalTLROperands, i::Integer, cols;
         S, Astack, Binner, Bstack, betaU, betaV,
         Bouter_ptrs, HOm_ptrs, H_ptrs, betaU_ptrs, betaV_ptrs, betaOm_ptrs,
         beta_tmp_ptrs,
-        Hbuf, Tbuf, Gbuf, Wbuf, Omega, beta_tmp,
+        Hbuf, Tbuf, Omega, beta_tmp,
         T(alpha), qk,
     )
 end
@@ -838,7 +848,8 @@ end
 
 function apply_left_row_run!(Z::AbstractArray{T,3}, run::RowRightRunCoupling,
                              Q::AbstractArray{T,3}, sketch_width::Int;
-                             beta=false, compute=nothing) where {T}
+                             beta=false, compute=nothing,
+                             G, Wbuf, beta_tmp) where {T}
     mode = compute === nothing ? default_gemm_compute_mode(T) :
            gemm_compute_mode(compute)
     adj = _adjoint_blas_char(T)
@@ -853,18 +864,18 @@ function apply_left_row_run!(Z::AbstractArray{T,3}, run::RowRightRunCoupling,
         # separately-retained duplicate of Astack's data.
         outer_factor_views = [view(run.Astack, :, :, kidx) for _ in 1:nmember for kidx in 1:qk]
         input_sketch_views = [view(Q, :, 1:sketch_width, p) for p in 1:nmember for kidx in 1:qk]
-        projected_views = [view(run.G, :, 1:sketch_width, kidx, p)
+        projected_views = [view(G, :, 1:sketch_width, kidx, p)
                 for p in 1:nmember for kidx in 1:qk]
         precision_gemm_batched!(adj, 'N', one(T), outer_factor_views, input_sketch_views,
                                 zero(T), projected_views, mode)
         coupling_views = [view(run.S, :, :, kidx, p) for p in 1:nmember for kidx in 1:qk]
-        coupling_sketch_views = [view(run.Wbuf, :, kidx, 1:sketch_width, p)
+        coupling_sketch_views = [view(Wbuf, :, kidx, 1:sketch_width, p)
                 for p in 1:nmember for kidx in 1:qk]
         precision_gemm_batched!(adj, 'N', run.alpha, coupling_views, projected_views,
                                 zero(T), coupling_sketch_views, mode)
         right_factor_views = [reshape(view(run.Bstack, :, :, :, p), bn, rB * qk)
                 for p in 1:nmember]
-        coupling_sketch_stacks = [reshape(view(run.Wbuf, :, :, 1:sketch_width, p),
+        coupling_sketch_stacks = [reshape(view(Wbuf, :, :, 1:sketch_width, p),
                           rB * qk, sketch_width) for p in 1:nmember]
         sketch_views = [view(Z, :, 1:sketch_width, p) for p in 1:nmember]
         precision_gemm_batched!('N', 'N', one(T), right_factor_views, coupling_sketch_stacks,
@@ -873,7 +884,7 @@ function apply_left_row_run!(Z::AbstractArray{T,3}, run::RowRightRunCoupling,
         fill!(Z, zero(T))
     end
     if run.betaU !== nothing
-        tmp = [view(run.beta_tmp, :, 1:sketch_width, p) for p in 1:nmember]
+        tmp = [view(beta_tmp, :, 1:sketch_width, p) for p in 1:nmember]
         input_sketch_views = [view(Q, :, 1:sketch_width, p) for p in 1:nmember]
         sketch_views = [view(Z, :, 1:sketch_width, p) for p in 1:nmember]
         precision_gemm_batched!(adj, 'N', one(T), run.betaU, input_sketch_views,
@@ -917,7 +928,7 @@ G-formation call above it and the co-range apply
 unaffected; see [`ColumnRunCoupling`](@ref)'s docstring and `docs/TODO.md`
 for the general scoping rationale.
 """
-struct RowLeftRunCoupling{ST,AStackT,BStackT,BUT,BVT,GT,WT,HT,TT,OT,BT,T}
+struct RowLeftRunCoupling{ST,AStackT,BStackT,BUT,BVT,GT,WT,OT,BT,T}
     S::ST
     Astack::AStackT
     Bstack::BStackT
@@ -931,8 +942,6 @@ struct RowLeftRunCoupling{ST,AStackT,BStackT,BUT,BVT,GT,WT,HT,TT,OT,BT,T}
     beta_tmp_ptrs::Union{Nothing,BatchPtrDescriptor}
     G::GT
     Wbuf::WT
-    H::HT
-    Tbuf::TT
     Omega::OT
     beta_tmp::BT
     alpha::T
@@ -944,7 +953,7 @@ function RowLeftRunCoupling(ops::LogicalTLROperands, i::Integer, cols;
                             block::Int, maxrank::Int,
                             rA::Int=rankdim(ops.au),
                             rB::Int=rankdim(ops.bv),
-                            compute=nothing)
+                            compute=nothing, arena=nothing)
     ids = collect(Int, cols)
     nmember = length(ids)
     qk = ops.au.qn
@@ -954,12 +963,14 @@ function RowLeftRunCoupling(ops::LogicalTLROperands, i::Integer, cols;
     backend = get_backend(ops.au.data)
     bm = size(ops.au.data, 1)
     bn = size(ops.bv.data, 1)
+    parena = _run_persistent_t_arena(arena)
+    tarena = _run_t_arena(arena)
     Ainner = [_trimmed_tile(ops.av, Int(i), kidx, rA) for kidx in 1:qk]
-    Astack = _factor_row_stack(ops.au, Int(i), rA)
+    Astack = _factor_row_stack(ops.au, Int(i), rA; arena=parena)
     Bouter = [[_trimmed_tile(ops.bu, kidx, j, rB) for kidx in 1:qk] for j in ids]
-    Bstack = [_factor_column_stack(ops.bv, j, rB) for j in ids]
+    Bstack = [_factor_column_stack(ops.bv, j, rB; arena=parena) for j in ids]
 
-    S = allocate(backend, T, rA, rB, qk, nmember)
+    S = _workspace_array!(parena, backend, T, rA, rB, qk, nmember)
     if nmember > 0 && qk > 0 && rA > 0 && rB > 0
         left_factor_views = [Ainner[kidx] for p in 1:nmember for kidx in 1:qk]
         right_factor_views = [Bouter[p][kidx] for p in 1:nmember for kidx in 1:qk]
@@ -976,12 +987,11 @@ function RowLeftRunCoupling(ops::LogicalTLROperands, i::Integer, cols;
     end
     rC = betaU === nothing ? 0 : size(first(betaU), 2)
 
-    Gbuf = allocate(backend, T, rA, block, qk)
-    Wbuf = allocate(backend, T, rB, qk, block, nmember)
-    Hbuf = allocate(backend, T, rB, maxrank, qk, nmember)
-    Tbuf = allocate(backend, T, rA, qk, maxrank, nmember)
-    Omega = allocate(backend, T, bm, block, 1)
-    beta_tmp = allocate(backend, T, rC, max(block, maxrank), nmember)
+    _arena_reset_phase!(arena)
+    Gbuf = _workspace_array!(tarena, backend, T, rA, block, qk)
+    Wbuf = _workspace_array!(tarena, backend, T, rB, qk, block, nmember)
+    Omega = _workspace_array!(tarena, backend, T, bm, block, 1)
+    beta_tmp = _workspace_array!(tarena, backend, T, rC, max(block, maxrank), nmember)
 
     ptrs_ok = nmember > 0 && qk > 0 && supports_pointer_batched(backend)
     Bstack_ptrs = ptrs_ok ?
@@ -1003,7 +1013,7 @@ function RowLeftRunCoupling(ops::LogicalTLROperands, i::Integer, cols;
         S, Astack, Bstack, betaU, betaV,
         Bstack_ptrs, Wstack_ptrs, betaU_ptrs, betaV_ptrs, betaOm_ptrs,
         beta_tmp_ptrs,
-        Gbuf, Wbuf, Hbuf, Tbuf, Omega, beta_tmp,
+        Gbuf, Wbuf, Omega, beta_tmp,
         T(alpha), qk,
     )
 end
@@ -1104,7 +1114,8 @@ end
 
 function apply_right_row_run!(Z::AbstractArray{T,3}, run::RowLeftRunCoupling,
                               Q::AbstractArray{T,3}, sketch_width::Int;
-                              beta=false, compute=nothing) where {T}
+                              beta=false, compute=nothing,
+                              H, Tbuf, beta_tmp) where {T}
     mode = compute === nothing ? default_gemm_compute_mode(T) :
            gemm_compute_mode(compute)
     adj = _adjoint_blas_char(T)
@@ -1115,19 +1126,19 @@ function apply_right_row_run!(Z::AbstractArray{T,3}, run::RowLeftRunCoupling,
     if qk > 0 && rA > 0 && rB > 0
         right_factor_views = [view(run.Bstack[p], :, :, kidx) for p in 1:nmember for kidx in 1:qk]
         input_sketch_views = [view(Q, :, 1:sketch_width, p) for p in 1:nmember for kidx in 1:qk]
-        right_sketch_views = [view(run.H, :, 1:sketch_width, kidx, p)
+        right_sketch_views = [view(H, :, 1:sketch_width, kidx, p)
                 for p in 1:nmember for kidx in 1:qk]
         precision_gemm_batched!(adj, 'N', one(T), right_factor_views, input_sketch_views,
                                 zero(T), right_sketch_views, mode)
         coupling_views = [view(run.S, :, :, kidx, p) for p in 1:nmember for kidx in 1:qk]
-        coupling_sketch_views = [view(run.Tbuf, :, kidx, 1:sketch_width, p)
+        coupling_sketch_views = [view(Tbuf, :, kidx, 1:sketch_width, p)
                 for p in 1:nmember for kidx in 1:qk]
         precision_gemm_batched!('N', 'N', run.alpha, coupling_views, right_sketch_views,
                                 zero(T), coupling_sketch_views, mode)
         # See apply_right_row_run! (RowRightRunCoupling) for the identical
         # broadcast-batch-1 reshape used here.
         Astack3 = reshape(run.Astack, bm, rA * qk, 1)
-        Tbuf2 = reshape(run.Tbuf, rA * qk, size(run.Tbuf, 3), size(run.Tbuf, 4))
+        Tbuf2 = reshape(Tbuf, rA * qk, size(Tbuf, 3), size(Tbuf, 4))
         coupling_sketch_stacks = view(Tbuf2, :, 1:sketch_width, 1:nmember)
         Zview = view(Z, :, 1:sketch_width, 1:nmember)
         precision_gemm_batched!('N', 'N', one(T), Astack3, coupling_sketch_stacks,
@@ -1136,7 +1147,7 @@ function apply_right_row_run!(Z::AbstractArray{T,3}, run::RowLeftRunCoupling,
         fill!(Z, zero(T))
     end
     if run.betaU !== nothing
-        tmp = [view(run.beta_tmp, :, 1:sketch_width, p) for p in 1:nmember]
+        tmp = [view(beta_tmp, :, 1:sketch_width, p) for p in 1:nmember]
         input_sketch_views = [view(Q, :, 1:sketch_width, p) for p in 1:nmember]
         sketch_views = [view(Z, :, 1:sketch_width, p) for p in 1:nmember]
         precision_gemm_batched!(adj, 'N', one(T), run.betaV, input_sketch_views,
@@ -1145,4 +1156,99 @@ function apply_right_row_run!(Z::AbstractArray{T,3}, run::RowLeftRunCoupling,
                                 one(T), sketch_views, mode)
     end
     return Z
+end
+
+# Arena sizing ------------------------------------------------------------
+
+"""
+    ara_run_workspace_bytes(family, rA, rB, qk, nmember, block, maxrank, bm, bn,
+                            ::Type{T}, ::Type{Thi})
+        -> (persistent_t_bytes, phase_t_bytes, phase_thi_bytes)
+
+Pure arithmetic, no allocation: the persistent and peak phase bytes one
+canonical TLR-output GEMM run (`family ∈ (:column, :row_right, :row_left)`)
+draws from an `ARARunArena` over its whole lifetime. Sampling and finalization
+scratch share one rewound phase arena, while `Q`, `S`, and packed factor stacks
+remain persistent. Mirrors
+`direct.jl`'s `full_workspace_bytes`/`_slice_bytes` pattern for the dense
+path. `bm`/`bn` are the output tile's row/column block sizes; `maxrank`
+upper-bounds both the achieved rank `sQ` (only known after a run converges)
+and the β-term rank `rC` (only known when `beta != 0`), so this is an upper
+bound, not a tight minimum -- consistent with `_arena_array!` failing loudly
+(not silently) if it is ever wrong instead of merely loose.
+
+"""
+function ara_run_workspace_bytes(family::Symbol, rA::Int, rB::Int, qk::Int,
+                                 nmember::Int, block::Int, maxrank::Int,
+                                 bm::Int, bn::Int, ::Type{T}, ::Type{Thi}) where {T,Thi}
+    blk = min(block, max(maxrank, 1))
+    # ARAWorkspace scratch is identical in shape across all three families;
+    # only its `m` (row count) differs by family (bm for :column/:row_right,
+    # bn for :row_left, matching each range_find_*_run! call site).
+    ara_sample_t(m) = m * blk * nmember +         # Yblk
+               max(maxrank, 1) * blk * nmember +  # Dproj
+               2 * blk * blk * nmember            # R1, R2
+    ara_thi(m) = m * blk * nmember + blk * blk * nmember  # Y_hi, G_hi
+
+    persistent, phase, thi_elems = if family === :column
+        persist_t = nmember * bm * rA * qk +      # rowU
+                bn * rB * qk +                     # colZ
+                rA * rB * qk * nmember +           # S
+                bm * maxrank * nmember             # Q
+        constructor_t = nmember * bm * rA * qk +  # rowV packing
+                        bn * rB * qk                # colW packing
+        sample_t = rB * block * qk +               # Hbuf
+                   rA * qk * block * nmember +     # Tbuf
+                   bn * block +                    # Omega
+                   maxrank * max(block, maxrank) * nmember + # beta_tmp
+                   ara_sample_t(bm)
+        final_t = rA * maxrank * qk * nmember +    # G
+                  rB * qk * maxrank * nmember +    # Wbuf
+                  maxrank * maxrank * nmember +    # beta_tmp
+                  bn * maxrank * nmember +         # Z
+                  bm * maxrank * nmember +         # Uh
+                  bn * maxrank * nmember           # Vh
+        (persist_t, max(constructor_t, sample_t, final_t), ara_thi(bm))
+    elseif family === :row_right
+        persist_t = bm * rA * qk +                # Astack
+                    bn * rB * qk * nmember +       # Bstack
+                    rA * rB * qk * nmember +       # S
+                    bm * maxrank * nmember         # Q
+        sample_t = rB * block * qk * nmember +    # Hbuf
+                   rA * qk * block * nmember +     # Tbuf
+                   bn * block * nmember +          # Omega
+                   maxrank * max(block, maxrank) * nmember + # beta_tmp
+                   ara_sample_t(bm)
+        final_t = rA * maxrank * qk * nmember +   # G
+                  rB * qk * maxrank * nmember +   # Wbuf
+                  maxrank * maxrank * nmember +   # beta_tmp
+                  bn * maxrank * nmember +        # Z
+                  bm * maxrank * nmember +        # Uh
+                  bn * maxrank * nmember          # Vh
+        (persist_t, max(sample_t, final_t), ara_thi(bm))
+    elseif family === :row_left
+        persist_t = bm * rA * qk +                # Astack
+                    bn * rB * qk * nmember +       # Bstack
+                    rA * rB * qk * nmember +       # S
+                    bn * maxrank * nmember         # right basis Q
+        sample_t = rA * block * qk +              # Gbuf
+                   rB * qk * block * nmember +     # Wbuf
+                   bm * block +                    # Omega
+                   maxrank * max(block, maxrank) * nmember + # beta_tmp
+                   ara_sample_t(bn)
+        final_t = rB * maxrank * qk * nmember +   # H
+                  rA * qk * maxrank * nmember +   # Tbuf
+                  maxrank * maxrank * nmember +   # beta_tmp
+                  bm * maxrank * nmember +        # L
+                  bm * maxrank * nmember +        # Uh
+                  bn * maxrank * nmember          # Vh
+        (persist_t, max(sample_t, final_t), ara_thi(bn))
+    else
+        throw(ArgumentError("unknown run family $family"))
+    end
+    return (
+        persistent_t_bytes=persistent * sizeof(T),
+        phase_t_bytes=phase * sizeof(T),
+        phase_thi_bytes=thi_elems * sizeof(Thi),
+    )
 end
