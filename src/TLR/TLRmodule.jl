@@ -41,10 +41,11 @@ include("numerics/precision.jl")
 include("numerics/norms.jl")
 include("numerics/ara.jl")
 
-include("algorithms/compression/compress.jl")
-include("algorithms/compression/uncompress.jl")
-include("algorithms/gemm/operands.jl")
-include("algorithms/gemm/dense_result.jl")
-include("algorithms/gemm/tlr_result.jl")
+include("compression/compress.jl")
+include("compression/uncompress.jl")
+include("gemm/dense_result/axis_strategy.jl")
+include("gemm/operands.jl")
+include("gemm/dense_result.jl")
+include("gemm/tlr_result.jl")
 
 end
