@@ -43,6 +43,8 @@ include("numerics/ara.jl")
 
 include("algorithms/compression/compress.jl")
 include("algorithms/compression/uncompress.jl")
-include("algorithms/gemm/gemm.jl")
+include("algorithms/gemm/operands.jl")
+include("algorithms/gemm/dense_result.jl")
+include("algorithms/gemm/tlr_result.jl")
 
 end

@@ -1,4 +1,4 @@
-# R3: fixed-column RangeFind with a shared H pass and swap-compacted active
+# Fixed-column RangeFind with a shared H pass and swap-compacted active
 # members. Effective ranks are deliberately ordered low-to-high so early
 # convergence creates holes rather than an already-retired suffix.
 
@@ -72,12 +72,12 @@ function _check_column_run(::Type{T}, ArrayType, synchronize; with_beta=false) w
     end
 end
 
-@testset "RangeFind packed column run (R3)" begin
+@testset "RangeFind packed column run" begin
     _check_column_run(Float64, Array, _ -> nothing)
     _check_column_run(Float64, Array, _ -> nothing; with_beta=true)
 end
 
-@testset "RangeFind packed column run on GPU (R3)" begin
+@testset "RangeFind packed column run on GPU" begin
     for (backend_name, ArrayType, synchronize) in available_backends()
         @testset "$backend_name" begin
             _check_column_run(Float64, ArrayType, synchronize)
@@ -86,13 +86,13 @@ end
     end
 end
 
-# R3: fixed-row RangeFind (both sampling sides). Same graded-rank technique
+# Fixed-row RangeFind (both sampling sides). Same graded-rank technique
 # as the column-run fixture above, but grading B's per-column rank instead
 # of A's per-row rank, since rows/cols swap which axis is the member axis
 # for range_find_row_right_run!/range_find_row_left_run!. Exercises the
 # swap-tracked pointer-batch descriptors (RowRightRunCoupling's block-swapped
 # `Bouter_ptrs`, RowLeftRunCoupling's single-slot-swapped `Bstack_ptrs`) under
-# real active-prefix packing, which gemm_tlr_r3.jl's end-to-end tests (random,
+# real active-prefix packing, which tlr_gemm.jl's end-to-end tests (random,
 # not deliberately graded, ranks) do not guarantee.
 
 function _row_run_fixture(::Type{T}, ArrayType) where {T}
@@ -154,7 +154,7 @@ function _check_row_run(::Type{T}, ArrayType, synchronize, side::Symbol;
     @test info.member_ids != collect(1:length(cols)) # a real swap occurred
 
     # range_find_row_left_run! truncates X^T (ara_truncate!(Vh, Uh, ...) in
-    # range_find.jl), so V -- not U -- is the orthonormal factor there;
+    # run_sampling.jl), so V -- not U -- is the orthonormal factor there;
     # range_find_row_right_run! keeps the usual U-orthonormal convention.
     orthT = side === :right ? Uh : Vh
     for (slot, j) in enumerate(cols)
@@ -169,7 +169,7 @@ function _check_row_run(::Type{T}, ArrayType, synchronize, side::Symbol;
     end
 end
 
-@testset "RangeFind packed row run (R3)" begin
+@testset "RangeFind packed row run" begin
     for side in (:right, :left)
         @testset "$side" begin
             _check_row_run(Float64, Array, _ -> nothing, side)
@@ -178,7 +178,7 @@ end
     end
 end
 
-@testset "RangeFind packed row run on GPU (R3)" begin
+@testset "RangeFind packed row run on GPU" begin
     for (backend_name, ArrayType, synchronize) in available_backends()
         @testset "$backend_name" begin
             for side in (:right, :left)

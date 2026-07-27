@@ -1,9 +1,9 @@
-# Allocation-regression coverage for the R3 performance-closure work
-# (docs/TODO.md, "R3 performance closure"): the canonical `gemm!(C::TLRMatrix,
-# A::TLRMatrix, B::TLRMatrix; ...)` hot sampler must not rebuild a
-# `Vector`-of-views/device-pointer-array per ARA pass.
+# Allocation-regression coverage for the canonical TLR-output GEMM's hot
+# sampler (docs/TODO.md's dated worklog, "R3 performance closure"): the
+# canonical `gemm!(C::TLRMatrix, A::TLRMatrix, B::TLRMatrix; ...)` hot sampler
+# must not rebuild a `Vector`-of-views/device-pointer-array per ARA pass.
 #
-# CUDA-only: `gemm_budget.jl`'s `@allocated`-based `term_bytes` helper counts
+# CUDA-only: `dense_budget.jl`'s `@allocated`-based `term_bytes` helper counts
 # Julia heap bytes and is explicitly CPU-only for exactly this reason (a GPU
 # backend's device allocations don't show up there) -- this file is new
 # coverage for the device-side cost `term_bytes` cannot see. AMDGPU is
@@ -20,7 +20,7 @@
 #
 # The budget is not zero and is not meant to be: `ara_cholesky_pass!`'s
 # `trsm_batched!`/`potrfBatched!` calls allocate a transient device pointer
-# array on every ARA pass independent of anything in `ara/tile_apply.jl`, and
+# array on every ARA pass independent of anything in `tlr_result/run_coupling.jl`, and
 # a few same-call operands that are run-owned but not reshape-representable
 # as a strided batch (T-formation/W-formation in `RowRightRunCoupling`/
 # `RowLeftRunCoupling`) are left on the `Vector`-of-views path -- both are
@@ -38,9 +38,9 @@ catch
 end
 
 if isdefined(@__MODULE__, :CUDA)
-    const _R3_ALLOC_BUDGET = 500_000  # bytes; see rationale above
+    const _TLR_ALLOC_BUDGET = 500_000  # bytes; see rationale above
 
-    function _r3_alloc_bytes(ArrayType, synchronize;
+    function _tlr_alloc_bytes(ArrayType, synchronize;
                              transA, transB, rA=3, rB=4, seed=1200)
         T = Float64
         A, B, C = _canonical_tlr_fixture(T, ArrayType; rA, rB, seed)
@@ -56,7 +56,7 @@ if isdefined(@__MODULE__, :CUDA)
     end
 end
 
-@testset "canonical row-major TLR-result gemm! allocation (R3)" begin
+@testset "canonical row-major TLR-result gemm! allocation" begin
     for (backend_name, ArrayType, synchronize) in available_backends()
         backend_name == "CUDA" || continue
         @testset "$backend_name" begin
@@ -68,15 +68,15 @@ end
             ]
             for (name, kw) in cases
                 @testset "$name" begin
-                    bytes = _r3_alloc_bytes(ArrayType, synchronize; kw...)
-                    @test bytes <= _R3_ALLOC_BUDGET
+                    bytes = _tlr_alloc_bytes(ArrayType, synchronize; kw...)
+                    @test bytes <= _TLR_ALLOC_BUDGET
                 end
             end
         end
     end
 end
 
-# Cross-run arena reuse (R4 foundation, docs/TODO.md "R4 arena -- reusable
+# Cross-run arena reuse (docs/TODO.md's dated worklog, "R4 arena -- reusable
 # run/ARA workspace"): the canonical driver now builds one ARARunArena before
 # its traversal loop and resets it once per row/column run instead of letting
 # every run's ColumnRunCoupling/RowRightRunCoupling/RowLeftRunCoupling and
@@ -94,7 +94,7 @@ end
 # With reuse intact, allocated bytes should stay close to flat as qm grows;
 # a regression back to per-run allocation would scale with qm instead.
 if isdefined(@__MODULE__, :CUDA)
-    function _r3_alloc_bytes_tall(ArrayType, synchronize; qm::Int, rA=3, rB=4, seed=1200)
+    function _tlr_alloc_bytes_tall(ArrayType, synchronize; qm::Int, rA=3, rB=4, seed=1200)
         T = Float64
         b = 16
         qk = qn = 3
@@ -117,18 +117,18 @@ if isdefined(@__MODULE__, :CUDA)
     end
 end
 
-@testset "canonical row-major TLR-result gemm! cross-run arena reuse (R4)" begin
+@testset "canonical row-major TLR-result gemm! cross-run arena reuse" begin
     for (backend_name, ArrayType, synchronize) in available_backends()
         backend_name == "CUDA" || continue
         @testset "$backend_name" begin
-            few = _r3_alloc_bytes_tall(ArrayType, synchronize; qm=3)
-            many = _r3_alloc_bytes_tall(ArrayType, synchronize; qm=9)
+            few = _tlr_alloc_bytes_tall(ArrayType, synchronize; qm=3)
+            many = _tlr_alloc_bytes_tall(ArrayType, synchronize; qm=9)
             # Same per-run shape (nmember=qn=3, qk=3) both times; only the
             # number of loop iterations (qm) triples. A per-run-allocating
             # driver would scale allocated bytes with qm; with the arena
             # reused across the loop, it should stay within one run's budget
             # of the qm=3 measurement regardless of qm.
-            @test many <= few + _R3_ALLOC_BUDGET
+            @test many <= few + _TLR_ALLOC_BUDGET
         end
     end
 end

@@ -1,4 +1,4 @@
-# R1: the factor-list sampler for one output tile -- ApplyRight/ApplyLeft
+# The factor-list sampler for one output tile -- ApplyRight/ApplyLeft
 # against a dense reference, without ever materializing the output tile.
 
 # Dense reference for the update of tile (i,j): alpha * (A's tile-row i) *
@@ -33,7 +33,7 @@ function _tile_apply_fixture(::Type{T}, ArrayType; qm=3, qn=3, qk=4,
     return A_tlr, B_tlr
 end
 
-@testset "tile factor-list sampler (R1)" begin
+@testset "tile factor-list sampler" begin
     T = Float64
     rng = MersenneTwister(9001)
 
@@ -159,7 +159,7 @@ end
     end
 end
 
-@testset "tile factor-list sampler on GPU (R1)" begin
+@testset "tile factor-list sampler on GPU" begin
     for (backend_name, ArrayType, synchronize) in available_backends()
         @testset "$backend_name" begin
             T = Float64

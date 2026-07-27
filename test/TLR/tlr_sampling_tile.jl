@@ -1,8 +1,8 @@
-# R2: RangeFind on one tile = A1 (ara_build_basis!/ara_truncate!) driven
-# through R1 (apply_right!/apply_left!) as the implicit sampler. No exact
+# RangeFind on one tile: the batched ARA core (ara_build_basis!/ara_truncate!)
+# driven through the implicit sampler (apply_right!/apply_left!). No exact
 # residual is formed on this path (docs/TODO.md, worklog item 4).
 
-@testset "RangeFind on one tile (R2)" begin
+@testset "RangeFind on one tile" begin
     T = Float64
     rng = MersenneTwister(9101)
 
@@ -133,7 +133,7 @@
     end
 end
 
-@testset "RangeFind on one tile on GPU (R2)" begin
+@testset "RangeFind on one tile on GPU" begin
     for (backend_name, ArrayType, synchronize) in available_backends()
         @testset "$backend_name" begin
             T = Float64

@@ -83,7 +83,7 @@ An empty co-range returns empty factors directly and never enters LAPACK or a
 GPU solver.
 
 The factor-application layer (`ColumnRunCoupling`, `RowRightRunCoupling`,
-`RowLeftRunCoupling` in `ara/tile_apply.jl`) extends the same contract to the
+`RowLeftRunCoupling` in `tlr_result/run_coupling.jl`) extends the same contract to the
 couplings and their applies, on the run's hot per-pass sampler specifically.
 No sampling pass allocates numeric storage: `S`, the per-column/row coupling
 stacks, and the `H`/`T`/`G`/`W` scratch are sized once at run construction
@@ -234,7 +234,7 @@ Focused verification:
 
 ## R3 performance closure — 2026-07-27
 
-An audit of `ara/tile_apply.jl` found the R3 sampling couplers rebuilding
+An audit of `tlr_result/run_coupling.jl` found the R3 sampling couplers rebuilding
 `Vector`-of-views batch-pointer lists from scratch on every ARA sampling
 pass — on CUDA/AMDGPU each such call allocates and frees a fresh device
 pointer array (`_unsafe_batch_strided`/`_device_batch_strided`), several
@@ -355,7 +355,7 @@ among contraction, orthogonalization, and finalization.
 
 Before implementing shared cross-lane slot ownership, recover cross-lane
 occupancy by growing a single batched-GEMM call's batch count rather than by
-running several lane schedulers on independent streams. `direct.jl`'s
+running several lane schedulers on independent streams. `dense_result/low_rank_terms.jl`'s
 `execute_dense_stage3!(::KAsSerialLoop, ::FoldRight, run::ColumnRun, ...)`
 already does exactly this for the dense-output path: for one fixed
 contraction tile `k`, it folds every row-panel × column-panel pair in the run

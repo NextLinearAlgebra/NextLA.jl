@@ -33,7 +33,7 @@ function _check_canonical_tlr_gemm(ArrayType, synchronize;
     return C, A, B
 end
 
-@testset "canonical row-major TLR-result gemm! (R3)" begin
+@testset "canonical row-major TLR-result gemm!" begin
     A, B, C = _canonical_tlr_fixture(Float64, Array)
     @test _TLRM.tile_order(A) isa NextLA.TileRowMajor
     @test _TLRM.tile_order(B) isa NextLA.TileRowMajor
@@ -95,7 +95,7 @@ end
         C, A, B; transA='N', transB='T', block=4, workspace)
 end
 
-@testset "canonical row-major TLR-result gemm! on CUDA (R3)" begin
+@testset "canonical row-major TLR-result gemm! on CUDA" begin
     for (backend_name, ArrayType, synchronize) in available_backends()
         backend_name == "CUDA" || continue
         @testset "$backend_name" begin
