@@ -55,6 +55,20 @@ function _gemm_compute_batched!(mode::GEMMCompute, transA, transB, alpha, A, B, 
                            compute_type=gemm_compute_type(mode))
 end
 
+function _gemm_compute_batched_ptrs!(mode::GEMMCompute, transA, transB, alpha,
+                                     Aptrs, Aref, Bptrs, Bref, beta, Cptrs, Cref,
+                                     batch_count)
+    return gemmEx_batched_ptrs!(transA, transB, alpha, Aptrs, Aref, Bptrs, Bref,
+                                beta, Cptrs, Cref, batch_count;
+                                compute_type=gemm_compute_type(mode))
+end
+
+function _gemm_compute_batched_ptrs!(::TF32, transA, transB, alpha,
+                                     Aptrs, Aref, Bptrs, Bref, beta, Cptrs, Cref,
+                                     batch_count)
+    throw(ArgumentError("TF32 GEMM is supported only on CUDA"))
+end
+
 function _gemm_compute!(mode::GEMMCompute, transA, transB, alpha, A, B, beta, C)
     if get_backend(C) isa KernelAbstractions.CPU
         return BLAS.gemm!(transA, transB, eltype(C)(alpha), A, B, eltype(C)(beta), C)
@@ -86,6 +100,40 @@ function precision_gemm_batched!(transA, transB, alpha, A, B, beta, C,
         backend, _batch_eltype(A), _batch_eltype(B), _batch_eltype(C), mode,
     )
     return _gemm_compute_batched!(mode, transA, transB, alpha, A, B, beta, C)
+end
+
+"""
+    precision_gemm_batched_ptrs!(transA, transB, alpha,
+                                  Ad::BatchPtrDescriptor, Aref,
+                                  Bd::BatchPtrDescriptor, Bref, beta,
+                                  Cd::BatchPtrDescriptor, Cref,
+                                  batch_count, mode)
+
+Precision-policy sibling of [`precision_gemm_batched!`](@ref) for a batched
+GEMM over caller-owned, persistent pointer-batch descriptors (see
+[`BatchPtrDescriptor`](@ref)). Performs the same `validate_gemm_signature`
+check from `Aref`/`Bref`/`Cref`'s element types, then dispatches to
+[`gemmEx_batched_ptrs!`](@ref). `Ad`/`Bd`/`Cd` are untouched by this call; the
+caller builds them once and updates them only via
+[`swap_batch_ptrs!`](@ref), never by rebuilding. `Aref`/`Bref`/`Cref` are
+cheap representative views (not device allocations) used only to size this
+call's `m,n,k` and leading dimensions — they may change every call (e.g. as a
+sketch width varies pass to pass) without requiring `Ad`/`Bd`/`Cd` to.
+"""
+function precision_gemm_batched_ptrs!(transA, transB, alpha,
+                                      Ad::BatchPtrDescriptor, Aref::AbstractMatrix,
+                                      Bd::BatchPtrDescriptor, Bref::AbstractMatrix,
+                                      beta,
+                                      Cd::BatchPtrDescriptor, Cref::AbstractMatrix,
+                                      batch_count::Integer,
+                                      mode::AbstractGEMMComputeMode)
+    batch_count <= 0 && return Cd
+    backend = get_backend(Cref)
+    validate_gemm_signature(backend, eltype(Aref), eltype(Bref), eltype(Cref), mode)
+    _gemm_compute_batched_ptrs!(mode, transA, transB, alpha,
+                                Ad.ptrs, Aref, Bd.ptrs, Bref, beta, Cd.ptrs, Cref,
+                                batch_count)
+    return Cd
 end
 
 """Precision-policy dispatch for one GEMM, including mixed output storage."""

@@ -31,3 +31,6 @@ end
 @inline function _unsafe_batch_strided(batch::AbstractVector{<:CUDA.StridedCuMatrix{T}}) where {T}
     return CUDA.CuArray(pointer.(batch))
 end
+
+@inline NextLA._build_batch_ptrs(batch::AbstractVector{<:CUDA.StridedCuMatrix}) =
+    _unsafe_batch_strided(batch)

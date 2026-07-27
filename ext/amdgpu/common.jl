@@ -26,3 +26,6 @@ end
 @inline function _device_batch_strided(batch::AbstractVector{<:AMDGPU.StridedROCMatrix{T}}) where {T}
     return AMDGPU.ROCArray(pointer.(batch))
 end
+
+@inline NextLA._build_batch_ptrs(batch::AbstractVector{<:AMDGPU.StridedROCMatrix}) =
+    _device_batch_strided(batch)

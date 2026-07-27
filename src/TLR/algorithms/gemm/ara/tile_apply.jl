@@ -231,6 +231,44 @@ row panel are swap-compacted when a member retires.
 The fixed output column makes `H_ℓj = V^B_ℓj'Ω` common to every active tile:
 [`apply_right_run!`](@ref) forms it once per pass, then batches the remaining
 coupling and fused-reduction work over the active prefix.
+
+## Pointer-batch descriptors (hot path only)
+
+`rowU` is not representable as a strided-3D batch across members (its
+entries are views at arbitrary, non-uniformly-spaced offsets into shared
+operand storage), so a batched GEMM over it needs a pointer-batched call. On
+backends with pointer-batched GEMM, the hot per-pass sampler
+([`apply_right_run!`](@ref)'s member-only-batched final reduction and beta
+accumulation) is made allocation-free by building the needed pointer tables
+once here rather than rebuilding them every pass: `rowU_ptrs`,
+`betaU_ptrs`, `betaV_ptrs` are swap-tracked ([`swap_batch_ptrs!`](@ref) in
+[`_swap_column_run_members!`](@ref) keeps them in step with active-prefix
+packing); `Tstack_ptrs`, `Om_ptrs`, and `beta_tmp_ptrs` address this run's
+own scratch (`Tbuf`, `Omega`, `beta_tmp`), which is never swapped, only
+reused, so they are built once and never touched again. CUBLAS/rocBLAS's
+pointer-batched GEMM has no strided/pointer mixed form, so once `rowU` (or
+`betaU`/`betaV`) forces a call into pointer-batched form, every operand in
+that same call must be — including the otherwise-strided `Tstack`/`Om`/
+`beta_tmp`, which is why they get descriptors too even though a
+strided-only view of them would otherwise suffice.
+
+`Y` (the ARA basis being grown) is the one operand this cannot cover: it is
+owned by the caller's `ARAWorkspace`, not this run, so its address is only
+known at the first `apply_right_run!` call and cannot be cached in this
+struct without threading a descriptor through `numerics/ara.jl` — judged out
+of scope for this pass (see `docs/TODO.md`'s workspace contract). Its
+pointer array is therefore built once per `apply_right_run!` call (not once
+per GEMM within it, since the fused reduction and the beta accumulation
+share the same `Y`) and is the sampler's only remaining per-pass allocation.
+
+The co-range apply ([`apply_left_run!`](@ref), called once after
+convergence, not once per pass) is intentionally left entirely on the
+`Vector`-of-views path and does not use any of these descriptors: its cost
+does not compound with pass count the way the sampler's did, and its G/H
+formation batches `rowU` over member × contraction-tile (`count*qk`
+pointers, needing a `qk`-blocked swap) rather than member-only, which would
+need a second, larger descriptor. See `docs/TODO.md` for this scoping
+decision.
 """
 struct ColumnRunCoupling{ST,RU,CZ,BUT,BVT,HT,TT,GT,WT,OT,BT,T}
     S::ST
@@ -238,6 +276,12 @@ struct ColumnRunCoupling{ST,RU,CZ,BUT,BVT,HT,TT,GT,WT,OT,BT,T}
     colZ::CZ
     betaU::BUT
     betaV::BVT
+    rowU_ptrs::Union{Nothing,BatchPtrDescriptor}
+    Tstack_ptrs::Union{Nothing,BatchPtrDescriptor}
+    betaU_ptrs::Union{Nothing,BatchPtrDescriptor}
+    betaV_ptrs::Union{Nothing,BatchPtrDescriptor}
+    Om_ptrs::Union{Nothing,BatchPtrDescriptor}
+    beta_tmp_ptrs::Union{Nothing,BatchPtrDescriptor}
     H::HT
     Tbuf::TT
     G::GT
@@ -287,16 +331,35 @@ function ColumnRunCoupling(ops::LogicalTLROperands, rows, j::Integer;
         ([x[1] for x in uv], [x[2] for x in uv])
     end
 
+    Hbuf = allocate(backend, T, rB, block, qk)
+    Tbuf = allocate(backend, T, rA, qk, block, count)
+    Gbuf = allocate(backend, T, rA, maxrank, qk, count)
+    Wbuf = allocate(backend, T, rB, qk, maxrank, count)
+    Omega = allocate(backend, T, bn, block, 1)
+    beta_tmp = allocate(backend, T,
+                        betaV === nothing ? 0 : size(first(betaV), 2),
+                        max(block, maxrank), count)
+
+    ptrs_ok = count > 0 && supports_pointer_batched(backend)
+    rowU_ptrs = ptrs_ok ?
+        BatchPtrDescriptor([reshape(rowU[p], bm, rA * qk) for p in 1:count]) :
+        nothing
+    Tstack_ptrs = ptrs_ok ?
+        BatchPtrDescriptor([view(reshape(Tbuf, rA * qk, block, count), :, :, p)
+                           for p in 1:count]) :
+        nothing
+    has_beta_ptrs = ptrs_ok && betaU !== nothing
+    betaU_ptrs = has_beta_ptrs ? BatchPtrDescriptor(betaU) : nothing
+    betaV_ptrs = has_beta_ptrs ? BatchPtrDescriptor(betaV) : nothing
+    Om_ptrs = has_beta_ptrs ?
+        BatchPtrDescriptor([view(Omega, :, :, 1) for _ in 1:count]) : nothing
+    beta_tmp_ptrs = has_beta_ptrs ?
+        BatchPtrDescriptor([view(beta_tmp, :, :, p) for p in 1:count]) : nothing
+
     return ColumnRunCoupling(
         S, rowU, colZ, betaU, betaV,
-        allocate(backend, T, rB, block, qk),
-        allocate(backend, T, rA, qk, block, count),
-        allocate(backend, T, rA, maxrank, qk, count),
-        allocate(backend, T, rB, qk, maxrank, count),
-        allocate(backend, T, bn, block, 1),
-        allocate(backend, T,
-                 betaV === nothing ? 0 : size(first(betaV), 2),
-                 max(block, maxrank), count),
+        rowU_ptrs, Tstack_ptrs, betaU_ptrs, betaV_ptrs, Om_ptrs, beta_tmp_ptrs,
+        Hbuf, Tbuf, Gbuf, Wbuf, Omega, beta_tmp,
         T(alpha), qk,
     )
 end
@@ -308,9 +371,12 @@ function _swap_column_run_members!(run::ColumnRunCoupling, p::Int, q::Int)
     _ara_swap_basis_kernel!(backend)(S3, p, q;
                                      ndrange=(size(S3, 1), 1))
     run.rowU[p], run.rowU[q] = run.rowU[q], run.rowU[p]
+    run.rowU_ptrs !== nothing && swap_batch_ptrs!(run.rowU_ptrs, p, q)
     if run.betaU !== nothing
         run.betaU[p], run.betaU[q] = run.betaU[q], run.betaU[p]
         run.betaV[p], run.betaV[q] = run.betaV[q], run.betaV[p]
+        run.betaU_ptrs !== nothing && swap_batch_ptrs!(run.betaU_ptrs, p, q)
+        run.betaV_ptrs !== nothing && swap_batch_ptrs!(run.betaV_ptrs, p, q)
     end
     return run
 end
@@ -321,6 +387,15 @@ end
 Sample the contiguous active prefix of a fixed-column run. Exactly one `H`
 batch is formed for the column, independent of `nactive`; `T` and the final
 reduction are batched over active members.
+
+This is the run's hot per-pass sampler. When `run.rowU_ptrs !== nothing`
+(pointer-batched GEMM available), the final reduction and beta accumulation
+run entirely off the persistent descriptors built in
+[`ColumnRunCoupling`](@ref) -- no `Vector`-of-views or device pointer array
+is built for `rowU`/`Tstack`/beta terms. `Y`'s own pointer array is the one
+exception (see the struct docstring); it is built once here and reused for
+both GEMMs in this call. On backends without pointer-batched GEMM (CPU),
+this falls back to the original `Vector`-of-views construction.
 """
 function apply_right_run!(Y::AbstractArray{T,3}, run::ColumnRunCoupling,
                           width::Int, nactive::Int;
@@ -331,10 +406,16 @@ function apply_right_run!(Y::AbstractArray{T,3}, run::ColumnRunCoupling,
     qk = run.qk
     bm = size(Y, 1)
     rA, rB = size(run.S, 1), size(run.S, 2)
+    use_ptrs = run.rowU_ptrs !== nothing
 
     Om = view(run.Omega, :, 1:width, :)
     Random.randn!(Om)
     H = view(run.H, :, 1:width, :)
+
+    Yptrs = use_ptrs ?
+        BatchPtrDescriptor([view(Y, :, 1:width, p) for p in 1:nactive]) :
+        nothing
+
     if qk > 0 && rA > 0 && rB > 0
         precision_gemm_batched!(adj, 'N', one(T), run.colZ, Om,
                                 zero(T), H, mode)
@@ -344,24 +425,43 @@ function apply_right_run!(Y::AbstractArray{T,3}, run::ColumnRunCoupling,
                 for p in 1:nactive for l in 1:qk]
         precision_gemm_batched!('N', 'N', run.alpha, Svec, Hvec,
                                 zero(T), Tvec, mode)
-        Uvec = [reshape(run.rowU[p], bm, rA * qk) for p in 1:nactive]
-        Tstack = [reshape(view(run.Tbuf, :, :, 1:width, p), rA * qk, width)
-                  for p in 1:nactive]
-        Yvec = [view(Y, :, 1:width, p) for p in 1:nactive]
-        precision_gemm_batched!('N', 'N', one(T), Uvec, Tstack,
-                                zero(T), Yvec, mode)
+        if use_ptrs
+            Uref = reshape(run.rowU[1], bm, rA * qk)
+            Tref = view(reshape(run.Tbuf, rA * qk, size(run.Tbuf, 3),
+                               size(run.Tbuf, 4)), :, 1:width, 1)
+            precision_gemm_batched_ptrs!('N', 'N', one(T),
+                run.rowU_ptrs, Uref, run.Tstack_ptrs, Tref,
+                zero(T), Yptrs, view(Y, :, 1:width, 1), nactive, mode)
+        else
+            Uvec = [reshape(run.rowU[p], bm, rA * qk) for p in 1:nactive]
+            Tstack = [reshape(view(run.Tbuf, :, :, 1:width, p), rA * qk, width)
+                      for p in 1:nactive]
+            Yvec = [view(Y, :, 1:width, p) for p in 1:nactive]
+            precision_gemm_batched!('N', 'N', one(T), Uvec, Tstack,
+                                    zero(T), Yvec, mode)
+        end
     else
         fill!(view(Y, :, 1:width, :), zero(T))
     end
 
     if run.betaU !== nothing
-        tmp = [view(run.beta_tmp, :, 1:width, p) for p in 1:nactive]
-        Ovec = [view(Om, :, :, 1) for _ in 1:nactive]
-        Yvec = [view(Y, :, 1:width, p) for p in 1:nactive]
-        precision_gemm_batched!(adj, 'N', one(T), view(run.betaV, 1:nactive),
-                                Ovec, zero(T), tmp, mode)
-        precision_gemm_batched!('N', 'N', T(beta), view(run.betaU, 1:nactive),
-                                tmp, one(T), Yvec, mode)
+        if use_ptrs
+            tmpref = view(run.beta_tmp, :, 1:width, 1)
+            precision_gemm_batched_ptrs!(adj, 'N', one(T),
+                run.betaV_ptrs, first(run.betaV), run.Om_ptrs, view(Om, :, :, 1),
+                zero(T), run.beta_tmp_ptrs, tmpref, nactive, mode)
+            precision_gemm_batched_ptrs!('N', 'N', T(beta),
+                run.betaU_ptrs, first(run.betaU), run.beta_tmp_ptrs, tmpref,
+                one(T), Yptrs, view(Y, :, 1:width, 1), nactive, mode)
+        else
+            tmp = [view(run.beta_tmp, :, 1:width, p) for p in 1:nactive]
+            Ovec = [view(Om, :, :, 1) for _ in 1:nactive]
+            Yvec = [view(Y, :, 1:width, p) for p in 1:nactive]
+            precision_gemm_batched!(adj, 'N', one(T), view(run.betaV, 1:nactive),
+                                    Ovec, zero(T), tmp, mode)
+            precision_gemm_batched!('N', 'N', T(beta), view(run.betaU, 1:nactive),
+                                    tmp, one(T), Yvec, mode)
+        end
     end
     return Y
 end
@@ -491,6 +591,30 @@ end
 Fixed-row, right-sampling state for logical `A` tile-row-major. The repeated
 `XΩ` apply terminates in A's zero-copy row stack. B's column stacks are
 materialized once only for the final `XᵀQ` co-range.
+
+## Pointer-batch descriptors (hot path only)
+
+Unlike [`ColumnRunCoupling`](@ref)'s `rowU`, `Bouter` is genuinely on the hot
+per-pass sampler's path (`apply_right_row_run!`'s H-formation batches it over
+member × contraction-tile, `count*qk` entries, since each member's tiles sit
+at arbitrary offsets in `B`'s storage). On backends with pointer-batched
+GEMM, `Bouter_ptrs` is a `count*qk`-length descriptor, member-major
+(`(p-1)*qk+l`), swap-tracked with the *block* form of
+[`swap_batch_ptrs!`](@ref) (`blocklen=qk`) since retiring a member moves its
+whole qk-tile block. `HOm_ptrs` and `H_ptrs` cover this same call's other two
+operands: `Om` (this run's own `Omega`, repeated per contraction tile) and
+`H` (this run's own scratch, reshaped so its natural `(l,p)` memory order
+already matches `Bouter_ptrs`'s) -- both build-once, never swapped, since
+CUBLAS/rocBLAS's pointer-batched GEMM has no strided/pointer mixed form and
+every operand in a call with `Bouter_ptrs` must be pointer-batched too, even
+though `Om`/`H` would individually be fine as strided views. `betaU_ptrs`/
+`betaV_ptrs` (single-slot swap) and `betaOm_ptrs`/`beta_tmp_ptrs`
+(build-once, one entry per member, no `qk` repeat) cover the beta
+accumulation the same way. `Y`'s own pointer array remains the one residual
+per-pass cost (see [`ColumnRunCoupling`](@ref)'s docstring for why).
+
+The co-range apply (`apply_left_row_run!`, once per run, not once per pass)
+is intentionally left on the `Vector`-of-views path; see `docs/TODO.md`.
 """
 struct RowRightRunCoupling{ST,AStackT,BOT,BStackT,BUT,BVT,HT,TT,GT,WT,OT,BT,T}
     S::ST
@@ -499,6 +623,13 @@ struct RowRightRunCoupling{ST,AStackT,BOT,BStackT,BUT,BVT,HT,TT,GT,WT,OT,BT,T}
     Bstack::BStackT
     betaU::BUT
     betaV::BVT
+    Bouter_ptrs::Union{Nothing,BatchPtrDescriptor}
+    HOm_ptrs::Union{Nothing,BatchPtrDescriptor}
+    H_ptrs::Union{Nothing,BatchPtrDescriptor}
+    betaU_ptrs::Union{Nothing,BatchPtrDescriptor}
+    betaV_ptrs::Union{Nothing,BatchPtrDescriptor}
+    betaOm_ptrs::Union{Nothing,BatchPtrDescriptor}
+    beta_tmp_ptrs::Union{Nothing,BatchPtrDescriptor}
     H::HT
     Tbuf::TT
     G::GT
@@ -548,14 +679,41 @@ function RowRightRunCoupling(ops::LogicalTLROperands, i::Integer, cols;
         ([x[1] for x in uv], [x[2] for x in uv])
     end
     rC = betaV === nothing ? 0 : size(first(betaV), 2)
+
+    Hbuf = allocate(backend, T, rankB, block, qk, count)
+    Tbuf = allocate(backend, T, rankA, qk, block, count)
+    Gbuf = allocate(backend, T, rankA, maxrank, qk, count)
+    Wbuf = allocate(backend, T, rankB, qk, maxrank, count)
+    Omega = allocate(backend, T, bn, block, count)
+    beta_tmp = allocate(backend, T, rC, max(block, maxrank), count)
+
+    ptrs_ok = count > 0 && qk > 0 && supports_pointer_batched(backend)
+    # The struct field `Bouter` is populated from `Binner` below (matching
+    # apply_right_row_run!'s `run.Bouter[p][l]` access, which is the V-factor
+    # tile, not the local `Bouter`/U-factor variable used only for S above).
+    Bouter_ptrs = ptrs_ok ?
+        BatchPtrDescriptor([Binner[p][l] for p in 1:count for l in 1:qk]) :
+        nothing
+    HOm_ptrs = ptrs_ok ?
+        BatchPtrDescriptor([view(Omega, :, :, p) for p in 1:count for l in 1:qk]) :
+        nothing
+    H_ptrs = ptrs_ok ?
+        BatchPtrDescriptor([view(reshape(Hbuf, rankB, block, qk * count), :, :, k)
+                           for k in 1:(qk * count)]) :
+        nothing
+    has_beta_ptrs = ptrs_ok && betaU !== nothing
+    betaU_ptrs = has_beta_ptrs ? BatchPtrDescriptor(betaU) : nothing
+    betaV_ptrs = has_beta_ptrs ? BatchPtrDescriptor(betaV) : nothing
+    betaOm_ptrs = has_beta_ptrs ?
+        BatchPtrDescriptor([view(Omega, :, :, p) for p in 1:count]) : nothing
+    beta_tmp_ptrs = has_beta_ptrs ?
+        BatchPtrDescriptor([view(beta_tmp, :, :, p) for p in 1:count]) : nothing
+
     return RowRightRunCoupling(
         S, Astack, Binner, Bstack, betaU, betaV,
-        allocate(backend, T, rankB, block, qk, count),
-        allocate(backend, T, rankA, qk, block, count),
-        allocate(backend, T, rankA, maxrank, qk, count),
-        allocate(backend, T, rankB, qk, maxrank, count),
-        allocate(backend, T, bn, block, count),
-        allocate(backend, T, rC, max(block, maxrank), count),
+        Bouter_ptrs, HOm_ptrs, H_ptrs, betaU_ptrs, betaV_ptrs, betaOm_ptrs,
+        beta_tmp_ptrs,
+        Hbuf, Tbuf, Gbuf, Wbuf, Omega, beta_tmp,
         T(alpha), qk,
     )
 end
@@ -568,13 +726,42 @@ function _swap_row_right_members!(run::RowRightRunCoupling, p::Int, q::Int)
     B3 = reshape(run.Bstack, :, 1, size(run.Bstack, 4))
     _ara_swap_basis_kernel!(backend)(B3, p, q; ndrange=(size(B3, 1), 1))
     run.Bouter[p], run.Bouter[q] = run.Bouter[q], run.Bouter[p]
+    if run.Bouter_ptrs !== nothing
+        swap_batch_ptrs!(run.Bouter_ptrs, p, q, run.qk)
+    end
     if run.betaU !== nothing
         run.betaU[p], run.betaU[q] = run.betaU[q], run.betaU[p]
         run.betaV[p], run.betaV[q] = run.betaV[q], run.betaV[p]
+        run.betaU_ptrs !== nothing && swap_batch_ptrs!(run.betaU_ptrs, p, q)
+        run.betaV_ptrs !== nothing && swap_batch_ptrs!(run.betaV_ptrs, p, q)
     end
     return run
 end
 
+"""
+    apply_right_row_run!(Y, run, width, nactive; beta, compute)
+
+The run's hot per-pass sampler. When `run.Bouter_ptrs !== nothing`, the
+H-formation and beta accumulation run entirely off the persistent
+descriptors built in [`RowRightRunCoupling`](@ref) -- no `Vector`-of-views or
+device pointer array is rebuilt for `Bouter`/`Om`/`H`/beta terms.
+
+The T-formation call (`S`/`H`/`Tbuf`, all run-owned) is left on the
+`Vector`-of-views path even when `use_ptrs`: unlike `Bouter`, none of its
+operands are ragged, so it *could* be made descriptor-driven the same way,
+but is left as a documented residual to bound this pass's scope -- it costs
+one `Vector`+pointer-array build per pass, not one per tile, so it does not
+scale with `q_k` the way the eliminated `Bouter` call did. The final
+reduction never involves `Bouter` at all (`Astack`/`Tstack` are broadcast/
+reshape-friendly), so it was already fully strided from an earlier pass and
+needs no branching here.
+
+`Y`'s own pointer array is the one exception the descriptor mechanism can't
+remove for the beta accumulation (see [`ColumnRunCoupling`](@ref)'s
+docstring for why); it is built once here and reused for both beta GEMMs.
+On backends without pointer-batched GEMM (CPU), this falls back entirely to
+the original `Vector`-of-views construction.
+"""
 function apply_right_row_run!(Y::AbstractArray{T,3}, run::RowRightRunCoupling,
                               width::Int, nactive::Int;
                               beta=false, compute=nothing) where {T}
@@ -586,15 +773,24 @@ function apply_right_row_run!(Y::AbstractArray{T,3}, run::RowRightRunCoupling,
     bm = size(Y, 1)
     Om = view(run.Omega, :, 1:width, 1:nactive)
     Random.randn!(Om)
+    use_ptrs = run.Bouter_ptrs !== nothing
 
     if qk > 0 && rankA > 0 && rankB > 0
         H = view(run.H, :, 1:width, :, 1:nactive)
-        Bvec = [run.Bouter[p][l] for p in 1:nactive for l in 1:qk]
-        Ovec = [view(Om, :, :, p) for p in 1:nactive for l in 1:qk]
-        Hvec = [view(H, :, :, l, p) for p in 1:nactive for l in 1:qk]
-        precision_gemm_batched!(adj, 'N', one(T), Bvec, Ovec,
-                                zero(T), Hvec, mode)
+        if use_ptrs
+            Bref = first(first(run.Bouter))
+            precision_gemm_batched_ptrs!(adj, 'N', one(T),
+                run.Bouter_ptrs, Bref, run.HOm_ptrs, view(Om, :, :, 1),
+                zero(T), run.H_ptrs, view(H, :, :, 1, 1), nactive * qk, mode)
+        else
+            Bvec = [run.Bouter[p][l] for p in 1:nactive for l in 1:qk]
+            Ovec = [view(Om, :, :, p) for p in 1:nactive for l in 1:qk]
+            Hvec_out = [view(H, :, :, l, p) for p in 1:nactive for l in 1:qk]
+            precision_gemm_batched!(adj, 'N', one(T), Bvec, Ovec,
+                                    zero(T), Hvec_out, mode)
+        end
         Svec = [view(run.S, :, :, l, p) for p in 1:nactive for l in 1:qk]
+        Hvec = [view(H, :, :, l, p) for p in 1:nactive for l in 1:qk]
         Tvec = [view(run.Tbuf, :, l, 1:width, p)
                 for p in 1:nactive for l in 1:qk]
         precision_gemm_batched!('N', 'N', run.alpha, Svec, Hvec,
@@ -614,14 +810,28 @@ function apply_right_row_run!(Y::AbstractArray{T,3}, run::RowRightRunCoupling,
         fill!(view(Y, :, 1:width, 1:nactive), zero(T))
     end
 
+    Yptrs = (use_ptrs && run.betaU !== nothing) ?
+        BatchPtrDescriptor([view(Y, :, 1:width, p) for p in 1:nactive]) :
+        nothing
+
     if run.betaU !== nothing
-        tmp = [view(run.beta_tmp, :, 1:width, p) for p in 1:nactive]
-        Ovec = [view(Om, :, :, p) for p in 1:nactive]
-        Yvec = [view(Y, :, 1:width, p) for p in 1:nactive]
-        precision_gemm_batched!(adj, 'N', one(T), view(run.betaV, 1:nactive),
-                                Ovec, zero(T), tmp, mode)
-        precision_gemm_batched!('N', 'N', T(beta), view(run.betaU, 1:nactive),
-                                tmp, one(T), Yvec, mode)
+        if use_ptrs
+            tmpref = view(run.beta_tmp, :, 1:width, 1)
+            precision_gemm_batched_ptrs!(adj, 'N', one(T),
+                run.betaV_ptrs, first(run.betaV), run.betaOm_ptrs, view(Om, :, :, 1),
+                zero(T), run.beta_tmp_ptrs, tmpref, nactive, mode)
+            precision_gemm_batched_ptrs!('N', 'N', T(beta),
+                run.betaU_ptrs, first(run.betaU), run.beta_tmp_ptrs, tmpref,
+                one(T), Yptrs, view(Y, :, 1:width, 1), nactive, mode)
+        else
+            tmp = [view(run.beta_tmp, :, 1:width, p) for p in 1:nactive]
+            Ovec = [view(Om, :, :, p) for p in 1:nactive]
+            Yvec = [view(Y, :, 1:width, p) for p in 1:nactive]
+            precision_gemm_batched!(adj, 'N', one(T), view(run.betaV, 1:nactive),
+                                    Ovec, zero(T), tmp, mode)
+            precision_gemm_batched!('N', 'N', T(beta), view(run.betaU, 1:nactive),
+                                    tmp, one(T), Yvec, mode)
+        end
     end
     return Y
 end
@@ -678,6 +888,34 @@ end
 Fixed-row, left-sampling state for logical B tile-column-major. `G` is shared
 across every active output column. The opposite A row stack is zero-copy for
 `NT` and materialized once for `TT`.
+
+## Pointer-batch descriptors (hot path only)
+
+`Bstack` (one independently-obtained array per member, from arbitrary
+offsets in `B`'s storage -- like [`ColumnRunCoupling`](@ref)'s `rowU`) is
+reference-swapped and used, in the hot sampler
+([`apply_left_row_run!`](@ref)'s final reduction), batched over the member
+axis only (no `q_k` sub-structure at that point, since each member's tiles
+are already folded into one `(bn, rB*qk)` matrix) -- so it needs only the
+simple, `count`-length, single-slot-swapped descriptor form, same as
+`rowU`. `Wstack_ptrs` covers that same call's other operand (this run's own
+`Wbuf`, reshaped so its natural memory order matches), build-once and never
+swapped. `betaU_ptrs`/`betaV_ptrs` (single-slot swap) and
+`betaOm_ptrs`/`beta_tmp_ptrs` (build-once, since `Omega` here has no
+per-member axis at all -- it is one matrix shared and broadcast across every
+member, unlike [`RowRightRunCoupling`](@ref)'s) cover the beta accumulation.
+
+The W-formation call (`S`, `G`, `Wbuf`) is left on the `Vector`-of-views path
+even when descriptors are available: none of its three operands are ragged
+(`S` and `Wbuf` are run-owned with stable per-slot addresses, and `G` has no
+member axis to be ragged in), so it is not the same kind of problem `Bstack`
+is -- it is left as a documented residual, matching `T`-formation in
+[`RowRightRunCoupling`](@ref), rather than adding descriptor fields for
+operands that were never the source of the allocation this pass targets. The
+G-formation call above it and the co-range apply
+([`apply_right_row_run!`](@ref), once per run, not once per pass) are
+unaffected; see [`ColumnRunCoupling`](@ref)'s docstring and `docs/TODO.md`
+for the general scoping rationale.
 """
 struct RowLeftRunCoupling{ST,AStackT,BStackT,BUT,BVT,GT,WT,HT,TT,OT,BT,T}
     S::ST
@@ -685,6 +923,12 @@ struct RowLeftRunCoupling{ST,AStackT,BStackT,BUT,BVT,GT,WT,HT,TT,OT,BT,T}
     Bstack::BStackT
     betaU::BUT
     betaV::BVT
+    Bstack_ptrs::Union{Nothing,BatchPtrDescriptor}
+    Wstack_ptrs::Union{Nothing,BatchPtrDescriptor}
+    betaU_ptrs::Union{Nothing,BatchPtrDescriptor}
+    betaV_ptrs::Union{Nothing,BatchPtrDescriptor}
+    betaOm_ptrs::Union{Nothing,BatchPtrDescriptor}
+    beta_tmp_ptrs::Union{Nothing,BatchPtrDescriptor}
     G::GT
     Wbuf::WT
     H::HT
@@ -731,14 +975,35 @@ function RowLeftRunCoupling(ops::LogicalTLROperands, i::Integer, cols;
         ([x[1] for x in uv], [x[2] for x in uv])
     end
     rC = betaU === nothing ? 0 : size(first(betaU), 2)
+
+    Gbuf = allocate(backend, T, rankA, block, qk)
+    Wbuf = allocate(backend, T, rankB, qk, block, count)
+    Hbuf = allocate(backend, T, rankB, maxrank, qk, count)
+    Tbuf = allocate(backend, T, rankA, qk, maxrank, count)
+    Omega = allocate(backend, T, bm, block, 1)
+    beta_tmp = allocate(backend, T, rC, max(block, maxrank), count)
+
+    ptrs_ok = count > 0 && qk > 0 && supports_pointer_batched(backend)
+    Bstack_ptrs = ptrs_ok ?
+        BatchPtrDescriptor([reshape(Bstack[p], bn, rankB * qk) for p in 1:count]) :
+        nothing
+    Wstack_ptrs = ptrs_ok ?
+        BatchPtrDescriptor([view(reshape(Wbuf, rankB * qk, block, count), :, :, p)
+                           for p in 1:count]) :
+        nothing
+    has_beta_ptrs = ptrs_ok && betaU !== nothing
+    betaU_ptrs = has_beta_ptrs ? BatchPtrDescriptor(betaU) : nothing
+    betaV_ptrs = has_beta_ptrs ? BatchPtrDescriptor(betaV) : nothing
+    betaOm_ptrs = has_beta_ptrs ?
+        BatchPtrDescriptor([view(Omega, :, :, 1) for _ in 1:count]) : nothing
+    beta_tmp_ptrs = has_beta_ptrs ?
+        BatchPtrDescriptor([view(beta_tmp, :, :, p) for p in 1:count]) : nothing
+
     return RowLeftRunCoupling(
         S, Astack, Bstack, betaU, betaV,
-        allocate(backend, T, rankA, block, qk),
-        allocate(backend, T, rankB, qk, block, count),
-        allocate(backend, T, rankB, maxrank, qk, count),
-        allocate(backend, T, rankA, qk, maxrank, count),
-        allocate(backend, T, bm, block, 1),
-        allocate(backend, T, rC, max(block, maxrank), count),
+        Bstack_ptrs, Wstack_ptrs, betaU_ptrs, betaV_ptrs, betaOm_ptrs,
+        beta_tmp_ptrs,
+        Gbuf, Wbuf, Hbuf, Tbuf, Omega, beta_tmp,
         T(alpha), qk,
     )
 end
@@ -749,9 +1014,12 @@ function _swap_row_left_members!(run::RowLeftRunCoupling, p::Int, q::Int)
     S3 = reshape(run.S, :, 1, size(run.S, 4))
     _ara_swap_basis_kernel!(backend)(S3, p, q; ndrange=(size(S3, 1), 1))
     run.Bstack[p], run.Bstack[q] = run.Bstack[q], run.Bstack[p]
+    run.Bstack_ptrs !== nothing && swap_batch_ptrs!(run.Bstack_ptrs, p, q)
     if run.betaU !== nothing
         run.betaU[p], run.betaU[q] = run.betaU[q], run.betaU[p]
         run.betaV[p], run.betaV[q] = run.betaV[q], run.betaV[p]
+        run.betaU_ptrs !== nothing && swap_batch_ptrs!(run.betaU_ptrs, p, q)
+        run.betaV_ptrs !== nothing && swap_batch_ptrs!(run.betaV_ptrs, p, q)
     end
     return run
 end
@@ -767,6 +1035,13 @@ function apply_left_row_run!(Y::AbstractArray{T,3}, run::RowLeftRunCoupling,
     bn = size(Y, 1)
     Om = view(run.Omega, :, 1:width, :)
     Random.randn!(Om)
+    use_ptrs = run.Bstack_ptrs !== nothing
+    # Built once (when needed) and reused for both the final reduction and
+    # the beta accumulation below, rather than once per GEMM call.
+    Yptrs = use_ptrs ?
+        BatchPtrDescriptor([view(Y, :, 1:width, p) for p in 1:nactive]) :
+        nothing
+
     if qk > 0 && rankA > 0 && rankB > 0
         # run.Astack (bm, rankA, qk) and Om (bm, width, 1) are both already
         # plain strided-3D arrays: Om has no per-l axis and broadcasts as a
@@ -775,29 +1050,54 @@ function apply_left_row_run!(Y::AbstractArray{T,3}, run::RowLeftRunCoupling,
         G = view(run.G, :, 1:width, :)
         precision_gemm_batched!(adj, 'N', one(T), run.Astack, Om,
                                 zero(T), G, mode)
+        # W-formation is left on the Vector-of-views path even when
+        # use_ptrs: S/G/Wbuf are all run-owned, none ragged, so this is a
+        # documented residual (see the struct docstring), not the problem
+        # Bstack's descriptors below address.
         Svec = [view(run.S, :, :, l, p) for p in 1:nactive for l in 1:qk]
         Gvec = [view(G, :, :, l) for p in 1:nactive for l in 1:qk]
         Wvec = [view(run.Wbuf, :, l, 1:width, p)
                 for p in 1:nactive for l in 1:qk]
         precision_gemm_batched!(adj, 'N', run.alpha, Svec, Gvec,
                                 zero(T), Wvec, mode)
-        Bvec = [reshape(run.Bstack[p], bn, rankB * qk) for p in 1:nactive]
-        Wstack = [reshape(view(run.Wbuf, :, :, 1:width, p),
-                          rankB * qk, width) for p in 1:nactive]
-        Yvec = [view(Y, :, 1:width, p) for p in 1:nactive]
-        precision_gemm_batched!('N', 'N', one(T), Bvec, Wstack,
-                                zero(T), Yvec, mode)
+        if use_ptrs
+            Bref = reshape(first(run.Bstack), bn, rankB * qk)
+            Wbuf2 = reshape(run.Wbuf, rankB * qk, size(run.Wbuf, 3), size(run.Wbuf, 4))
+            Wref = view(Wbuf2, :, 1:width, 1)
+            precision_gemm_batched_ptrs!('N', 'N', one(T),
+                run.Bstack_ptrs, Bref, run.Wstack_ptrs, Wref,
+                zero(T), Yptrs, view(Y, :, 1:width, 1), nactive, mode)
+        else
+            Bvec = [reshape(run.Bstack[p], bn, rankB * qk) for p in 1:nactive]
+            Wstack = [reshape(view(run.Wbuf, :, :, 1:width, p),
+                              rankB * qk, width) for p in 1:nactive]
+            Yvec = [view(Y, :, 1:width, p) for p in 1:nactive]
+            precision_gemm_batched!('N', 'N', one(T), Bvec, Wstack,
+                                    zero(T), Yvec, mode)
+        end
     else
         fill!(view(Y, :, 1:width, 1:nactive), zero(T))
     end
+
     if run.betaU !== nothing
-        tmp = [view(run.beta_tmp, :, 1:width, p) for p in 1:nactive]
-        Ovec = [view(Om, :, :, 1) for p in 1:nactive]
-        Yvec = [view(Y, :, 1:width, p) for p in 1:nactive]
-        precision_gemm_batched!(adj, 'N', one(T), view(run.betaU, 1:nactive),
-                                Ovec, zero(T), tmp, mode)
-        precision_gemm_batched!('N', 'N', T(beta), view(run.betaV, 1:nactive),
-                                tmp, one(T), Yvec, mode)
+        if use_ptrs
+            tmpref = view(run.beta_tmp, :, 1:width, 1)
+            Yptrs = BatchPtrDescriptor([view(Y, :, 1:width, p) for p in 1:nactive])
+            precision_gemm_batched_ptrs!(adj, 'N', one(T),
+                run.betaU_ptrs, first(run.betaU), run.betaOm_ptrs, view(Om, :, :, 1),
+                zero(T), run.beta_tmp_ptrs, tmpref, nactive, mode)
+            precision_gemm_batched_ptrs!('N', 'N', T(beta),
+                run.betaV_ptrs, first(run.betaV), run.beta_tmp_ptrs, tmpref,
+                one(T), Yptrs, view(Y, :, 1:width, 1), nactive, mode)
+        else
+            tmp = [view(run.beta_tmp, :, 1:width, p) for p in 1:nactive]
+            Ovec = [view(Om, :, :, 1) for p in 1:nactive]
+            Yvec = [view(Y, :, 1:width, p) for p in 1:nactive]
+            precision_gemm_batched!(adj, 'N', one(T), view(run.betaU, 1:nactive),
+                                    Ovec, zero(T), tmp, mode)
+            precision_gemm_batched!('N', 'N', T(beta), view(run.betaV, 1:nactive),
+                                    tmp, one(T), Yvec, mode)
+        end
     end
     return Y
 end

@@ -17,6 +17,8 @@ using ..NextLA: precision_gemm!, precision_gemm_batched!, gemm_compute_mode, gem
 using ..NextLA: GEMMCompute, validate_gemm_signature
 using ..NextLA: create_streams, with_stream, sync_stream, sync_streams_with_default
 using ..NextLA: SUBGROUP_SIZE, unwrap
+using ..NextLA: BatchPtrDescriptor, swap_batch_ptrs!, precision_gemm_batched_ptrs!
+using ..NextLA: supports_pointer_batched
 
 export TileColMajor, TileRowMajor
 export AbstractTLRMatrix, TLRDenseDiagMatrix, TLRMatrix

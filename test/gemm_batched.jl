@@ -254,3 +254,96 @@ _apply_transpose(A::AbstractMatrix, trans::Char) =
         end
     end
 end
+
+@testset "persistent batch pointer descriptors" begin
+    # `BatchPtrDescriptor` exists so a caller issuing the same batched-GEMM
+    # shape on many successive calls (one per ARA sampling pass, say) can
+    # build the device pointer table once instead of paying a fresh
+    # allocate/upload/free on every call, as the `Vector`-of-matrix
+    # `gemm_batched!`/`gemmEx_batched!` methods do. These tests check: (1) a
+    # descriptor drives a batched GEMM to the same result as the transient
+    # pointer-batch path, (2) `swap_batch_ptrs!` moves which address a slot
+    # refers to without touching the underlying data, single-slot and block
+    # forms, and (3) CPU (and any backend without a `_build_batch_ptrs`
+    # method) fails to construct one, since CPU batched GEMM never needs a
+    # pointer array.
+    transA_d, transB_d = 'N', 'N'
+    alpha_d, beta_d = Float32(2), Float32(0.5)
+    mode_d = NextLA.GEMMCompute{Float32}()
+    A_batch_d = [Float32[1 2; 3 4], Float32[1 0; 2 1], Float32[2 1; 0 1]]
+    B_batch_d = [Float32[0 1; 1 0], Float32[1 2; 0 1], Float32[1 1; 1 0]]
+    C_batch_d = [fill(Float32(1), 2, 2), fill(Float32(-2), 2, 2), fill(Float32(0.5), 2, 2)]
+    expected_d = [
+        alpha_d * A_batch_d[i] * B_batch_d[i] + beta_d * C_batch_d[i]
+        for i in eachindex(A_batch_d)
+    ]
+
+    for (name, AT, sync) in backends
+        @testset "$name" begin
+            A_dev = _to_backend(AT, deepcopy(A_batch_d))
+            B_dev = _to_backend(AT, deepcopy(B_batch_d))
+
+            if name in ("CUDA", "AMDGPU")
+                Ad = BatchPtrDescriptor(A_dev)
+                Bd = BatchPtrDescriptor(B_dev)
+                @test length(Ad) == length(A_dev) == length(Bd)
+
+                C_dev = _to_backend(AT, deepcopy(C_batch_d))
+                Cd = BatchPtrDescriptor(C_dev)
+                NextLA.precision_gemm_batched_ptrs!(
+                    transA_d, transB_d, alpha_d, Ad, A_dev[1], Bd, B_dev[1],
+                    beta_d, Cd, C_dev[1], length(C_dev), mode_d,
+                )
+                sync(first(C_dev))
+                for i in eachindex(expected_d)
+                    @test Array(C_dev[i]) ≈ expected_d[i]
+                end
+
+                # Single-slot swap: only Cd2 is swapped, not Ad/Bd, so slot k
+                # still computes with A[k]/B[k] but accumulates into whatever
+                # C address slot k's swapped pointer now targets. Swapping
+                # slots 1 and 3 means slot 1 writes alpha*A[1]*B[1] +
+                # beta*C_batch_d[3] into C_dev2[3]'s memory (untouched by the
+                # swap itself), and slot 3 writes alpha*A[3]*B[3] +
+                # beta*C_batch_d[1] into C_dev2[1]'s memory.
+                C_dev2 = _to_backend(AT, deepcopy(C_batch_d))
+                Cd2 = BatchPtrDescriptor(C_dev2)
+                swap_batch_ptrs!(Cd2, 1, 3)
+                NextLA.precision_gemm_batched_ptrs!(
+                    transA_d, transB_d, alpha_d, Ad, A_dev[1], Bd, B_dev[1],
+                    beta_d, Cd2, C_dev2[1], length(C_dev2), mode_d,
+                )
+                sync(first(C_dev2))
+                mix(iAB, iC) = alpha_d * A_batch_d[iAB] * B_batch_d[iAB] +
+                               beta_d * C_batch_d[iC]
+                @test Array(C_dev2[3]) ≈ mix(1, 3)
+                @test Array(C_dev2[2]) ≈ expected_d[2]
+                @test Array(C_dev2[1]) ≈ mix(3, 1)
+
+                # Block swap (blocklen=2): descriptor slots [1,2,3,4] holding
+                # members [D1,D2,D3,D4] become [D3,D4,D1,D2] after swapping
+                # the two-slot blocks at member offsets 1 and 2.
+                D_batch = [Float32[1 0; 0 1], Float32[2 0; 0 2],
+                          Float32[0 1; 1 0], Float32[1 1; 0 1]]
+                D_dev = _to_backend(AT, deepcopy(D_batch))
+                Dd = BatchPtrDescriptor(D_dev)
+                swap_batch_ptrs!(Dd, 1, 2, 2)
+                I_dev = _to_backend(AT, [Float32[1 0; 0 1] for _ in 1:4])
+                Id = BatchPtrDescriptor(I_dev)
+                Out_dev = _to_backend(AT, [zeros(Float32, 2, 2) for _ in 1:4])
+                Outd = BatchPtrDescriptor(Out_dev)
+                NextLA.precision_gemm_batched_ptrs!(
+                    'N', 'N', one(Float32), Dd, D_dev[1], Id, I_dev[1],
+                    zero(Float32), Outd, Out_dev[1], 4, mode_d,
+                )
+                sync(first(Out_dev))
+                @test Array(Out_dev[1]) ≈ D_batch[3]
+                @test Array(Out_dev[2]) ≈ D_batch[4]
+                @test Array(Out_dev[3]) ≈ D_batch[1]
+                @test Array(Out_dev[4]) ≈ D_batch[2]
+            else
+                @test_throws ArgumentError BatchPtrDescriptor(A_dev)
+            end
+        end
+    end
+end

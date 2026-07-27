@@ -253,3 +253,114 @@ function gemmEx_batched!(transA::Char,
         compute_type,
     )
 end
+
+# --- persistent pointer-batch descriptors -----------------------------------
+#
+# `gemm_batched!`/`gemmEx_batched!`'s `Vector`-of-matrix methods build a fresh
+# device pointer array and free it again on every call (see each backend
+# extension's `_unsafe_batch_strided`/`_device_batch_strided`). That is the
+# right default for one-shot calls, but wrong for a loop that issues the same
+# batched shape on every iteration (e.g. one call per ARA sampling pass): the
+# repeated device allocation, H2D upload, and free dominates the actual GEMM
+# for small batches. `BatchPtrDescriptor` lets such a caller build the pointer
+# table once and reuse it, updating only the tiny address table (via
+# `swap_batch_ptrs!`) when which logical member occupies which physical slot
+# changes, rather than rebuilding the table or moving the numeric data itself.
+
+export BatchPtrDescriptor, swap_batch_ptrs!
+
+"""
+    BatchPtrDescriptor(ptrs)
+    BatchPtrDescriptor(batch::AbstractVector{<:AbstractMatrix})
+
+A device array of matrix base pointers built once and reused across many
+batched GEMM calls (via [`gemm_batched_ptrs!`](@ref)/[`gemmEx_batched_ptrs!`](@ref)),
+in contrast to the transient pointer arrays the `Vector`-of-matrix
+`gemm_batched!`/`gemmEx_batched!` methods build and free on every call.
+
+A descriptor carries only addresses, no shape/element-type/leading-dimension
+information — callers supply a fresh, cheap representative `Aref`/`Bref`/`Cref`
+view at each call to size that call's GEMM. Slot `k` is stable across calls:
+if which logical batch member occupies slot `k` changes (e.g. active-prefix
+packing retiring a converged member), that must be expressed with
+[`swap_batch_ptrs!`](@ref), which moves addresses between slots, never by
+physically reordering the pointed-to data or by rebuilding the descriptor.
+
+The caller owns the descriptor's lifetime and must keep the pointed-to
+storage alive for as long as the descriptor is used; unlike the transient
+pointer arrays built by the `Vector`-of-matrix methods, nothing frees a
+`BatchPtrDescriptor`'s pointer array automatically.
+"""
+struct BatchPtrDescriptor{PT<:AbstractVector}
+    ptrs::PT
+end
+
+BatchPtrDescriptor(batch::AbstractVector{<:AbstractMatrix}) =
+    BatchPtrDescriptor(_build_batch_ptrs(batch))
+
+Base.length(d::BatchPtrDescriptor) = length(d.ptrs)
+KernelAbstractions.get_backend(d::BatchPtrDescriptor) = get_backend(d.ptrs)
+
+"""
+    _build_batch_ptrs(batch::AbstractVector{<:AbstractMatrix}) -> device pointer array
+
+Backend hook constructing the actual device array of base pointers for
+[`BatchPtrDescriptor`](@ref). CUDA and AMDGPU provide it, with the same body
+as their existing transient pointer-array constructors. There is no CPU
+method: CPU batched GEMM loops the `Vector` of matrices directly and never
+needs a pointer array, so a `BatchPtrDescriptor` is never constructed there.
+"""
+function _build_batch_ptrs(batch::AbstractVector{<:AbstractMatrix})
+    throw(ArgumentError("NextLA._build_batch_ptrs is supported only on CUDA and AMDGPU"))
+end
+
+@kernel function _swap_batch_ptr_kernel!(ptrs, p::Int, q::Int)
+    _ = @index(Global, Linear)
+    @inbounds begin
+        x = ptrs[p]
+        ptrs[p] = ptrs[q]
+        ptrs[q] = x
+    end
+end
+
+@kernel function _swap_batch_ptr_block_kernel!(ptrs, p::Int, q::Int, blocklen::Int)
+    i = @index(Global, Linear)
+    @inbounds begin
+        pi = (p - 1) * blocklen + i
+        qi = (q - 1) * blocklen + i
+        x = ptrs[pi]
+        ptrs[pi] = ptrs[qi]
+        ptrs[qi] = x
+    end
+end
+
+"""
+    swap_batch_ptrs!(d::BatchPtrDescriptor, p::Int, q::Int)
+
+Swap which base address occupies descriptor slots `p` and `q`. Only the small
+address table moves; the numeric data the addresses point to is untouched and
+does not move. Use this instead of physically swapping or copying the
+underlying batch members when active-prefix packing retires one.
+"""
+function swap_batch_ptrs!(d::BatchPtrDescriptor, p::Int, q::Int)
+    p == q && return d
+    _swap_batch_ptr_kernel!(get_backend(d))(d.ptrs, p, q; ndrange=(1,))
+    return d
+end
+
+"""
+    swap_batch_ptrs!(d::BatchPtrDescriptor, p::Int, q::Int, blocklen::Int)
+
+Block form of [`swap_batch_ptrs!`](@ref) for descriptors where each logical
+batch member owns `blocklen` consecutive descriptor slots (e.g. one pointer
+per contraction tile of a member's factor panel, laid out member-major):
+swaps the two length-`blocklen` contiguous slot ranges
+`[(p-1)*blocklen+1:p*blocklen]` and `[(q-1)*blocklen+1:q*blocklen]`.
+"""
+function swap_batch_ptrs!(d::BatchPtrDescriptor, p::Int, q::Int, blocklen::Int)
+    (p == q || blocklen == 0) && return d
+    _swap_batch_ptr_block_kernel!(get_backend(d))(
+        d.ptrs, p, q, blocklen; ndrange=(blocklen,),
+    )
+    return d
+end
