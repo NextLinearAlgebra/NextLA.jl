@@ -492,9 +492,8 @@ Fixed-row, right-sampling state for logical `A` tile-row-major. The repeated
 `XΩ` apply terminates in A's zero-copy row stack. B's column stacks are
 materialized once only for the final `XᵀQ` co-range.
 """
-struct RowRightRunCoupling{ST,AT,AStackT,BOT,BStackT,BUT,BVT,HT,TT,GT,WT,OT,BT,T}
+struct RowRightRunCoupling{ST,AStackT,BOT,BStackT,BUT,BVT,HT,TT,GT,WT,OT,BT,T}
     S::ST
-    Aouter::AT
     Astack::AStackT
     Bouter::BOT
     Bstack::BStackT
@@ -526,7 +525,6 @@ function RowRightRunCoupling(ops::LogicalTLROperands, i::Integer, cols;
     bm = size(ops.au.data, 1)
     bn = size(ops.bz.data, 1)
 
-    Aouter = [_trimmed_tile(ops.au, Int(i), l, rankA) for l in 1:qk]
     Ainner = [_trimmed_tile(ops.av, Int(i), l, rankA) for l in 1:qk]
     Bouter = [[_trimmed_tile(ops.bw, l, j, rankB) for l in 1:qk] for j in ids]
     Binner = [[_trimmed_tile(ops.bz, l, j, rankB) for l in 1:qk] for j in ids]
@@ -551,7 +549,7 @@ function RowRightRunCoupling(ops::LogicalTLROperands, i::Integer, cols;
     end
     rC = betaV === nothing ? 0 : size(first(betaV), 2)
     return RowRightRunCoupling(
-        S, Aouter, Astack, Binner, Bstack, betaU, betaV,
+        S, Astack, Binner, Bstack, betaU, betaV,
         allocate(backend, T, rankB, block, qk, count),
         allocate(backend, T, rankA, qk, block, count),
         allocate(backend, T, rankA, maxrank, qk, count),
@@ -601,13 +599,17 @@ function apply_right_row_run!(Y::AbstractArray{T,3}, run::RowRightRunCoupling,
                 for p in 1:nactive for l in 1:qk]
         precision_gemm_batched!('N', 'N', run.alpha, Svec, Hvec,
                                 zero(T), Tvec, mode)
-        Astack = reshape(run.Astack, bm, rankA * qk)
-        Avec = [Astack for _ in 1:nactive]
-        Tstack = [reshape(view(run.Tbuf, :, :, 1:width, p),
-                          rankA * qk, width) for p in 1:nactive]
-        Yvec = [view(Y, :, 1:width, p) for p in 1:nactive]
-        precision_gemm_batched!('N', 'N', one(T), Avec, Tstack,
-                                zero(T), Yvec, mode)
+        # Fused reduction Y = Astack * Tstack as one strided-batched GEMM:
+        # Astack (bm, rA*qk) is the same matrix for every member (fixed output
+        # row), so it broadcasts as a batch-count-1 strided operand; Tstack is
+        # a zero-copy reshape of run.Tbuf's leading (rA,qk) dims, batched over
+        # the active member axis. No pointer-batch Vector is built here.
+        Astack3 = reshape(run.Astack, bm, rankA * qk, 1)
+        Tbuf2 = reshape(run.Tbuf, rankA * qk, size(run.Tbuf, 3), size(run.Tbuf, 4))
+        Tstack = view(Tbuf2, :, 1:width, 1:nactive)
+        Yview = view(Y, :, 1:width, 1:nactive)
+        precision_gemm_batched!('N', 'N', one(T), Astack3, Tstack,
+                                zero(T), Yview, mode)
     else
         fill!(view(Y, :, 1:width, 1:nactive), zero(T))
     end
@@ -635,7 +637,11 @@ function apply_left_row_run!(Z::AbstractArray{T,3}, run::RowRightRunCoupling,
     rankA, rankB = size(run.S, 1), size(run.S, 2)
     bn = size(Z, 1)
     if qk > 0 && rankA > 0 && rankB > 0
-        Uvec = [run.Aouter[l] for p in 1:count for l in 1:qk]
+        # run.Astack[:,:,l] holds the same data run.Aouter[l] used to; A has
+        # no per-member axis here, so this stays a Vector rebuild (co-range,
+        # once per run, not the per-pass hot path) but no longer needs a
+        # separately-retained duplicate of Astack's data.
+        Uvec = [view(run.Astack, :, :, l) for _ in 1:count for l in 1:qk]
         Qvec = [view(Q, :, 1:width, p) for p in 1:count for l in 1:qk]
         Gvec = [view(run.G, :, 1:width, l, p)
                 for p in 1:count for l in 1:qk]
@@ -673,9 +679,8 @@ Fixed-row, left-sampling state for logical B tile-column-major. `G` is shared
 across every active output column. The opposite A row stack is zero-copy for
 `NT` and materialized once for `TT`.
 """
-struct RowLeftRunCoupling{ST,AT,AStackT,BStackT,BUT,BVT,GT,WT,HT,TT,OT,BT,T}
+struct RowLeftRunCoupling{ST,AStackT,BStackT,BUT,BVT,GT,WT,HT,TT,OT,BT,T}
     S::ST
-    Aouter::AT
     Astack::AStackT
     Bstack::BStackT
     betaU::BUT
@@ -705,7 +710,6 @@ function RowLeftRunCoupling(ops::LogicalTLROperands, i::Integer, cols;
     backend = get_backend(ops.au.data)
     bm = size(ops.au.data, 1)
     bn = size(ops.bz.data, 1)
-    Aouter = [_trimmed_tile(ops.au, Int(i), l, rankA) for l in 1:qk]
     Ainner = [_trimmed_tile(ops.av, Int(i), l, rankA) for l in 1:qk]
     Astack = _factor_row_stack(ops.au, Int(i), rankA)
     Bouter = [[_trimmed_tile(ops.bw, l, j, rankB) for l in 1:qk] for j in ids]
@@ -728,7 +732,7 @@ function RowLeftRunCoupling(ops::LogicalTLROperands, i::Integer, cols;
     end
     rC = betaU === nothing ? 0 : size(first(betaU), 2)
     return RowLeftRunCoupling(
-        S, Aouter, Astack, Bstack, betaU, betaV,
+        S, Astack, Bstack, betaU, betaV,
         allocate(backend, T, rankA, block, qk),
         allocate(backend, T, rankB, qk, block, count),
         allocate(backend, T, rankB, maxrank, qk, count),
@@ -764,10 +768,13 @@ function apply_left_row_run!(Y::AbstractArray{T,3}, run::RowLeftRunCoupling,
     Om = view(run.Omega, :, 1:width, :)
     Random.randn!(Om)
     if qk > 0 && rankA > 0 && rankB > 0
+        # run.Astack (bm, rankA, qk) and Om (bm, width, 1) are both already
+        # plain strided-3D arrays: Om has no per-l axis and broadcasts as a
+        # batch-count-1 operand, so this dispatches as one strided-batched
+        # GEMM over the qk axis with no pointer-batch Vector at all.
         G = view(run.G, :, 1:width, :)
-        Ovec = [view(Om, :, :, 1) for l in 1:qk]
-        precision_gemm_batched!(adj, 'N', one(T), run.Aouter, Ovec,
-                                zero(T), _batch_views(G), mode)
+        precision_gemm_batched!(adj, 'N', one(T), run.Astack, Om,
+                                zero(T), G, mode)
         Svec = [view(run.S, :, :, l, p) for p in 1:nactive for l in 1:qk]
         Gvec = [view(G, :, :, l) for p in 1:nactive for l in 1:qk]
         Wvec = [view(run.Wbuf, :, l, 1:width, p)
@@ -817,13 +824,14 @@ function apply_right_row_run!(Z::AbstractArray{T,3}, run::RowLeftRunCoupling,
                 for p in 1:count for l in 1:qk]
         precision_gemm_batched!('N', 'N', run.alpha, Svec, Hvec,
                                 zero(T), Tvec, mode)
-        Astack = reshape(run.Astack, bm, rankA * qk)
-        Avec = [Astack for p in 1:count]
-        Tstack = [reshape(view(run.Tbuf, :, :, 1:width, p),
-                          rankA * qk, width) for p in 1:count]
-        Zvec = [view(Z, :, 1:width, p) for p in 1:count]
-        precision_gemm_batched!('N', 'N', one(T), Avec, Tstack,
-                                zero(T), Zvec, mode)
+        # See apply_right_row_run! (RowRightRunCoupling) for the identical
+        # broadcast-batch-1 reshape used here.
+        Astack3 = reshape(run.Astack, bm, rankA * qk, 1)
+        Tbuf2 = reshape(run.Tbuf, rankA * qk, size(run.Tbuf, 3), size(run.Tbuf, 4))
+        Tstack = view(Tbuf2, :, 1:width, 1:count)
+        Zview = view(Z, :, 1:width, 1:count)
+        precision_gemm_batched!('N', 'N', one(T), Astack3, Tstack,
+                                zero(T), Zview, mode)
     else
         fill!(Z, zero(T))
     end
