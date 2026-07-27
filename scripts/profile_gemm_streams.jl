@@ -40,13 +40,13 @@ budget = M.gemm_maximum_workspace_bytes(A, B)
 
 # warmup (compile + caches), untraced
 for _ in 1:3
-    M.gemm!(C, A, B; alpha=1.0, beta=0.5, max_workspace=budget)
+    M.gemm!(C, A, B; alpha=1.0, beta=0.5, workspace=budget)
 end
 CUDA.synchronize()
 
 # one traced call
 CUDA.@profile external=true begin
-    M.gemm!(C, A, B; alpha=1.0, beta=0.5, max_workspace=budget)
+    M.gemm!(C, A, B; alpha=1.0, beta=0.5, workspace=budget)
     CUDA.synchronize()
 end
 println("profiled gemm! on n=$m (b=$b, nt=$nt, tail=$tail)")

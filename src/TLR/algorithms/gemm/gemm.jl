@@ -4,6 +4,7 @@ include("lowering/strategy.jl")
 include("operands.jl")
 include("ara/tile_apply.jl")
 include("ara/range_find.jl")
+include("workspace.jl")
 include("lowering/schedule.jl")
 include("lowering/stages.jl")
 include("direct.jl")
@@ -12,8 +13,6 @@ include("regions/corner.jl")
 include("regions/right.jl")
 include("regions/bottom.jl")
 include("tlr_dense.jl")
-
-const DEFAULT_GEMM_BUDGET = 10^9
 
 @inline function _validate_logical_gemm(C, LA::LogicalTLROperand, LB::LogicalTLROperand)
     size(LA, 2) == size(LB, 1) ||
@@ -26,7 +25,8 @@ const DEFAULT_GEMM_BUDGET = 10^9
 end
 
 """
-    gemm!(C, A, B; alpha=true, beta=false, max_workspace=DEFAULT_GEMM_BUDGET,
+    gemm!(C, A, B; workspace,
+          alpha=true, beta=false,
           transA='N', transB='N', compute=nothing) -> C
 
 Compute `C := alpha·(op(A)·op(B)) + beta·C` for dense-diagonal TLR matrices `A`,
@@ -34,16 +34,17 @@ Compute `C := alpha·(op(A)·op(B)) + beta·C` for dense-diagonal TLR matrices `
 case-insensitive `N/T`. Transposed operands currently require square matrices with
 equal square tiling.
 
-The output traversal of `C` is a function of the operand layouts (`A.order`,
-`B.order`) — not a free knob. `max_workspace` (bytes) sets how long a contiguous
-run of `C` is materialized at once (see `lowering/schedule.jl`).
+`workspace` is either a global byte count or a reusable `DenseGemmWorkspace`.
+It is split between the concurrent interior and serialized-boundary streams
+using `InteriorFirstWorkspace`.
 `compute` selects the accumulation mode; when omitted it defaults to `Float32` for
 `Float16` operands and otherwise to the operand type. `alpha` and `beta` are
 converted to that compute type.
 """
 function gemm!(C::AbstractMatrix, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T};
-    alpha=true, beta=false, max_workspace::Int=DEFAULT_GEMM_BUDGET,
-    transA::Char=('N'), transB::Char=('N'), compute=nothing) where {BackendT,T}
+    workspace, alpha=true, beta=false,
+    transA::Char=('N'), transB::Char=('N'), compute=nothing,
+    workspace_policy=InteriorFirstWorkspace()) where {BackendT,T}
     LA = logical_operand(A, transA)
     LB = logical_operand(B, transB)
     _validate_logical_gemm(C, LA, LB)
@@ -65,37 +66,39 @@ function gemm!(C::AbstractMatrix, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDense
     α = ScalarT(alpha)
     β = ScalarT(beta)
     one_β = one(ScalarT)
-    W = max_workspace
+    ws, interior_arena, auxiliary_arena, split =
+        _prepare_dense_gemm_workspace(
+            A, B, workspace, workspace_policy; transA, transB)
+    WI, WA = split.interior, split.auxiliary
 
     interior = () -> begin                                        # C_int
-        tlr_gemm_int_by_int(C, LA, LB, α, β; budget=W, compute=mode)             #   A_int B_int  (folds β)
-        tlr_gemm_rpanel_by_bpanel(C, LA, LB, α; beta=one_β, budget=W, compute=mode)  # u_A v_Bᵀ  (accumulate)
+        tlr_gemm_int_by_int(C, LA, LB, α, β; budget=WI, compute=mode,
+                            arena=interior_arena)
+        tlr_gemm_rpanel_by_bpanel(C, LA, LB, α; beta=one_β, budget=WI,
+                                  compute=mode, arena=interior_arena)
     end
-    right = () -> begin                                          # C_right
-        tlr_gemm_int_by_rpanel(C, LA, LB, α; beta=β, budget=W, compute=mode)     #   A_int u_B    (folds β)
-        tlr_gemm_rpanel_by_corner(C, LA, LB, α; beta=one_β, budget=W, compute=mode)        #   u_A γ_B      (accumulate)
-    end
-    bottom = () -> begin                                         # C_bottom
-        tlr_gemm_bpanel_by_int(C, LA, LB, α; beta=β, budget=W, compute=mode)     #   v_Aᵀ B_int   (folds β)
-        tlr_gemm_corner_by_bpanel(C, LA, LB, α; beta=one_β, budget=W, compute=mode)        #   γ_A v_Bᵀ     (accumulate)
-    end
-    corner = () -> begin                                         # C_corner
-        tlr_gemm_corner_by_corner(C, LA, LB, α; beta=β, compute=mode)            #   γ_A γ_B       (folds β)
-        tlr_gemm_bpanel_by_rpanel(C, LA, LB, α; beta=one_β, budget=W, compute=mode)        #   v_Aᵀ u_B     (accumulate)
+    boundaries = () -> begin
+        tlr_gemm_int_by_rpanel(C, LA, LB, α; beta=β, budget=WA,
+                               compute=mode, arena=auxiliary_arena)
+        tlr_gemm_rpanel_by_corner(C, LA, LB, α; beta=one_β, budget=WA,
+                                  compute=mode, arena=auxiliary_arena)
+        tlr_gemm_bpanel_by_int(C, LA, LB, α; beta=β, budget=WA,
+                               compute=mode, arena=auxiliary_arena)
+        tlr_gemm_corner_by_bpanel(C, LA, LB, α; beta=one_β, budget=WA,
+                                  compute=mode, arena=auxiliary_arena)
+        tlr_gemm_corner_by_corner(C, LA, LB, α; beta=β, budget=WA,
+                                  compute=mode, arena=auxiliary_arena)
+        tlr_gemm_bpanel_by_rpanel(C, LA, LB, α; beta=one_β, budget=WA,
+                                  compute=mode, arena=auxiliary_arena)
     end
 
     if backend isa KernelAbstractions.CPU
         interior();
-        right();
-        bottom();
-        corner()
+        boundaries()
     else
-        streams = create_streams(backend, 4)
-        with_stream(interior, backend, streams[1])
-        with_stream(right, backend, streams[2])
-        with_stream(bottom, backend, streams[3])
-        with_stream(corner, backend, streams[4])
-        for s in streams
+        with_stream(interior, backend, ws.streams[1])
+        with_stream(boundaries, backend, ws.streams[2])
+        for s in ws.streams
             sync_stream(backend, s)
         end
     end
@@ -103,7 +106,8 @@ function gemm!(C::AbstractMatrix, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDense
 end
 
 """
-    gemm!(C, A::TLRMatrix, B::TLRMatrix; alpha=true, beta=false, max_workspace) -> C
+    gemm!(C, A::TLRMatrix, B::TLRMatrix; workspace,
+          alpha=true, beta=false) -> C
 
 Fully low-rank TLR × TLR → dense `C := alpha·(A·B) + beta·C`. Every tile is low-rank,
 so the product is the four-region block product with each region a low-rank staged
@@ -120,8 +124,9 @@ selects the accumulation mode. Intermediate factors always retain operand storag
 `alpha` and `beta` use compute precision.
 """
 function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T};
-    alpha=true, beta=false, max_workspace::Int=DEFAULT_GEMM_BUDGET,
-    transA::Char=('N'), transB::Char=('N'), compute=nothing) where {BackendT,T}
+    workspace, alpha=true, beta=false,
+    transA::Char=('N'), transB::Char=('N'), compute=nothing,
+    workspace_policy=InteriorFirstWorkspace()) where {BackendT,T}
     LA = logical_operand(A, transA)
     LB = logical_operand(B, transB)
     _validate_logical_gemm(C, LA, LB)
@@ -133,7 +138,10 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backend
     α = ScalarT(alpha)
     β = ScalarT(beta)
     one_β = one(ScalarT)
-    W = max_workspace
+    ws, interior_arena, auxiliary_arena, split =
+        _prepare_dense_gemm_workspace(
+            A, B, workspace, workspace_policy; transA, transB)
+    WI, WA = split.interior, split.auxiliary
 
     if maxrank(A) == 0 || maxrank(B) == 0
         _scale_output!(C, β)
@@ -141,35 +149,33 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backend
     end
 
     interior = () -> begin                                       # C_int
-        _offdiag_offdiag_gemm!(C, LA, LB; alpha=α, beta=β, budget=W, compute=mode)  # op(A)ᵢ op(B)ᵢ (folds β)
-        tlr_gemm_rpanel_by_bpanel(C, LA, LB, α; beta=one_β, budget=W, compute=mode)  # u_A v_Bᵀ (no-op when aligned)
+        _offdiag_offdiag_gemm!(C, LA, LB; alpha=α, beta=β, budget=WI,
+                               compute=mode, arena=interior_arena)
+        tlr_gemm_rpanel_by_bpanel(C, LA, LB, α; beta=one_β, budget=WI,
+                                  compute=mode, arena=interior_arena)
     end
-    right = () -> begin                                          # C_right
-        tlr_gemm_int_by_rpanel(C, LA, LB, α; beta=β, budget=W, compute=mode)         # A_int u_B (folds β)
-        tlr_gemm_rpanel_by_corner(C, LA, LB, α; beta=one_β, budget=W, compute=mode)           # u_A γ_B
-    end
-    bottom = () -> begin                                         # C_bottom
-        tlr_gemm_bpanel_by_int(C, LA, LB, α; beta=β, budget=W, compute=mode)         # v_Aᵀ B_int (folds β)
-        tlr_gemm_corner_by_bpanel(C, LA, LB, α; beta=one_β, budget=W, compute=mode)          # γ_A v_Bᵀ
-    end
-    corner = () -> begin                                         # C_corner
-        tlr_gemm_corner_by_corner(C, LA, LB, α; beta=β, compute=mode)               # γ_A γ_B (folds β)
-        tlr_gemm_bpanel_by_rpanel(C, LA, LB, α; beta=one_β, budget=W, compute=mode)          # v_Aᵀ u_B
+    boundaries = () -> begin
+        tlr_gemm_int_by_rpanel(C, LA, LB, α; beta=β, budget=WA,
+                               compute=mode, arena=auxiliary_arena)
+        tlr_gemm_rpanel_by_corner(C, LA, LB, α; beta=one_β, budget=WA,
+                                  compute=mode, arena=auxiliary_arena)
+        tlr_gemm_bpanel_by_int(C, LA, LB, α; beta=β, budget=WA,
+                               compute=mode, arena=auxiliary_arena)
+        tlr_gemm_corner_by_bpanel(C, LA, LB, α; beta=one_β, budget=WA,
+                                  compute=mode, arena=auxiliary_arena)
+        tlr_gemm_corner_by_corner(C, LA, LB, α; beta=β, budget=WA,
+                                  compute=mode, arena=auxiliary_arena)
+        tlr_gemm_bpanel_by_rpanel(C, LA, LB, α; beta=one_β, budget=WA,
+                                  compute=mode, arena=auxiliary_arena)
     end
 
     if backend isa KernelAbstractions.CPU
         interior();
-        right();
-        bottom();
-        corner()
+        boundaries()
     else
-        # Regions write disjoint quadrants → independent streams, one host sync at end.
-        streams = create_streams(backend, 4)
-        with_stream(interior, backend, streams[1])
-        with_stream(right, backend, streams[2])
-        with_stream(bottom, backend, streams[3])
-        with_stream(corner, backend, streams[4])
-        for s in streams
+        with_stream(interior, backend, ws.streams[1])
+        with_stream(boundaries, backend, ws.streams[2])
+        for s in ws.streams
             sync_stream(backend, s)
         end
     end
@@ -191,7 +197,7 @@ Compute `C := alpha·op(A)·op(B) + beta·C` with a fully low-rank left operand
 and a standalone dense right operand. Intermediates retain the operand storage type.
 """
 function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::AbstractMatrix{T};
-    alpha=true, beta=false, max_workspace::Int=DEFAULT_GEMM_BUDGET,
+    workspace, alpha=true, beta=false,
     transA::Char='N', transB::Char='N', compute=nothing) where {BackendT,T}
     LA = logical_operand(A, transA)
     LB = logical_dense_operand(B, transB)
@@ -202,8 +208,9 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::AbstractMatrix{T}
     mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
     validate_tlr_gemm_precision(backend, T, eltype(C), mode)
     ScalarT = gemm_compute_type(mode)
+    _, arena, budget = _prepare_single_gemm_workspace(A, workspace)
     return _tlr_dense_gemm!(C, LA, LB, ScalarT(alpha), ScalarT(beta),
-                            max_workspace, mode)
+                            budget, mode, arena)
 end
 
 """
@@ -213,7 +220,7 @@ Compute `C := alpha·op(A)·op(B) + beta·C` with a standalone dense left operan
 and a fully low-rank right operand. Intermediates retain the operand storage type.
 """
 function gemm!(C::AbstractMatrix, A::AbstractMatrix{T}, B::TLRMatrix{BackendT,T};
-    alpha=true, beta=false, max_workspace::Int=DEFAULT_GEMM_BUDGET,
+    workspace, alpha=true, beta=false,
     transA::Char='N', transB::Char='N', compute=nothing) where {BackendT,T}
     LA = logical_dense_operand(A, transA)
     LB = logical_operand(B, transB)
@@ -224,8 +231,9 @@ function gemm!(C::AbstractMatrix, A::AbstractMatrix{T}, B::TLRMatrix{BackendT,T}
     mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
     validate_tlr_gemm_precision(backend, T, eltype(C), mode)
     ScalarT = gemm_compute_type(mode)
+    _, arena, budget = _prepare_single_gemm_workspace(B, workspace)
     return _dense_tlr_gemm!(C, LA, LB, ScalarT(alpha), ScalarT(beta),
-                            max_workspace, mode)
+                            budget, mode, arena)
 end
 
 # ─── Canonical TLR × TLR → TLR (R3) ──────────────────────────────────────────

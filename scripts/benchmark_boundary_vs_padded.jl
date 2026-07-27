@@ -7,7 +7,7 @@
 #
 # Compares two ways of handling a non-uniform tiling (n % b ≠ 0):
 #   * boundary  — `gemm!` on the n×n matrix directly (interior + right/bottom/corner
-#                 regions, run on four streams).
+#                 regions, run on two streams).
 #   * padded    — `gemm!` on a uniform n2×n2 matrix, n2 = cld(n,b)·b (the smallest
 #                 multiple of b above n): no boundary terms, one interior product.
 # We build a fresh uniform TLR at n2 rather than literally zero-padding the n×n one —
@@ -81,12 +81,12 @@ function time_gemm(backend, m, b, r, oA, oB)
     C = backend isa CPU ? randn(T, m, m) : CUDA.CuArray(randn(T, m, m))
     budget = M.gemm_maximum_workspace_bytes(A, B)
     for _ in 1:WARMUP
-        M.gemm!(C, A, B; alpha=1.0, beta=0.5, max_workspace=budget); gpu_sync()
+        M.gemm!(C, A, B; alpha=1.0, beta=0.5, workspace=budget); gpu_sync()
     end
     ts = Float64[]
     for _ in 1:NREPS
         t = @elapsed begin
-            M.gemm!(C, A, B; alpha=1.0, beta=0.5, max_workspace=budget); gpu_sync()
+            M.gemm!(C, A, B; alpha=1.0, beta=0.5, workspace=budget); gpu_sync()
         end
         push!(ts, t)
     end

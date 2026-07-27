@@ -120,7 +120,7 @@ Local output coordinates start at the logical destination tile `(i0,j0)`.
 """
 function execute_lowrank_gemm!(C, A, B, ops, geom::RegularGeometry, i0::Int, j0::Int;
         alpha, beta, budget::Int, compute, fold::Union{Nothing,FoldSide}=nothing,
-        placement::Union{Nothing,KAxisSchedule}=nothing)
+        placement::Union{Nothing,KAxisSchedule}=nothing, arena=nothing)
     (geom.q_m == 0 || geom.q_n == 0) && return C
     region = _output_region(C, A, B, i0, geom.q_m, j0, geom.q_n)
     if geom.q_c == 0 || geom.perA_row == 0 || geom.rA == 0 || geom.rB == 0
@@ -131,21 +131,23 @@ function execute_lowrank_gemm!(C, A, B, ops, geom::RegularGeometry, i0::Int, j0:
     chosen_fold = fold === nothing ? _default_fold(ops) : fold
     chosen_placement = placement === nothing ? placement_for_fold(chosen_fold, ops) : placement
     return _execute_lowrank_gemm!(C, A, B, ops, geom, i0, j0, chosen_placement,
-                                  chosen_fold, alpha, beta, budget, compute, region)
+                                  chosen_fold, alpha, beta, budget, compute, region,
+                                  arena)
 end
 
 # This dispatch boundary keeps the run loop fully concrete even when automatic fold
 # selection has a two-type inferred union.
 function _execute_lowrank_gemm!(C, A, B, ops, geom, i0::Int, j0::Int,
         chosen_placement::KAxisSchedule, chosen_fold::FoldSide,
-        alpha, beta, budget::Int, compute, region)
+        alpha, beta, budget::Int, compute, region, arena)
     beta_stage = if chosen_placement isa KAsGemmK
         beta
     else
         _scale_output!(region, beta)
         one(beta)
     end
-    ws = allocate_workspace(chosen_placement, geom, ops, C, budget, chosen_fold)
+    ws = allocate_workspace(chosen_placement, geom, ops, C, budget, chosen_fold;
+                            arena)
     @inbounds for run in runs(chosen_placement, geom, budget, chosen_fold)
         prepare_run!(chosen_placement, run, ws)
         execute_stage1!(chosen_placement, run, ops, ws, compute)
@@ -160,11 +162,12 @@ end
         q_m::Int, q_c::Int, q_n::Int, i0::Int, j0::Int;
         alpha, beta, budget::Int, compute,
         fold::Union{Nothing,FoldSide}=nothing,
-        placement::Union{Nothing,KAxisSchedule}=nothing)
+        placement::Union{Nothing,KAxisSchedule}=nothing, arena=nothing)
     ops = _lowrank_term_operands(Apair, Bpair)
     geom = regular_geometry(q_m, q_c, q_n, ops)
     return execute_lowrank_gemm!(C, A, B, ops, geom, i0, j0;
-                                 alpha, beta, budget, compute, fold, placement)
+                                 alpha, beta, budget, compute, fold, placement,
+                                 arena)
 end
 
 @inline function full_workspace_bytes(geom::RegularGeometry, ops;
@@ -198,7 +201,7 @@ end
 
 function execute_lowrank_dense_term!(C, A, B, left_outer, left_inner,
         dense::LogicalDenseTile, q_m::Int, i0::Int, j0::Int;
-        alpha, beta, budget::Int, compute)
+        alpha, beta, budget::Int, compute, arena=nothing)
     q_m == 0 && return C
     region = _output_region(C, A, B, i0, q_m, j0, 1)
     rA = rankdim(left_inner)
@@ -209,7 +212,9 @@ function execute_lowrank_dense_term!(C, A, B, left_outer, left_inner,
     T = eltype(left_inner.data)
     bn = size(_output_tile_view(C, A, B, i0, j0), 2)
     maxI = clamp(div(budget, max(rA * bn * sizeof(T), 1)), 1, q_m)
-    work = allocate(get_backend(left_inner.data), T, rA, bn, maxI)
+    _arena_reset!(arena)
+    work = _workspace_array!(
+        arena, get_backend(left_inner.data), T, rA, bn, maxI)
     data = _dense_data(dense)
     s1v = _batchvec(tilefactor(left_inner, 1, 1), maxI)
     s1d = _batchvec(data, maxI)
@@ -236,7 +241,7 @@ end
 
 function execute_dense_lowrank_term!(C, A, B, dense::LogicalDenseTile,
         right_outer, right_inner, q_n::Int, i0::Int, j0::Int;
-        alpha, beta, budget::Int, compute)
+        alpha, beta, budget::Int, compute, arena=nothing)
     q_n == 0 && return C
     region = _output_region(C, A, B, i0, 1, j0, q_n)
     rB = rankdim(right_outer)
@@ -247,7 +252,9 @@ function execute_dense_lowrank_term!(C, A, B, dense::LogicalDenseTile,
     T = eltype(right_outer.data)
     bm = size(_output_tile_view(C, A, B, i0, j0), 1)
     maxJ = clamp(div(budget, max(bm * rB * sizeof(T), 1)), 1, q_n)
-    work = allocate(get_backend(right_outer.data), T, bm, rB, maxJ)
+    _arena_reset!(arena)
+    work = _workspace_array!(
+        arena, get_backend(right_outer.data), T, bm, rB, maxJ)
     data = _dense_data(dense)
     s1d = _batchvec(data, maxJ)
     s1w = _batchvec(tilefactor(right_outer, 1, 1), maxJ)
@@ -295,10 +302,10 @@ end
 @inline _has_row_tail(A) = tilegrid_size(A)[1] > regular_tilegrid_size(A)[1]
 @inline _has_col_tail(A) = tilegrid_size(A)[2] > regular_tilegrid_size(A)[2]
 
-function _gemm_workspace_bound(A::AbstractTLRMatrix, B::AbstractTLRMatrix,
-                               sizing, lowrank_dense_sizing,
-                               dense_lowrank_sizing;
-                               transA::Char='N', transB::Char='N')
+function _gemm_region_workspace_bound(A::AbstractTLRMatrix, B::AbstractTLRMatrix,
+                                      sizing, lowrank_dense_sizing,
+                                      dense_lowrank_sizing;
+                                      transA::Char='N', transB::Char='N')
     LA = logical_operand(A, transA)
     LB = logical_operand(B, transB)
     size(LA, 2) == size(LB, 1) ||
@@ -321,11 +328,17 @@ function _gemm_workspace_bound(A::AbstractTLRMatrix, B::AbstractTLRMatrix,
     Bright = _right_pair(LB)
     Bbottom = _bottom_pair(LB)
 
-    requirements = Int[
+    interior = Int[
         _lowrank_term_workspace(Aint, Bint, q_m, q_c, q_n, sizing),
-        has_j ? _lowrank_term_workspace(Aint, Bright, q_m, q_c, 1, sizing) : 0,
-        has_i ? _lowrank_term_workspace(Abottom, Bint, 1, q_c, q_n, sizing) : 0,
         has_k ? _lowrank_term_workspace(Aright, Bbottom, q_m, 1, q_n, sizing) : 0,
+    ]
+    right = Int[
+        has_j ? _lowrank_term_workspace(Aint, Bright, q_m, q_c, 1, sizing) : 0,
+    ]
+    bottom = Int[
+        has_i ? _lowrank_term_workspace(Abottom, Bint, 1, q_c, q_n, sizing) : 0,
+    ]
+    corner = Int[
         (has_i && has_j) ? _lowrank_term_workspace(
             Abottom, Bright, 1, q_c, 1, sizing;
             fold=FoldRight(), placement=KAsSerialLoop{:k}()) : 0,
@@ -333,57 +346,109 @@ function _gemm_workspace_bound(A::AbstractTLRMatrix, B::AbstractTLRMatrix,
 
     if has_k && has_j
         if physical(LB) isa TLRMatrix
-            push!(requirements, _lowrank_term_workspace(Aright, _corner_pair(LB),
-                                                        q_m, 1, 1, sizing))
+            push!(right, _lowrank_term_workspace(
+                Aright, _corner_pair(LB), q_m, 1, 1, sizing))
         else
-            push!(requirements, lowrank_dense_sizing(
+            push!(right, lowrank_dense_sizing(
                 q_m, maxrank(LA), tail_tile_size(LB, 2), eltype(LA)))
         end
     end
     if has_i && has_k
         if physical(LA) isa TLRMatrix
-            push!(requirements, _lowrank_term_workspace(_corner_pair(LA), Bbottom,
-                                                        1, 1, q_n, sizing))
+            push!(bottom, _lowrank_term_workspace(
+                _corner_pair(LA), Bbottom, 1, 1, q_n, sizing))
         else
-            push!(requirements, dense_lowrank_sizing(
+            push!(bottom, dense_lowrank_sizing(
                 q_n, tail_tile_size(LA, 1), maxrank(LB), eltype(LB)))
         end
     end
     if has_i && has_k && has_j && physical(LA) isa TLRMatrix && physical(LB) isa TLRMatrix
-        push!(requirements, _lowrank_term_workspace(_corner_pair(LA), _corner_pair(LB),
-                                                    1, 1, 1, sizing))
+        push!(corner, _lowrank_term_workspace(
+            _corner_pair(LA), _corner_pair(LB), 1, 1, 1, sizing))
     end
-    return maximum(requirements; init=0)
+
+    # Dense-diagonal terms use complete, presently unpartitioned batches. They
+    # are sequential with the regular term in their region, so each contributes
+    # through a regional maximum rather than a sum.
+    if physical(LA) isa TLRDenseDiagMatrix && physical(LB) isa TLRDenseDiagMatrix
+        T = eltype(LA)
+        n_int = size(outer_factors(LA, _INTERIOR), 3)
+        diag_interior = n_int * nominal_tile_size(LA, 1) *
+                        max(maxrank(LA), maxrank(LB)) * sizeof(T)
+        push!(interior, diag_interior)
+        has_j && push!(right, q_m * nominal_tile_size(LA, 1) *
+                              maxrank(LB) * sizeof(T))
+        has_i && push!(bottom, q_c * maxrank(LA) *
+                               nominal_tile_size(LB, 2) * sizeof(T))
+    end
+    return (
+        interior=maximum(interior; init=0),
+        right=maximum(right; init=0),
+        bottom=maximum(bottom; init=0),
+        corner=maximum(corner; init=0),
+    )
+end
+
+@inline _auxiliary_workspace(regions) =
+    max(regions.right, regions.bottom, regions.corner)
+
+function _gemm_workspace_regions(A, B, which::Symbol;
+                                 transA::Char='N', transB::Char='N')
+    if which === :minimum
+        return _gemm_region_workspace_bound(
+            A, B, minimum_workspace_bytes,
+            minimum_workspace_bytes_lowrank_dense,
+            minimum_workspace_bytes_dense_lowrank;
+            transA, transB,
+        )
+    elseif which === :maximum
+        return _gemm_region_workspace_bound(
+            A, B, full_workspace_bytes,
+            full_workspace_bytes_lowrank_dense,
+            full_workspace_bytes_dense_lowrank;
+            transA, transB,
+        )
+    end
+    throw(ArgumentError("unknown workspace bound $which"))
 end
 
 """
     gemm_minimum_workspace_bytes(A, B; transA='N', transB='N') -> Int
 
-Return the smallest dense-output TLR GEMM scheduler budget that can hold one
-complete run slice for every term in `op(A) * op(B)`. Passing this value as
-`max_workspace` gives the maximally partitioned execution.
+Return the smallest global numerical workspace for two-stream dense-output TLR
+GEMM. It is the interior minimum plus the largest minimum of the serialized
+right, bottom, and corner regions.
 """
-gemm_minimum_workspace_bytes(A::AbstractTLRMatrix, B::AbstractTLRMatrix;
-                             transA::Char='N', transB::Char='N') =
-    _gemm_workspace_bound(
-        A, B, minimum_workspace_bytes,
-        minimum_workspace_bytes_lowrank_dense,
-        minimum_workspace_bytes_dense_lowrank;
-        transA, transB,
-    )
+function gemm_minimum_workspace_bytes(A::AbstractTLRMatrix, B::AbstractTLRMatrix;
+                                      transA::Char='N', transB::Char='N')
+    regions = _gemm_workspace_regions(A, B, :minimum; transA, transB)
+    return regions.interior + _auxiliary_workspace(regions)
+end
 
 """
     gemm_maximum_workspace_bytes(A, B; transA='N', transB='N') -> Int
 
-Return the smallest dense-output TLR GEMM scheduler budget for which every
-term in `op(A) * op(B)` executes at its full run width. Larger values cannot
-increase any run dimension.
+Return the smallest global numerical workspace for which every dense-output
+TLR GEMM term can execute at full run width under the two-stream split.
 """
-gemm_maximum_workspace_bytes(A::AbstractTLRMatrix, B::AbstractTLRMatrix;
-                             transA::Char='N', transB::Char='N') =
-    _gemm_workspace_bound(
-        A, B, full_workspace_bytes,
-        full_workspace_bytes_lowrank_dense,
-        full_workspace_bytes_dense_lowrank;
-        transA, transB,
-    )
+function gemm_maximum_workspace_bytes(A::AbstractTLRMatrix, B::AbstractTLRMatrix;
+                                      transA::Char='N', transB::Char='N')
+    regions = _gemm_workspace_regions(A, B, :maximum; transA, transB)
+    return regions.interior + _auxiliary_workspace(regions)
+end
+
+function _gemm_workspace_split(A, B, bytes::Int,
+                               ::InteriorFirstWorkspace;
+                               transA::Char='N', transB::Char='N')
+    minimum = _gemm_workspace_regions(A, B, :minimum; transA, transB)
+    maximum = _gemm_workspace_regions(A, B, :maximum; transA, transB)
+    global_min = minimum.interior + _auxiliary_workspace(minimum)
+    global_max = maximum.interior + _auxiliary_workspace(maximum)
+    bytes >= global_min || throw(ArgumentError(
+        "workspace has $bytes bytes; at least $global_min bytes are required"))
+    usable = min(bytes, global_max)
+    auxiliary_min = _auxiliary_workspace(minimum)
+    interior = min(maximum.interior, usable - auxiliary_min)
+    auxiliary = usable - interior
+    return (; interior, auxiliary, usable, minimum=global_min, maximum=global_max)
+end

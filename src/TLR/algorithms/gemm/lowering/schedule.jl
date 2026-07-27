@@ -375,7 +375,8 @@ once per term call, sized to the budgeted run width for the given reduction plac
 `geom` fixes the sizes and `ops` supplies storage for reshaped K-stacks and batch views.
 This serves interior, panel, and corner factor accessors for both grid kinds.
 """
-function allocate_workspace(placement::KAsGemmK, geom, ops, C::AbstractMatrix, budget::Int, ::FoldRight)
+function allocate_workspace(placement::KAsGemmK, geom, ops, C::AbstractMatrix,
+                            budget::Int, ::FoldRight; arena=nothing)
     T = eltype(geom)
     backend = get_backend(ops.av.data)
     bm = geom.bm; bn = geom.bn
@@ -386,14 +387,16 @@ function allocate_workspace(placement::KAsGemmK, geom, ops, C::AbstractMatrix, b
     Uall = reshape(ops.au.data, bm, rA * noff, geom.q_m)
     # S[:,:,p,kk,il]: p = position within the run's column block, laid out so a fused
     # per-(i,k) Stage-1 GEMM writes a contiguous [rA, len·rB] slice.
-    Sbuf = allocate(backend, T, rA, rB, maxJ, noff, maxI)
-    Tbuf = allocate(backend, T, rA, noff, bn, maxJ, maxI)
+    _arena_reset!(arena)
+    Sbuf = _workspace_array!(arena, backend, T, rA, rB, maxJ, noff, maxI)
+    Tbuf = _workspace_array!(arena, backend, T, rA, noff, bn, maxJ, maxI)
     return RowWorkspace(ScratchS(Sbuf), ScratchT(Tbuf), Uall,
                         _row_batches(placement, ops, C, Sbuf, Tbuf, Uall,
                                      geom, maxI, maxJ))
 end
 
-function allocate_workspace(placement::KAsGemmK, geom, ops, C::AbstractMatrix, budget::Int, ::FoldLeft)
+function allocate_workspace(placement::KAsGemmK, geom, ops, C::AbstractMatrix,
+                            budget::Int, ::FoldLeft; arena=nothing)
     T = eltype(geom)
     backend = get_backend(ops.av.data)
     bm = geom.bm; bn = geom.bn
@@ -403,13 +406,15 @@ function allocate_workspace(placement::KAsGemmK, geom, ops, C::AbstractMatrix, b
     maxI, maxJ = _row_block(geom, budget, FoldLeft())
     # Z-stack: for fixed output column j, all k contiguous ⟺ B TileColMajor.
     Zall = reshape(ops.bz.data, bn, rB * noff, geom.q_n)
-    Sbuf = allocate(backend, T, rA, rB, maxJ, noff, maxI)
-    Tbuf = allocate(backend, T, bm, rB, noff, maxJ, maxI)   # T' = U·S is bm×rB
+    _arena_reset!(arena)
+    Sbuf = _workspace_array!(arena, backend, T, rA, rB, maxJ, noff, maxI)
+    Tbuf = _workspace_array!(arena, backend, T, bm, rB, noff, maxJ, maxI)   # T' = U·S is bm×rB
     return RowWorkspace(ScratchS(Sbuf), ScratchT(Tbuf), Zall,
                         _row_batches_left(ops, C, Sbuf, Tbuf, Zall, geom, maxI, maxJ))
 end
 
-function allocate_workspace(placement::KAsSerialLoop, geom, ops, C::AbstractMatrix, budget::Int, ::FoldSide)
+function allocate_workspace(placement::KAsSerialLoop, geom, ops, C::AbstractMatrix,
+                            budget::Int, ::FoldSide; arena=nothing)
     T = eltype(geom)
     backend = get_backend(ops.av.data)
     bm = geom.bm; bk = geom.bk; bn = geom.bn
@@ -419,8 +424,9 @@ function allocate_workspace(placement::KAsSerialLoop, geom, ops, C::AbstractMatr
     maxK, maxJ = _column_block(geom, budget)
     Vall = reshape(ops.av.data, bk, rA * noff, geom.q_c)
     Uall = reshape(ops.au.data, bm, rA, noff, geom.q_c)
-    Sbuf = allocate(backend, T, rA * noff, rB, maxJ, maxK)
-    Tbuf = allocate(backend, T, rA, noff, bn, maxJ, maxK)
+    _arena_reset!(arena)
+    Sbuf = _workspace_array!(arena, backend, T, rA * noff, rB, maxJ, maxK)
+    Tbuf = _workspace_array!(arena, backend, T, rA, noff, bn, maxJ, maxK)
     return ColumnWorkspace(ScratchS(Sbuf), ScratchT(Tbuf), Vall, Uall,
                            _column_batches(placement, ops, C, Sbuf, Tbuf, Vall, Uall,
                                            geom, maxK, maxJ))

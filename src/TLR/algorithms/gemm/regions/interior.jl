@@ -121,7 +121,7 @@ end
 # Component 2: O_A D_B then D_A O_B, interior category only, sharing ONE scratch.
 # `O_A D_B` is the first off-diagonal writer (folds β); `D_A O_B` then accumulates
 # with β = 1.  If A has zero off-diagonal rank, `D_A O_B` becomes the first writer.
-function _diag_times_offdiag_interior!(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha; beta=one(alpha), compute=default_gemm_compute_mode(T)) where {T}
+function _diag_times_offdiag_interior!(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha; beta=one(alpha), compute=default_gemm_compute_mode(T), arena=nothing) where {T}
     AU = outer_factors(A, _INTERIOR)
     AV = inner_factors(A, _INTERIOR)
     BU = outer_factors(B, _INTERIOR)
@@ -130,7 +130,9 @@ function _diag_times_offdiag_interior!(C, A::LogicalTLROperand{<:Any,<:TLRDenseD
     rmax = max(maxrank(A), maxrank(B))
     (n_int == 0 || rmax == 0) && return C
     bm = nominal_tile_size(A, 1)
-    scratch = allocate(get_backend(A), T, n_int * bm * rmax)
+    _arena_reset!(arena)
+    scratch = _workspace_array!(
+        arena, get_backend(A), T, n_int * bm * rmax)
 
     if maxrank(A) > 0
         if stride1_axis_left(A) isa Stride1Axis{:i}
@@ -177,18 +179,19 @@ accumulates with β = 1.
 """
 function _offdiag_offdiag_gemm!(C, A::LogicalTLROperand{<:Any,<:AbstractTLRMatrix{<:Any,T}}, B::LogicalTLROperand;
     alpha, beta=one(alpha), budget, fold::Union{Nothing,FoldSide}=nothing,
-    compute=default_gemm_compute_mode(T)) where {T}
+    compute=default_gemm_compute_mode(T), arena=nothing) where {T}
     ops = logical_operands(A, B)
     geom = interior_geometry(A, B)
     return execute_lowrank_gemm!(C, A, B, ops, geom, 1, 1;
-                                 alpha, beta, budget, compute, fold)
+                                 alpha, beta, budget, compute, fold, arena)
 end
 
 function _offdiag_offdiag_gemm!(C, A::AbstractTLRMatrix{<:Any,T}, B::AbstractTLRMatrix{<:Any,T};
     alpha, beta=one(alpha), budget, fold::Union{Nothing,FoldSide}=nothing,
-    transA::Char='N', transB::Char='N', compute=default_gemm_compute_mode(T)) where {T}
+    transA::Char='N', transB::Char='N', compute=default_gemm_compute_mode(T),
+    arena=nothing) where {T}
     return _offdiag_offdiag_gemm!(C, logical_operand(A, transA), logical_operand(B, transB);
-                                  alpha, beta, budget, fold, compute)
+                                  alpha, beta, budget, fold, compute, arena)
 end
 
 """
@@ -203,10 +206,10 @@ rather than the diagonal terms) is what lets the `TLRMatrix` interior — which 
 *only* `O_A O_B` — share the same β-folding path. Order-only dependencies — no host
 sync; the caller places this whole term on a region stream (see `gemm!`).
 """
-function tlr_gemm_int_by_int(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha, beta; budget::Int, compute=default_gemm_compute_mode(T)) where {T}
-    _offdiag_offdiag_gemm!(C, A, B; alpha=alpha, beta=beta, budget=budget, compute)  # O_A O_B (folds β)
+function tlr_gemm_int_by_int(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha, beta; budget::Int, compute=default_gemm_compute_mode(T), arena=nothing) where {T}
+    _offdiag_offdiag_gemm!(C, A, B; alpha=alpha, beta=beta, budget=budget, compute, arena)  # O_A O_B (folds β)
     _diag_diag_gemm!(C, A, B, alpha; beta=one(T), compute)                           # D_A D_B
-    _diag_times_offdiag_interior!(C, A, B, alpha; beta=one(T), compute)              # O_A D_B + D_A O_B
+    _diag_times_offdiag_interior!(C, A, B, alpha; beta=one(T), compute, arena)       # O_A D_B + D_A O_B
     return C
 end
 
@@ -220,11 +223,11 @@ in `A`) or the pairing is incomplete (non-square boundary).
 # Pure low-rank panels (A's right column × B's bottom row): identical for both
 # container types, so it dispatches on `AbstractTLRMatrix`.
 function tlr_gemm_rpanel_by_bpanel(C, A::LogicalTLROperand{<:Any,<:AbstractTLRMatrix{<:Any,T}}, B::LogicalTLROperand, alpha;
-    beta=one(alpha), budget::Int, compute=default_gemm_compute_mode(T)) where {T}
+    beta=one(alpha), budget::Int, compute=default_gemm_compute_mode(T), arena=nothing) where {T}
     qm = region_tile_count(A, _RIGHT)
     qn = region_tile_count(B, _BOTTOM)
     (qm == 0 || qn == 0) && return C
     return execute_lowrank_term!(C, A, B, _right_pair(A), _bottom_pair(B),
                                  qm, 1, qn, 1, 1;
-                                 alpha, beta, budget, compute)
+                                 alpha, beta, budget, compute, arena)
 end

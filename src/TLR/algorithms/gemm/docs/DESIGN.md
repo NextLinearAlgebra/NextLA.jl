@@ -61,7 +61,8 @@ Two traversal families cover the four effective layout combinations:
   write accumulates with `beta = 1`.
 
 Within each family Stage 1 either batches tilewise or fuses the right operand's
-contiguous `j` panel into GEMM N. Run dimensions come directly from `max_workspace`.
+contiguous `j` panel into GEMM N. Run dimensions come from the regional slice
+assigned by the global workspace policy.
 All batch vectors are allocated once with concrete view element types and refilled with
 `empty!`/`push!`.
 
@@ -81,31 +82,48 @@ uses direct helpers for boundary combinations:
 - dense × low-rank: a budgeted two-stage column batch;
 - dense × dense: one direct batched GEMM.
 
-The top-level dense driver keeps four disjoint output regions (interior, right, bottom,
-corner). CPU executes them in order. GPU backends use four independent streams and one
-final synchronization.
+The top-level dense driver keeps four disjoint output regions (interior, right,
+bottom, corner). GPU backends use two streams: one for the interior and one
+which executes right, bottom, and corner serially. CPU executes the same two
+groups in order.
 
 ## Workspace contract
 
-Dense-output GEMM exposes two exact scheduler bounds:
+Dense-output GEMM exposes two exact global bounds:
 
-- `gemm_minimum_workspace_bytes(A, B; transA, transB)` is the smallest budget
-  that holds one complete run slice for every live term. It produces the most
-  partitioned valid schedule.
-- `gemm_maximum_workspace_bytes(A, B; transA, transB)` is the smallest budget
-  at which every live term runs at full width. Increasing the budget beyond
-  this value cannot enlarge a run.
+- `gemm_minimum_workspace_bytes(A, B; transA, transB)` is the interior
+  minimum plus the largest minimum of the serialized boundary regions.
+- `gemm_maximum_workspace_bytes(A, B; transA, transB)` is the interior
+  full-width requirement plus the largest full-width boundary requirement.
+  Increasing the workspace beyond this value cannot enlarge a run.
 
 Every query includes transpose-aware tails and specialized dense-boundary
 kernels. Any budget between the two bounds is correct, making policies such as
 a multiple of the minimum or a fraction of the maximum explicit without
 claiming an unmeasured performance optimum.
 
-The bound covers promoted contraction scratch. Output storage, persistent TLR factors,
-and backend-library internal allocations are outside that public budget, as before.
-The current `max_workspace` argument is the scheduler budget supplied to each
-region term; because disjoint output regions may execute on concurrent streams,
-it is not yet a strict bound on their summed instantaneous storage.
+`gemm!` requires `workspace`, either an integer global byte count or a reusable
+`DenseGemmWorkspace`. Both modes use one typed numerical arena. The
+`InteriorFirstWorkspace` policy reserves the auxiliary minimum, gives remaining
+capacity to the interior up to its maximum, and assigns the rest to the
+auxiliary stream:
+
+```text
+Waux,min = max(Wright,min, Wbottom,min, Wcorner,min)
+Winterior = min(Winterior,max, Wglobal - Waux,min)
+Waux = Wglobal - Winterior
+```
+
+Right, bottom, and corner reset and reuse the same auxiliary slice. An integer
+constructs a temporary arena; passing a `DenseGemmWorkspace` reuses its device
+allocation and streams across calls. Budgets below the global minimum are
+rejected and capacity beyond the global maximum is unused.
+
+The bound covers numerical scratch allocated by the TLR GEMM implementation.
+Output storage, persistent TLR factors, host batch descriptors, and
+backend-library internal allocations are outside it. Dynamic lending of the
+interior slice to the auxiliary stream is deferred until profiling justifies
+an event boundary.
 
 ## Precision
 

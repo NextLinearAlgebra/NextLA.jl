@@ -7,7 +7,7 @@
 #   julia --project=../gpuenv benchmark_gemm.jl
 #
 # Times `gemm!(C, A, B)` across problem sizes and the four operand-layout combinations
-# (kj, kk, ik, ij). A large `max_workspace` is used so the scheduler batches maximally
+# (kj, kk, ik, ij). The maximum workspace is used so the scheduler batches maximally
 # (row and column traversals both use their widest legal runs).
 #
 # Configs come in two families. `tail=0` is tile-aligned and hard-term-dominated: it
@@ -92,12 +92,12 @@ function time_gemm(backend, b, nt, r, tail, oA, oB)
     # Full-width budget for every direct regular and boundary kernel.
     budget = M.gemm_maximum_workspace_bytes(A, B)
     for _ in 1:WARMUP
-        M.gemm!(C, A, B; alpha=1.0, beta=0.5, max_workspace=budget); gpu_sync()
+        M.gemm!(C, A, B; alpha=1.0, beta=0.5, workspace=budget); gpu_sync()
     end
     ts = Float64[]
     for _ in 1:NREPS
         t = @elapsed begin
-            M.gemm!(C, A, B; alpha=1.0, beta=0.5, max_workspace=budget); gpu_sync()
+            M.gemm!(C, A, B; alpha=1.0, beta=0.5, workspace=budget); gpu_sync()
         end
         push!(ts, t)
     end

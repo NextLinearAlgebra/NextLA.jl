@@ -174,7 +174,8 @@ function assert_gemm_matches_dense(ArrayType::Type, A_tlr, B_tlr, synchronize;
     rng = MersenneTwister(303)
     C0_cpu = randn(rng, T, size(A_tlr, 1), size(B_tlr, 2))
     C = ArrayType(C0_cpu)
-    NextLA.TLRmodule.gemm!(C, A_tlr, B_tlr; alpha=alpha, beta=beta, max_workspace=budget)
+    workspace = max(budget, NextLA.gemm_minimum_workspace_bytes(A_tlr, B_tlr))
+    NextLA.TLRmodule.gemm!(C, A_tlr, B_tlr; alpha=alpha, beta=beta, workspace)
     synchronize(C)
 
     C_ref = alpha * reconstruct_tlr(A_tlr) * reconstruct_tlr(B_tlr) + beta * C0_cpu
@@ -224,16 +225,18 @@ function assert_dense_fulllr_gemm(ArrayType::Type, ::Type{T}, side::Symbol,
                              optiles(tiles, transA), 3; tile_order=order)
         fill_random_tlr!(A, ArrayType; seed=101)
         B = ArrayType(randn(MersenneTwister(202), T, stored(k, n, transB)...))
+        workspace = max(budget, 3 * sizeof(T))
         NextLA.TLRmodule.gemm!(C, A, B; alpha=α, beta=β, transA, transB,
-                               max_workspace=budget)
+                               workspace)
         ref = α * opd(reconstruct_tlr(A), transA) * opd(Array(B), transB) + β * C0
     else
         A = ArrayType(randn(MersenneTwister(101), T, stored(m, k, transA)...))
         B = NextLA.TLRMatrix(ArrayType(zeros(T, stored(k, n, transB)...)),
                              optiles(tiles, transB), 3; tile_order=order)
         fill_random_tlr!(B, ArrayType; seed=202)
+        workspace = max(budget, 3 * sizeof(T))
         NextLA.TLRmodule.gemm!(C, A, B; alpha=α, beta=β, transA, transB,
-                               max_workspace=budget)
+                               workspace)
         ref = α * opd(Array(A), transA) * opd(reconstruct_tlr(B), transB) + β * C0
     end
     synchronize(C)
@@ -257,8 +260,12 @@ function assert_transpose_matches_dense(m, k, n, tsA, tsB, oA, oB, transA, trans
     fill_random_tlr!(B, ArrayType; seed=2)
     C0 = randn(MersenneTwister(7), Float64, m, n)
     C = ArrayType(C0)
+    workspace = max(
+        budget,
+        NextLA.gemm_minimum_workspace_bytes(A, B; transA, transB),
+    )
     NextLA.TLRmodule.gemm!(C, A, B; alpha=alpha, beta=beta, transA=transA,
-                           transB=transB, max_workspace=budget)
+                           transB=transB, workspace)
     synchronize(C)
     opd(D, t) = t == 'T' ? permutedims(D) : D
     ref = alpha .* (opd(reconstruct_tlr(A), transA) * opd(reconstruct_tlr(B), transB)) .+ beta .* C0
@@ -275,7 +282,11 @@ function assert_dense_diag_transpose_matches(n, b, r, oA, oB, transA, transB;
     fill_random_tlr!(B, ArrayType; seed=22)
     C0 = randn(MersenneTwister(33), Float64, n, n)
     C = ArrayType(C0)
-    NextLA.TLRmodule.gemm!(C, A, B; alpha, beta, transA, transB, max_workspace=budget)
+    workspace = max(
+        budget,
+        NextLA.gemm_minimum_workspace_bytes(A, B; transA, transB),
+    )
+    NextLA.TLRmodule.gemm!(C, A, B; alpha, beta, transA, transB, workspace)
     synchronize(C)
     opd(X, t) = uppercase(t) == 'T' ? transpose(X) : X
     ref = alpha .* (opd(reconstruct_tlr(A), transA) * opd(reconstruct_tlr(B), transB)) .+ beta .* C0

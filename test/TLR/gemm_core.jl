@@ -156,7 +156,7 @@ end
     reference = reconstruct_tlr(A) * reconstruct_tlr(B)
     for workspace in (wmin, wmax)
         C = zeros(T, size(A, 1), size(B, 2))
-        _TLRM.gemm!(C, A, B; max_workspace=workspace)
+        _TLRM.gemm!(C, A, B; workspace)
         @test C ≈ reference
     end
 
@@ -170,5 +170,30 @@ end
                 X, Y; transA, transB)
             @test 0 < lo <= hi
         end
+    end
+
+    X = NextLA.TLRMatrix(zeros(T, 35, 35), b, r)
+    Y = NextLA.TLRMatrix(zeros(T, 35, 35), b, r)
+    fill_random_tlr!(X, Array; seed=73)
+    fill_random_tlr!(Y, Array; seed=74)
+    lo_regions = _TLRM._gemm_workspace_regions(X, Y, :minimum)
+    hi_regions = _TLRM._gemm_workspace_regions(X, Y, :maximum)
+    lo = NextLA.gemm_minimum_workspace_bytes(X, Y)
+    hi = NextLA.gemm_maximum_workspace_bytes(X, Y)
+    @test lo == lo_regions.interior +
+                max(lo_regions.right, lo_regions.bottom, lo_regions.corner)
+    @test hi == hi_regions.interior +
+                max(hi_regions.right, hi_regions.bottom, hi_regions.corner)
+    @test_throws ArgumentError _TLRM.gemm!(
+        zeros(T, size(X, 1), size(Y, 2)), X, Y; workspace=lo - 1)
+
+    reusable = NextLA.DenseGemmWorkspace(X, Y; bytes=lo)
+    storage = reusable.storage
+    reference = reconstruct_tlr(X) * reconstruct_tlr(Y)
+    for _ in 1:2
+        C = zeros(T, size(X, 1), size(Y, 2))
+        _TLRM.gemm!(C, X, Y; workspace=reusable)
+        @test C ≈ reference
+        @test reusable.storage === storage
     end
 end

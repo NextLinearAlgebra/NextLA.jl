@@ -1,6 +1,6 @@
 # Workspace-budget compliance gate (ROADMAP milestone 3, step 0).
 #
-# `gemm!` documents `max_workspace` as the bound on how much scratch is live at once.
+# The direct term helpers accept a scheduler budget that bounds their scratch.
 # The correctness tests in `gemm.jl` run `budget=1` and a large budget, but they only
 # assert the *result*, so a term that ignores the budget entirely still passes them.
 # These tests assert the budget is actually honoured.
@@ -57,7 +57,7 @@ function densediag_operand_pair(::Type{T}, b::Int, r::Int, nt::Int; order=NextLA
 end
 
 @testset "GEMM workspace budget compliance" begin
-    @testset "budget-accepting terms respond to max_workspace" begin
+    @testset "budget-accepting terms respond to their scheduler budget" begin
         @testset "TLRMatrix (full low-rank)" begin
             LA, LB, C = fulllr_operand_pair(Float64, 8, 4, 10)
 

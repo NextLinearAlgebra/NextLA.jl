@@ -103,5 +103,7 @@ using .TLRmodule: maxrank, ranks, residuals, dense_diag, dense_diag_corner, tile
 using .TLRmodule: compress!, uncompress!, alloc_workspace
 using .TLRmodule: get_factors
 using .TLRmodule: gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes
+using .TLRmodule: DenseGemmWorkspace, InteriorFirstWorkspace
 export gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes
+export DenseGemmWorkspace, InteriorFirstWorkspace
 end

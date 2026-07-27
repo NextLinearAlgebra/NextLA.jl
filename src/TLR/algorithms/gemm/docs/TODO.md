@@ -190,16 +190,47 @@ Focused verification:
 - The GPU test also verifies compact active-rank panel packing; full-rank
   canonical panels remain views.
 
-## Dense-output workspace bounds — 2026-07-27
+## Dense-output global workspace arena — 2026-07-27
 
-The dense-output scheduler now exposes exact minimum and maximum budget
-queries. The minimum holds one complete slice for each possible contraction
-term; the maximum is the first budget at which every term has full run width.
-No saturation heuristic is claimed yet. Callers can select an explicit point
-between the bounds—for example, a multiple of the minimum or a fraction of the
-maximum—while later benchmarking determines a backend-specific performance
-knee. A tall-and-skinny test fixes the expected large separation between the
-two bounds and verifies correctness at both endpoints.
+Dense-output GEMM now exposes exact global minimum and maximum queries under a
+two-stream execution model:
+
+```text
+global = interior + max(right, bottom, corner)
+```
+
+The interior occupies one stream. Right, bottom, and corner execute serially
+on the second stream and reset/reuse one auxiliary arena slice. The static
+`InteriorFirstWorkspace` policy reserves the auxiliary minimum, grows the
+interior to full width, then grows the auxiliary slice. This is an explicit
+temporary policy, not a claimed saturation model.
+
+The required `workspace` keyword accepts either a global byte count or a
+reusable `DenseGemmWorkspace`. Integer mode allocates one typed arena for the
+call; object mode reuses the same numerical allocation and two streams.
+Budgets below the global minimum fail, while bytes beyond the global maximum
+cannot change the schedule. The old `DEFAULT_GEMM_BUDGET` and
+`max_workspace` interface were removed.
+
+The bounds now include the previously omitted full-batch dense-diagonal
+intermediates as well as the regular low-rank and boundary terms. Focused
+tests cover correctness at both endpoints, a large tall/skinny min/max gap,
+all transpose combinations, rejection below the minimum, the regional
+sum/max identities, and repeated use of one arena. Dynamic cross-stream
+lending is intentionally deferred until profiling establishes a profitable
+event boundary.
+
+Focused verification:
+
+- CPU workspace bounds, split identities, endpoint correctness, and arena
+  reuse: 19/19; direct-term budget compliance: 13/13.
+- CPU dense-output GEMM: dense-diagonal 4/4, fully low-rank 7/7, fold
+  selection 7/7, logical operands 17/17, complete-grid transpose 13/13,
+  boundary transpose 6/6, and one-dense-operand paths 12/12.
+- CUDA through `../gpuenv`: a boundary-tiled fully low-rank product passed
+  twice using the same two-stream `DenseGemmWorkspace` and unchanged device
+  storage; dense-diagonal boundary and TLR×dense arena paths also matched
+  their dense references.
 
 ## R3 performance closure — 2026-07-27
 
