@@ -272,17 +272,17 @@ end
 @inline tiles_per_col(::CornerOperand) = 1
 
 """
-    LogicalTLROperands(av, bw, bz, au)
+    LogicalTLROperands(av, bu, bv, au)
 
 The interior factor panels used by the staged off-diagonal product, named for the
 formulas `A_ik = U_ik V_ik'` and `B_kj = W_kj Z_kj'`: `av = V`, `au = U` (from `A`);
-`bw = W`, `bz = Z` (from `B`). Stage 3 of the row family stacks `U` in workspace; the
+`bu = W`, `bv = Z` (from `B`). Stage 3 of the row family stacks `U` in workspace; the
 column family enumerates it tilewise, hence `au` is carried here.
 """
-struct LogicalTLROperands{AV,BW,BZ,AU}
+struct LogicalTLROperands{AV,BU,BV,AU}
     av::AV
-    bw::BW
-    bz::BZ
+    bu::BU
+    bv::BV
     au::AU
 end
 
@@ -316,29 +316,29 @@ logical_operands(A::AbstractTLRMatrix, B::AbstractTLRMatrix) =
 
 function logical_operands(A::LogicalTLROperand{<:Any,<:TLRMatrix},
                           B::LogicalTLROperand{<:Any,<:TLRMatrix})
-    qAm, qAn = regular_tilegrid_size(A)
-    qBm, qBn = regular_tilegrid_size(B)
+    qmA, qnA = regular_tilegrid_size(A)
+    qmB, qnB = regular_tilegrid_size(B)
     ordA = tile_order(A)
     ordB = tile_order(B)
     return LogicalTLROperands(
-        interior_operand(FullGrid(), inner_factors(A, _INTERIOR), ordA, qAm, qAn), # av
-        interior_operand(FullGrid(), outer_factors(B, _INTERIOR), ordB, qBm, qBn), # bw
-        interior_operand(FullGrid(), inner_factors(B, _INTERIOR), ordB, qBm, qBn), # bz
-        interior_operand(FullGrid(), outer_factors(A, _INTERIOR), ordA, qAm, qAn), # au
+        interior_operand(FullGrid(), inner_factors(A, _INTERIOR), ordA, qmA, qnA), # av
+        interior_operand(FullGrid(), outer_factors(B, _INTERIOR), ordB, qmB, qnB), # bu
+        interior_operand(FullGrid(), inner_factors(B, _INTERIOR), ordB, qmB, qnB), # bv
+        interior_operand(FullGrid(), outer_factors(A, _INTERIOR), ordA, qmA, qnA), # au
     )
 end
 
 function logical_operands(A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix},
                           B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix})
-    qAm, qAn = regular_tilegrid_size(A)
-    qBm, qBn = regular_tilegrid_size(B)
+    qmA, qnA = regular_tilegrid_size(A)
+    qmB, qnB = regular_tilegrid_size(B)
     ordA = tile_order(A)
     ordB = tile_order(B)
     return LogicalTLROperands(
-        interior_operand(SkipDiag(), inner_factors(A, _INTERIOR), ordA, qAm, qAn),
-        interior_operand(SkipDiag(), outer_factors(B, _INTERIOR), ordB, qBm, qBn),
-        interior_operand(SkipDiag(), inner_factors(B, _INTERIOR), ordB, qBm, qBn),
-        interior_operand(SkipDiag(), outer_factors(A, _INTERIOR), ordA, qAm, qAn),
+        interior_operand(SkipDiag(), inner_factors(A, _INTERIOR), ordA, qmA, qnA),
+        interior_operand(SkipDiag(), outer_factors(B, _INTERIOR), ordB, qmB, qnB),
+        interior_operand(SkipDiag(), inner_factors(B, _INTERIOR), ordB, qmB, qnB),
+        interior_operand(SkipDiag(), outer_factors(A, _INTERIOR), ordA, qmA, qnA),
     )
 end
 

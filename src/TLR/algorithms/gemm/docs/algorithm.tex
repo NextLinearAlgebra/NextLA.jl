@@ -58,6 +58,11 @@ B_{\ell j}=U^B_{\ell j}\bigl(V^B_{\ell j}\bigr)^{\T},
 \qquad
 C_{ij}=U^C_{ij}\bigl(V^C_{ij}\bigr)^{\T},
 \]
+The implementation uses compact ASCII spellings of these axis-indexed quantities:
+$(b_m,b_k,b_n)\leftrightarrow(\texttt{bm},\texttt{bk},\texttt{bn})$ and
+$(q_m,q_k,q_n)\leftrightarrow(\texttt{qm},\texttt{qk},\texttt{qn})$.
+Likewise, $(r_A,r_B,r_C)$ are written as `rA`, `rB`, and `rC`; the four
+logical factor handles correspond to $U^A,V^A,U^B,V^B$ in that order.
 with ranks $r_{A,i\ell}$, $r_{B,\ell j}$, $r_{C,ij}$. We update one output tile
 \begin{equation}
 \label{eq:update}
@@ -259,8 +264,8 @@ scheme that instead \emph{verifies} must beat that exchange rate.
 
 \paragraph{It cannot.}
 Forming $\Fnorm{X}^2$ from the factor list costs $\mathcal O(n_f^2)$ small
-Grams, i.e.\ $\mathcal O(b\,q_k^2r^2)$ for representative rank $r$, whereas one
-further sketch block costs $\mathcal O(b\,q_k r\,\Delta s)$. The ratio is
+Grams, i.e.\ $\mathcal O(b_m\,q_k^2r^2)$ for representative rank $r$, whereas one
+further sketch block costs $\mathcal O(b_m\,q_k r\,\Delta s)$. The ratio is
 $q_k r/\Delta s$, about $32$ at $q_k=16$, $r=32$, $\Delta s=16$: it is far
 cheaper to draw another block than to check whether one was needed. Verification
 would only pay if it usually answered ``stop'', but the only situation that

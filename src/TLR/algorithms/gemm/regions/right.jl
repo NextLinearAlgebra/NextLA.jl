@@ -60,7 +60,7 @@ Accumulate `α · u_A γ_B` into the right region of `C`.  A's right-panel tiles
   Stage 2 (batched over i):          C_{i,Q+1} += α · U_i M_i   (b×s_n)
 No-op when `n_A % b == 0`, `A.maxrank == 0`, or B has no corner.
 """
-# Budget blocks the free row axis `i` (scratch was `O(q_m)` with no knob). `γ_B` is a
+# Budget blocks the free row axis `i` (scratch was `O(qm)` with no knob). `γ_B` is a
 # dense corner uses a direct two-stage helper — no identity factor is formed — and the
 # corner tile is broadcast across the batch.
 function tlr_gemm_rpanel_by_corner(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha;
@@ -94,9 +94,9 @@ function tlr_gemm_int_by_rpanel(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,
                                  alpha, beta, budget, compute, arena)
 end
 
-# u_A γ_B:  C_right[i] += A_{i,bnd} γ_B,  i = 1:q_m^A.
+# u_A γ_B:  C_right[i] += A_{i,bnd} γ_B,  i = 1:qm^A.
 #
-# The `(1:q_m, bnd, bnd)` corner: A's right panel against B's low-rank corner. The
+# The `(1:qm, bnd, bnd)` corner: A's right panel against B's low-rank corner. The
 # reduction axis is a single tile, so there is nothing to reduce — the whole term is
 # Stage 1/2/3 batched over the free row axis, with the corner's factors broadcast. Budget
 # blocks `i`; each `i` writes a distinct output tile, so β folds in Stage 3 for every block

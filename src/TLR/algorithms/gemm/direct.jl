@@ -41,8 +41,8 @@ end
     return view(C, p0:p1, q0:q1)
 end
 
-@inline _output_region(C, A, B, i0, q_m, j0, q_n) =
-    _output_block_view(C, A, B, i0, i0 + q_m - 1, j0, j0 + q_n - 1)
+@inline _output_region(C, A, B, i0, qm, j0, qn) =
+    _output_block_view(C, A, B, i0, i0 + qm - 1, j0, j0 + qn - 1)
 
 function execute_dense_stage3!(::KAsGemmK, ::FoldRight, run::RowRun, ops,
                                ws::RowWorkspace, C, A, B, i0::Int, j0::Int,
@@ -97,7 +97,7 @@ function execute_dense_stage3!(::KAsSerialLoop, ::FoldRight, run::ColumnRun, ops
         for li in 1:noff
             i = panel_col(ops.au, k, li)
             for (jx, jpos) in enumerate(run.jpos0:run.jpos1)
-                j = panel_col(ops.bw, k, jpos)
+                j = panel_col(ops.bu, k, jpos)
                 push!(vb.s3u, view(ws.Ufactored, :, :, li, k))
                 push!(vb.s3t, view(ws.T.data, :, li, :, jx, kx))
                 push!(vb.s3c, _output_tile_view(C, A, B, i0 + i - 1, j0 + j - 1))
@@ -121,9 +121,9 @@ Local output coordinates start at the logical destination tile `(i0,j0)`.
 function execute_lowrank_gemm!(C, A, B, ops, geom::RegularGeometry, i0::Int, j0::Int;
         alpha, beta, budget::Int, compute, fold::Union{Nothing,FoldSide}=nothing,
         placement::Union{Nothing,KAxisSchedule}=nothing, arena=nothing)
-    (geom.q_m == 0 || geom.q_n == 0) && return C
-    region = _output_region(C, A, B, i0, geom.q_m, j0, geom.q_n)
-    if geom.q_c == 0 || geom.perA_row == 0 || geom.rA == 0 || geom.rB == 0
+    (geom.qm == 0 || geom.qn == 0) && return C
+    region = _output_region(C, A, B, i0, geom.qm, j0, geom.qn)
+    if geom.qk == 0 || geom.perA_row == 0 || geom.rA == 0 || geom.rB == 0
         _scale_output!(region, beta)
         return C
     end
@@ -159,12 +159,12 @@ function _execute_lowrank_gemm!(C, A, B, ops, geom, i0::Int, j0::Int,
 end
 
 @inline function execute_lowrank_term!(C, A, B, Apair, Bpair,
-        q_m::Int, q_c::Int, q_n::Int, i0::Int, j0::Int;
+        qm::Int, qk::Int, qn::Int, i0::Int, j0::Int;
         alpha, beta, budget::Int, compute,
         fold::Union{Nothing,FoldSide}=nothing,
         placement::Union{Nothing,KAxisSchedule}=nothing, arena=nothing)
     ops = _lowrank_term_operands(Apair, Bpair)
-    geom = regular_geometry(q_m, q_c, q_n, ops)
+    geom = regular_geometry(qm, qk, qn, ops)
     return execute_lowrank_gemm!(C, A, B, ops, geom, i0, j0;
                                  alpha, beta, budget, compute, fold, placement,
                                  arena)
@@ -173,7 +173,7 @@ end
 @inline function full_workspace_bytes(geom::RegularGeometry, ops;
         fold::Union{Nothing,FoldSide}=nothing,
         placement::Union{Nothing,KAxisSchedule}=nothing)
-    (geom.q_m == 0 || geom.q_c == 0 || geom.q_n == 0 ||
+    (geom.qm == 0 || geom.qk == 0 || geom.qn == 0 ||
      geom.rA == 0 || geom.rB == 0) && return 0
     chosen_fold = fold === nothing ? _default_fold(ops) : fold
     chosen_placement = placement === nothing ? placement_for_fold(chosen_fold, ops) : placement
@@ -188,7 +188,7 @@ end
 @inline function minimum_workspace_bytes(geom::RegularGeometry, ops;
         fold::Union{Nothing,FoldSide}=nothing,
         placement::Union{Nothing,KAxisSchedule}=nothing)
-    (geom.q_m == 0 || geom.q_c == 0 || geom.q_n == 0 ||
+    (geom.qm == 0 || geom.qk == 0 || geom.qn == 0 ||
      geom.rA == 0 || geom.rB == 0) && return 0
     chosen_fold = fold === nothing ? _default_fold(ops) : fold
     chosen_placement = placement === nothing ? placement_for_fold(chosen_fold, ops) : placement
@@ -200,10 +200,10 @@ end
 end
 
 function execute_lowrank_dense_term!(C, A, B, left_outer, left_inner,
-        dense::LogicalDenseTile, q_m::Int, i0::Int, j0::Int;
+        dense::LogicalDenseTile, qm::Int, i0::Int, j0::Int;
         alpha, beta, budget::Int, compute, arena=nothing)
-    q_m == 0 && return C
-    region = _output_region(C, A, B, i0, q_m, j0, 1)
+    qm == 0 && return C
+    region = _output_region(C, A, B, i0, qm, j0, 1)
     rA = rankdim(left_inner)
     if rA == 0
         _scale_output!(region, beta)
@@ -211,7 +211,7 @@ function execute_lowrank_dense_term!(C, A, B, left_outer, left_inner,
     end
     T = eltype(left_inner.data)
     bn = size(_output_tile_view(C, A, B, i0, j0), 2)
-    maxI = clamp(div(budget, max(rA * bn * sizeof(T), 1)), 1, q_m)
+    maxI = clamp(div(budget, max(rA * bn * sizeof(T), 1)), 1, qm)
     _arena_reset!(arena)
     work = _workspace_array!(
         arena, get_backend(left_inner.data), T, rA, bn, maxI)
@@ -221,7 +221,7 @@ function execute_lowrank_dense_term!(C, A, B, left_outer, left_inner,
     s1t = _batchvec(view(work, :, :, 1), maxI)
     s2u = _batchvec(tilefactor(left_outer, 1, 1), maxI)
     s2c = _batchvec(_output_tile_view(C, A, B, i0, j0), maxI)
-    @inbounds for irange in Iterators.partition(1:q_m, maxI)
+    @inbounds for irange in Iterators.partition(1:qm, maxI)
         il0 = first(irange)
         _clear_batches!(s1v, s1d, s1t, s2u, s2c)
         for i in irange
@@ -240,10 +240,10 @@ function execute_lowrank_dense_term!(C, A, B, left_outer, left_inner,
 end
 
 function execute_dense_lowrank_term!(C, A, B, dense::LogicalDenseTile,
-        right_outer, right_inner, q_n::Int, i0::Int, j0::Int;
+        right_outer, right_inner, qn::Int, i0::Int, j0::Int;
         alpha, beta, budget::Int, compute, arena=nothing)
-    q_n == 0 && return C
-    region = _output_region(C, A, B, i0, 1, j0, q_n)
+    qn == 0 && return C
+    region = _output_region(C, A, B, i0, 1, j0, qn)
     rB = rankdim(right_outer)
     if rB == 0
         _scale_output!(region, beta)
@@ -251,7 +251,7 @@ function execute_dense_lowrank_term!(C, A, B, dense::LogicalDenseTile,
     end
     T = eltype(right_outer.data)
     bm = size(_output_tile_view(C, A, B, i0, j0), 1)
-    maxJ = clamp(div(budget, max(bm * rB * sizeof(T), 1)), 1, q_n)
+    maxJ = clamp(div(budget, max(bm * rB * sizeof(T), 1)), 1, qn)
     _arena_reset!(arena)
     work = _workspace_array!(
         arena, get_backend(right_outer.data), T, bm, rB, maxJ)
@@ -261,7 +261,7 @@ function execute_dense_lowrank_term!(C, A, B, dense::LogicalDenseTile,
     s1t = _batchvec(view(work, :, :, 1), maxJ)
     s2z = _batchvec(tilefactor(right_inner, 1, 1), maxJ)
     s2c = _batchvec(_output_tile_view(C, A, B, i0, j0), maxJ)
-    @inbounds for jrange in Iterators.partition(1:q_n, maxJ)
+    @inbounds for jrange in Iterators.partition(1:qn, maxJ)
         jl0 = first(jrange)
         _clear_batches!(s1d, s1w, s1t, s2z, s2c)
         for j in jrange
@@ -279,23 +279,23 @@ function execute_dense_lowrank_term!(C, A, B, dense::LogicalDenseTile,
     return C
 end
 
-@inline full_workspace_bytes_lowrank_dense(q_m::Int, rA::Int, bn::Int, ::Type{T}) where {T} =
-    q_m == 0 || rA == 0 ? 0 : q_m * rA * bn * sizeof(T)
+@inline full_workspace_bytes_lowrank_dense(qm::Int, rA::Int, bn::Int, ::Type{T}) where {T} =
+    qm == 0 || rA == 0 ? 0 : qm * rA * bn * sizeof(T)
 
-@inline full_workspace_bytes_dense_lowrank(q_n::Int, bm::Int, rB::Int, ::Type{T}) where {T} =
-    q_n == 0 || rB == 0 ? 0 : q_n * bm * rB * sizeof(T)
+@inline full_workspace_bytes_dense_lowrank(qn::Int, bm::Int, rB::Int, ::Type{T}) where {T} =
+    qn == 0 || rB == 0 ? 0 : qn * bm * rB * sizeof(T)
 
-@inline minimum_workspace_bytes_lowrank_dense(q_m::Int, rA::Int, bn::Int, ::Type{T}) where {T} =
-    q_m == 0 || rA == 0 ? 0 : rA * bn * sizeof(T)
+@inline minimum_workspace_bytes_lowrank_dense(qm::Int, rA::Int, bn::Int, ::Type{T}) where {T} =
+    qm == 0 || rA == 0 ? 0 : rA * bn * sizeof(T)
 
-@inline minimum_workspace_bytes_dense_lowrank(q_n::Int, bm::Int, rB::Int, ::Type{T}) where {T} =
-    q_n == 0 || rB == 0 ? 0 : bm * rB * sizeof(T)
+@inline minimum_workspace_bytes_dense_lowrank(qn::Int, bm::Int, rB::Int, ::Type{T}) where {T} =
+    qn == 0 || rB == 0 ? 0 : bm * rB * sizeof(T)
 
-@inline function _lowrank_term_workspace(Apair, Bpair, q_m, q_c, q_n, sizing;
+@inline function _lowrank_term_workspace(Apair, Bpair, qm, qk, qn, sizing;
                                          fold=nothing, placement=nothing)
-    (q_m == 0 || q_c == 0 || q_n == 0) && return 0
+    (qm == 0 || qk == 0 || qn == 0) && return 0
     ops = _lowrank_term_operands(Apair, Bpair)
-    geom = regular_geometry(q_m, q_c, q_n, ops)
+    geom = regular_geometry(qm, qk, qn, ops)
     return sizing(geom, ops; fold, placement)
 end
 
@@ -313,9 +313,9 @@ function _gemm_region_workspace_bound(A::AbstractTLRMatrix, B::AbstractTLRMatrix
     nominal_tile_size(LA, 2) == nominal_tile_size(LB, 1) ||
         throw(DimensionMismatch("op(A)'s column tile size must equal op(B)'s row tile size (contraction tiling)"))
 
-    q_m, q_c = regular_tilegrid_size(LA)
-    q_cB, q_n = regular_tilegrid_size(LB)
-    q_c == q_cB ||
+    qm, qk = regular_tilegrid_size(LA)
+    qkB, qn = regular_tilegrid_size(LB)
+    qk == qkB ||
         throw(DimensionMismatch("op(A)'s column tile grid must equal op(B)'s row tile grid"))
     has_i = _has_row_tail(LA)
     has_k = _has_col_tail(LA) && _has_row_tail(LB)
@@ -329,37 +329,37 @@ function _gemm_region_workspace_bound(A::AbstractTLRMatrix, B::AbstractTLRMatrix
     Bbottom = _bottom_pair(LB)
 
     interior = Int[
-        _lowrank_term_workspace(Aint, Bint, q_m, q_c, q_n, sizing),
-        has_k ? _lowrank_term_workspace(Aright, Bbottom, q_m, 1, q_n, sizing) : 0,
+        _lowrank_term_workspace(Aint, Bint, qm, qk, qn, sizing),
+        has_k ? _lowrank_term_workspace(Aright, Bbottom, qm, 1, qn, sizing) : 0,
     ]
     right = Int[
-        has_j ? _lowrank_term_workspace(Aint, Bright, q_m, q_c, 1, sizing) : 0,
+        has_j ? _lowrank_term_workspace(Aint, Bright, qm, qk, 1, sizing) : 0,
     ]
     bottom = Int[
-        has_i ? _lowrank_term_workspace(Abottom, Bint, 1, q_c, q_n, sizing) : 0,
+        has_i ? _lowrank_term_workspace(Abottom, Bint, 1, qk, qn, sizing) : 0,
     ]
     corner = Int[
         (has_i && has_j) ? _lowrank_term_workspace(
-            Abottom, Bright, 1, q_c, 1, sizing;
+            Abottom, Bright, 1, qk, 1, sizing;
             fold=FoldRight(), placement=KAsSerialLoop{:k}()) : 0,
     ]
 
     if has_k && has_j
         if physical(LB) isa TLRMatrix
             push!(right, _lowrank_term_workspace(
-                Aright, _corner_pair(LB), q_m, 1, 1, sizing))
+                Aright, _corner_pair(LB), qm, 1, 1, sizing))
         else
             push!(right, lowrank_dense_sizing(
-                q_m, maxrank(LA), tail_tile_size(LB, 2), eltype(LA)))
+                qm, maxrank(LA), tail_tile_size(LB, 2), eltype(LA)))
         end
     end
     if has_i && has_k
         if physical(LA) isa TLRMatrix
             push!(bottom, _lowrank_term_workspace(
-                _corner_pair(LA), Bbottom, 1, 1, q_n, sizing))
+                _corner_pair(LA), Bbottom, 1, 1, qn, sizing))
         else
             push!(bottom, dense_lowrank_sizing(
-                q_n, tail_tile_size(LA, 1), maxrank(LB), eltype(LB)))
+                qn, tail_tile_size(LA, 1), maxrank(LB), eltype(LB)))
         end
     end
     if has_i && has_k && has_j && physical(LA) isa TLRMatrix && physical(LB) isa TLRMatrix
@@ -376,9 +376,9 @@ function _gemm_region_workspace_bound(A::AbstractTLRMatrix, B::AbstractTLRMatrix
         diag_interior = n_int * nominal_tile_size(LA, 1) *
                         max(maxrank(LA), maxrank(LB)) * sizeof(T)
         push!(interior, diag_interior)
-        has_j && push!(right, q_m * nominal_tile_size(LA, 1) *
+        has_j && push!(right, qm * nominal_tile_size(LA, 1) *
                               maxrank(LB) * sizeof(T))
-        has_i && push!(bottom, q_c * maxrank(LA) *
+        has_i && push!(bottom, qk * maxrank(LA) *
                                nominal_tile_size(LB, 2) * sizeof(T))
     end
     return (

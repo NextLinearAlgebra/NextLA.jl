@@ -32,8 +32,8 @@ struct TileCoupling{ST,RVT,RUT,CWT,CZT,T}
     S::ST        # rA × rB × qk
     rowV::RVT    # rowpanel(av, i): bk × rA × qk  (V^A_{i·})
     rowU::RUT    # rowpanel(au, i): bm × rA × qk  (U^A_{i·})
-    colW::CWT    # colpanel(bw, j): bk × rB × qk  (U^B_{·j})
-    colZ::CZT    # colpanel(bz, j): bn × rB × qk  (V^B_{·j})
+    colW::CWT    # colpanel(bu, j): bk × rB × qk  (U^B_{·j})
+    colZ::CZT    # colpanel(bv, j): bn × rB × qk  (V^B_{·j})
     alpha::T
 end
 
@@ -41,8 +41,8 @@ function TileCoupling(ops::LogicalTLROperands, i::Integer, j::Integer;
                       alpha, compute=nothing)
     rowV = rowpanel(ops.av, i)
     rowU = rowpanel(ops.au, i)
-    colW = colpanel(ops.bw, j)
-    colZ = colpanel(ops.bz, j)
+    colW = colpanel(ops.bu, j)
+    colZ = colpanel(ops.bv, j)
     size(rowV, 3) == size(colW, 3) ||
         throw(DimensionMismatch("A's row panel and B's column panel disagree on q_k"))
     size(rowV, 1) == size(colW, 1) ||
@@ -140,9 +140,9 @@ function apply_right!(Y::AbstractMatrix{T}, coupling::TileCoupling,
         # rowpanel(au,i)'s own memory order (rA fastest, then ℓ) so the fused
         # reduction below is a single zero-copy reshape on both operands.
         Tbuf = similar(Y, T, rA, qk, s)
-        Sviews = [view(coupling.S, :, :, l) for l in 1:qk]
-        Hviews = [view(H, :, :, l) for l in 1:qk]
-        Tviews = [view(Tbuf, :, l, :) for l in 1:qk]
+        Sviews = [view(coupling.S, :, :, kidx) for kidx in 1:qk]
+        Hviews = [view(H, :, :, kidx) for kidx in 1:qk]
+        Tviews = [view(Tbuf, :, kidx, :) for kidx in 1:qk]
         precision_gemm_batched!('N', 'N', coupling.alpha, Sviews, Hviews, zero(T),
                                 Tviews, mode)
 
@@ -197,9 +197,9 @@ function apply_left!(Z::AbstractMatrix{T}, coupling::TileCoupling,
                                 Q3, zero(T), G, mode)
 
         Wbuf = similar(Z, T, rB, qk, s)
-        Sviews = [view(coupling.S, :, :, l) for l in 1:qk]
-        Gviews = [view(G, :, :, l) for l in 1:qk]
-        Wviews = [view(Wbuf, :, l, :) for l in 1:qk]
+        Sviews = [view(coupling.S, :, :, kidx) for kidx in 1:qk]
+        Gviews = [view(G, :, :, kidx) for kidx in 1:qk]
+        Wviews = [view(Wbuf, :, kidx, :) for kidx in 1:qk]
         precision_gemm_batched!(adj, 'N', coupling.alpha, Sviews, Gviews, zero(T),
                                 Wviews, mode)
 
@@ -265,7 +265,7 @@ The co-range apply ([`apply_left_run!`](@ref), called once after
 convergence, not once per pass) is intentionally left entirely on the
 `Vector`-of-views path and does not use any of these descriptors: its cost
 does not compound with pass count the way the sampler's did, and its G/H
-formation batches `rowU` over member × contraction-tile (`count*qk`
+formation batches `rowU` over member × contraction-tile (`nmember*qk`
 pointers, needing a `qk`-blocked swap) rather than member-only, which would
 need a second, larger descriptor. See `docs/TODO.md` for this scoping
 decision.
@@ -295,30 +295,30 @@ end
 function ColumnRunCoupling(ops::LogicalTLROperands, rows, j::Integer;
                            alpha, beta=false, C=nothing,
                            block::Int, maxrank::Int,
-                           rankA::Int=rankdim(ops.au),
-                           rankB::Int=rankdim(ops.bz),
+                           rA::Int=rankdim(ops.au),
+                           rB::Int=rankdim(ops.bv),
                            compute=nothing)
     ids = collect(Int, rows)
-    count = length(ids)
-    rowU = [_factor_row_stack(ops.au, i, rankA) for i in ids]
-    rowV = [_factor_row_stack(ops.av, i, rankA) for i in ids]
-    colW = _factor_column_stack(ops.bw, Int(j), rankB)
-    colZ = _factor_column_stack(ops.bz, Int(j), rankB)
+    nmember = length(ids)
+    rowU = [_factor_row_stack(ops.au, i, rA) for i in ids]
+    rowV = [_factor_row_stack(ops.av, i, rA) for i in ids]
+    colW = _factor_column_stack(ops.bu, Int(j), rB)
+    colZ = _factor_column_stack(ops.bv, Int(j), rB)
     T = eltype(colZ)
     mode = compute === nothing ? default_gemm_compute_mode(T) :
            gemm_compute_mode(compute)
     qk = size(colZ, 3)
-    rA = rankA
-    rB = rankB
+    rA = rA
+    rB = rB
     bm = size(first(rowU), 1)
     bn = size(colZ, 1)
     backend = get_backend(colZ)
 
-    S = allocate(backend, T, rA, rB, qk, count)
-    if count > 0 && qk > 0 && rA > 0 && rB > 0
-        Avec = [view(rowV[p], :, :, l) for p in 1:count for l in 1:qk]
-        Bvec = [view(colW, :, :, l) for p in 1:count for l in 1:qk]
-        Svec = [view(S, :, :, l, p) for p in 1:count for l in 1:qk]
+    S = allocate(backend, T, rA, rB, qk, nmember)
+    if nmember > 0 && qk > 0 && rA > 0 && rB > 0
+        Avec = [view(rowV[p], :, :, kidx) for p in 1:nmember for kidx in 1:qk]
+        Bvec = [view(colW, :, :, kidx) for p in 1:nmember for kidx in 1:qk]
+        Svec = [view(S, :, :, kidx, p) for p in 1:nmember for kidx in 1:qk]
         precision_gemm_batched!(_adjoint_blas_char(T), 'N', one(T),
                                 Avec, Bvec, zero(T), Svec, mode)
     end
@@ -332,29 +332,29 @@ function ColumnRunCoupling(ops::LogicalTLROperands, rows, j::Integer;
     end
 
     Hbuf = allocate(backend, T, rB, block, qk)
-    Tbuf = allocate(backend, T, rA, qk, block, count)
-    Gbuf = allocate(backend, T, rA, maxrank, qk, count)
-    Wbuf = allocate(backend, T, rB, qk, maxrank, count)
+    Tbuf = allocate(backend, T, rA, qk, block, nmember)
+    Gbuf = allocate(backend, T, rA, maxrank, qk, nmember)
+    Wbuf = allocate(backend, T, rB, qk, maxrank, nmember)
     Omega = allocate(backend, T, bn, block, 1)
     beta_tmp = allocate(backend, T,
                         betaV === nothing ? 0 : size(first(betaV), 2),
-                        max(block, maxrank), count)
+                        max(block, maxrank), nmember)
 
-    ptrs_ok = count > 0 && supports_pointer_batched(backend)
+    ptrs_ok = nmember > 0 && supports_pointer_batched(backend)
     rowU_ptrs = ptrs_ok ?
-        BatchPtrDescriptor([reshape(rowU[p], bm, rA * qk) for p in 1:count]) :
+        BatchPtrDescriptor([reshape(rowU[p], bm, rA * qk) for p in 1:nmember]) :
         nothing
     Tstack_ptrs = ptrs_ok ?
-        BatchPtrDescriptor([view(reshape(Tbuf, rA * qk, block, count), :, :, p)
-                           for p in 1:count]) :
+        BatchPtrDescriptor([view(reshape(Tbuf, rA * qk, block, nmember), :, :, p)
+                           for p in 1:nmember]) :
         nothing
     has_beta_ptrs = ptrs_ok && betaU !== nothing
     betaU_ptrs = has_beta_ptrs ? BatchPtrDescriptor(betaU) : nothing
     betaV_ptrs = has_beta_ptrs ? BatchPtrDescriptor(betaV) : nothing
     Om_ptrs = has_beta_ptrs ?
-        BatchPtrDescriptor([view(Omega, :, :, 1) for _ in 1:count]) : nothing
+        BatchPtrDescriptor([view(Omega, :, :, 1) for _ in 1:nmember]) : nothing
     beta_tmp_ptrs = has_beta_ptrs ?
-        BatchPtrDescriptor([view(beta_tmp, :, :, p) for p in 1:count]) : nothing
+        BatchPtrDescriptor([view(beta_tmp, :, :, p) for p in 1:nmember]) : nothing
 
     return ColumnRunCoupling(
         S, rowU, colZ, betaU, betaV,
@@ -382,7 +382,7 @@ function _swap_column_run_members!(run::ColumnRunCoupling, p::Int, q::Int)
 end
 
 """
-    apply_right_run!(Y, run, width, nactive; beta, compute)
+    apply_right_run!(Y, run, sketch_width, nactive; beta, compute)
 
 Sample the contiguous active prefix of a fixed-column run. Exactly one `H`
 batch is formed for the column, independent of `nactive`; `T` and the final
@@ -398,7 +398,7 @@ both GEMMs in this call. On backends without pointer-batched GEMM (CPU),
 this falls back to the original `Vector`-of-views construction.
 """
 function apply_right_run!(Y::AbstractArray{T,3}, run::ColumnRunCoupling,
-                          width::Int, nactive::Int;
+                          sketch_width::Int, nactive::Int;
                           beta=false, compute=nothing) where {T}
     mode = compute === nothing ? default_gemm_compute_mode(T) :
            gemm_compute_mode(compute)
@@ -408,55 +408,55 @@ function apply_right_run!(Y::AbstractArray{T,3}, run::ColumnRunCoupling,
     rA, rB = size(run.S, 1), size(run.S, 2)
     use_ptrs = run.rowU_ptrs !== nothing
 
-    Om = view(run.Omega, :, 1:width, :)
+    Om = view(run.Omega, :, 1:sketch_width, :)
     Random.randn!(Om)
-    H = view(run.H, :, 1:width, :)
+    H = view(run.H, :, 1:sketch_width, :)
 
     Yptrs = use_ptrs ?
-        BatchPtrDescriptor([view(Y, :, 1:width, p) for p in 1:nactive]) :
+        BatchPtrDescriptor([view(Y, :, 1:sketch_width, p) for p in 1:nactive]) :
         nothing
 
     if qk > 0 && rA > 0 && rB > 0
         precision_gemm_batched!(adj, 'N', one(T), run.colZ, Om,
                                 zero(T), H, mode)
-        Svec = [view(run.S, :, :, l, p) for p in 1:nactive for l in 1:qk]
-        Hvec = [view(H, :, :, l) for p in 1:nactive for l in 1:qk]
-        Tvec = [view(run.Tbuf, :, l, 1:width, p)
-                for p in 1:nactive for l in 1:qk]
+        Svec = [view(run.S, :, :, kidx, p) for p in 1:nactive for kidx in 1:qk]
+        Hvec = [view(H, :, :, kidx) for p in 1:nactive for kidx in 1:qk]
+        Tvec = [view(run.Tbuf, :, kidx, 1:sketch_width, p)
+                for p in 1:nactive for kidx in 1:qk]
         precision_gemm_batched!('N', 'N', run.alpha, Svec, Hvec,
                                 zero(T), Tvec, mode)
         if use_ptrs
             Uref = reshape(run.rowU[1], bm, rA * qk)
             Tref = view(reshape(run.Tbuf, rA * qk, size(run.Tbuf, 3),
-                               size(run.Tbuf, 4)), :, 1:width, 1)
+                               size(run.Tbuf, 4)), :, 1:sketch_width, 1)
             precision_gemm_batched_ptrs!('N', 'N', one(T),
                 run.rowU_ptrs, Uref, run.Tstack_ptrs, Tref,
-                zero(T), Yptrs, view(Y, :, 1:width, 1), nactive, mode)
+                zero(T), Yptrs, view(Y, :, 1:sketch_width, 1), nactive, mode)
         else
             Uvec = [reshape(run.rowU[p], bm, rA * qk) for p in 1:nactive]
-            Tstack = [reshape(view(run.Tbuf, :, :, 1:width, p), rA * qk, width)
+            Tstack = [reshape(view(run.Tbuf, :, :, 1:sketch_width, p), rA * qk, sketch_width)
                       for p in 1:nactive]
-            Yvec = [view(Y, :, 1:width, p) for p in 1:nactive]
+            Yvec = [view(Y, :, 1:sketch_width, p) for p in 1:nactive]
             precision_gemm_batched!('N', 'N', one(T), Uvec, Tstack,
                                     zero(T), Yvec, mode)
         end
     else
-        fill!(view(Y, :, 1:width, :), zero(T))
+        fill!(view(Y, :, 1:sketch_width, :), zero(T))
     end
 
     if run.betaU !== nothing
         if use_ptrs
-            tmpref = view(run.beta_tmp, :, 1:width, 1)
+            tmpref = view(run.beta_tmp, :, 1:sketch_width, 1)
             precision_gemm_batched_ptrs!(adj, 'N', one(T),
                 run.betaV_ptrs, first(run.betaV), run.Om_ptrs, view(Om, :, :, 1),
                 zero(T), run.beta_tmp_ptrs, tmpref, nactive, mode)
             precision_gemm_batched_ptrs!('N', 'N', T(beta),
                 run.betaU_ptrs, first(run.betaU), run.beta_tmp_ptrs, tmpref,
-                one(T), Yptrs, view(Y, :, 1:width, 1), nactive, mode)
+                one(T), Yptrs, view(Y, :, 1:sketch_width, 1), nactive, mode)
         else
-            tmp = [view(run.beta_tmp, :, 1:width, p) for p in 1:nactive]
+            tmp = [view(run.beta_tmp, :, 1:sketch_width, p) for p in 1:nactive]
             Ovec = [view(Om, :, :, 1) for _ in 1:nactive]
-            Yvec = [view(Y, :, 1:width, p) for p in 1:nactive]
+            Yvec = [view(Y, :, 1:sketch_width, p) for p in 1:nactive]
             precision_gemm_batched!(adj, 'N', one(T), view(run.betaV, 1:nactive),
                                     Ovec, zero(T), tmp, mode)
             precision_gemm_batched!('N', 'N', T(beta), view(run.betaU, 1:nactive),
@@ -467,37 +467,37 @@ function apply_right_run!(Y::AbstractArray{T,3}, run::ColumnRunCoupling,
 end
 
 """
-    apply_left_run!(Z, run, Q, width; beta, compute)
+    apply_left_run!(Z, run, Q, sketch_width; beta, compute)
 
 Form `Z_slot = X_tile(slot)'Q_slot` for every member of the finished run in
 one grouped apply. Run-local `S` and `Q` are in the same final packed order.
 """
 function apply_left_run!(Z::AbstractArray{T,3}, run::ColumnRunCoupling,
-                         Q::AbstractArray{T,3}, width::Int;
+                         Q::AbstractArray{T,3}, sketch_width::Int;
                          beta=false, compute=nothing) where {T}
     mode = compute === nothing ? default_gemm_compute_mode(T) :
            gemm_compute_mode(compute)
     adj = _adjoint_blas_char(T)
-    count = size(Q, 3)
+    nmember = size(Q, 3)
     qk = run.qk
     rA, rB = size(run.S, 1), size(run.S, 2)
     bn = size(Z, 1)
 
     if qk > 0 && rA > 0 && rB > 0
-        Uvec = [view(run.rowU[p], :, :, l) for p in 1:count for l in 1:qk]
-        Qvec = [view(Q, :, 1:width, p) for p in 1:count for l in 1:qk]
-        Gvec = [view(run.G, :, 1:width, l, p) for p in 1:count for l in 1:qk]
+        Uvec = [view(run.rowU[p], :, :, kidx) for p in 1:nmember for kidx in 1:qk]
+        Qvec = [view(Q, :, 1:sketch_width, p) for p in 1:nmember for kidx in 1:qk]
+        Gvec = [view(run.G, :, 1:sketch_width, kidx, p) for p in 1:nmember for kidx in 1:qk]
         precision_gemm_batched!(adj, 'N', one(T), Uvec, Qvec,
                                 zero(T), Gvec, mode)
-        Svec = [view(run.S, :, :, l, p) for p in 1:count for l in 1:qk]
-        Wvec = [view(run.Wbuf, :, l, 1:width, p)
-                for p in 1:count for l in 1:qk]
+        Svec = [view(run.S, :, :, kidx, p) for p in 1:nmember for kidx in 1:qk]
+        Wvec = [view(run.Wbuf, :, kidx, 1:sketch_width, p)
+                for p in 1:nmember for kidx in 1:qk]
         precision_gemm_batched!(adj, 'N', run.alpha, Svec, Gvec,
                                 zero(T), Wvec, mode)
-        Zleft = [reshape(run.colZ, bn, rB * qk) for _ in 1:count]
-        Wstack = [reshape(view(run.Wbuf, :, :, 1:width, p), rB * qk, width)
-                  for p in 1:count]
-        Zvec = [view(Z, :, 1:width, p) for p in 1:count]
+        Zleft = [reshape(run.colZ, bn, rB * qk) for _ in 1:nmember]
+        Wstack = [reshape(view(run.Wbuf, :, :, 1:sketch_width, p), rB * qk, sketch_width)
+                  for p in 1:nmember]
+        Zvec = [view(Z, :, 1:sketch_width, p) for p in 1:nmember]
         precision_gemm_batched!('N', 'N', one(T), Zleft, Wstack,
                                 zero(T), Zvec, mode)
     else
@@ -505,9 +505,9 @@ function apply_left_run!(Z::AbstractArray{T,3}, run::ColumnRunCoupling,
     end
 
     if run.betaU !== nothing
-        tmp = [view(run.beta_tmp, :, 1:width, p) for p in 1:count]
-        Qvec = [view(Q, :, 1:width, p) for p in 1:count]
-        Zvec = [view(Z, :, 1:width, p) for p in 1:count]
+        tmp = [view(run.beta_tmp, :, 1:sketch_width, p) for p in 1:nmember]
+        Qvec = [view(Q, :, 1:sketch_width, p) for p in 1:nmember]
+        Zvec = [view(Z, :, 1:sketch_width, p) for p in 1:nmember]
         precision_gemm_batched!(adj, 'N', one(T), run.betaU, Qvec,
                                 zero(T), tmp, mode)
         precision_gemm_batched!('N', 'N', T(beta), run.betaV, tmp,
@@ -520,24 +520,24 @@ end
 
 @kernel function _pack_factor_row_kernel!(dest, src, row::Int, qm::Int, qn::Int,
                                           row_major::Bool)
-    i, k, l = @index(Global, NTuple)
-    tile = row_major ? l + (row - 1) * qn : row + (l - 1) * qm
-    @inbounds dest[i, k, l] = src[i, k, tile]
+    i, k, kidx = @index(Global, NTuple)
+    tile = row_major ? kidx + (row - 1) * qn : row + (kidx - 1) * qm
+    @inbounds dest[i, k, kidx] = src[i, k, tile]
 end
 
 @kernel function _pack_factor_columns_kernel!(dest, src, cols, qm::Int, qn::Int,
                                               row_major::Bool)
-    i, k, l, p = @index(Global, NTuple)
+    i, k, kidx, p = @index(Global, NTuple)
     col = Int(@inbounds cols[p])
-    tile = row_major ? col + (l - 1) * qn : l + (col - 1) * qm
-    @inbounds dest[i, k, l, p] = src[i, k, tile]
+    tile = row_major ? col + (kidx - 1) * qn : kidx + (col - 1) * qm
+    @inbounds dest[i, k, kidx, p] = src[i, k, tile]
 end
 
 @kernel function _pack_factor_column_kernel!(dest, src, col::Int, qm::Int, qn::Int,
                                              row_major::Bool)
-    i, k, l = @index(Global, NTuple)
-    tile = row_major ? col + (l - 1) * qn : l + (col - 1) * qm
-    @inbounds dest[i, k, l] = src[i, k, tile]
+    i, k, kidx = @index(Global, NTuple)
+    tile = row_major ? col + (kidx - 1) * qn : kidx + (col - 1) * qm
+    @inbounds dest[i, k, kidx] = src[i, k, tile]
 end
 
 @inline _is_row_major(order) = order isa TileRowMajor
@@ -572,10 +572,10 @@ end
 
 function _factor_column_stacks(p::InteriorOperand, cols::Vector{Int}, rank::Int)
     backend = get_backend(p.data)
-    count = length(cols)
-    dest = allocate(backend, eltype(p.data), size(p.data, 1), rank, p.qm, count)
-    (rank == 0 || count == 0) && return dest
-    cols_dev = copyto!(allocate(backend, Int32, count), Int32.(cols))
+    nmember = length(cols)
+    dest = allocate(backend, eltype(p.data), size(p.data, 1), rank, p.qm, nmember)
+    (rank == 0 || nmember == 0) && return dest
+    cols_dev = copyto!(allocate(backend, Int32, nmember), Int32.(cols))
     _pack_factor_columns_kernel!(backend)(
         dest, p.data, cols_dev, p.qm, p.qn, _is_row_major(p.order);
         ndrange=size(dest),
@@ -596,14 +596,14 @@ materialized once only for the final `XᵀQ` co-range.
 
 Unlike [`ColumnRunCoupling`](@ref)'s `rowU`, `Bouter` is genuinely on the hot
 per-pass sampler's path (`apply_right_row_run!`'s H-formation batches it over
-member × contraction-tile, `count*qk` entries, since each member's tiles sit
+member × contraction-tile, `nmember*qk` entries, since each member's tiles sit
 at arbitrary offsets in `B`'s storage). On backends with pointer-batched
-GEMM, `Bouter_ptrs` is a `count*qk`-length descriptor, member-major
-(`(p-1)*qk+l`), swap-tracked with the *block* form of
+GEMM, `Bouter_ptrs` is a `nmember*qk`-length descriptor, member-major
+(`(p-1)*qk+kidx`), swap-tracked with the *block* form of
 [`swap_batch_ptrs!`](@ref) (`blocklen=qk`) since retiring a member moves its
 whole qk-tile block. `HOm_ptrs` and `H_ptrs` cover this same call's other two
 operands: `Om` (this run's own `Omega`, repeated per contraction tile) and
-`H` (this run's own scratch, reshaped so its natural `(l,p)` memory order
+`H` (this run's own scratch, reshaped so its natural `(kidx,p)` memory order
 already matches `Bouter_ptrs`'s) -- both build-once, never swapped, since
 CUBLAS/rocBLAS's pointer-batched GEMM has no strided/pointer mixed form and
 every operand in a call with `Bouter_ptrs` must be pointer-batched too, even
@@ -643,30 +643,30 @@ end
 function RowRightRunCoupling(ops::LogicalTLROperands, i::Integer, cols;
                              alpha, beta=false, C=nothing,
                              block::Int, maxrank::Int,
-                             rankA::Int=rankdim(ops.au),
-                             rankB::Int=rankdim(ops.bz),
+                             rA::Int=rankdim(ops.au),
+                             rB::Int=rankdim(ops.bv),
                              compute=nothing)
     ids = collect(Int, cols)
-    count = length(ids)
+    nmember = length(ids)
     qk = ops.au.qn
     T = eltype(ops.au.data)
     mode = compute === nothing ? default_gemm_compute_mode(T) :
            gemm_compute_mode(compute)
     backend = get_backend(ops.au.data)
     bm = size(ops.au.data, 1)
-    bn = size(ops.bz.data, 1)
+    bn = size(ops.bv.data, 1)
 
-    Ainner = [_trimmed_tile(ops.av, Int(i), l, rankA) for l in 1:qk]
-    Bouter = [[_trimmed_tile(ops.bw, l, j, rankB) for l in 1:qk] for j in ids]
-    Binner = [[_trimmed_tile(ops.bz, l, j, rankB) for l in 1:qk] for j in ids]
-    Astack = _factor_row_stack(ops.au, Int(i), rankA)
-    Bstack = _factor_column_stacks(ops.bz, ids, rankB)
+    Ainner = [_trimmed_tile(ops.av, Int(i), kidx, rA) for kidx in 1:qk]
+    Bouter = [[_trimmed_tile(ops.bu, kidx, j, rB) for kidx in 1:qk] for j in ids]
+    Binner = [[_trimmed_tile(ops.bv, kidx, j, rB) for kidx in 1:qk] for j in ids]
+    Astack = _factor_row_stack(ops.au, Int(i), rA)
+    Bstack = _factor_column_stacks(ops.bv, ids, rB)
 
-    S = allocate(backend, T, rankA, rankB, qk, count)
-    if count > 0 && qk > 0 && rankA > 0 && rankB > 0
-        Avec = [Ainner[l] for p in 1:count for l in 1:qk]
-        Bvec = [Bouter[p][l] for p in 1:count for l in 1:qk]
-        Svec = [view(S, :, :, l, p) for p in 1:count for l in 1:qk]
+    S = allocate(backend, T, rA, rB, qk, nmember)
+    if nmember > 0 && qk > 0 && rA > 0 && rB > 0
+        Avec = [Ainner[kidx] for p in 1:nmember for kidx in 1:qk]
+        Bvec = [Bouter[p][kidx] for p in 1:nmember for kidx in 1:qk]
+        Svec = [view(S, :, :, kidx, p) for p in 1:nmember for kidx in 1:qk]
         precision_gemm_batched!(_adjoint_blas_char(T), 'N', one(T),
                                 Avec, Bvec, zero(T), Svec, mode)
     end
@@ -680,34 +680,34 @@ function RowRightRunCoupling(ops::LogicalTLROperands, i::Integer, cols;
     end
     rC = betaV === nothing ? 0 : size(first(betaV), 2)
 
-    Hbuf = allocate(backend, T, rankB, block, qk, count)
-    Tbuf = allocate(backend, T, rankA, qk, block, count)
-    Gbuf = allocate(backend, T, rankA, maxrank, qk, count)
-    Wbuf = allocate(backend, T, rankB, qk, maxrank, count)
-    Omega = allocate(backend, T, bn, block, count)
-    beta_tmp = allocate(backend, T, rC, max(block, maxrank), count)
+    Hbuf = allocate(backend, T, rB, block, qk, nmember)
+    Tbuf = allocate(backend, T, rA, qk, block, nmember)
+    Gbuf = allocate(backend, T, rA, maxrank, qk, nmember)
+    Wbuf = allocate(backend, T, rB, qk, maxrank, nmember)
+    Omega = allocate(backend, T, bn, block, nmember)
+    beta_tmp = allocate(backend, T, rC, max(block, maxrank), nmember)
 
-    ptrs_ok = count > 0 && qk > 0 && supports_pointer_batched(backend)
+    ptrs_ok = nmember > 0 && qk > 0 && supports_pointer_batched(backend)
     # The struct field `Bouter` is populated from `Binner` below (matching
-    # apply_right_row_run!'s `run.Bouter[p][l]` access, which is the V-factor
+    # apply_right_row_run!'s `run.Bouter[p][kidx]` access, which is the V-factor
     # tile, not the local `Bouter`/U-factor variable used only for S above).
     Bouter_ptrs = ptrs_ok ?
-        BatchPtrDescriptor([Binner[p][l] for p in 1:count for l in 1:qk]) :
+        BatchPtrDescriptor([Binner[p][kidx] for p in 1:nmember for kidx in 1:qk]) :
         nothing
     HOm_ptrs = ptrs_ok ?
-        BatchPtrDescriptor([view(Omega, :, :, p) for p in 1:count for l in 1:qk]) :
+        BatchPtrDescriptor([view(Omega, :, :, p) for p in 1:nmember for kidx in 1:qk]) :
         nothing
     H_ptrs = ptrs_ok ?
-        BatchPtrDescriptor([view(reshape(Hbuf, rankB, block, qk * count), :, :, k)
-                           for k in 1:(qk * count)]) :
+        BatchPtrDescriptor([view(reshape(Hbuf, rB, block, qk * nmember), :, :, k)
+                           for k in 1:(qk * nmember)]) :
         nothing
     has_beta_ptrs = ptrs_ok && betaU !== nothing
     betaU_ptrs = has_beta_ptrs ? BatchPtrDescriptor(betaU) : nothing
     betaV_ptrs = has_beta_ptrs ? BatchPtrDescriptor(betaV) : nothing
     betaOm_ptrs = has_beta_ptrs ?
-        BatchPtrDescriptor([view(Omega, :, :, p) for p in 1:count]) : nothing
+        BatchPtrDescriptor([view(Omega, :, :, p) for p in 1:nmember]) : nothing
     beta_tmp_ptrs = has_beta_ptrs ?
-        BatchPtrDescriptor([view(beta_tmp, :, :, p) for p in 1:count]) : nothing
+        BatchPtrDescriptor([view(beta_tmp, :, :, p) for p in 1:nmember]) : nothing
 
     return RowRightRunCoupling(
         S, Astack, Binner, Bstack, betaU, betaV,
@@ -739,7 +739,7 @@ function _swap_row_right_members!(run::RowRightRunCoupling, p::Int, q::Int)
 end
 
 """
-    apply_right_row_run!(Y, run, width, nactive; beta, compute)
+    apply_right_row_run!(Y, run, sketch_width, nactive; beta, compute)
 
 The run's hot per-pass sampler. When `run.Bouter_ptrs !== nothing`, the
 H-formation and beta accumulation run entirely off the persistent
@@ -763,70 +763,70 @@ On backends without pointer-batched GEMM (CPU), this falls back entirely to
 the original `Vector`-of-views construction.
 """
 function apply_right_row_run!(Y::AbstractArray{T,3}, run::RowRightRunCoupling,
-                              width::Int, nactive::Int;
+                              sketch_width::Int, nactive::Int;
                               beta=false, compute=nothing) where {T}
     mode = compute === nothing ? default_gemm_compute_mode(T) :
            gemm_compute_mode(compute)
     adj = _adjoint_blas_char(T)
     qk = run.qk
-    rankA, rankB = size(run.S, 1), size(run.S, 2)
+    rA, rB = size(run.S, 1), size(run.S, 2)
     bm = size(Y, 1)
-    Om = view(run.Omega, :, 1:width, 1:nactive)
+    Om = view(run.Omega, :, 1:sketch_width, 1:nactive)
     Random.randn!(Om)
     use_ptrs = run.Bouter_ptrs !== nothing
 
-    if qk > 0 && rankA > 0 && rankB > 0
-        H = view(run.H, :, 1:width, :, 1:nactive)
+    if qk > 0 && rA > 0 && rB > 0
+        H = view(run.H, :, 1:sketch_width, :, 1:nactive)
         if use_ptrs
             Bref = first(first(run.Bouter))
             precision_gemm_batched_ptrs!(adj, 'N', one(T),
                 run.Bouter_ptrs, Bref, run.HOm_ptrs, view(Om, :, :, 1),
                 zero(T), run.H_ptrs, view(H, :, :, 1, 1), nactive * qk, mode)
         else
-            Bvec = [run.Bouter[p][l] for p in 1:nactive for l in 1:qk]
-            Ovec = [view(Om, :, :, p) for p in 1:nactive for l in 1:qk]
-            Hvec_out = [view(H, :, :, l, p) for p in 1:nactive for l in 1:qk]
+            Bvec = [run.Bouter[p][kidx] for p in 1:nactive for kidx in 1:qk]
+            Ovec = [view(Om, :, :, p) for p in 1:nactive for kidx in 1:qk]
+            Hvec_out = [view(H, :, :, kidx, p) for p in 1:nactive for kidx in 1:qk]
             precision_gemm_batched!(adj, 'N', one(T), Bvec, Ovec,
                                     zero(T), Hvec_out, mode)
         end
-        Svec = [view(run.S, :, :, l, p) for p in 1:nactive for l in 1:qk]
-        Hvec = [view(H, :, :, l, p) for p in 1:nactive for l in 1:qk]
-        Tvec = [view(run.Tbuf, :, l, 1:width, p)
-                for p in 1:nactive for l in 1:qk]
+        Svec = [view(run.S, :, :, kidx, p) for p in 1:nactive for kidx in 1:qk]
+        Hvec = [view(H, :, :, kidx, p) for p in 1:nactive for kidx in 1:qk]
+        Tvec = [view(run.Tbuf, :, kidx, 1:sketch_width, p)
+                for p in 1:nactive for kidx in 1:qk]
         precision_gemm_batched!('N', 'N', run.alpha, Svec, Hvec,
                                 zero(T), Tvec, mode)
         # Fused reduction Y = Astack * Tstack as one strided-batched GEMM:
         # Astack (bm, rA*qk) is the same matrix for every member (fixed output
-        # row), so it broadcasts as a batch-count-1 strided operand; Tstack is
+        # row), so it broadcasts as a batch-nmember-1 strided operand; Tstack is
         # a zero-copy reshape of run.Tbuf's leading (rA,qk) dims, batched over
         # the active member axis. No pointer-batch Vector is built here.
-        Astack3 = reshape(run.Astack, bm, rankA * qk, 1)
-        Tbuf2 = reshape(run.Tbuf, rankA * qk, size(run.Tbuf, 3), size(run.Tbuf, 4))
-        Tstack = view(Tbuf2, :, 1:width, 1:nactive)
-        Yview = view(Y, :, 1:width, 1:nactive)
+        Astack3 = reshape(run.Astack, bm, rA * qk, 1)
+        Tbuf2 = reshape(run.Tbuf, rA * qk, size(run.Tbuf, 3), size(run.Tbuf, 4))
+        Tstack = view(Tbuf2, :, 1:sketch_width, 1:nactive)
+        Yview = view(Y, :, 1:sketch_width, 1:nactive)
         precision_gemm_batched!('N', 'N', one(T), Astack3, Tstack,
                                 zero(T), Yview, mode)
     else
-        fill!(view(Y, :, 1:width, 1:nactive), zero(T))
+        fill!(view(Y, :, 1:sketch_width, 1:nactive), zero(T))
     end
 
     Yptrs = (use_ptrs && run.betaU !== nothing) ?
-        BatchPtrDescriptor([view(Y, :, 1:width, p) for p in 1:nactive]) :
+        BatchPtrDescriptor([view(Y, :, 1:sketch_width, p) for p in 1:nactive]) :
         nothing
 
     if run.betaU !== nothing
         if use_ptrs
-            tmpref = view(run.beta_tmp, :, 1:width, 1)
+            tmpref = view(run.beta_tmp, :, 1:sketch_width, 1)
             precision_gemm_batched_ptrs!(adj, 'N', one(T),
                 run.betaV_ptrs, first(run.betaV), run.betaOm_ptrs, view(Om, :, :, 1),
                 zero(T), run.beta_tmp_ptrs, tmpref, nactive, mode)
             precision_gemm_batched_ptrs!('N', 'N', T(beta),
                 run.betaU_ptrs, first(run.betaU), run.beta_tmp_ptrs, tmpref,
-                one(T), Yptrs, view(Y, :, 1:width, 1), nactive, mode)
+                one(T), Yptrs, view(Y, :, 1:sketch_width, 1), nactive, mode)
         else
-            tmp = [view(run.beta_tmp, :, 1:width, p) for p in 1:nactive]
+            tmp = [view(run.beta_tmp, :, 1:sketch_width, p) for p in 1:nactive]
             Ovec = [view(Om, :, :, p) for p in 1:nactive]
-            Yvec = [view(Y, :, 1:width, p) for p in 1:nactive]
+            Yvec = [view(Y, :, 1:sketch_width, p) for p in 1:nactive]
             precision_gemm_batched!(adj, 'N', one(T), view(run.betaV, 1:nactive),
                                     Ovec, zero(T), tmp, mode)
             precision_gemm_batched!('N', 'N', T(beta), view(run.betaU, 1:nactive),
@@ -837,45 +837,45 @@ function apply_right_row_run!(Y::AbstractArray{T,3}, run::RowRightRunCoupling,
 end
 
 function apply_left_row_run!(Z::AbstractArray{T,3}, run::RowRightRunCoupling,
-                             Q::AbstractArray{T,3}, width::Int;
+                             Q::AbstractArray{T,3}, sketch_width::Int;
                              beta=false, compute=nothing) where {T}
     mode = compute === nothing ? default_gemm_compute_mode(T) :
            gemm_compute_mode(compute)
     adj = _adjoint_blas_char(T)
-    count = size(Q, 3)
+    nmember = size(Q, 3)
     qk = run.qk
-    rankA, rankB = size(run.S, 1), size(run.S, 2)
+    rA, rB = size(run.S, 1), size(run.S, 2)
     bn = size(Z, 1)
-    if qk > 0 && rankA > 0 && rankB > 0
-        # run.Astack[:,:,l] holds the same data run.Aouter[l] used to; A has
+    if qk > 0 && rA > 0 && rB > 0
+        # run.Astack[:,:,kidx] holds the same data run.Aouter[kidx] used to; A has
         # no per-member axis here, so this stays a Vector rebuild (co-range,
         # once per run, not the per-pass hot path) but no longer needs a
         # separately-retained duplicate of Astack's data.
-        Uvec = [view(run.Astack, :, :, l) for _ in 1:count for l in 1:qk]
-        Qvec = [view(Q, :, 1:width, p) for p in 1:count for l in 1:qk]
-        Gvec = [view(run.G, :, 1:width, l, p)
-                for p in 1:count for l in 1:qk]
+        Uvec = [view(run.Astack, :, :, kidx) for _ in 1:nmember for kidx in 1:qk]
+        Qvec = [view(Q, :, 1:sketch_width, p) for p in 1:nmember for kidx in 1:qk]
+        Gvec = [view(run.G, :, 1:sketch_width, kidx, p)
+                for p in 1:nmember for kidx in 1:qk]
         precision_gemm_batched!(adj, 'N', one(T), Uvec, Qvec,
                                 zero(T), Gvec, mode)
-        Svec = [view(run.S, :, :, l, p) for p in 1:count for l in 1:qk]
-        Wvec = [view(run.Wbuf, :, l, 1:width, p)
-                for p in 1:count for l in 1:qk]
+        Svec = [view(run.S, :, :, kidx, p) for p in 1:nmember for kidx in 1:qk]
+        Wvec = [view(run.Wbuf, :, kidx, 1:sketch_width, p)
+                for p in 1:nmember for kidx in 1:qk]
         precision_gemm_batched!(adj, 'N', run.alpha, Svec, Gvec,
                                 zero(T), Wvec, mode)
-        Bvec = [reshape(view(run.Bstack, :, :, :, p), bn, rankB * qk)
-                for p in 1:count]
-        Wstack = [reshape(view(run.Wbuf, :, :, 1:width, p),
-                          rankB * qk, width) for p in 1:count]
-        Zvec = [view(Z, :, 1:width, p) for p in 1:count]
+        Bvec = [reshape(view(run.Bstack, :, :, :, p), bn, rB * qk)
+                for p in 1:nmember]
+        Wstack = [reshape(view(run.Wbuf, :, :, 1:sketch_width, p),
+                          rB * qk, sketch_width) for p in 1:nmember]
+        Zvec = [view(Z, :, 1:sketch_width, p) for p in 1:nmember]
         precision_gemm_batched!('N', 'N', one(T), Bvec, Wstack,
                                 zero(T), Zvec, mode)
     else
         fill!(Z, zero(T))
     end
     if run.betaU !== nothing
-        tmp = [view(run.beta_tmp, :, 1:width, p) for p in 1:count]
-        Qvec = [view(Q, :, 1:width, p) for p in 1:count]
-        Zvec = [view(Z, :, 1:width, p) for p in 1:count]
+        tmp = [view(run.beta_tmp, :, 1:sketch_width, p) for p in 1:nmember]
+        Qvec = [view(Q, :, 1:sketch_width, p) for p in 1:nmember]
+        Zvec = [view(Z, :, 1:sketch_width, p) for p in 1:nmember]
         precision_gemm_batched!(adj, 'N', one(T), run.betaU, Qvec,
                                 zero(T), tmp, mode)
         precision_gemm_batched!('N', 'N', T(beta), run.betaV, tmp,
@@ -897,7 +897,7 @@ reference-swapped and used, in the hot sampler
 ([`apply_left_row_run!`](@ref)'s final reduction), batched over the member
 axis only (no `q_k` sub-structure at that point, since each member's tiles
 are already folded into one `(bn, rB*qk)` matrix) -- so it needs only the
-simple, `count`-length, single-slot-swapped descriptor form, same as
+simple, `nmember`-length, single-slot-swapped descriptor form, same as
 `rowU`. `Wstack_ptrs` covers that same call's other operand (this run's own
 `Wbuf`, reshaped so its natural memory order matches), build-once and never
 swapped. `betaU_ptrs`/`betaV_ptrs` (single-slot swap) and
@@ -942,28 +942,28 @@ end
 function RowLeftRunCoupling(ops::LogicalTLROperands, i::Integer, cols;
                             alpha, beta=false, C=nothing,
                             block::Int, maxrank::Int,
-                            rankA::Int=rankdim(ops.au),
-                            rankB::Int=rankdim(ops.bz),
+                            rA::Int=rankdim(ops.au),
+                            rB::Int=rankdim(ops.bv),
                             compute=nothing)
     ids = collect(Int, cols)
-    count = length(ids)
+    nmember = length(ids)
     qk = ops.au.qn
     T = eltype(ops.au.data)
     mode = compute === nothing ? default_gemm_compute_mode(T) :
            gemm_compute_mode(compute)
     backend = get_backend(ops.au.data)
     bm = size(ops.au.data, 1)
-    bn = size(ops.bz.data, 1)
-    Ainner = [_trimmed_tile(ops.av, Int(i), l, rankA) for l in 1:qk]
-    Astack = _factor_row_stack(ops.au, Int(i), rankA)
-    Bouter = [[_trimmed_tile(ops.bw, l, j, rankB) for l in 1:qk] for j in ids]
-    Bstack = [_factor_column_stack(ops.bz, j, rankB) for j in ids]
+    bn = size(ops.bv.data, 1)
+    Ainner = [_trimmed_tile(ops.av, Int(i), kidx, rA) for kidx in 1:qk]
+    Astack = _factor_row_stack(ops.au, Int(i), rA)
+    Bouter = [[_trimmed_tile(ops.bu, kidx, j, rB) for kidx in 1:qk] for j in ids]
+    Bstack = [_factor_column_stack(ops.bv, j, rB) for j in ids]
 
-    S = allocate(backend, T, rankA, rankB, qk, count)
-    if count > 0 && qk > 0 && rankA > 0 && rankB > 0
-        Avec = [Ainner[l] for p in 1:count for l in 1:qk]
-        Bvec = [Bouter[p][l] for p in 1:count for l in 1:qk]
-        Svec = [view(S, :, :, l, p) for p in 1:count for l in 1:qk]
+    S = allocate(backend, T, rA, rB, qk, nmember)
+    if nmember > 0 && qk > 0 && rA > 0 && rB > 0
+        Avec = [Ainner[kidx] for p in 1:nmember for kidx in 1:qk]
+        Bvec = [Bouter[p][kidx] for p in 1:nmember for kidx in 1:qk]
+        Svec = [view(S, :, :, kidx, p) for p in 1:nmember for kidx in 1:qk]
         precision_gemm_batched!(_adjoint_blas_char(T), 'N', one(T),
                                 Avec, Bvec, zero(T), Svec, mode)
     end
@@ -976,28 +976,28 @@ function RowLeftRunCoupling(ops::LogicalTLROperands, i::Integer, cols;
     end
     rC = betaU === nothing ? 0 : size(first(betaU), 2)
 
-    Gbuf = allocate(backend, T, rankA, block, qk)
-    Wbuf = allocate(backend, T, rankB, qk, block, count)
-    Hbuf = allocate(backend, T, rankB, maxrank, qk, count)
-    Tbuf = allocate(backend, T, rankA, qk, maxrank, count)
+    Gbuf = allocate(backend, T, rA, block, qk)
+    Wbuf = allocate(backend, T, rB, qk, block, nmember)
+    Hbuf = allocate(backend, T, rB, maxrank, qk, nmember)
+    Tbuf = allocate(backend, T, rA, qk, maxrank, nmember)
     Omega = allocate(backend, T, bm, block, 1)
-    beta_tmp = allocate(backend, T, rC, max(block, maxrank), count)
+    beta_tmp = allocate(backend, T, rC, max(block, maxrank), nmember)
 
-    ptrs_ok = count > 0 && qk > 0 && supports_pointer_batched(backend)
+    ptrs_ok = nmember > 0 && qk > 0 && supports_pointer_batched(backend)
     Bstack_ptrs = ptrs_ok ?
-        BatchPtrDescriptor([reshape(Bstack[p], bn, rankB * qk) for p in 1:count]) :
+        BatchPtrDescriptor([reshape(Bstack[p], bn, rB * qk) for p in 1:nmember]) :
         nothing
     Wstack_ptrs = ptrs_ok ?
-        BatchPtrDescriptor([view(reshape(Wbuf, rankB * qk, block, count), :, :, p)
-                           for p in 1:count]) :
+        BatchPtrDescriptor([view(reshape(Wbuf, rB * qk, block, nmember), :, :, p)
+                           for p in 1:nmember]) :
         nothing
     has_beta_ptrs = ptrs_ok && betaU !== nothing
     betaU_ptrs = has_beta_ptrs ? BatchPtrDescriptor(betaU) : nothing
     betaV_ptrs = has_beta_ptrs ? BatchPtrDescriptor(betaV) : nothing
     betaOm_ptrs = has_beta_ptrs ?
-        BatchPtrDescriptor([view(Omega, :, :, 1) for _ in 1:count]) : nothing
+        BatchPtrDescriptor([view(Omega, :, :, 1) for _ in 1:nmember]) : nothing
     beta_tmp_ptrs = has_beta_ptrs ?
-        BatchPtrDescriptor([view(beta_tmp, :, :, p) for p in 1:count]) : nothing
+        BatchPtrDescriptor([view(beta_tmp, :, :, p) for p in 1:nmember]) : nothing
 
     return RowLeftRunCoupling(
         S, Astack, Bstack, betaU, betaV,
@@ -1025,74 +1025,74 @@ function _swap_row_left_members!(run::RowLeftRunCoupling, p::Int, q::Int)
 end
 
 function apply_left_row_run!(Y::AbstractArray{T,3}, run::RowLeftRunCoupling,
-                             width::Int, nactive::Int;
+                             sketch_width::Int, nactive::Int;
                              beta=false, compute=nothing) where {T}
     mode = compute === nothing ? default_gemm_compute_mode(T) :
            gemm_compute_mode(compute)
     adj = _adjoint_blas_char(T)
     qk = run.qk
-    rankA, rankB = size(run.S, 1), size(run.S, 2)
+    rA, rB = size(run.S, 1), size(run.S, 2)
     bn = size(Y, 1)
-    Om = view(run.Omega, :, 1:width, :)
+    Om = view(run.Omega, :, 1:sketch_width, :)
     Random.randn!(Om)
     use_ptrs = run.Bstack_ptrs !== nothing
     # Built once (when needed) and reused for both the final reduction and
     # the beta accumulation below, rather than once per GEMM call.
     Yptrs = use_ptrs ?
-        BatchPtrDescriptor([view(Y, :, 1:width, p) for p in 1:nactive]) :
+        BatchPtrDescriptor([view(Y, :, 1:sketch_width, p) for p in 1:nactive]) :
         nothing
 
-    if qk > 0 && rankA > 0 && rankB > 0
-        # run.Astack (bm, rankA, qk) and Om (bm, width, 1) are both already
-        # plain strided-3D arrays: Om has no per-l axis and broadcasts as a
-        # batch-count-1 operand, so this dispatches as one strided-batched
+    if qk > 0 && rA > 0 && rB > 0
+        # run.Astack (bm, rA, qk) and Om (bm, sketch_width, 1) are both already
+        # plain strided-3D arrays: Om has no per-kidx axis and broadcasts as a
+        # batch-nmember-1 operand, so this dispatches as one strided-batched
         # GEMM over the qk axis with no pointer-batch Vector at all.
-        G = view(run.G, :, 1:width, :)
+        G = view(run.G, :, 1:sketch_width, :)
         precision_gemm_batched!(adj, 'N', one(T), run.Astack, Om,
                                 zero(T), G, mode)
         # W-formation is left on the Vector-of-views path even when
         # use_ptrs: S/G/Wbuf are all run-owned, none ragged, so this is a
         # documented residual (see the struct docstring), not the problem
         # Bstack's descriptors below address.
-        Svec = [view(run.S, :, :, l, p) for p in 1:nactive for l in 1:qk]
-        Gvec = [view(G, :, :, l) for p in 1:nactive for l in 1:qk]
-        Wvec = [view(run.Wbuf, :, l, 1:width, p)
-                for p in 1:nactive for l in 1:qk]
+        Svec = [view(run.S, :, :, kidx, p) for p in 1:nactive for kidx in 1:qk]
+        Gvec = [view(G, :, :, kidx) for p in 1:nactive for kidx in 1:qk]
+        Wvec = [view(run.Wbuf, :, kidx, 1:sketch_width, p)
+                for p in 1:nactive for kidx in 1:qk]
         precision_gemm_batched!(adj, 'N', run.alpha, Svec, Gvec,
                                 zero(T), Wvec, mode)
         if use_ptrs
-            Bref = reshape(first(run.Bstack), bn, rankB * qk)
-            Wbuf2 = reshape(run.Wbuf, rankB * qk, size(run.Wbuf, 3), size(run.Wbuf, 4))
-            Wref = view(Wbuf2, :, 1:width, 1)
+            Bref = reshape(first(run.Bstack), bn, rB * qk)
+            Wbuf2 = reshape(run.Wbuf, rB * qk, size(run.Wbuf, 3), size(run.Wbuf, 4))
+            Wref = view(Wbuf2, :, 1:sketch_width, 1)
             precision_gemm_batched_ptrs!('N', 'N', one(T),
                 run.Bstack_ptrs, Bref, run.Wstack_ptrs, Wref,
-                zero(T), Yptrs, view(Y, :, 1:width, 1), nactive, mode)
+                zero(T), Yptrs, view(Y, :, 1:sketch_width, 1), nactive, mode)
         else
-            Bvec = [reshape(run.Bstack[p], bn, rankB * qk) for p in 1:nactive]
-            Wstack = [reshape(view(run.Wbuf, :, :, 1:width, p),
-                              rankB * qk, width) for p in 1:nactive]
-            Yvec = [view(Y, :, 1:width, p) for p in 1:nactive]
+            Bvec = [reshape(run.Bstack[p], bn, rB * qk) for p in 1:nactive]
+            Wstack = [reshape(view(run.Wbuf, :, :, 1:sketch_width, p),
+                              rB * qk, sketch_width) for p in 1:nactive]
+            Yvec = [view(Y, :, 1:sketch_width, p) for p in 1:nactive]
             precision_gemm_batched!('N', 'N', one(T), Bvec, Wstack,
                                     zero(T), Yvec, mode)
         end
     else
-        fill!(view(Y, :, 1:width, 1:nactive), zero(T))
+        fill!(view(Y, :, 1:sketch_width, 1:nactive), zero(T))
     end
 
     if run.betaU !== nothing
         if use_ptrs
-            tmpref = view(run.beta_tmp, :, 1:width, 1)
-            Yptrs = BatchPtrDescriptor([view(Y, :, 1:width, p) for p in 1:nactive])
+            tmpref = view(run.beta_tmp, :, 1:sketch_width, 1)
+            Yptrs = BatchPtrDescriptor([view(Y, :, 1:sketch_width, p) for p in 1:nactive])
             precision_gemm_batched_ptrs!(adj, 'N', one(T),
                 run.betaU_ptrs, first(run.betaU), run.betaOm_ptrs, view(Om, :, :, 1),
                 zero(T), run.beta_tmp_ptrs, tmpref, nactive, mode)
             precision_gemm_batched_ptrs!('N', 'N', T(beta),
                 run.betaV_ptrs, first(run.betaV), run.beta_tmp_ptrs, tmpref,
-                one(T), Yptrs, view(Y, :, 1:width, 1), nactive, mode)
+                one(T), Yptrs, view(Y, :, 1:sketch_width, 1), nactive, mode)
         else
-            tmp = [view(run.beta_tmp, :, 1:width, p) for p in 1:nactive]
+            tmp = [view(run.beta_tmp, :, 1:sketch_width, p) for p in 1:nactive]
             Ovec = [view(Om, :, :, 1) for p in 1:nactive]
-            Yvec = [view(Y, :, 1:width, p) for p in 1:nactive]
+            Yvec = [view(Y, :, 1:sketch_width, p) for p in 1:nactive]
             precision_gemm_batched!(adj, 'N', one(T), view(run.betaU, 1:nactive),
                                     Ovec, zero(T), tmp, mode)
             precision_gemm_batched!('N', 'N', T(beta), view(run.betaV, 1:nactive),
@@ -1103,42 +1103,42 @@ function apply_left_row_run!(Y::AbstractArray{T,3}, run::RowLeftRunCoupling,
 end
 
 function apply_right_row_run!(Z::AbstractArray{T,3}, run::RowLeftRunCoupling,
-                              Q::AbstractArray{T,3}, width::Int;
+                              Q::AbstractArray{T,3}, sketch_width::Int;
                               beta=false, compute=nothing) where {T}
     mode = compute === nothing ? default_gemm_compute_mode(T) :
            gemm_compute_mode(compute)
     adj = _adjoint_blas_char(T)
-    count = size(Q, 3)
+    nmember = size(Q, 3)
     qk = run.qk
-    rankA, rankB = size(run.S, 1), size(run.S, 2)
+    rA, rB = size(run.S, 1), size(run.S, 2)
     bm = size(Z, 1)
-    if qk > 0 && rankA > 0 && rankB > 0
-        Bvec = [view(run.Bstack[p], :, :, l) for p in 1:count for l in 1:qk]
-        Qvec = [view(Q, :, 1:width, p) for p in 1:count for l in 1:qk]
-        Hvec = [view(run.H, :, 1:width, l, p)
-                for p in 1:count for l in 1:qk]
+    if qk > 0 && rA > 0 && rB > 0
+        Bvec = [view(run.Bstack[p], :, :, kidx) for p in 1:nmember for kidx in 1:qk]
+        Qvec = [view(Q, :, 1:sketch_width, p) for p in 1:nmember for kidx in 1:qk]
+        Hvec = [view(run.H, :, 1:sketch_width, kidx, p)
+                for p in 1:nmember for kidx in 1:qk]
         precision_gemm_batched!(adj, 'N', one(T), Bvec, Qvec,
                                 zero(T), Hvec, mode)
-        Svec = [view(run.S, :, :, l, p) for p in 1:count for l in 1:qk]
-        Tvec = [view(run.Tbuf, :, l, 1:width, p)
-                for p in 1:count for l in 1:qk]
+        Svec = [view(run.S, :, :, kidx, p) for p in 1:nmember for kidx in 1:qk]
+        Tvec = [view(run.Tbuf, :, kidx, 1:sketch_width, p)
+                for p in 1:nmember for kidx in 1:qk]
         precision_gemm_batched!('N', 'N', run.alpha, Svec, Hvec,
                                 zero(T), Tvec, mode)
         # See apply_right_row_run! (RowRightRunCoupling) for the identical
         # broadcast-batch-1 reshape used here.
-        Astack3 = reshape(run.Astack, bm, rankA * qk, 1)
-        Tbuf2 = reshape(run.Tbuf, rankA * qk, size(run.Tbuf, 3), size(run.Tbuf, 4))
-        Tstack = view(Tbuf2, :, 1:width, 1:count)
-        Zview = view(Z, :, 1:width, 1:count)
+        Astack3 = reshape(run.Astack, bm, rA * qk, 1)
+        Tbuf2 = reshape(run.Tbuf, rA * qk, size(run.Tbuf, 3), size(run.Tbuf, 4))
+        Tstack = view(Tbuf2, :, 1:sketch_width, 1:nmember)
+        Zview = view(Z, :, 1:sketch_width, 1:nmember)
         precision_gemm_batched!('N', 'N', one(T), Astack3, Tstack,
                                 zero(T), Zview, mode)
     else
         fill!(Z, zero(T))
     end
     if run.betaU !== nothing
-        tmp = [view(run.beta_tmp, :, 1:width, p) for p in 1:count]
-        Qvec = [view(Q, :, 1:width, p) for p in 1:count]
-        Zvec = [view(Z, :, 1:width, p) for p in 1:count]
+        tmp = [view(run.beta_tmp, :, 1:sketch_width, p) for p in 1:nmember]
+        Qvec = [view(Q, :, 1:sketch_width, p) for p in 1:nmember]
+        Zvec = [view(Z, :, 1:sketch_width, p) for p in 1:nmember]
         precision_gemm_batched!(adj, 'N', one(T), run.betaV, Qvec,
                                 zero(T), tmp, mode)
         precision_gemm_batched!('N', 'N', T(beta), run.betaU, tmp,

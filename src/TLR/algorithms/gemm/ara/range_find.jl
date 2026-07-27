@@ -24,7 +24,7 @@ Three phases, matching algorithm.tex's `RangeFind`:
     -- there is no point capturing more range than the tile can store.
  2. The co-range `Z = X_ijᵀQ`, one [`apply_left!`](@ref) call.
  3. Optimal (Eckart-Young) truncation of `(Q,Z)` via [`ara_truncate!`](@ref),
-    to `tol` and the basis's own achieved width -- never to `maxrank` directly,
+to `tol` and the basis's own achieved sketch width -- never to `maxrank` directly,
     since [`ara_truncate!`](@ref) cannot truncate wider than the basis it was
     given (see the note below).
 
@@ -34,10 +34,10 @@ stops (bounded below by [`ara_stopping_floor`](@ref)); `tol` is the Frobenius
 error the *returned factors* must meet after truncation, and carries no such
 floor (truncation is exact, `docs/TODO.md` worklog item 6).
 
-## Why truncation is capped at the achieved basis width, not `maxrank`
+## Why truncation is capped at the achieved basis sketch width, not `maxrank`
 
 If the tile's true rank is below `maxrank`, the ARA loop converges (via the
-`r_required`-consecutive-small-columns rule) at some width `s_Q < maxrank`,
+`r_required`-consecutive-small-columns rule) at some sketch width `s_Q < maxrank`,
 and `ara_truncate!` can only select a rank ≤ the basis actually built --
 asking it to truncate "up to `maxrank`" when the basis is narrower is not
 meaningful. So truncation runs at cap `s_Q`, into a temporary `s_Q`-wide
@@ -89,10 +89,10 @@ function range_find_tile!(U::AbstractArray{T,3}, V::AbstractArray{T,3},
 
     ws = ARAWorkspace(T, backend, bm, maxrank, 1; block)
     Omega = allocate(backend, T, bn, ws.block, 1)
-    sampler = function (Y, width)
-        Om = view(Omega, :, 1:width, 1)
+    sampler = function (Y, sketch_width)
+        Om = view(Omega, :, 1:sketch_width, 1)
         Random.randn!(Om)
-        apply_right!(view(Y, :, 1:width, 1), coupling, beta_term, Om; compute)
+        apply_right!(view(Y, :, 1:sketch_width, 1), coupling, beta_term, Om; compute)
         return Y
     end
     basis = ara_build_basis!(ws, sampler; eps_rel, r_required, compute)
@@ -108,7 +108,7 @@ function range_find_tile!(U::AbstractArray{T,3}, V::AbstractArray{T,3},
     apply_left!(view(Z, :, :, 1), coupling, beta_term, view(basis.Q, :, :, 1);
                compute)
 
-    # Truncate at the basis's own width; see the docstring for why `maxrank`
+    # Truncate at the basis's own sketch width; see the docstring for why `maxrank`
     # itself would be the wrong cap whenever the basis converged early.
     Uh = allocate(backend, T, bm, sQ, 1)
     Vh = allocate(backend, T, bn, sQ, 1)
@@ -158,34 +158,34 @@ function range_find_column_run!(U::AbstractArray{T,3}, V::AbstractArray{T,3},
                                 eps_rel::Real, r_required::Int=10,
                                 tol::Real, rel::Bool=true,
                                 block::Int=32,
-                                rankA::Int=rankdim(ops.au),
-                                rankB::Int=rankdim(ops.bz),
+                                rA::Int=rankdim(ops.au),
+                                rB::Int=rankdim(ops.bv),
                                 compute=nothing) where {T}
     row_ids = collect(Int, rows)
-    count = length(row_ids)
+    nmember = length(row_ids)
     bm, maxrank, countU = size(U)
     bn, maxrankV, countV = size(V)
-    countU == countV == count == length(ranks) == length(err_sq) ||
+    countU == countV == nmember == length(ranks) == length(err_sq) ||
         throw(DimensionMismatch("run outputs and diagnostics must match length(rows)"))
     maxrank == maxrankV ||
         throw(DimensionMismatch("U and V must have the same rank capacity"))
-    count == 0 && return (; passes=0, active_counts=Int[], member_ids=Int[])
+    nmember == 0 && return (; passes=0, active_counts=Int[], member_ids=Int[])
     fill!(U, zero(T)); fill!(V, zero(T))
 
     if maxrank == 0
         fill!(ranks, zero(eltype(ranks)))
         fill!(err_sq, 0.0)
-        return (; passes=0, active_counts=Int[], member_ids=collect(1:count))
+        return (; passes=0, active_counts=Int[], member_ids=collect(1:nmember))
     end
 
     backend = get_backend(U)
-    ws = ARAWorkspace(T, backend, bm, maxrank, count; block)
+    ws = ARAWorkspace(T, backend, bm, maxrank, nmember; block)
     run = ColumnRunCoupling(ops, row_ids, j;
                             alpha, beta, C, block=ws.block, maxrank,
-                            rankA, rankB, compute)
-    member_ids = collect(1:count)
-    sampler = function (Y, width, active_ids)
-        apply_right_run!(Y, run, width, length(active_ids); beta, compute)
+                            rA, rB, compute)
+    member_ids = collect(1:nmember)
+    sampler = function (Y, sketch_width, active_ids)
+        apply_right_run!(Y, run, sketch_width, length(active_ids); beta, compute)
     end
     basis = ara_build_basis_packed!(
         ws, sampler, member_ids; eps_rel, r_required, compute,
@@ -200,56 +200,56 @@ function range_find_column_run!(U::AbstractArray{T,3}, V::AbstractArray{T,3},
                 member_ids=basis.member_ids)
     end
 
-    Z = allocate(backend, T, bn, sQ, count)
+    Z = allocate(backend, T, bn, sQ, nmember)
     apply_left_run!(Z, run, basis.Q, sQ; beta, compute)
-    Uh = allocate(backend, T, bm, sQ, count)
-    Vh = allocate(backend, T, bn, sQ, count)
-    ranks_slot = allocate(backend, eltype(ranks), count)
-    err_slot = allocate(backend, eltype(err_sq), count)
+    Uh = allocate(backend, T, bm, sQ, nmember)
+    Vh = allocate(backend, T, bn, sQ, nmember)
+    ranks_slot = allocate(backend, eltype(ranks), nmember)
+    err_slot = allocate(backend, eltype(err_sq), nmember)
     ara_truncate!(Uh, Vh, ranks_slot, err_slot, basis.Q, Z;
                   tol, relative=rel, maxrank=sQ, compute)
 
-    slot_to_member = copyto!(allocate(backend, Int32, count),
+    slot_to_member = copyto!(allocate(backend, Int32, nmember),
                              Int32.(basis.member_ids))
     _scatter_run_factor_kernel!(backend)(
         view(U, :, 1:sQ, :), Uh, ranks_slot, slot_to_member;
-        ndrange=(bm, sQ, count),
+        ndrange=(bm, sQ, nmember),
     )
     _scatter_run_factor_kernel!(backend)(
         view(V, :, 1:sQ, :), Vh, ranks_slot, slot_to_member;
-        ndrange=(bn, sQ, count),
+        ndrange=(bn, sQ, nmember),
     )
     _scatter_run_diagnostic_kernel!(backend)(
-        ranks, err_sq, ranks_slot, err_slot, slot_to_member; ndrange=count,
+        ranks, err_sq, ranks_slot, err_slot, slot_to_member; ndrange=nmember,
     )
     return (; passes=basis.passes, active_counts=basis.active_counts,
             member_ids=basis.member_ids)
 end
 
 @inline function _validate_row_run_outputs(U, V, ranks, err_sq, cols)
-    count = length(cols)
-    size(U, 3) == size(V, 3) == count == length(ranks) == length(err_sq) ||
+    nmember = length(cols)
+    size(U, 3) == size(V, 3) == nmember == length(ranks) == length(err_sq) ||
         throw(DimensionMismatch("run outputs and diagnostics must match length(cols)"))
     size(U, 2) == size(V, 2) ||
         throw(DimensionMismatch("U and V must have the same rank capacity"))
-    return count
+    return nmember
 end
 
 function _scatter_range_run!(U, V, ranks, err_sq, Uh, Vh, ranks_slot, err_slot,
                              member_ids, sQ)
     backend = get_backend(U)
-    count = length(member_ids)
-    slot_to_member = copyto!(allocate(backend, Int32, count), Int32.(member_ids))
+    nmember = length(member_ids)
+    slot_to_member = copyto!(allocate(backend, Int32, nmember), Int32.(member_ids))
     _scatter_run_factor_kernel!(backend)(
         view(U, :, 1:sQ, :), Uh, ranks_slot, slot_to_member;
-        ndrange=(size(U, 1), sQ, count),
+        ndrange=(size(U, 1), sQ, nmember),
     )
     _scatter_run_factor_kernel!(backend)(
         view(V, :, 1:sQ, :), Vh, ranks_slot, slot_to_member;
-        ndrange=(size(V, 1), sQ, count),
+        ndrange=(size(V, 1), sQ, nmember),
     )
     _scatter_run_diagnostic_kernel!(backend)(
-        ranks, err_sq, ranks_slot, err_slot, slot_to_member; ndrange=count,
+        ranks, err_sq, ranks_slot, err_slot, slot_to_member; ndrange=nmember,
     )
     return nothing
 end
@@ -267,30 +267,30 @@ function range_find_row_right_run!(U::AbstractArray{T,3}, V::AbstractArray{T,3},
                                    eps_rel::Real, r_required::Int=10,
                                    tol::Real, rel::Bool=true,
                                    block::Int=32,
-                                   rankA::Int=rankdim(ops.au),
-                                   rankB::Int=rankdim(ops.bz),
+                                   rA::Int=rankdim(ops.au),
+                                   rB::Int=rankdim(ops.bv),
                                    compute=nothing) where {T}
     col_ids = collect(Int, cols)
-    count = _validate_row_run_outputs(U, V, ranks, err_sq, col_ids)
-    count == 0 &&
+    nmember = _validate_row_run_outputs(U, V, ranks, err_sq, col_ids)
+    nmember == 0 &&
         return (; passes=0, active_counts=Int[], member_ids=Int[], side=:right)
     fill!(U, zero(T)); fill!(V, zero(T))
     maxrank = size(U, 2)
     if maxrank == 0
         fill!(ranks, zero(eltype(ranks))); fill!(err_sq, 0.0)
-        return (; passes=0, active_counts=Int[], member_ids=collect(1:count),
+        return (; passes=0, active_counts=Int[], member_ids=collect(1:nmember),
                 side=:right)
     end
 
     backend = get_backend(U)
-    ws = ARAWorkspace(T, backend, size(U, 1), maxrank, count; block)
+    ws = ARAWorkspace(T, backend, size(U, 1), maxrank, nmember; block)
     run = RowRightRunCoupling(
         ops, i, col_ids; alpha, beta, C, block=ws.block, maxrank,
-        rankA, rankB, compute,
+        rA, rB, compute,
     )
-    member_ids = collect(1:count)
-    sampler = function (Y, width, active_ids)
-        apply_right_row_run!(Y, run, width, length(active_ids); beta, compute)
+    member_ids = collect(1:nmember)
+    sampler = function (Y, sketch_width, active_ids)
+        apply_right_row_run!(Y, run, sketch_width, length(active_ids); beta, compute)
     end
     basis = ara_build_basis_packed!(
         ws, sampler, member_ids; eps_rel, r_required, compute,
@@ -301,12 +301,12 @@ function range_find_row_right_run!(U::AbstractArray{T,3}, V::AbstractArray{T,3},
         return (; passes=basis.passes, active_counts=basis.active_counts,
                 member_ids=basis.member_ids, side=:right)
 
-    Z = allocate(backend, T, size(V, 1), sQ, count)
+    Z = allocate(backend, T, size(V, 1), sQ, nmember)
     apply_left_row_run!(Z, run, basis.Q, sQ; beta, compute)
-    Uh = allocate(backend, T, size(U, 1), sQ, count)
-    Vh = allocate(backend, T, size(V, 1), sQ, count)
-    ranks_slot = allocate(backend, eltype(ranks), count)
-    err_slot = allocate(backend, eltype(err_sq), count)
+    Uh = allocate(backend, T, size(U, 1), sQ, nmember)
+    Vh = allocate(backend, T, size(V, 1), sQ, nmember)
+    ranks_slot = allocate(backend, eltype(ranks), nmember)
+    err_slot = allocate(backend, eltype(err_sq), nmember)
     ara_truncate!(Uh, Vh, ranks_slot, err_slot, basis.Q, Z;
                   tol, relative=rel, maxrank=sQ, compute)
     _scatter_range_run!(U, V, ranks, err_sq, Uh, Vh, ranks_slot, err_slot,
@@ -329,30 +329,30 @@ function range_find_row_left_run!(U::AbstractArray{T,3}, V::AbstractArray{T,3},
                                   eps_rel::Real, r_required::Int=10,
                                   tol::Real, rel::Bool=true,
                                   block::Int=32,
-                                  rankA::Int=rankdim(ops.au),
-                                  rankB::Int=rankdim(ops.bz),
+                                  rA::Int=rankdim(ops.au),
+                                  rB::Int=rankdim(ops.bv),
                                   compute=nothing) where {T}
     col_ids = collect(Int, cols)
-    count = _validate_row_run_outputs(U, V, ranks, err_sq, col_ids)
-    count == 0 &&
+    nmember = _validate_row_run_outputs(U, V, ranks, err_sq, col_ids)
+    nmember == 0 &&
         return (; passes=0, active_counts=Int[], member_ids=Int[], side=:left)
     fill!(U, zero(T)); fill!(V, zero(T))
     maxrank = size(U, 2)
     if maxrank == 0
         fill!(ranks, zero(eltype(ranks))); fill!(err_sq, 0.0)
-        return (; passes=0, active_counts=Int[], member_ids=collect(1:count),
+        return (; passes=0, active_counts=Int[], member_ids=collect(1:nmember),
                 side=:left)
     end
 
     backend = get_backend(U)
-    ws = ARAWorkspace(T, backend, size(V, 1), maxrank, count; block)
+    ws = ARAWorkspace(T, backend, size(V, 1), maxrank, nmember; block)
     run = RowLeftRunCoupling(
         ops, i, col_ids; alpha, beta, C, block=ws.block, maxrank,
-        rankA, rankB, compute,
+        rA, rB, compute,
     )
-    member_ids = collect(1:count)
-    sampler = function (Y, width, active_ids)
-        apply_left_row_run!(Y, run, width, length(active_ids); beta, compute)
+    member_ids = collect(1:nmember)
+    sampler = function (Y, sketch_width, active_ids)
+        apply_left_row_run!(Y, run, sketch_width, length(active_ids); beta, compute)
     end
     basis = ara_build_basis_packed!(
         ws, sampler, member_ids; eps_rel, r_required, compute,
@@ -363,12 +363,12 @@ function range_find_row_left_run!(U::AbstractArray{T,3}, V::AbstractArray{T,3},
         return (; passes=basis.passes, active_counts=basis.active_counts,
                 member_ids=basis.member_ids, side=:left)
 
-    L = allocate(backend, T, size(U, 1), sQ, count)
+    L = allocate(backend, T, size(U, 1), sQ, nmember)
     apply_right_row_run!(L, run, basis.Q, sQ; beta, compute)
-    Uh = allocate(backend, T, size(U, 1), sQ, count)
-    Vh = allocate(backend, T, size(V, 1), sQ, count)
-    ranks_slot = allocate(backend, eltype(ranks), count)
-    err_slot = allocate(backend, eltype(err_sq), count)
+    Uh = allocate(backend, T, size(U, 1), sQ, nmember)
+    Vh = allocate(backend, T, size(V, 1), sQ, nmember)
+    ranks_slot = allocate(backend, eltype(ranks), nmember)
+    err_slot = allocate(backend, eltype(err_sq), nmember)
     # Xᵀ ≈ Q_R Lᵀ. Truncating the transpose returns (V, U).
     ara_truncate!(Vh, Uh, ranks_slot, err_slot, basis.Q, L;
                   tol, relative=rel, maxrank=sQ, compute)

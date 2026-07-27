@@ -243,22 +243,22 @@ end
 
 @inline function _right_sampling_workspace_elems(qm::Int, qk::Int,
                                                  rA::Int, rB::Int,
-                                                 block::Int, maxrankC::Int)
+                                                 block::Int, rmaxC::Int)
     qk * (block * (rB + qm * rA) +
-          maxrankC * qm * (rA + rB) +
+          rmaxC * qm * (rA + rB) +
           qm * rA * rB)
 end
 
 @inline function _left_sampling_workspace_elems(qn::Int, qk::Int,
                                                 rA::Int, rB::Int,
-                                                block::Int, maxrankC::Int)
+                                                block::Int, rmaxC::Int)
     qk * (block * (rA + qn * rB) +
-          maxrankC * qn * (rA + rB) +
+          rmaxC * qn * (rA + rB) +
           qn * rA * rB)
 end
 
 """
-    choose_tlr_sampling_side(LA, LB, maxrankC, block, rA, rB) -> Symbol
+    choose_tlr_sampling_side(LA, LB, rmaxC, block, rA, rB) -> Symbol
 
 Choose the repeated ARA apply from the logical layouts. A logical row-major A
 permits zero-copy right sampling; a logical column-major B permits zero-copy
@@ -267,7 +267,7 @@ workspace of one fixed-column right run with one fixed-row left run.
 """
 function choose_tlr_sampling_side(LA::LogicalTLROperand,
                                   LB::LogicalTLROperand,
-                                  maxrankC::Int, block::Int,
+                                  rmaxC::Int, block::Int,
                                   rA::Int, rB::Int)
     can_right = tile_order(LA) isa TileRowMajor
     can_left = tile_order(LB) isa TileColMajor
@@ -281,9 +281,9 @@ function choose_tlr_sampling_side(LA::LogicalTLROperand,
     qm, qk = tilegrid_size(LA)
     _, qn = tilegrid_size(LB)
     right = _right_sampling_workspace_elems(
-        qm, qk, rA, rB, block, maxrankC)
+        qm, qk, rA, rB, block, rmaxC)
     left = _left_sampling_workspace_elems(
-        qn, qk, rA, rB, block, maxrankC)
+        qn, qk, rA, rB, block, rmaxC)
     return right < left ? :right : :left
 end
 
@@ -421,7 +421,7 @@ function gemm!(C::TLRMatrix{BackendT,T},
             range_find_column_run!(
                 U, V, rr, ee, ops, 1:qm, j;
                 alpha=α, beta=β, C=LC, eps_rel=sample_tol, r_required,
-                tol, rel, block=blk, rankA=rA, rankB=rB, compute=mode,
+                tol, rel, block=blk, rA=rA, rB=rB, compute=mode,
             )
             slots = [j + (i - 1) * qn for i in 1:qm]
             _store_tlr_run!(C, U, V, rr, ee, slots, ranks_dev, err_dev, slots_dev)
@@ -438,13 +438,13 @@ function gemm!(C::TLRMatrix{BackendT,T},
                 range_find_row_right_run!(
                     U, V, rr, ee, ops, i, 1:qn;
                     alpha=α, beta=β, C=LC, eps_rel=sample_tol, r_required,
-                    tol, rel, block=blk, rankA=rA, rankB=rB, compute=mode,
+                    tol, rel, block=blk, rA=rA, rB=rB, compute=mode,
                 )
             else
                 range_find_row_left_run!(
                     U, V, rr, ee, ops, i, 1:qn;
                     alpha=α, beta=β, C=LC, eps_rel=sample_tol, r_required,
-                    tol, rel, block=blk, rankA=rA, rankB=rB, compute=mode,
+                    tol, rel, block=blk, rA=rA, rB=rB, compute=mode,
                 )
             end
             slots = collect(((i - 1) * qn + 1):(i * qn))
