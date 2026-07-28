@@ -25,15 +25,14 @@ const DEFAULT_CASE_REGEX = ".*"
 const DEFAULT_PRECISIONS = "float16,float32,float64"
 const DEFAULT_WORKSPACE_FRACTIONS = "0.125,0.25,0.5,0.75,1.0"
 const DEFAULT_MEMORY_SAFETY = "0.90"
-const DEFAULT_M = "8192"
-const DEFAULT_K = "8192"
-const DEFAULT_N = "8192"
-const DEFAULT_BM = "1024"
-const DEFAULT_BK = "1024"
-const DEFAULT_BN = "1024"
 const DEFAULT_TILE_SIZE = "32"
-const DEFAULT_MAX_RANK_A = "64"
-const DEFAULT_MAX_RANK_B = "32"
+
+# Add or remove entries here to define the complete benchmark grid. Each case
+# owns its dimensions, tile sizes, and maximum operand ranks.
+const GEMM_CASES = [
+    (m=8192, k=8192, n=8192, bm=1024, bk=1024, bn=1024,
+     maxrank_A=64, maxrank_B=32),
+]
 
 struct GemmBenchmarkConfig
     benchmark::Symbol
@@ -48,15 +47,8 @@ struct GemmBenchmarkConfig
     precisions::Vector{Symbol}
     workspace_fractions::Vector{Float64}
     workspace_memory_safety::Float64
-    m::Int
-    k::Int
-    n::Int
-    bm::Int
-    bk::Int
-    bn::Int
+    cases::Vector{<:NamedTuple}
     tile_size::Int
-    max_rank_a::Int
-    max_rank_b::Int
 end
 
 function print_help(io::IO=stdout)
@@ -180,15 +172,7 @@ function load_config(args=ARGS; default_benchmark::Symbol=:dense)
         DEFAULT_WORKSPACE_FRACTIONS), "workspace fractions")
     workspace_memory_safety = parse(Float64, _value(
         options, "memory_safety", ("NEXTLA_GEMM_MEMORY_SAFETY",), DEFAULT_MEMORY_SAFETY))
-    m = parse(Int, DEFAULT_M)
-    k = parse(Int, DEFAULT_K)
-    n = parse(Int, DEFAULT_N)
-    bm = parse(Int, DEFAULT_BM)
-    bk = parse(Int, DEFAULT_BK)
-    bn = parse(Int, DEFAULT_BN)
     tile_size = parse(Int, DEFAULT_TILE_SIZE)
-    max_rank_a = parse(Int, DEFAULT_MAX_RANK_A)
-    max_rank_b = parse(Int, DEFAULT_MAX_RANK_B)
 
     reps >= 1 || error("reps must be positive")
     warmup >= 0 || error("warmup must be nonnegative")
@@ -198,19 +182,22 @@ function load_config(args=ARGS; default_benchmark::Symbol=:dense)
         error("workspace fractions must lie in (0, 1]")
     0 < workspace_memory_safety <= 1 ||
         error("memory-safety must lie in (0, 1]")
-    all(>(0), (m, k, n, bm, bk, bn, tile_size, max_rank_a, max_rank_b)) ||
-        error("all dimensions, tile sizes, and ranks must be positive")
-    m % bm == 0 && k % bk == 0 && n % bn == 0 ||
-        error("m, k, and n must be divisible by bm, bk, and bn respectively")
-    max(max_rank_a, max_rank_b) <= min(bm, bk, bn) ||
-        error("maximum ranks must not exceed the tile sizes")
+    isempty(GEMM_CASES) && error("GEMM_CASES must not be empty")
+    for case in GEMM_CASES
+        all(>(0), (case.m, case.k, case.n, case.bm, case.bk, case.bn,
+                   case.maxrank_A, case.maxrank_B)) ||
+            error("all case dimensions, tile sizes, and ranks must be positive")
+        case.m % case.bm == 0 && case.k % case.bk == 0 && case.n % case.bn == 0 ||
+            error("each case must be divisible by its bm, bk, and bn")
+        max(case.maxrank_A, case.maxrank_B) <= min(case.bm, case.bk, case.bn) ||
+            error("case maximum ranks must not exceed its tile sizes")
+    end
 
     mkpath(output_dir)
     return GemmBenchmarkConfig(
         benchmark, backend, reps, warmup, seed, output_dir, shard_count,
         shard_index, case_regex, precisions, workspace_fractions,
-        workspace_memory_safety, m, k, n, bm, bk, bn, tile_size,
-        max_rank_a, max_rank_b)
+        workspace_memory_safety, collect(GEMM_CASES), tile_size)
 end
 
 load_config(; default_benchmark::Symbol=:dense) =

@@ -26,14 +26,6 @@ using NextLA
 const TLRM = NextLA.TLRmodule
 
 const CONFIG = load_config(; default_benchmark=Symbol("tlr-output"))
-const M = CONFIG.m
-const K = CONFIG.k
-const N = CONFIG.n
-const BM = CONFIG.bm
-const BK = CONFIG.bk
-const BN = CONFIG.bn
-const MAX_RANK_A = CONFIG.max_rank_a
-const MAX_RANK_B = CONFIG.max_rank_b
 const NREPS = CONFIG.reps
 const WARMUP = CONFIG.warmup
 const BLOCK = CONFIG.tile_size
@@ -192,10 +184,10 @@ function main()
     write_header_if_needed(OUTPUT)
     done = completed_cases(OUTPUT)
     cases = NamedTuple[]
-    for precision in CONFIG.precisions
-        m, k, n = M, K, N
-        bm, bk, bn = BM, BK, BN
-        rank_A, rank_B = MAX_RANK_A, MAX_RANK_B
+    for spec in CONFIG.cases, precision in CONFIG.precisions
+        m, k, n = spec.m, spec.k, spec.n
+        bm, bk, bn = spec.bm, spec.bk, spec.bn
+        rank_A, rank_B = spec.maxrank_A, spec.maxrank_B
         max(rank_A, rank_B) <= min(bm, bk, bn) ||
             error("ranks must not exceed tile sizes (m=$m, k=$k, n=$n, " *
                   "bm=$bm, bk=$bk, bn=$bn, " *

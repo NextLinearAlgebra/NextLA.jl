@@ -197,12 +197,12 @@ end
 
 function all_cases()
     cases = NamedTuple[]
-    for precision in PRECISIONS
+    for spec in CONFIG.cases, precision in PRECISIONS
         push!(cases, (
-            shape="m$(CONFIG.m)xk$(CONFIG.k)xn$(CONFIG.n)",
-            m=CONFIG.m, k=CONFIG.k, n=CONFIG.n,
-            bm=CONFIG.bm, bk=CONFIG.bk, bn=CONFIG.bn,
-            maxrank_A=CONFIG.max_rank_a, maxrank_B=CONFIG.max_rank_b,
+            shape="m$(spec.m)xk$(spec.k)xn$(spec.n)",
+            m=spec.m, k=spec.k, n=spec.n,
+            bm=spec.bm, bk=spec.bk, bn=spec.bn,
+            maxrank_A=spec.maxrank_A, maxrank_B=spec.maxrank_B,
             axis=AXIS.name, orderA=AXIS.orderA, orderB=AXIS.orderB,
             precision=precision.name, T=precision.T, compute=precision.compute,
         ))

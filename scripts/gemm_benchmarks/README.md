@@ -21,9 +21,19 @@ JULIA_PROJECT=/path/to/gpuenv \
   --benchmark dense --backend cuda --shard-count 8 --shard-index "$SLURM_ARRAY_TASK_ID"
 ```
 
-Set dimensions, tile sizes, ranks, and precisions by editing the `DEFAULT_*`
-values in `config.jl`. Float64 needs more memory and is typically slower, so
-use smaller dimensions or more job-array shards if GPU memory is limited.
+Set dimensions, tile sizes, and ranks by editing `GEMM_CASES` in `config.jl`:
+
+```julia
+const GEMM_CASES = [
+    (m=1024, k=1024, n=2048, bm=128, bk=128, bn=256,
+     maxrank_A=32, maxrank_B=24),
+    (m=2048, k=4096, n=2048, bm=256, bk=256, bn=256,
+     maxrank_A=64, maxrank_B=32),
+]
+```
+
+Float64 needs more memory and is typically slower, so use smaller dimensions
+or more job-array shards if GPU memory is limited.
 
 The default output directory is `scripts/gemm_benchmarks/results/`; use
 `--output-dir` to put results on scratch storage. Existing case IDs are
