@@ -4,9 +4,12 @@
 # by TLRmodule.jl (operands.jl needs its GridKind before this hub runs).
 include("dense_result/precision.jl")
 include("dense_result/workspace.jl")
+include("dense_result/ragged_schedule.jl")
 include("dense_result/run_schedule.jl")
 include("dense_result/stages.jl")
+include("dense_result/ragged_stages.jl")
 include("dense_result/low_rank_terms.jl")
+include("dense_result/ragged_low_rank_terms.jl")
 include("dense_result/regions/interior.jl")
 include("dense_result/regions/corner.jl")
 include("dense_result/regions/right.jl")

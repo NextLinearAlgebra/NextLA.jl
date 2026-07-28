@@ -170,6 +170,29 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backend
     return C
 end
 
+"""
+    gemm!(C, A::BCLRMatrix, B::BCLRMatrix; workspace, alpha=true, beta=false)
+
+CUDA-only exact-rank BCLR dense accumulation. The initial implementation
+supports a full regular grid and logical `N/T` operands, using grouped GEMM
+for all three stages and selecting FoldRight/FoldLeft from packed layouts.
+"""
+function gemm!(C::AbstractMatrix, A::BCLRMatrix{BackendT,T}, B::BCLRMatrix{BackendT,T};
+    workspace, alpha=true, beta=false,
+    transA::Char='N', transB::Char='N', compute=nothing,
+    workspace_policy=InteriorFirstWorkspace()) where {BackendT,T}
+    workspace_policy isa InteriorFirstWorkspace ||
+        throw(ArgumentError("BCLR dense GEMM currently supports InteriorFirstWorkspace only"))
+    LA = logical_operand(A, transA)
+    LB = logical_operand(B, transB)
+    size(LA, 2) == size(LB, 1) || throw(DimensionMismatch("inner dimensions must match"))
+    size(C) == (size(LA, 1), size(LB, 2)) ||
+        throw(DimensionMismatch("C must be size(op(A),1) × size(op(B),2)"))
+    mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
+    ScalarT = gemm_compute_type(mode)
+    return _bclr_gemm!(C, LA, LB; workspace, alpha=ScalarT(alpha), beta=ScalarT(beta), compute=mode)
+end
+
 @inline function _validate_dense_backend(C, tlr, dense)
     backend = get_backend(tlr)
     typeof(get_backend(dense)) === typeof(backend) &&

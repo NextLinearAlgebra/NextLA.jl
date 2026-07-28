@@ -132,6 +132,33 @@ follows `C`. GEMM scalars use the selected compute precision. `precision_gemm_ba
 is the sole backend dispatch point for ordinary GEMM, CUDA GEMMEx/TF32, and capability
 validation.
 
+## Exact-rank BCLR dense output
+
+`BCLRMatrix` is the exact-rank companion to padded `TLRMatrix`. Its outer and
+inner factors are independently packed one-dimensional allocations with host
+prefix offsets in their own tile orders. A factor span is therefore a compact
+matrix view of its active rank, not a `maxrank` prefix with a zero tail.
+
+The initial CUDA path is full-grid, BCLR × BCLR → dense with any logical
+`N/T` combination. It forms a ragged run plan and invokes
+`cublasGemmGroupedBatchedEx` for all stages. A row-packed A
+outer factor enables FoldRight's U stack; row-packed B outer factors retain
+the Stage-1 `j → N` W-panel fusion. A column-packed B inner factor additionally
+enables FoldLeft. The planner chooses one valid fold for every contiguous row
+run after checking exact scratch bytes; it compares non-common active-rank
+flops and breaks ties toward FoldRight's wider terminal GEMM.
+
+The BCLR workspace profile retains the public minimum/maximum contract. The
+minimum is the largest one-row exact requirement, and the maximum is enough
+for the best full-region fold. A budget between them greedily admits contiguous
+rows while a single numerical arena is reset and reused per run. Host rank,
+offset, and cuBLAS grouped-pointer metadata are outside this numerical bound.
+The grouped API uses device-resident pointer tables and host group metadata.
+It supports homogeneous Float16 (Float32 compute), Float32, and Float64 BCLR
+storage here; current cuBLAS rejects grouped Float16 → Float32 output, so that
+mixed storage signature is explicitly rejected rather than falling back to
+ordinary or stream-batched GEMM.
+
 ## TLR result integration boundary
 
 The predictable TLR-result API requires physical `TileRowMajor` storage for

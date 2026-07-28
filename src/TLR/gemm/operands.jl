@@ -129,6 +129,44 @@ end
             view(inner_factors(A, region), :, :, slot))
 end
 
+# Exact-rank BCLR tile access through the same logical N/T view.  A transpose
+# swaps factor roles and tile coordinates; the physical column packing of V/Z
+# thereby becomes logical row packing, and conversely for U/W.
+@inline _bclr_logical_coords(::LogicalTLROperand{:N,<:BCLRMatrix}, i::Int, j::Int) = (i, j)
+@inline _bclr_logical_coords(::LogicalTLROperand{:T,<:BCLRMatrix}, i::Int, j::Int) = (j, i)
+
+@inline _bclr_rank(A::LogicalTLROperand{:N,<:BCLRMatrix}, i::Int, j::Int) =
+    _bclr_rank(physical(A), i, j)
+@inline _bclr_rank(A::LogicalTLROperand{:T,<:BCLRMatrix}, i::Int, j::Int) =
+    _bclr_rank(physical(A), j, i)
+
+@inline bclr_outer(A::LogicalTLROperand{:N,<:BCLRMatrix}, i::Int, j::Int) =
+    bclr_outer(physical(A), i, j)
+@inline bclr_outer(A::LogicalTLROperand{:T,<:BCLRMatrix}, i::Int, j::Int) =
+    bclr_inner(physical(A), j, i)
+@inline bclr_inner(A::LogicalTLROperand{:N,<:BCLRMatrix}, i::Int, j::Int) =
+    bclr_inner(physical(A), i, j)
+@inline bclr_inner(A::LogicalTLROperand{:T,<:BCLRMatrix}, i::Int, j::Int) =
+    bclr_outer(physical(A), j, i)
+
+@inline bclr_outer_order(A::LogicalTLROperand{:N,<:BCLRMatrix}) =
+    bclr_outer_order(physical(A))
+@inline bclr_outer_order(A::LogicalTLROperand{:T,<:BCLRMatrix}) =
+    _transpose_order(bclr_inner_order(physical(A)))
+@inline bclr_inner_order(A::LogicalTLROperand{:N,<:BCLRMatrix}) =
+    bclr_inner_order(physical(A))
+@inline bclr_inner_order(A::LogicalTLROperand{:T,<:BCLRMatrix}) =
+    _transpose_order(bclr_outer_order(physical(A)))
+
+@inline _bclr_outer_storage(A::BCLRMatrix) = A.outer
+@inline _bclr_inner_storage(A::BCLRMatrix) = A.inner
+@inline _bclr_parent(A::BCLRMatrix) = A
+@inline _bclr_outer_storage(A::LogicalTLROperand{:N,<:BCLRMatrix}) = physical(A).outer
+@inline _bclr_outer_storage(A::LogicalTLROperand{:T,<:BCLRMatrix}) = physical(A).inner
+@inline _bclr_inner_storage(A::LogicalTLROperand{:N,<:BCLRMatrix}) = physical(A).inner
+@inline _bclr_inner_storage(A::LogicalTLROperand{:T,<:BCLRMatrix}) = physical(A).outer
+@inline _bclr_parent(A::LogicalTLROperand{<:Any,<:BCLRMatrix}) = physical(A)
+
 # ─── Interior operand ─────────────────────────────────────────────────────────
 
 """

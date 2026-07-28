@@ -13,7 +13,8 @@ using KernelAbstractions: zeros, allocate
 using KernelAbstractions.Extras: @unroll
 
 using ..NextLA: gemm_batched!, trsm_batched!, potrf_batched!
-using ..NextLA: precision_gemm!, precision_gemm_batched!, gemm_compute_mode, gemm_compute_type
+using ..NextLA: precision_gemm!, precision_gemm_batched!, precision_gemm_grouped!, GroupedGemmTask
+using ..NextLA: gemm_compute_mode, gemm_compute_type, supports_grouped_gemm
 using ..NextLA: GEMMCompute, validate_gemm_signature
 using ..NextLA: create_streams, with_stream, sync_stream, sync_streams_with_default
 using ..NextLA: SUBGROUP_SIZE, unwrap
@@ -22,10 +23,11 @@ using ..NextLA: precision_gemm_batched_ptrs!
 using ..NextLA: supports_pointer_batched
 
 export TileColMajor, TileRowMajor
-export AbstractTLRMatrix, TLRDenseDiagMatrix, TLRMatrix
+export AbstractTLRMatrix, TLRDenseDiagMatrix, TLRMatrix, BCLRMatrix
 export compress!, alloc_workspace
 export uncompress!
 export get_factors
+export pack_bclr
 export maxrank, ranks, residuals, dense_diag, dense_diag_corner, grid_size
 export nominal_tile_size, tail_tile_size
 export ndiag_tiles, tile_origin_coords, tile_size
@@ -38,6 +40,7 @@ include("container/order.jl")
 include("container/abstract.jl")
 include("container/dense_diag_tlr_matrix.jl")
 include("container/full_tlr_matrix.jl")
+include("container/bclr_matrix.jl")
 
 include("numerics/precision.jl")
 include("numerics/norms.jl")

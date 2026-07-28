@@ -80,3 +80,37 @@ function uncompress!(A::AbstractMatrix{T}, A_tlr::TLRMatrix{<:Any,T}) where {T}
 
     return A
 end
+
+"""Write an exact-rank regular-grid BCLR matrix into dense storage."""
+function uncompress!(A::AbstractMatrix{T}, A_tlr::BCLRMatrix{<:Any,T}) where {T}
+    size(A) == size(A_tlr) || throw(DimensionMismatch("A dimensions must match A_tlr"))
+    fill!(A, zero(T))
+    qm, qn = regular_grid_size(A_tlr)
+    mode = default_gemm_compute_mode(T)
+    # Exact ranks make the tile reconstructions heterogeneous. On CUDA submit
+    # their factor/destination views through GEMMGroupedBatchedEx in one call;
+    # the generic path remains an explicit CPU-compatible tile loop.
+    if supports_grouped_gemm(get_backend(A_tlr))
+        tasks = nothing
+        @inbounds for j in 1:qn, i in 1:qm
+            _bclr_rank(A_tlr, i, j) == 0 && continue
+            U, V = get_factors(A_tlr, i, j)
+            task = GroupedGemmTask('N', _adjoint_blas_char(T), one(T), U, V, zero(T),
+                                   _dense_tile_view(A, A_tlr, i, j))
+            if tasks === nothing
+                tasks = typeof(task)[task]
+            else
+                push!(tasks, task)
+            end
+        end
+        tasks === nothing || precision_gemm_grouped!(tasks, mode)
+        return A
+    end
+    @inbounds for j in 1:qn, i in 1:qm
+        _bclr_rank(A_tlr, i, j) == 0 && continue
+        U, V = get_factors(A_tlr, i, j)
+        precision_gemm!('N', _adjoint_blas_char(T), one(T), U, V, zero(T),
+                        _dense_tile_view(A, A_tlr, i, j), mode)
+    end
+    return A
+end

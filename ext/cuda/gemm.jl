@@ -1,3 +1,124 @@
+@inline NextLA.supports_grouped_gemm(::Type{<:CUDA.CUDABackend}) = true
+
+@inline _grouped_cuptr(A::CUDA.StridedCuArray{T}) where {T} = pointer(A)
+@inline _grouped_cuptr(A::Base.ReshapedArray) = _grouped_cuptr(parent(A))
+@inline _grouped_cuptr(A::SubArray{T}) where {T} = Base.unsafe_convert(CUDA.CuPtr{T}, A)
+
+"""
+Call the actual cuBLAS grouped-Ex entry point with device-resident pointer
+tables. CUDA.jl's generated binding currently declares `Aarray`/`Barray`/
+`Carray` as host `Ptr{Ptr{Cvoid}}`; the cuBLAS API expects pointer arrays in
+device memory, as do the typed grouped-GEMM bindings. Keep this narrow shim
+until that generated signature is corrected upstream.
+"""
+function _cublas_gemm_grouped_batched_ex!(transa, transb, m, n, k, alpha,
+                                           Aptrs, Atype, lda, Bptrs, Btype, ldb,
+                                           beta, Cptrs, Ctype, ldc, group_count,
+                                           group_size, compute)
+    CUBLAS.initialize_context()
+    CUBLAS.check() do
+        @ccall CUBLAS.libcublas.cublasGemmGroupedBatchedEx(
+            CUBLAS.handle()::CUBLAS.cublasHandle_t,
+            transa::Ptr{CUBLAS.cublasOperation_t},
+            transb::Ptr{CUBLAS.cublasOperation_t},
+            m::Ptr{Cint}, n::Ptr{Cint}, k::Ptr{Cint},
+            alpha::Ptr{Cvoid},
+            Aptrs::CUDA.CuPtr{CUDA.CuPtr{Cvoid}}, Atype::CUBLAS.cudaDataType_t,
+            lda::Ptr{Cint},
+            Bptrs::CUDA.CuPtr{CUDA.CuPtr{Cvoid}}, Btype::CUBLAS.cudaDataType_t,
+            ldb::Ptr{Cint},
+            beta::Ptr{Cvoid},
+            Cptrs::CUDA.CuPtr{CUDA.CuPtr{Cvoid}}, Ctype::CUBLAS.cudaDataType_t,
+            ldc::Ptr{Cint},
+            group_count::Cint, group_size::Ptr{Cint},
+            compute::CUBLAS.cublasComputeType_t,
+        )::CUBLAS.cublasStatus_t
+    end
+    return nothing
+end
+
+function _cuda_grouped_gemm_ex!(tasks::AbstractVector{<:NextLA.GroupedGemmTask},
+                                 ::Type{ScalarT}, compute_enum) where {ScalarT}
+    isempty(tasks) && return tasks
+    TaskT = eltype(tasks)
+    AT = typeof(first(tasks).A)
+    BT = typeof(first(tasks).B)
+    CT = typeof(first(tasks).C)
+    keys = Tuple[]
+    buckets = Vector{Vector{TaskT}}()
+    @inbounds for task in tasks
+        m, n, k, lda, ldb, ldc = NextLA._gemm_dims(
+            task.transA, task.transB, task.A, task.B, task.C)
+        # cuBLAS supplies alpha/beta once per group, not once per member.
+        # Shapes with different scalars therefore need distinct groups.
+        key = (task.transA, task.transB, m, n, k, lda, ldb, ldc,
+               ScalarT(task.alpha), ScalarT(task.beta))
+        pos = findfirst(isequal(key), keys)
+        if pos === nothing
+            push!(keys, key)
+            push!(buckets, TaskT[])
+            pos = length(buckets)
+        end
+        push!(buckets[pos], task)
+    end
+
+    transA = Char[]; transB = Char[]; alpha = ScalarT[]; beta = ScalarT[]
+    m = Int32[]; n = Int32[]; k = Int32[]
+    lda = Int32[]; ldb = Int32[]; ldc = Int32[]; group_size = Int32[]
+    flatA = AT[]; flatB = BT[]; flatC = CT[]
+    for bucket in buckets
+        task0 = first(bucket)
+        gm, gn, gk, glda, gldb, gldc = NextLA._gemm_dims(
+            task0.transA, task0.transB, task0.A, task0.B, task0.C)
+        push!(transA, bucket[1].transA)
+        push!(transB, bucket[1].transB)
+        push!(alpha, ScalarT(bucket[1].alpha))
+        push!(beta, ScalarT(bucket[1].beta))
+        push!(m, Int32(gm)); push!(n, Int32(gn)); push!(k, Int32(gk))
+        push!(lda, Int32(glda)); push!(ldb, Int32(gldb)); push!(ldc, Int32(gldc))
+        push!(group_size, Int32(length(bucket)))
+        for task in bucket
+            push!(flatA, task.A); push!(flatB, task.B); push!(flatC, task.C)
+        end
+    end
+    # The grouped API consumes one flat device pointer table, ordered by
+    # groups. Group metadata and per-group scalars remain host arrays.
+    Aptrs = CUDA.CuArray(reinterpret.(CUDA.CuPtr{Cvoid}, _grouped_cuptr.(flatA)))
+    Bptrs = CUDA.CuArray(reinterpret.(CUDA.CuPtr{Cvoid}, _grouped_cuptr.(flatB)))
+    Cptrs = CUDA.CuArray(reinterpret.(CUDA.CuPtr{Cvoid}, _grouped_cuptr.(flatC)))
+    transa = convert.(CUBLAS.cublasOperation_t, transA)
+    transb = convert.(CUBLAS.cublasOperation_t, transB)
+    try
+        # cuBLAS grouped GEMM takes per-group scalars from host memory.
+        CUBLAS.cublasSetPointerMode_v2(CUBLAS.handle(), CUBLAS.CUBLAS_POINTER_MODE_HOST)
+        _cublas_gemm_grouped_batched_ex!(
+            transa, transb, m, n, k, alpha,
+            Aptrs, convert(CUBLAS.cudaDataType_t, eltype(first(flatA))), lda,
+            Bptrs, convert(CUBLAS.cudaDataType_t, eltype(first(flatB))), ldb,
+            beta, Cptrs, convert(CUBLAS.cudaDataType_t, eltype(first(flatC))), ldc,
+            Cint(length(buckets)), group_size, compute_enum,
+        )
+    finally
+        CUBLAS.cublasSetPointerMode_v2(CUBLAS.handle(), CUBLAS.CUBLAS_POINTER_MODE_DEVICE)
+        CUDA.unsafe_free!(Cptrs)
+        CUDA.unsafe_free!(Bptrs)
+        CUDA.unsafe_free!(Aptrs)
+    end
+    return tasks
+end
+
+function NextLA._precision_gemm_grouped!(tasks::AbstractVector{<:NextLA.GroupedGemmTask},
+                                          mode::NextLA.GEMMCompute{ComputeT}) where {ComputeT}
+    return _cuda_grouped_gemm_ex!(tasks, _cublas_scalar_type(ComputeT),
+                                  _cublas_compute_type(ComputeT))
+end
+
+function NextLA._precision_gemm_grouped!(tasks::AbstractVector{<:NextLA.GroupedGemmTask},
+                                          ::NextLA.TF32)
+    return _cuda_grouped_gemm_ex!(tasks, Float32,
+                                  CUBLAS.CUBLAS_COMPUTE_32F_FAST_TF32)
+end
+
 function NextLA.gemm_batched!(transA::Char,
                               transB::Char,
                               alpha,
