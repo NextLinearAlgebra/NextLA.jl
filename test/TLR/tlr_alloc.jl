@@ -1,6 +1,6 @@
 # Allocation-regression coverage for the canonical TLR-output GEMM's hot
 # sampler (docs/TODO.md's dated worklog, "R3 performance closure"): the
-# canonical `gemm!(C::TLRMatrix, A::TLRMatrix, B::TLRMatrix; ...)` hot sampler
+# canonical `gemm!(C::PaddedFTLRMatrix, A::PaddedFTLRMatrix, B::PaddedFTLRMatrix; ...)` hot sampler
 # must not rebuild a `Vector`-of-views/device-pointer-array per ARA pass.
 #
 # CUDA-only: `dense_budget.jl`'s `@allocated`-based `term_bytes` helper counts
@@ -133,9 +133,9 @@ if isdefined(@__MODULE__, :CUDA)
         T = Float64
         b = 16
         qk = qn = 3
-        A = NextLA.TLRMatrix(ArrayType(zeros(T, qm * b, qk * b)), b, rA)
-        B = NextLA.TLRMatrix(ArrayType(zeros(T, qk * b, qn * b)), b, rB)
-        C = NextLA.TLRMatrix(ArrayType(zeros(T, qm * b, qn * b)), b, 16)
+        A = NextLA.PaddedFTLRMatrix(ArrayType(zeros(T, qm * b, qk * b)), b, rA)
+        B = NextLA.PaddedFTLRMatrix(ArrayType(zeros(T, qk * b, qn * b)), b, rB)
+        C = NextLA.PaddedFTLRMatrix(ArrayType(zeros(T, qm * b, qn * b)), b, 16)
         fill_random_tlr!(A, ArrayType; seed=seed + 1)
         fill_random_tlr!(B, ArrayType; seed=seed + 2)
         workspace = NextLA.TLRGemmWorkspace(C, A, B; block=4)

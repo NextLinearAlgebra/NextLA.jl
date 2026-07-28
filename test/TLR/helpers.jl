@@ -59,7 +59,7 @@ end
 
 # ── TLR reconstruction and storage assertions ─────────────────────────────────
 
-function reconstruct_tlr(A_tlr::NextLA.TLRDenseDiagMatrix)
+function reconstruct_tlr(A_tlr::NextLA.TLRMatrix)
     T = eltype(A_tlr)
     A = zeros(T, size(A_tlr))
     D = Array(NextLA.dense_diag(A_tlr))
@@ -91,7 +91,7 @@ function reconstruct_tlr(A_tlr::NextLA.TLRDenseDiagMatrix)
     return A
 end
 
-function reconstruct_tlr(A_tlr::NextLA.TLRMatrix)
+function reconstruct_tlr(A_tlr::NextLA.PaddedFTLRMatrix)
     T = eltype(A_tlr)
     A = zeros(T, size(A_tlr))
 
@@ -137,7 +137,7 @@ end
 
 # ── Random TLR operands for GEMM tests ────────────────────────────────────────
 
-function fill_random_tlr!(A_tlr::NextLA.TLRDenseDiagMatrix, ArrayType::Type; seed::Integer)
+function fill_random_tlr!(A_tlr::NextLA.TLRMatrix, ArrayType::Type; seed::Integer)
     rng = MersenneTwister(seed)
     T = eltype(A_tlr)
     A_tlr.D .= ArrayType(randn(rng, T, size(A_tlr.D)))
@@ -152,7 +152,7 @@ function fill_random_tlr!(A_tlr::NextLA.TLRDenseDiagMatrix, ArrayType::Type; see
     return A_tlr
 end
 
-function fill_random_tlr!(A_tlr::NextLA.TLRMatrix, ArrayType::Type; seed::Integer)
+function fill_random_tlr!(A_tlr::NextLA.PaddedFTLRMatrix, ArrayType::Type; seed::Integer)
     rng = MersenneTwister(seed)
     T = eltype(A_tlr)
     for f in (A_tlr.int_U, A_tlr.int_V, A_tlr.right_U, A_tlr.right_V,
@@ -186,8 +186,8 @@ end
 function assert_tlr_gemm_matches_dense(ArrayType::Type, T::Type, n::Int, b::Int, r::Int,
                                        orderA, orderB, synchronize; budget::Int,
                                        alpha=T(1.3), beta=T(-0.4), atol=1e-10, rtol=1e-10)
-    A_tlr = NextLA.TLRDenseDiagMatrix(ArrayType(zeros(T, n, n)), b, r; tile_order=orderA)
-    B_tlr = NextLA.TLRDenseDiagMatrix(ArrayType(zeros(T, n, n)), b, r; tile_order=orderB)
+    A_tlr = NextLA.TLRMatrix(ArrayType(zeros(T, n, n)), b, r; tile_order=orderA)
+    B_tlr = NextLA.TLRMatrix(ArrayType(zeros(T, n, n)), b, r; tile_order=orderB)
     fill_random_tlr!(A_tlr, ArrayType; seed=101)
     fill_random_tlr!(B_tlr, ArrayType; seed=202)
     assert_gemm_matches_dense(ArrayType, A_tlr, B_tlr, synchronize;
@@ -202,8 +202,8 @@ function assert_fulllr_gemm_matches_dense(ArrayType::Type, T::Type, mA::Int, k::
                                           synchronize; budget::Int,
                                           alpha=T(1.3), beta=T(-0.4), atol=1e-10, rtol=1e-10)
     tsA[2] == tsB[1] || throw(ArgumentError("contraction tile sizes must agree"))
-    A_tlr = NextLA.TLRMatrix(ArrayType(zeros(T, mA, k)), tsA, r; tile_order=orderA)
-    B_tlr = NextLA.TLRMatrix(ArrayType(zeros(T, k, nB)), tsB, r; tile_order=orderB)
+    A_tlr = NextLA.PaddedFTLRMatrix(ArrayType(zeros(T, mA, k)), tsA, r; tile_order=orderA)
+    B_tlr = NextLA.PaddedFTLRMatrix(ArrayType(zeros(T, k, nB)), tsB, r; tile_order=orderB)
     fill_random_tlr!(A_tlr, ArrayType; seed=101)
     fill_random_tlr!(B_tlr, ArrayType; seed=202)
     assert_gemm_matches_dense(ArrayType, A_tlr, B_tlr, synchronize;
@@ -221,7 +221,7 @@ function assert_dense_fulllr_gemm(ArrayType::Type, ::Type{T}, side::Symbol,
     C = ArrayType(C0)
 
     if side === :tlr_dense
-        A = NextLA.TLRMatrix(ArrayType(zeros(T, stored(m, k, transA)...)),
+        A = NextLA.PaddedFTLRMatrix(ArrayType(zeros(T, stored(m, k, transA)...)),
                              optiles(tiles, transA), 3; tile_order=order)
         fill_random_tlr!(A, ArrayType; seed=101)
         B = ArrayType(randn(MersenneTwister(202), T, stored(k, n, transB)...))
@@ -231,7 +231,7 @@ function assert_dense_fulllr_gemm(ArrayType::Type, ::Type{T}, side::Symbol,
         ref = α * opd(reconstruct_tlr(A), transA) * opd(Array(B), transB) + β * C0
     else
         A = ArrayType(randn(MersenneTwister(101), T, stored(m, k, transA)...))
-        B = NextLA.TLRMatrix(ArrayType(zeros(T, stored(k, n, transB)...)),
+        B = NextLA.PaddedFTLRMatrix(ArrayType(zeros(T, stored(k, n, transB)...)),
                              optiles(tiles, transB), 3; tile_order=order)
         fill_random_tlr!(B, ArrayType; seed=202)
         workspace = max(budget, 3 * sizeof(T))
@@ -254,8 +254,8 @@ function assert_transpose_matches_dense(m, k, n, tsA, tsB, oA, oB, transA, trans
     @assert bk == bk2
     storedA, tileA = transA == 'T' ? ((k, m), (bk, bm)) : ((m, k), (bm, bk))
     storedB, tileB = transB == 'T' ? ((n, k), (bn, bk)) : ((k, n), (bk, bn))
-    A = NextLA.TLRMatrix(ArrayType(zeros(Float64, storedA...)), tileA, 3; tile_order=oA)
-    B = NextLA.TLRMatrix(ArrayType(zeros(Float64, storedB...)), tileB, 3; tile_order=oB)
+    A = NextLA.PaddedFTLRMatrix(ArrayType(zeros(Float64, storedA...)), tileA, 3; tile_order=oA)
+    B = NextLA.PaddedFTLRMatrix(ArrayType(zeros(Float64, storedB...)), tileB, 3; tile_order=oB)
     fill_random_tlr!(A, ArrayType; seed=1)
     fill_random_tlr!(B, ArrayType; seed=2)
     C0 = randn(MersenneTwister(7), Float64, m, n)
@@ -276,8 +276,8 @@ function assert_dense_diag_transpose_matches(n, b, r, oA, oB, transA, transB;
                                              budget, alpha=1.3, beta=-0.4,
                                              ArrayType=Array, synchronize=_ -> nothing,
                                              atol=1e-9, rtol=1e-9)
-    A = NextLA.TLRDenseDiagMatrix(ArrayType(zeros(Float64, n, n)), b, r; tile_order=oA)
-    B = NextLA.TLRDenseDiagMatrix(ArrayType(zeros(Float64, n, n)), b, r; tile_order=oB)
+    A = NextLA.TLRMatrix(ArrayType(zeros(Float64, n, n)), b, r; tile_order=oA)
+    B = NextLA.TLRMatrix(ArrayType(zeros(Float64, n, n)), b, r; tile_order=oB)
     fill_random_tlr!(A, ArrayType; seed=11)
     fill_random_tlr!(B, ArrayType; seed=22)
     C0 = randn(MersenneTwister(33), Float64, n, n)

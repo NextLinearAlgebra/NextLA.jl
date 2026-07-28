@@ -12,7 +12,7 @@ where `U_i = A.bottom_U[i] (s×rA)`, `V_i = A.bottom_V[i] (b×rA)` are the botto
 factors and `W_ij, Z_ij` are B's interior factors.  First writer of C_bottom, folds β.
 No-op when `m_A % b == 0`.
 """
-function tlr_gemm_bpanel_by_int(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha; beta=one(alpha), budget::Int, compute=default_gemm_compute_mode(T), arena=nothing) where {T}
+function tlr_gemm_bpanel_by_int(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRMatrix}, alpha; beta=one(alpha), budget::Int, compute=default_gemm_compute_mode(T), arena=nothing) where {T}
     qkA = region_tile_count(A, _BOTTOM)        # A bottom-panel tiles (= interior columns)
     qkA == 0 && return C                       # no bottom panel (m_A % b == 0)
 
@@ -54,7 +54,7 @@ No-op when `m_B % b == 0`, `B.maxrank == 0`, or A has no corner.
 """
 # Budget blocks the free column axis `j` (workspace was `O(qn)` with no knob). `γ_A` is a
 # dense corner uses a direct two-stage helper, with the corner tile broadcast.
-function tlr_gemm_corner_by_bpanel(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha;
+function tlr_gemm_corner_by_bpanel(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRMatrix}, alpha;
     beta=one(alpha), budget::Int, compute=default_gemm_compute_mode(T), arena=nothing) where {T}
     qnB = region_tile_count(B, _BOTTOM)
     qnB == 0 && return C                      # no bottom panel (m_B % b == 0)
@@ -67,14 +67,14 @@ function tlr_gemm_corner_by_bpanel(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagM
                                        alpha, beta, budget, compute, arena)
 end
 
-# ── Fully low-rank variants (TLRMatrix) ──────────────────────────────────────
+# ── Fully low-rank variants (PaddedFTLRMatrix) ──────────────────────────────────────
 #
 # `v_Aᵀ B_int` reduces over ALL contraction tiles `k` (no dense diagonal), and
 # `γ_A v_Bᵀ` uses a low-rank corner `γ_A`.
 
 # v_Aᵀ B_int is the mirror direct boundary path. The bottom panel supplies a complete
 # contiguous left k-stack and the local row maps to A's physical tail tile-row.
-function tlr_gemm_bpanel_by_int(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRMatrix}, alpha;
+function tlr_gemm_bpanel_by_int(C, A::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix}, alpha;
     beta=one(alpha), budget::Int, compute=default_gemm_compute_mode(T), arena=nothing) where {T}
     qk = region_tile_count(A, _BOTTOM)
     qk == 0 && return C
@@ -91,7 +91,7 @@ end
 # The mirror of `rpanel_by_corner`: the `(bnd, bnd, 1:qn)` corner, so A's low-rank corner
 # is broadcast and the budget blocks the free *column* axis `j`. Each `j` writes a distinct
 # output tile, so β folds in Stage 3 for every block.
-function tlr_gemm_corner_by_bpanel(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRMatrix}, alpha;
+function tlr_gemm_corner_by_bpanel(C, A::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix}, alpha;
     beta=one(alpha), budget::Int, compute=default_gemm_compute_mode(T), arena=nothing) where {T}
     qn = region_tile_count(B, _BOTTOM)
     qn == 0 && return C

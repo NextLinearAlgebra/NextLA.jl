@@ -1,9 +1,9 @@
 function _canonical_tlr_fixture(::Type{T}, ArrayType;
                                 rA=3, rB=4, rC=16, seed=1200) where {T}
     n, b = 48, 16
-    A = NextLA.TLRMatrix(ArrayType(zeros(T, n, n)), b, rA)
-    B = NextLA.TLRMatrix(ArrayType(zeros(T, n, n)), b, rB)
-    C = NextLA.TLRMatrix(ArrayType(zeros(T, n, n)), b, rC)
+    A = NextLA.PaddedFTLRMatrix(ArrayType(zeros(T, n, n)), b, rA)
+    B = NextLA.PaddedFTLRMatrix(ArrayType(zeros(T, n, n)), b, rB)
+    C = NextLA.PaddedFTLRMatrix(ArrayType(zeros(T, n, n)), b, rC)
     fill_random_tlr!(A, ArrayType; seed=seed + 1)
     fill_random_tlr!(B, ArrayType; seed=seed + 2)
     return A, B, C
@@ -64,7 +64,7 @@ end
     @test_throws ArgumentError _TLRM.gemm!(
         C, A, B; transA='T', transB='N', tol=1e-6)
 
-    Acol = NextLA.TLRMatrix(zeros(Float64, 48, 48), 16, 3;
+    Acol = NextLA.PaddedFTLRMatrix(zeros(Float64, 48, 48), 16, 3;
                             tile_order=NextLA.TileColMajor())
     @test_throws ArgumentError _TLRM.gemm!(C, Acol, B; tol=1e-6)
 end

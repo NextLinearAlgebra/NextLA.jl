@@ -81,7 +81,7 @@ end
 Build the prologue for one output tile `(i,j)` of `X = α·op(A)·op(B) + β·C`:
 the coupling matrices (always) and, when `β ≠ 0`, `C`'s own tile factors folded
 in as one further factor pair. `C` must be a `LogicalTLROperand` over a
-`TLRMatrix` (a zero-copy tile-factor view); required whenever `beta != 0`.
+`PaddedFTLRMatrix` (a zero-copy tile-factor view); required whenever `beta != 0`.
 """
 function tile_factor_list(ops::LogicalTLROperands, i::Integer, j::Integer;
                           alpha, beta=false, C=nothing, compute=nothing)

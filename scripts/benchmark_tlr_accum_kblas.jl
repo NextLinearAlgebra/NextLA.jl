@@ -45,7 +45,7 @@ end
 end
 
 function load_tlr(Ulogical, Vlogical, b, nt, capacity, order, profile, operand, r, beta)
-    X = M.TLRMatrix(CUDA.CUDABackend(), T, b * nt, b * nt, (b, b), capacity; tile_order=order)
+    X = M.PaddedFTLRMatrix(CUDA.CUDABackend(), T, b * nt, b * nt, (b, b), capacity; tile_order=order)
     Uh = zeros(T, size(X.int_U)); Vh = zeros(T, size(X.int_V))
     for j in 1:nt, i in 1:nt
         logical = i + (j - 1) * nt
@@ -99,7 +99,7 @@ function run_record(rec; smoke=false)
     A = load_tlr(rec.au, rec.av, rec.b, rec.nt, rec.r, M.TileRowMajor(), rec.profile, :A, rec.r, rec.beta)
     B = load_tlr(rec.bu, rec.bv, rec.b, rec.nt, rec.r, M.TileColMajor(), rec.profile, :B, rec.r, rec.beta)
     C0 = load_tlr(rec.cu0, rec.cv0, rec.b, rec.nt, rec.rC, M.TileRowMajor(), rec.profile, :C, rec.r, rec.beta)
-    C = M.TLRMatrix(CUDA.CUDABackend(), T, rec.b * rec.nt, rec.b * rec.nt, (rec.b, rec.b), rec.rC; tile_order=M.TileRowMajor())
+    C = M.PaddedFTLRMatrix(CUDA.CUDABackend(), T, rec.b * rec.nt, rec.b * rec.nt, (rec.b, rec.b), rec.rC; tile_order=M.TileRowMajor())
     Aref = reconstruct(rec.au, rec.av, rec.b, rec.nt, (i, j) -> effective_rank(rec.profile, :A, i, j, rec.r, rec.beta))
     Bref = reconstruct(rec.bu, rec.bv, rec.b, rec.nt, (i, j) -> effective_rank(rec.profile, :B, i, j, rec.r, rec.beta))
     C0ref = reconstruct(rec.cu0, rec.cv0, rec.b, rec.nt, (i, j) -> effective_rank(rec.profile, :C, i, j, rec.r, rec.beta))

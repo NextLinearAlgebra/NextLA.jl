@@ -98,12 +98,12 @@ include("ttqrt.jl")
 
 include("TLR/TLRmodule.jl")
 using .TLRmodule: TileColMajor, TileRowMajor
-using .TLRmodule: AbstractTLRMatrix, TLRDenseDiagMatrix, TLRMatrix, BCLRMatrix
+using .TLRmodule: AbstractTLRMatrix, TLRMatrix, PaddedFTLRMatrix, CompressedFTLRMatrix
 using .TLRmodule: ndiag_tiles, tile_origin_coords, tile_size
 using .TLRmodule: maxrank, ranks, residuals, dense_diag, dense_diag_corner, grid_size, nominal_tile_size, tail_tile_size
 using .TLRmodule: compress!, uncompress!, alloc_workspace
 using .TLRmodule: get_factors
-using .TLRmodule: pack_bclr
+using .TLRmodule: pack_compressed_ftlr
 using .TLRmodule: gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes
 using .TLRmodule: DenseGemmWorkspace, InteriorFirstWorkspace
 using .TLRmodule: TLRGemmWorkspace

@@ -24,9 +24,9 @@ end
 function _tile_apply_fixture(::Type{T}, ArrayType; qm=3, qn=3, qk=4,
                              bm=4, bk=3, bn=5, rA=3, rB=2) where {T}
     RM = NextLA.TileRowMajor(); CM = NextLA.TileColMajor()
-    A_tlr = NextLA.TLRMatrix(ArrayType(zeros(T, qm * bm, qk * bk)), (bm, bk), rA;
+    A_tlr = NextLA.PaddedFTLRMatrix(ArrayType(zeros(T, qm * bm, qk * bk)), (bm, bk), rA;
                             tile_order=RM)
-    B_tlr = NextLA.TLRMatrix(ArrayType(zeros(T, qk * bk, qn * bn)), (bk, bn), rB;
+    B_tlr = NextLA.PaddedFTLRMatrix(ArrayType(zeros(T, qk * bk, qn * bn)), (bk, bn), rB;
                             tile_order=CM)
     fill_random_tlr!(A_tlr, ArrayType; seed=811)
     fill_random_tlr!(B_tlr, ArrayType; seed=812)
@@ -70,7 +70,7 @@ end
     @testset "beta != 0 folds in C's own tile" begin
         A_tlr, B_tlr = _tile_apply_fixture(T, Array)
         Adense, Bdense = reconstruct_tlr(A_tlr), reconstruct_tlr(B_tlr)
-        C_tlr = NextLA.TLRMatrix(zeros(T, 3 * 4, 3 * 5), (4, 5), 5)
+        C_tlr = NextLA.PaddedFTLRMatrix(zeros(T, 3 * 4, 3 * 5), (4, 5), 5)
         fill_random_tlr!(C_tlr, Array; seed=813)
         Cdense = reconstruct_tlr(C_tlr)
         LA, LB, LC = _TLRM.logical_operand(A_tlr), _TLRM.logical_operand(B_tlr),

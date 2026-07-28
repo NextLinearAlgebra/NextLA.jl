@@ -5,7 +5,7 @@
     # arithmetic; the row-major variant only flips the enumeration axis, so it is
     # pinned by the round-trip property plus spot checks below.
     @testset "column-major index table" begin
-        A = NextLA.TLRDenseDiagMatrix(zeros(Float32, 10, 9), 4, 4; tile_order=NextLA.TileColMajor)
+        A = NextLA.TLRMatrix(zeros(Float32, 10, 9), 4, 4; tile_order=NextLA.TileColMajor)
         expected = [
             (1, 1, 1, 1, 1, 4, 4),
             (2, 1, 2, 5, 1, 4, 4),
@@ -33,7 +33,7 @@
     end
 
     @testset "row-major round trip and offdiag slots" begin
-        A = NextLA.TLRDenseDiagMatrix(zeros(Float32, 10, 9), 4, 4; tile_order=NextLA.TileRowMajor)
+        A = NextLA.TLRMatrix(zeros(Float32, 10, 9), 4, 4; tile_order=NextLA.TileRowMajor)
         gs = NextLA.grid_size(A)
         @test gs == (3, 3)
 
@@ -52,11 +52,11 @@
     end
 end
 
-@testset "TLRDenseDiagMatrix constructor and storage allocation" begin
+@testset "TLRMatrix constructor and storage allocation" begin
     # Rectangular nominal tiles with tails on both axes: exercises every storage
     # region (interior, right, bottom, dense corner) in one construction.
     @testset "rectangular nominal tile geometry" begin
-        A = NextLA.TLRDenseDiagMatrix(zeros(Float64, 10, 11), (4, 5), 3)
+        A = NextLA.TLRMatrix(zeros(Float64, 10, 11), (4, 5), 3)
 
         @test !ismutable(A)
         @test size(A) == (10, 11)
@@ -89,7 +89,7 @@ end
             @testset "$backend_name" begin
                 prototype = ArrayType(zeros(Float32, 32, 32))
                 # 32×32 with b=16: 2×2 tile grid, no boundary tiles
-                A = NextLA.TLRDenseDiagMatrix(prototype, 16, 16)
+                A = NextLA.TLRMatrix(prototype, 16, 16)
 
                 @test size(A) == (32, 32)
                 @test NextLA.grid_size(A) == (2, 2)
@@ -111,25 +111,25 @@ end
     end
 
     @testset "constructor validation" begin
-        @test_throws ArgumentError NextLA.TLRDenseDiagMatrix(zeros(Float64, 5, 5), -1, 2)
-        @test_throws ArgumentError NextLA.TLRDenseDiagMatrix(zeros(Float64, 5, 5), 0, 2)
-        @test_throws ArgumentError NextLA.TLRDenseDiagMatrix(zeros(Float64, 5, 5), (2, 0), 2)
-        @test_throws ArgumentError NextLA.TLRDenseDiagMatrix(zeros(Float64, 5, 5), 2, -1)
+        @test_throws ArgumentError NextLA.TLRMatrix(zeros(Float64, 5, 5), -1, 2)
+        @test_throws ArgumentError NextLA.TLRMatrix(zeros(Float64, 5, 5), 0, 2)
+        @test_throws ArgumentError NextLA.TLRMatrix(zeros(Float64, 5, 5), (2, 0), 2)
+        @test_throws ArgumentError NextLA.TLRMatrix(zeros(Float64, 5, 5), 2, -1)
 
-        A = NextLA.TLRDenseDiagMatrix(zeros(Float64, 8, 8), 4, 2)
+        A = NextLA.TLRMatrix(zeros(Float64, 8, 8), 4, 2)
         @test_throws BoundsError  NextLA.TLRmodule.tile_linear_index(A.order, NextLA.grid_size(A)..., 3, 1)
         @test_throws BoundsError  NextLA.TLRmodule.tile_linear_index(A.order, NextLA.grid_size(A)..., 1, 3)
         @test_throws ArgumentError NextLA.TLRmodule.region_slot(A, 1, 1)
 
         # Smaller than one tile: the whole matrix is the dense corner.
-        A_small = NextLA.TLRDenseDiagMatrix(zeros(Float64, 2, 2), 4, 2)
+        A_small = NextLA.TLRMatrix(zeros(Float64, 2, 2), 4, 2)
         @test size(NextLA.dense_diag(A_small)) == (4, 4, 0)
         @test size(NextLA.dense_diag_corner(A_small)) == (2, 2, 1)
     end
 end
 
-@testset "TLRMatrix constructor and factor access" begin
-    A = NextLA.TLRMatrix(zeros(Float64, 10, 14), (4, 5), 3)
+@testset "PaddedFTLRMatrix constructor and factor access" begin
+    A = NextLA.PaddedFTLRMatrix(zeros(Float64, 10, 14), (4, 5), 3)
 
     @test !ismutable(A)
     @test size(A) == (10, 14)
@@ -172,7 +172,7 @@ end
     @test size(V_corner) == (4, 2)
 
     # Tile-aligned row-major variant: boundary storage is empty.
-    B = NextLA.TLRMatrix(zeros(Float32, 8, 10), (4, 5), 2; tile_order=NextLA.TileRowMajor)
+    B = NextLA.PaddedFTLRMatrix(zeros(Float32, 8, 10), (4, 5), 2; tile_order=NextLA.TileRowMajor)
     @test NextLA.grid_size(B) == (2, 2)
     @test NextLA.TLRmodule.tile_order(B) isa NextLA.TileRowMajor
     @test size(B.int_U) == (4, 2, 4)
@@ -180,15 +180,15 @@ end
     @test size(B.bottom_U, 3) == 0
     @test size(B.corner_U, 3) == 0
 
-    @test_throws ArgumentError NextLA.TLRMatrix(zeros(Float64, 5, 5), 0, 2)
-    @test_throws ArgumentError NextLA.TLRMatrix(zeros(Float64, 5, 5), (2, 0), 2)
-    @test_throws ArgumentError NextLA.TLRMatrix(zeros(Float64, 5, 5), 2, -1)
+    @test_throws ArgumentError NextLA.PaddedFTLRMatrix(zeros(Float64, 5, 5), 0, 2)
+    @test_throws ArgumentError NextLA.PaddedFTLRMatrix(zeros(Float64, 5, 5), (2, 0), 2)
+    @test_throws ArgumentError NextLA.PaddedFTLRMatrix(zeros(Float64, 5, 5), 2, -1)
     @test_throws BoundsError NextLA.get_factors(A, 4, 1)
 end
 
 @testset "TLR factor access — boundary tile categories" begin
     # 10×10 with b=4: 3×3 tile grid, tail_m=tail_n=2
-    A_tlr = NextLA.TLRDenseDiagMatrix(zeros(Float64, 10, 10), 4, 3)
+    A_tlr = NextLA.TLRMatrix(zeros(Float64, 10, 10), 4, 3)
 
     internal_slot = NextLA.TLRmodule._rank_index(A_tlr, 1, 2)
     bottom_slot   = NextLA.TLRmodule._rank_index(A_tlr, 3, 1)

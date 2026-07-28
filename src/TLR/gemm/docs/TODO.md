@@ -97,7 +97,7 @@ converged member's swap-removal into the retired suffix updates only the
 tiny device address table (`swap_batch_ptrs!`), never the numeric buffers a
 stable-address field points into. Run output (`U`, `V`) and diagnostic
 buffers (`ranks`, `err_sq`) are likewise driver-owned and reused across the
-traversal's outer loop in `gemm!(C::TLRMatrix,...)`, not reallocated per
+traversal's outer loop in `gemm!(C::PaddedFTLRMatrix,...)`, not reallocated per
 output row/column.
 
 This contract stops at the sampler. Three things it does not cover, by
@@ -162,7 +162,7 @@ Focused verification:
 Added
 
 ```julia
-gemm!(C::TLRMatrix, A::TLRMatrix, B::TLRMatrix;
+gemm!(C::PaddedFTLRMatrix, A::PaddedFTLRMatrix, B::PaddedFTLRMatrix;
       alpha=true, beta=false, transA='N', transB='N',
       tol=0, rel=false, eps_rel=nothing,
       r_required=10, block=32, compute=nothing)
@@ -263,7 +263,7 @@ Three pieces landed:
    per-run-call residual, built once and reused across the GEMMs within a
    single `apply_*_run!` call rather than rebuilt per GEMM).
 
-Also hoisted `gemm!(C::TLRMatrix,...)`'s per-output-row/column `U`, `V`,
+Also hoisted `gemm!(C::PaddedFTLRMatrix,...)`'s per-output-row/column `U`, `V`,
 `rr`, `ee`, and `_store_tlr_run!`'s `slots_dev` scratch, previously
 reallocated on every iteration of the traversal despite being loop-invariant
 in shape.

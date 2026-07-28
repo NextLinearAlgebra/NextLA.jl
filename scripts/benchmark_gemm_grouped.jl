@@ -41,13 +41,13 @@ function summarize(label, f, flops)
     return t
 end
 
-function grouped_tasks(ns)
+function grouped_tasks(dims)
     tasks = NextLA.GroupedGemmTask[]
     for i in 1:BATCH
-        n = ns[i]
-        A = CUDA.rand(Float32, M, K)
-        B = CUDA.rand(Float32, K, n)
-        C = CUDA.zeros(Float32, M, n)
+        m, k, n = dims[i]
+        A = CUDA.rand(Float32, m, k)
+        B = CUDA.rand(Float32, k, n)
+        C = CUDA.zeros(Float32, m, n)
         push!(tasks, NextLA.GroupedGemmTask('N', 'N', 1.0f0, A, B, 0.0f0, C))
     end
     return tasks
@@ -58,7 +58,7 @@ function main()
     println("batch=$BATCH, m=k=$M, Float32, warmup=$WARMUP, reps=$REPS")
 
     println("128 × 512×512×256 (grouped vs pointer-batched)")
-    grouped = grouped_tasks(fill(512, BATCH))
+    grouped = grouped_tasks([(M, K, 512) for _ in 1:BATCH])
     A = [task.A for task in grouped]
     B = [task.B for task in grouped]
     Cbatched = [CUDA.zeros(Float32, M, 512) for _ in 1:BATCH]
@@ -69,7 +69,7 @@ function main()
 
     println("\n128 × 512×512×n, n=128:512 (grouped vs individual GEMMs)")
     ns = collect(round.(Int, range(128, 512; length=BATCH)))
-    ragged = grouped_tasks(ns)
+    ragged = grouped_tasks([(M, K, n) for n in ns])
     individual = () -> foreach(ragged) do task
         NextLA.precision_gemm!(task.transA, task.transB, task.alpha, task.A,
                                task.B, task.beta, task.C, MODE)
@@ -78,6 +78,22 @@ function main()
     tg_ragged = summarize("precision_gemm_grouped!", () -> NextLA.precision_gemm_grouped!(ragged, MODE), ragged_flops)
     ti = summarize("128 individual precision_gemm!", individual, ragged_flops)
     @printf("grouped / individual: %.3fx\n", tg_ragged / ti)
+
+    println("\n128 × heterogeneous m,k,n (grouped vs individual GEMMs)")
+    dims = collect(zip(
+        round.(Int, range(256, 512; length=BATCH)),
+        reverse(round.(Int, range(256, 512; length=BATCH))),
+        round.(Int, range(128, 512; length=BATCH)),
+    ))
+    fully_ragged = grouped_tasks(dims)
+    fully_individual = () -> foreach(fully_ragged) do task
+        NextLA.precision_gemm!(task.transA, task.transB, task.alpha, task.A,
+                               task.B, task.beta, task.C, MODE)
+    end
+    heterogeneous_flops = sum(2.0 * m * k * n for (m, k, n) in dims)
+    tg_heterogeneous = summarize("precision_gemm_grouped!", () -> NextLA.precision_gemm_grouped!(fully_ragged, MODE), heterogeneous_flops)
+    ti_heterogeneous = summarize("128 individual precision_gemm!", fully_individual, heterogeneous_flops)
+    @printf("grouped / individual: %.3fx\n", tg_heterogeneous / ti_heterogeneous)
 end
 
 main()

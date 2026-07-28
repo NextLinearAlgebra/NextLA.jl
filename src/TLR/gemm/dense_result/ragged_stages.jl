@@ -1,24 +1,24 @@
-@inline function _bclr_row_outer_stack(A, i::Int, rho::Int)
+@inline function _compressed_ftlr_row_outer_stack(A, i::Int, rho::Int)
     qm, qk = regular_grid_size(A)
     1 <= i <= qm || throw(BoundsError(A, (i, :)))
-    f = _bclr_outer_storage(A)
-    fi, fj = _bclr_logical_coords(A, i, 1)
-    li, lj = _bclr_logical_coords(A, i, qk)
-    first_slot = _bclr_slot(f, fi, fj)
-    last_slot = _bclr_slot(f, li, lj)
+    f = _compressed_ftlr_outer_storage(A)
+    fi, fj = _compressed_ftlr_logical_coords(A, i, 1)
+    li, lj = _compressed_ftlr_logical_coords(A, i, qk)
+    first_slot = _compressed_ftlr_slot(f, fi, fj)
+    last_slot = _compressed_ftlr_slot(f, li, lj)
     first = f.offsets[first_slot]
     last = f.offsets[last_slot + 1] - 1
     rho == 0 && return reshape(view(f.data, 1:0), nominal_tile_size(A, 1), 0)
     return reshape(view(f.data, first:last), nominal_tile_size(A, 1), rho)
 end
 
-@inline function _bclr_row_w_stack(B, k::Int, rho::Int)
+@inline function _compressed_ftlr_row_w_stack(B, k::Int, rho::Int)
     _, qn = regular_grid_size(B)
-    f = _bclr_outer_storage(B)
-    fi, fj = _bclr_logical_coords(B, k, 1)
-    li, lj = _bclr_logical_coords(B, k, qn)
-    first_slot = _bclr_slot(f, fi, fj)
-    last_slot = _bclr_slot(f, li, lj)
+    f = _compressed_ftlr_outer_storage(B)
+    fi, fj = _compressed_ftlr_logical_coords(B, k, 1)
+    li, lj = _compressed_ftlr_logical_coords(B, k, qn)
+    first_slot = _compressed_ftlr_slot(f, fi, fj)
+    last_slot = _compressed_ftlr_slot(f, li, lj)
     first = f.offsets[first_slot]
     last = f.offsets[last_slot + 1] - 1
     rho == 0 && return reshape(view(f.data, 1:0), nominal_tile_size(B, 1), 0)
@@ -31,16 +31,16 @@ end
 end
 
 """
-Execute one FoldRight BCLR row run. `S` is packed in `(i,k,j)` order for the
+Execute one FoldRight CompressedFTLR row run. `S` is packed in `(i,k,j)` order for the
 Stage-1 W-panel fusion; `T` is packed in `(i,j,k)` order so each row is already
 the Stage-3 `rho_i × (qn*bn)` stack.
 """
-function _execute_bclr_foldright_run!(C, A, B, plan::BCLRRankPlan, irange,
+function _execute_compressed_ftlr_foldright_run!(C, A, B, plan::CompressedFTLRRankPlan, irange,
                                        alpha, beta, mode, arena)
     T = eltype(A)
     qm, qk = regular_grid_size(A)
     qkB, qn = regular_grid_size(B)
-    qk == qkB || throw(DimensionMismatch("BCLR contraction grids do not match"))
+    qk == qkB || throw(DimensionMismatch("CompressedFTLR contraction grids do not match"))
     bm = nominal_tile_size(A, 1)
     bn = nominal_tile_size(B, 2)
     nr = length(irange)
@@ -49,7 +49,7 @@ function _execute_bclr_foldright_run!(C, A, B, plan::BCLRRankPlan, irange,
     soff = Base.zeros(Int, nr, qk, qn)
     s_total = 0
     @inbounds for (ii, i) in enumerate(irange), k in 1:qk, j in 1:qn
-        rA = _bclr_rank(A, i, k); rB = _bclr_rank(B, k, j)
+        rA = _compressed_ftlr_rank(A, i, k); rB = _compressed_ftlr_rank(B, k, j)
         rA == 0 || rB == 0 || begin
             soff[ii, k, j] = s_total + 1
             s_total += rA * rB
@@ -84,12 +84,12 @@ function _execute_bclr_foldright_run!(C, A, B, plan::BCLRRankPlan, irange,
     # Stage 1: one W-row panel per (i,k), so j is folded into N.
     s1 = nothing
     @inbounds for (ii, i) in enumerate(irange), k in 1:qk
-        rA = _bclr_rank(A, i, k)
+        rA = _compressed_ftlr_rank(A, i, k)
         rBsum = plan.b_row_ranks[k]
         (rA == 0 || rBsum == 0) && continue
         firstj = plan.b_first_active_col[k]
-        task = GroupedGemmTask('T', 'N', one(T), bclr_inner(A, i, k),
-                               _bclr_row_w_stack(B, k, rBsum), zero(T),
+        task = GroupedGemmTask('T', 'N', one(T), compressed_ftlr_inner(A, i, k),
+                               _compressed_ftlr_row_w_stack(B, k, rBsum), zero(T),
                                _ragged_view(sdata, soff[ii, k, firstj], rA, rBsum))
         if s1 === nothing
             s1 = typeof(task)[task]
@@ -102,14 +102,14 @@ function _execute_bclr_foldright_run!(C, A, B, plan::BCLRRankPlan, irange,
     # Stage 2: each S_ikj is multiplied by Z_kj'.
     s2 = nothing
     @inbounds for (ii, i) in enumerate(irange), k in 1:qk, j in 1:qn
-        rA = _bclr_rank(A, i, k); rB = _bclr_rank(B, k, j)
+        rA = _compressed_ftlr_rank(A, i, k); rB = _compressed_ftlr_rank(B, k, j)
         (rA == 0 || rB == 0) && continue
         rho_before_k = plan.a_k_prefix[i, k]
         rho = plan.a_k_prefix[i, end]
         tstack = _ragged_view(tdata, tbase[ii], rho, qn * bn)
         task = GroupedGemmTask('N', 'T', one(T),
                                _ragged_view(sdata, soff[ii, k, j], rA, rB),
-                               bclr_inner(B, k, j), zero(T),
+                               compressed_ftlr_inner(B, k, j), zero(T),
                                view(tstack, (rho_before_k + 1):(rho_before_k + rA),
                                     ((j - 1) * bn + 1):(j * bn)))
         if s2 === nothing
@@ -129,7 +129,7 @@ function _execute_bclr_foldright_run!(C, A, B, plan::BCLRRankPlan, irange,
             _scale_output!(Crow, beta)
             continue
         end
-        task = GroupedGemmTask('N', 'N', alpha, _bclr_row_outer_stack(A, i, rho),
+        task = GroupedGemmTask('N', 'N', alpha, _compressed_ftlr_row_outer_stack(A, i, rho),
                                _ragged_view(tdata, tbase[ii], rho, qn * bn), beta, Crow)
         if s3 === nothing
             s3 = typeof(task)[task]
@@ -141,14 +141,14 @@ function _execute_bclr_foldright_run!(C, A, B, plan::BCLRRankPlan, irange,
     return C
 end
 
-@inline function _bclr_col_z_stack(B, j::Int, gamma::Int)
+@inline function _compressed_ftlr_col_z_stack(B, j::Int, gamma::Int)
     qk, qn = regular_grid_size(B)
     1 <= j <= qn || throw(BoundsError(B, (:, j)))
-    f = _bclr_inner_storage(B)
-    fi, fj = _bclr_logical_coords(B, 1, j)
-    li, lj = _bclr_logical_coords(B, qk, j)
-    first_slot = _bclr_slot(f, fi, fj)
-    last_slot = _bclr_slot(f, li, lj)
+    f = _compressed_ftlr_inner_storage(B)
+    fi, fj = _compressed_ftlr_logical_coords(B, 1, j)
+    li, lj = _compressed_ftlr_logical_coords(B, qk, j)
+    first_slot = _compressed_ftlr_slot(f, fi, fj)
+    last_slot = _compressed_ftlr_slot(f, li, lj)
     first = f.offsets[first_slot]
     last = f.offsets[last_slot + 1] - 1
     gamma == 0 && return reshape(view(f.data, 1:0), nominal_tile_size(B, 2), 0)
@@ -156,18 +156,18 @@ end
 end
 
 """FoldLeft companion: the T' arena is packed directly into each `(i,j)` K-stack."""
-function _execute_bclr_foldleft_run!(C, A, B, plan::BCLRRankPlan, irange,
+function _execute_compressed_ftlr_foldleft_run!(C, A, B, plan::CompressedFTLRRankPlan, irange,
                                       alpha, beta, mode, arena)
     T = eltype(A)
     _, qk = regular_grid_size(A)
     qkB, qn = regular_grid_size(B)
-    qk == qkB || throw(DimensionMismatch("BCLR contraction grids do not match"))
+    qk == qkB || throw(DimensionMismatch("CompressedFTLR contraction grids do not match"))
     bm = nominal_tile_size(A, 1); bn = nominal_tile_size(B, 2)
     nr = length(irange)
     soff = Base.zeros(Int, nr, qk, qn)
     s_total = 0
     @inbounds for (ii, i) in enumerate(irange), k in 1:qk, j in 1:qn
-        rA = _bclr_rank(A, i, k); rB = _bclr_rank(B, k, j)
+        rA = _compressed_ftlr_rank(A, i, k); rB = _compressed_ftlr_rank(B, k, j)
         rA == 0 || rB == 0 || begin
             soff[ii, k, j] = s_total + 1
             s_total += rA * rB
@@ -188,12 +188,12 @@ function _execute_bclr_foldleft_run!(C, A, B, plan::BCLRRankPlan, irange,
 
     s1 = nothing
     @inbounds for (ii, i) in enumerate(irange), k in 1:qk
-        rA = _bclr_rank(A, i, k)
+        rA = _compressed_ftlr_rank(A, i, k)
         rBsum = plan.b_row_ranks[k]
         (rA == 0 || rBsum == 0) && continue
         firstj = plan.b_first_active_col[k]
-        task = GroupedGemmTask('T', 'N', one(T), bclr_inner(A, i, k),
-                               _bclr_row_w_stack(B, k, rBsum), zero(T),
+        task = GroupedGemmTask('T', 'N', one(T), compressed_ftlr_inner(A, i, k),
+                               _compressed_ftlr_row_w_stack(B, k, rBsum), zero(T),
                                _ragged_view(sdata, soff[ii, k, firstj], rA, rBsum))
         if s1 === nothing; s1 = typeof(task)[task]; else; push!(s1, task); end
     end
@@ -201,11 +201,11 @@ function _execute_bclr_foldleft_run!(C, A, B, plan::BCLRRankPlan, irange,
 
     s2 = nothing
     @inbounds for (ii, i) in enumerate(irange), k in 1:qk, j in 1:qn
-        rA = _bclr_rank(A, i, k); rB = _bclr_rank(B, k, j)
+        rA = _compressed_ftlr_rank(A, i, k); rB = _compressed_ftlr_rank(B, k, j)
         (rA == 0 || rB == 0) && continue
         tbase = (ii - 1) * bm * plan.b_total_rank + bm * plan.b_col_prefix[j] + 1
         toff = tbase + bm * plan.b_col_k_prefix[j, k]
-        task = GroupedGemmTask('N', 'N', one(T), bclr_outer(A, i, k),
+        task = GroupedGemmTask('N', 'N', one(T), compressed_ftlr_outer(A, i, k),
                                _ragged_view(sdata, soff[ii, k, j], rA, rB), zero(T),
                                _ragged_view(tdata, toff, bm, rB))
         if s2 === nothing; s2 = typeof(task)[task]; else; push!(s2, task); end
@@ -223,7 +223,7 @@ function _execute_bclr_foldleft_run!(C, A, B, plan::BCLRRankPlan, irange,
         tbase = (ii - 1) * bm * plan.b_total_rank + bm * plan.b_col_prefix[j] + 1
         task = GroupedGemmTask('N', 'T', alpha,
                                _ragged_view(tdata, tbase, bm, gamma),
-                               _bclr_col_z_stack(B, j, gamma), beta, Cij)
+                               _compressed_ftlr_col_z_stack(B, j, gamma), beta, Cij)
         if s3 === nothing; s3 = typeof(task)[task]; else; push!(s3, task); end
     end
     s3 === nothing || precision_gemm_grouped!(s3, mode)

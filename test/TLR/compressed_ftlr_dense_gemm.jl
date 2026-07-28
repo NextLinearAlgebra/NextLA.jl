@@ -1,10 +1,10 @@
 using Test
 using KernelAbstractions
 
-function _bclr_to_backend(A::NextLA.BCLRMatrix, AT)
+function _compressed_ftlr_to_backend(A::NextLA.CompressedFTLRMatrix, AT)
     qm, qn = NextLA.grid_size(A)
     rank_grid = [Int(NextLA.ranks(A)[_TLRM._rank_index(A, i, j)]) for i in 1:qm, j in 1:qn]
-    B = NextLA.BCLRMatrix(KernelAbstractions.get_backend(AT(zeros(eltype(A), 1))),
+    B = NextLA.CompressedFTLRMatrix(KernelAbstractions.get_backend(AT(zeros(eltype(A), 1))),
                            eltype(A), size(A, 1), size(A, 2),
                            NextLA.nominal_tile_size(A),
                            rank_grid;
@@ -14,15 +14,15 @@ function _bclr_to_backend(A::NextLA.BCLRMatrix, AT)
     return B
 end
 
-@testset "BCLR CUDA logical transpose combinations" begin
-    Ahost = _bclr_fixture(Float32, Int[1 2; 3 1])
-    Bhost = _bclr_fixture(Float32, Int[2 1; 1 3])
+@testset "CompressedFTLR CUDA logical transpose combinations" begin
+    Ahost = _compressed_ftlr_fixture(Float32, Int[1 2; 3 1])
+    Bhost = _compressed_ftlr_fixture(Float32, Int[2 1; 1 3])
     referenceA = zeros(Float32, size(Ahost)); referenceB = zeros(Float32, size(Bhost))
     NextLA.uncompress!(referenceA, Ahost); NextLA.uncompress!(referenceB, Bhost)
     for (name, AT, sync) in backends
         name == "CUDA" || continue
-        A = _bclr_to_backend(Ahost, AT)
-        B = _bclr_to_backend(Bhost, AT)
+        A = _compressed_ftlr_to_backend(Ahost, AT)
+        B = _compressed_ftlr_to_backend(Bhost, AT)
         for transA in ('N', 'T'), transB in ('N', 'T')
             opA = transA == 'N' ? referenceA : transpose(referenceA)
             opB = transB == 'N' ? referenceB : transpose(referenceB)
@@ -40,15 +40,15 @@ end
     end
 end
 
-@testset "BCLR CUDA dense GEMM" begin
-    Ahost = _bclr_fixture(Float32)
-    Bhost = _bclr_fixture(Float32, Int[1 0; 2 1; 3 1])
+@testset "CompressedFTLR CUDA dense GEMM" begin
+    Ahost = _compressed_ftlr_fixture(Float32)
+    Bhost = _compressed_ftlr_fixture(Float32, Int[1 0; 2 1; 3 1])
     @test_throws ArgumentError _TLRM.gemm!(zeros(Float32, 8, 8), Ahost, Bhost;
                                              workspace=NextLA.gemm_minimum_workspace_bytes(Ahost, Bhost))
     for (name, AT, sync) in backends
         name == "CUDA" || continue
-        A = _bclr_to_backend(Ahost, AT)
-        B = _bclr_to_backend(Bhost, AT)
+        A = _compressed_ftlr_to_backend(Ahost, AT)
+        B = _compressed_ftlr_to_backend(Bhost, AT)
         referenceA = zeros(Float32, size(A)); referenceB = zeros(Float32, size(B))
         NextLA.uncompress!(referenceA, Ahost); NextLA.uncompress!(referenceB, Bhost)
         reconstructed = AT(zeros(Float32, size(A)))

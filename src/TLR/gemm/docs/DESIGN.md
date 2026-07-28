@@ -74,7 +74,7 @@ origin, scalars, compute mode, and workspace budget. It selects or accepts a fol
 traversal, allocates one typed workspace, and executes the runs.
 
 The full-TLR driver calls it for the regular interior and each live low-rank boundary
-term. `TLRDenseDiagMatrix` retains its tuned diagonal/off-diagonal interior kernels and
+term. `TLRMatrix` retains its tuned diagonal/off-diagonal interior kernels and
 uses direct helpers for boundary combinations:
 
 - low-rank × low-rank: the shared budgeted core;
@@ -132,14 +132,14 @@ follows `C`. GEMM scalars use the selected compute precision. `precision_gemm_ba
 is the sole backend dispatch point for ordinary GEMM, CUDA GEMMEx/TF32, and capability
 validation.
 
-## Exact-rank BCLR dense output
+## Exact-rank CompressedFTLR dense output
 
-`BCLRMatrix` is the exact-rank companion to padded `TLRMatrix`. Its outer and
+`CompressedFTLRMatrix` is the exact-rank companion to padded `PaddedFTLRMatrix`. Its outer and
 inner factors are independently packed one-dimensional allocations with host
 prefix offsets in their own tile orders. A factor span is therefore a compact
 matrix view of its active rank, not a `maxrank` prefix with a zero tail.
 
-The initial CUDA path is full-grid, BCLR × BCLR → dense with any logical
+The initial CUDA path is full-grid, CompressedFTLR × CompressedFTLR → dense with any logical
 `N/T` combination. It forms a ragged run plan and invokes
 `cublasGemmGroupedBatchedEx` for all stages. A row-packed A
 outer factor enables FoldRight's U stack; row-packed B outer factors retain
@@ -148,13 +148,13 @@ enables FoldLeft. The planner chooses one valid fold for every contiguous row
 run after checking exact scratch bytes; it compares non-common active-rank
 flops and breaks ties toward FoldRight's wider terminal GEMM.
 
-The BCLR workspace profile retains the public minimum/maximum contract. The
+The CompressedFTLR workspace profile retains the public minimum/maximum contract. The
 minimum is the largest one-row exact requirement, and the maximum is enough
 for the best full-region fold. A budget between them greedily admits contiguous
 rows while a single numerical arena is reset and reused per run. Host rank,
 offset, and cuBLAS grouped-pointer metadata are outside this numerical bound.
 The grouped API uses device-resident pointer tables and host group metadata.
-It supports homogeneous Float16 (Float32 compute), Float32, and Float64 BCLR
+It supports homogeneous Float16 (Float32 compute), Float32, and Float64 CompressedFTLR
 storage here; current cuBLAS rejects grouped Float16 → Float32 output, so that
 mixed storage signature is explicitly rejected rather than falling back to
 ordinary or stream-batched GEMM.
@@ -162,7 +162,7 @@ ordinary or stream-batched GEMM.
 ## TLR result integration boundary
 
 The predictable TLR-result API requires physical `TileRowMajor` storage for
-`C`, `A`, and `B`. `TLRMatrix` therefore defaults to that order. Transpose flags
+`C`, `A`, and `B`. `PaddedFTLRMatrix` therefore defaults to that order. Transpose flags
 change the logical order but never reinterpret the physical contract.
 
 For a regular tile grid, the supported sampling table is:

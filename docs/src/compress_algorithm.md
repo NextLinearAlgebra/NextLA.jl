@@ -30,13 +30,13 @@ The implemented container behavior is:
 
 | container | matrix shape | compressed tiles | dense tiles |
 | --- | --- | --- | --- |
-| `TLRMatrix` | rectangular supported | every tile, including the corner | none |
-| `TLRDenseDiagMatrix` | currently square only | interior off-diagonal, right, and bottom regions | regular diagonal and dense corner |
+| `PaddedFTLRMatrix` | rectangular supported | every tile, including the corner | none |
+| `TLRMatrix` | currently square only | interior off-diagonal, right, and bottom regions | regular diagonal and dense corner |
 
 `A` must have the same dimensions and element type as `A_tlr`, and its storage must
 be compatible with the container backend. `tol` must be nonnegative.
 
-For `TLRDenseDiagMatrix`, diagonal tiles are copied exactly before low-rank
+For `TLRMatrix`, diagonal tiles are copied exactly before low-rank
 compression. Their recorded rank is `min(tile_m, tile_n)` and their residual is zero.
 
 ## 2. Tile categories and workspace
@@ -47,7 +47,7 @@ has the same shape:
 - interior;
 - right boundary;
 - bottom boundary;
-- corner, for `TLRMatrix` only.
+- corner, for `PaddedFTLRMatrix` only.
 
 `lowrank_regions(A_tlr)` selects the categories belonging to the container.
 `alloc_workspace` creates one `CompressCategoryWorkspace` per category and one stream
@@ -99,7 +99,7 @@ Conceptually, `compress!` performs:
 ```text
 validate dimensions and tolerance
 
-if A_tlr is TLRDenseDiagMatrix:
+if A_tlr is TLRMatrix:
     copy dense diagonal and corner tiles
     set their rank/residual diagnostics
 
@@ -305,6 +305,6 @@ unsatisfied tiles to dense storage or a higher-capacity second pass.
 - The tolerance is per tile, not a global matrix error allocation.
 - Workspace is allocated per category; GPU categories may hold their scratch
   concurrently.
-- `TLRDenseDiagMatrix` compression currently requires a square matrix.
+- `TLRMatrix` compression currently requires a square matrix.
 - The implementation estimates error using the randQB_EI energy identity; it does not
   recompute the dense reconstruction error.

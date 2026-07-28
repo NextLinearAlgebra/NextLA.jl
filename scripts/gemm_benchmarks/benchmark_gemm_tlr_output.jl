@@ -71,7 +71,7 @@ end
 function make_full_rank_tlr(backend, ::Type{T}, m, n, bm, bn, rank, seed) where {T}
     m % bm == 0 || error("m=$m must be divisible by tile size bm=$bm")
     n % bn == 0 || error("n=$n must be divisible by tile size bn=$bn")
-    X = TLRM.TLRMatrix(
+    X = TLRM.PaddedFTLRMatrix(
         backend, T, m, n, (bm, bn), rank; tile_order=TLRM.TileRowMajor)
     Random.seed!(seed)
     randn!(X.int_U)
@@ -137,7 +137,7 @@ function benchmark_case(backend, ::Type{T}, m, k, n, bm, bk, bn,
     dense_ms = best_time_ms(dense_gemm, backend)
 
     C_dense = backend_zeros(backend, T, m, n)
-    C_compressed = TLRM.TLRMatrix(
+    C_compressed = TLRM.PaddedFTLRMatrix(
         backend, T, m, n, (bm, bn), rank_C; tile_order=TLRM.TileRowMajor)
     dense_ws = TLRM.DenseGemmWorkspace(
         A, B; bytes=TLRM.gemm_maximum_workspace_bytes(A, B))
@@ -148,7 +148,7 @@ function benchmark_case(backend, ::Type{T}, m, k, n, bm, bk, bn,
     end
     dense_compress_ms = best_time_ms(dense_plus_compress, backend)
 
-    C_tlr = TLRM.TLRMatrix(
+    C_tlr = TLRM.PaddedFTLRMatrix(
         backend, T, m, n, (bm, bn), rank_C; tile_order=TLRM.TileRowMajor)
     tlr_ws = TLRM.TLRGemmWorkspace(C_tlr, A, B; block=BLOCK)
     tlr_output = () -> TLRM.gemm!(

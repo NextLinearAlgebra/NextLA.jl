@@ -1,7 +1,7 @@
 # Complete TLR × dense and dense × TLR products. Each low-rank tile needs only one
 # operand-typed intermediate; the reduction over TLR tiles accumulates directly in C.
 
-function _tlr_dense_gemm!(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}},
+function _tlr_dense_gemm!(C, A::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix{<:Any,T}},
                           B::LogicalDenseOperand, alpha, beta, budget::Int,
                           compute, arena=nothing) where {T}
     _scale_output!(C, beta)
@@ -29,7 +29,7 @@ function _tlr_dense_gemm!(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}},
 end
 
 function _dense_tlr_gemm!(C, A::LogicalDenseOperand,
-                          B::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}},
+                          B::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix{<:Any,T}},
                           alpha, beta, budget::Int, compute, arena=nothing) where {T}
     _scale_output!(C, beta)
     r = maxrank(B)

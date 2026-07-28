@@ -4,7 +4,7 @@ module ExperimentMatrixGeneration
 using LinearAlgebra
 using Random
 using KernelAbstractions
-using NextLA.TLRmodule: TLRMatrix, TileRowMajor, grid_size, maxrank,
+using NextLA.TLRmodule: PaddedFTLRMatrix, TileRowMajor, grid_size, maxrank,
                         get_factors, tile_size
 
 export generate_tlr_operands, generate_tlr_matrix
@@ -53,8 +53,8 @@ function generate_tlr_operands(
         throw(ArgumentError("tile ranks must not exceed tile_size"))
     T <: Number || throw(ArgumentError("dtype must be numeric"))
 
-    A = TLRMatrix(backend, T, m, k, b, rA; tile_order=TileRowMajor)
-    B = TLRMatrix(backend, T, k, n, b, rB; tile_order=TileRowMajor)
+    A = PaddedFTLRMatrix(backend, T, m, k, b, rA; tile_order=TileRowMajor)
+    B = PaddedFTLRMatrix(backend, T, k, n, b, rB; tile_order=TileRowMajor)
     A.ranks .= rA
     B.ranks .= rB
 
@@ -74,8 +74,8 @@ function generate_tlr_matrix(
 end
 
 function _fill_factors(
-    A::TLRMatrix{<:Any,T},
-    B::TLRMatrix{<:Any,T},
+    A::PaddedFTLRMatrix{<:Any,T},
+    B::PaddedFTLRMatrix{<:Any,T},
     rng,
     shared_rank::Int,
 ) where {T}

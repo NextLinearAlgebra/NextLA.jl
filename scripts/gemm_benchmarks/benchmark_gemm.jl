@@ -81,7 +81,7 @@ end
 
 function make_tlr(backend, ::Type{T}, m, n, bm, bn, maxrank, order;
                   seed) where {T}
-    X = TLRM.TLRMatrix(
+    X = TLRM.PaddedFTLRMatrix(
         backend, T, m, n, (bm, bn), maxrank; tile_order=order)
     randn!(X.int_U)
     randn!(X.int_V)

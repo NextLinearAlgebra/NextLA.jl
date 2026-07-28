@@ -29,7 +29,7 @@ using `InteriorFirstWorkspace`.
 `Float16` operands and otherwise to the operand type. `alpha` and `beta` are
 converted to that compute type.
 """
-function gemm!(C::AbstractMatrix, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDenseDiagMatrix{BackendT,T};
+function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T};
     workspace, alpha=true, beta=false,
     transA::Char=('N'), transB::Char=('N'), compute=nothing,
     workspace_policy=InteriorFirstWorkspace()) where {BackendT,T}
@@ -94,7 +94,7 @@ function gemm!(C::AbstractMatrix, A::TLRDenseDiagMatrix{BackendT,T}, B::TLRDense
 end
 
 """
-    gemm!(C, A::TLRMatrix, B::TLRMatrix; workspace,
+    gemm!(C, A::PaddedFTLRMatrix, B::PaddedFTLRMatrix; workspace,
           alpha=true, beta=false) -> C
 
 Fully low-rank TLR × TLR → dense `C := alpha·(A·B) + beta·C`. Every tile is low-rank,
@@ -111,7 +111,7 @@ Operand storage is inferred from `A` and `B`, output storage from `C`, and `comp
 selects the accumulation mode. Intermediate factors always retain operand storage;
 `alpha` and `beta` use compute precision.
 """
-function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T};
+function gemm!(C::AbstractMatrix, A::PaddedFTLRMatrix{BackendT,T}, B::PaddedFTLRMatrix{BackendT,T};
     workspace, alpha=true, beta=false,
     transA::Char=('N'), transB::Char=('N'), compute=nothing,
     workspace_policy=InteriorFirstWorkspace()) where {BackendT,T}
@@ -171,18 +171,18 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backend
 end
 
 """
-    gemm!(C, A::BCLRMatrix, B::BCLRMatrix; workspace, alpha=true, beta=false)
+    gemm!(C, A::CompressedFTLRMatrix, B::CompressedFTLRMatrix; workspace, alpha=true, beta=false)
 
-CUDA-only exact-rank BCLR dense accumulation. The initial implementation
+CUDA-only exact-rank CompressedFTLR dense accumulation. The initial implementation
 supports a full regular grid and logical `N/T` operands, using grouped GEMM
 for all three stages and selecting FoldRight/FoldLeft from packed layouts.
 """
-function gemm!(C::AbstractMatrix, A::BCLRMatrix{BackendT,T}, B::BCLRMatrix{BackendT,T};
+function gemm!(C::AbstractMatrix, A::CompressedFTLRMatrix{BackendT,T}, B::CompressedFTLRMatrix{BackendT,T};
     workspace, alpha=true, beta=false,
     transA::Char='N', transB::Char='N', compute=nothing,
     workspace_policy=InteriorFirstWorkspace()) where {BackendT,T}
     workspace_policy isa InteriorFirstWorkspace ||
-        throw(ArgumentError("BCLR dense GEMM currently supports InteriorFirstWorkspace only"))
+        throw(ArgumentError("CompressedFTLR dense GEMM currently supports InteriorFirstWorkspace only"))
     LA = logical_operand(A, transA)
     LB = logical_operand(B, transB)
     size(LA, 2) == size(LB, 1) || throw(DimensionMismatch("inner dimensions must match"))
@@ -190,7 +190,7 @@ function gemm!(C::AbstractMatrix, A::BCLRMatrix{BackendT,T}, B::BCLRMatrix{Backe
         throw(DimensionMismatch("C must be size(op(A),1) × size(op(B),2)"))
     mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
     ScalarT = gemm_compute_type(mode)
-    return _bclr_gemm!(C, LA, LB; workspace, alpha=ScalarT(alpha), beta=ScalarT(beta), compute=mode)
+    return _compressed_ftlr_gemm!(C, LA, LB; workspace, alpha=ScalarT(alpha), beta=ScalarT(beta), compute=mode)
 end
 
 @inline function _validate_dense_backend(C, tlr, dense)
@@ -202,12 +202,12 @@ end
 end
 
 """
-    gemm!(C, A::TLRMatrix, B::AbstractMatrix; ...)
+    gemm!(C, A::PaddedFTLRMatrix, B::AbstractMatrix; ...)
 
 Compute `C := alpha·op(A)·op(B) + beta·C` with a fully low-rank left operand
 and a standalone dense right operand. Intermediates retain the operand storage type.
 """
-function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::AbstractMatrix{T};
+function gemm!(C::AbstractMatrix, A::PaddedFTLRMatrix{BackendT,T}, B::AbstractMatrix{T};
     workspace, alpha=true, beta=false,
     transA::Char='N', transB::Char='N', compute=nothing) where {BackendT,T}
     LA = logical_operand(A, transA)
@@ -225,12 +225,12 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::AbstractMatrix{T}
 end
 
 """
-    gemm!(C, A::AbstractMatrix, B::TLRMatrix; ...)
+    gemm!(C, A::AbstractMatrix, B::PaddedFTLRMatrix; ...)
 
 Compute `C := alpha·op(A)·op(B) + beta·C` with a standalone dense left operand
 and a fully low-rank right operand. Intermediates retain the operand storage type.
 """
-function gemm!(C::AbstractMatrix, A::AbstractMatrix{T}, B::TLRMatrix{BackendT,T};
+function gemm!(C::AbstractMatrix, A::AbstractMatrix{T}, B::PaddedFTLRMatrix{BackendT,T};
     workspace, alpha=true, beta=false,
     transA::Char='N', transB::Char='N', compute=nothing) where {BackendT,T}
     LA = logical_dense_operand(A, transA)

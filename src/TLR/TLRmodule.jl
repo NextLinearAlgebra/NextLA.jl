@@ -23,11 +23,11 @@ using ..NextLA: precision_gemm_batched_ptrs!
 using ..NextLA: supports_pointer_batched
 
 export TileColMajor, TileRowMajor
-export AbstractTLRMatrix, TLRDenseDiagMatrix, TLRMatrix, BCLRMatrix
+export AbstractTLRMatrix, TLRMatrix, PaddedFTLRMatrix, CompressedFTLRMatrix
 export compress!, alloc_workspace
 export uncompress!
 export get_factors
-export pack_bclr
+export pack_compressed_ftlr
 export maxrank, ranks, residuals, dense_diag, dense_diag_corner, grid_size
 export nominal_tile_size, tail_tile_size
 export ndiag_tiles, tile_origin_coords, tile_size
@@ -38,9 +38,9 @@ export tlr_gemm_minimum_workspace_bytes, tlr_gemm_maximum_workspace_bytes
 
 include("container/order.jl")
 include("container/abstract.jl")
-include("container/dense_diag_tlr_matrix.jl")
-include("container/full_tlr_matrix.jl")
-include("container/bclr_matrix.jl")
+include("container/tlr_matrix.jl")
+include("container/padded_ftlr_matrix.jl")
+include("container/compressed_ftlr_matrix.jl")
 
 include("numerics/precision.jl")
 include("numerics/norms.jl")

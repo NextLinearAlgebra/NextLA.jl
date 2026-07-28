@@ -4,7 +4,7 @@
 @testset "direct GEMM factor operands" begin
     T = Float64
     b, r = 8, 3
-    A = NextLA.TLRMatrix(zeros(T, b * 4 + 3, b * 5 + 2), b, r;
+    A = NextLA.PaddedFTLRMatrix(zeros(T, b * 4 + 3, b * 5 + 2), b, r;
                          tile_order=NextLA.TileRowMajor())
     fill_random_tlr!(A, Array; seed=17)
 
@@ -36,7 +36,7 @@ end
     α, β = T(1.3), T(-0.4)
 
     function aligned(order, seed)
-        X = NextLA.TLRMatrix(zeros(T, b * nt, b * nt), b, r; tile_order=order)
+        X = NextLA.PaddedFTLRMatrix(zeros(T, b * nt, b * nt), b, r; tile_order=order)
         fill_random_tlr!(X, Array; seed)
         return X
     end
@@ -95,9 +95,9 @@ end
 @testset "concrete regular workspace" begin
     T = Float64
     b, r, nt = 8, 4, 6
-    A = NextLA.TLRMatrix(zeros(T, b * nt, b * nt), b, r;
+    A = NextLA.PaddedFTLRMatrix(zeros(T, b * nt, b * nt), b, r;
                          tile_order=NextLA.TileRowMajor())
-    B = NextLA.TLRMatrix(zeros(T, b * nt, b * nt), b, r;
+    B = NextLA.PaddedFTLRMatrix(zeros(T, b * nt, b * nt), b, r;
                          tile_order=NextLA.TileColMajor())
     fill_random_tlr!(A, Array; seed=61)
     fill_random_tlr!(B, Array; seed=62)
@@ -124,9 +124,9 @@ end
 @testset "empty product and beta behaviour" begin
     T = Float64
     b, nt = 8, 4
-    A = NextLA.TLRMatrix(zeros(T, b * nt, b * nt), b, 0;
+    A = NextLA.PaddedFTLRMatrix(zeros(T, b * nt, b * nt), b, 0;
                          tile_order=NextLA.TileRowMajor())
-    B = NextLA.TLRMatrix(zeros(T, b * nt, b * nt), b, 0;
+    B = NextLA.PaddedFTLRMatrix(zeros(T, b * nt, b * nt), b, 0;
                          tile_order=NextLA.TileRowMajor())
     LA = _TLRM.logical_operand(A)
     LB = _TLRM.logical_operand(B)
@@ -143,8 +143,8 @@ end
     T = Float64
     b, r = 8, 3
     qm, qk, qn = 32, 4, 2
-    A = NextLA.TLRMatrix(zeros(T, b * qm, b * qk), b, r)
-    B = NextLA.TLRMatrix(zeros(T, b * qk, b * qn), b, r)
+    A = NextLA.PaddedFTLRMatrix(zeros(T, b * qm, b * qk), b, r)
+    B = NextLA.PaddedFTLRMatrix(zeros(T, b * qk, b * qn), b, r)
     fill_random_tlr!(A, Array; seed=71)
     fill_random_tlr!(B, Array; seed=72)
 
@@ -160,7 +160,7 @@ end
         @test C ≈ reference
     end
 
-    for MatrixType in (NextLA.TLRMatrix, NextLA.TLRDenseDiagMatrix)
+    for MatrixType in (NextLA.PaddedFTLRMatrix, NextLA.TLRMatrix)
         X = MatrixType(zeros(T, 35, 35), b, r)
         Y = MatrixType(zeros(T, 35, 35), b, r)
         for (transA, transB) in (('N', 'N'), ('N', 'T'), ('T', 'N'), ('T', 'T'))
@@ -172,8 +172,8 @@ end
         end
     end
 
-    X = NextLA.TLRMatrix(zeros(T, 35, 35), b, r)
-    Y = NextLA.TLRMatrix(zeros(T, 35, 35), b, r)
+    X = NextLA.PaddedFTLRMatrix(zeros(T, 35, 35), b, r)
+    Y = NextLA.PaddedFTLRMatrix(zeros(T, 35, 35), b, r)
     fill_random_tlr!(X, Array; seed=73)
     fill_random_tlr!(Y, Array; seed=74)
     lo_regions = _TLRM._gemm_workspace_regions(X, Y, :minimum)

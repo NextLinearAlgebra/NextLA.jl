@@ -8,7 +8,7 @@ export uncompress!
     @inbounds A[p0+row-1, q0+col-1] = D[row, col, batch]
 end
 
-function _copy_diagonal_to_dense!(A::AbstractMatrix{T}, A_tlr::TLRDenseDiagMatrix{<:Any,T}) where {T}
+function _copy_diagonal_to_dense!(A::AbstractMatrix{T}, A_tlr::TLRMatrix{<:Any,T}) where {T}
     n_full_diag = _nfull_diag_tiles(A_tlr)
     bm, bn = nominal_tile_size(A_tlr)
     _copy_diag_kernel!(A_tlr.backend)(
@@ -48,7 +48,7 @@ Write the dense matrix represented by `A_tlr` into `A` in-place.
 Diagonal tiles are copied from the packed diagonal storage and off-diagonal
 tiles are reconstructed region-by-region with batched GEMMs.
 """
-function uncompress!(A::AbstractMatrix{T}, A_tlr::TLRDenseDiagMatrix{<:Any,T}) where {T}
+function uncompress!(A::AbstractMatrix{T}, A_tlr::TLRMatrix{<:Any,T}) where {T}
     size(A, 1) == A_tlr.m && size(A, 2) == A_tlr.n ||
         throw(DimensionMismatch("A dimensions must match A_tlr"))
     A_tlr.m == A_tlr.n ||
@@ -64,13 +64,13 @@ function uncompress!(A::AbstractMatrix{T}, A_tlr::TLRDenseDiagMatrix{<:Any,T}) w
 end
 
 """
-    uncompress!(A, A_tlr::TLRMatrix)
+    uncompress!(A, A_tlr::PaddedFTLRMatrix)
 
 Write a fully tile-low-rank matrix into the dense matrix `A` in-place. Unlike
-`TLRDenseDiagMatrix`, every tile, including diagonal and boundary tiles, is
+`TLRMatrix`, every tile, including diagonal and boundary tiles, is
 reconstructed from its factor pair.
 """
-function uncompress!(A::AbstractMatrix{T}, A_tlr::TLRMatrix{<:Any,T}) where {T}
+function uncompress!(A::AbstractMatrix{T}, A_tlr::PaddedFTLRMatrix{<:Any,T}) where {T}
     size(A, 1) == A_tlr.m && size(A, 2) == A_tlr.n ||
         throw(DimensionMismatch("A dimensions must match A_tlr"))
 
@@ -81,8 +81,8 @@ function uncompress!(A::AbstractMatrix{T}, A_tlr::TLRMatrix{<:Any,T}) where {T}
     return A
 end
 
-"""Write an exact-rank regular-grid BCLR matrix into dense storage."""
-function uncompress!(A::AbstractMatrix{T}, A_tlr::BCLRMatrix{<:Any,T}) where {T}
+"""Write an exact-rank regular-grid CompressedFTLR matrix into dense storage."""
+function uncompress!(A::AbstractMatrix{T}, A_tlr::CompressedFTLRMatrix{<:Any,T}) where {T}
     size(A) == size(A_tlr) || throw(DimensionMismatch("A dimensions must match A_tlr"))
     fill!(A, zero(T))
     qm, qn = regular_grid_size(A_tlr)
@@ -93,7 +93,7 @@ function uncompress!(A::AbstractMatrix{T}, A_tlr::BCLRMatrix{<:Any,T}) where {T}
     if supports_grouped_gemm(get_backend(A_tlr))
         tasks = nothing
         @inbounds for j in 1:qn, i in 1:qm
-            _bclr_rank(A_tlr, i, j) == 0 && continue
+            _compressed_ftlr_rank(A_tlr, i, j) == 0 && continue
             U, V = get_factors(A_tlr, i, j)
             task = GroupedGemmTask('N', _adjoint_blas_char(T), one(T), U, V, zero(T),
                                    _dense_tile_view(A, A_tlr, i, j))
@@ -107,7 +107,7 @@ function uncompress!(A::AbstractMatrix{T}, A_tlr::BCLRMatrix{<:Any,T}) where {T}
         return A
     end
     @inbounds for j in 1:qn, i in 1:qm
-        _bclr_rank(A_tlr, i, j) == 0 && continue
+        _compressed_ftlr_rank(A_tlr, i, j) == 0 && continue
         U, V = get_factors(A_tlr, i, j)
         precision_gemm!('N', _adjoint_blas_char(T), one(T), U, V, zero(T),
                         _dense_tile_view(A, A_tlr, i, j), mode)

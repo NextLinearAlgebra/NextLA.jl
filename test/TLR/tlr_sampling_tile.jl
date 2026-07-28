@@ -44,7 +44,7 @@
     @testset "beta != 0 folds C's tile into the found range" begin
         A_tlr, B_tlr = _tile_apply_fixture(T, Array; qm=2, qn=2, qk=1,
                                            bm=16, bk=6, bn=18, rA=2, rB=6)
-        C_tlr = NextLA.TLRMatrix(zeros(T, 2 * 16, 2 * 18), (16, 18), 4)
+        C_tlr = NextLA.PaddedFTLRMatrix(zeros(T, 2 * 16, 2 * 18), (16, 18), 4)
         fill_random_tlr!(C_tlr, Array; seed=931)
         Adense, Bdense = reconstruct_tlr(A_tlr), reconstruct_tlr(B_tlr)
         Cdense = reconstruct_tlr(C_tlr)

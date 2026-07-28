@@ -20,7 +20,7 @@ end
     GroupedGemmTask{typeof(A),typeof(B),typeof(C),promote_type(typeof(alpha), typeof(beta))}(
         transA, transB, alpha, A, B, beta, C)
 
-"""Whether a backend has the heterogeneous grouped-GEMM primitive used by BCLR."""
+"""Whether a backend has the heterogeneous grouped-GEMM primitive used by compressed FTLR."""
 @inline supports_grouped_gemm(::Type) = false
 @inline supports_grouped_gemm(backend) = supports_grouped_gemm(typeof(backend))
 

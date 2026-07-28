@@ -1,5 +1,5 @@
 """
-    TLRMatrix{BackendT, T, Arr3T, RankT, OrderT}
+    PaddedFTLRMatrix{BackendT, T, Arr3T, RankT, OrderT}
 
 Fully tile-low-rank matrix. Every tile, including diagonal and boundary-corner
 tiles, is stored through low-rank factors.
@@ -20,7 +20,7 @@ Storage is split by tile geometry:
 where `q_m = fld(m, bm)` and `q_n = fld(n, bn)`. Zero-depth arrays are used for
 boundary categories that do not exist.
 """
-struct TLRMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},RankT<:Integer,OrderT<:TileOrderStyle} <: AbstractTLRMatrix{BackendT,T,OrderT}
+struct PaddedFTLRMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},RankT<:Integer,OrderT<:TileOrderStyle} <: AbstractTLRMatrix{BackendT,T,OrderT}
     backend::BackendT
     order::OrderT
     m::Int
@@ -42,17 +42,17 @@ struct TLRMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},RankT<:Integer,Or
     maxrank::Int
 end
 
-@inline function _tile_index(A::TLRMatrix, i::Integer, j::Integer)
+@inline function _tile_index(A::PaddedFTLRMatrix, i::Integer, j::Integer)
     mt, nt = grid_size(A)
     return tile_linear_index(A.order, mt, nt, Int(i), Int(j))
 end
 
-@inline function region_tile_coords(A::TLRMatrix, ::InteriorRegion, k::Int)
+@inline function region_tile_coords(A::PaddedFTLRMatrix, ::InteriorRegion, k::Int)
     q_m, q_n = regular_grid_size(A)
     return inverse_tile_index(A.order, q_m, q_n, k)
 end
 
-@inline function region_slot(A::TLRMatrix, i::Int, j::Int)
+@inline function region_slot(A::PaddedFTLRMatrix, i::Int, j::Int)
     mt, nt = grid_size(A)
     checkbounds_tile(mt, nt, i, j)
     q_m, q_n = regular_grid_size(A)
@@ -67,12 +67,12 @@ end
 end
 
 """
-    get_factors(A::TLRMatrix, i, j) -> (U, V)
+    get_factors(A::PaddedFTLRMatrix, i, j) -> (U, V)
 
 Return the low-rank factors for tile `(i, j)`, trimmed to the tile's effective
 rank. Unlike dense-diagonal TLR, diagonal tiles are valid low-rank tiles.
 """
-@inline function get_factors(A::TLRMatrix, i::Int, j::Int)
+@inline function get_factors(A::PaddedFTLRMatrix, i::Int, j::Int)
     region, k = region_slot(A, i, j)
     r = Int(A.ranks[_tile_index(A, i, j)])
     U = outer_factors(A, region)
@@ -80,23 +80,23 @@ rank. Unlike dense-diagonal TLR, diagonal tiles are valid low-rank tiles.
     return view(U, :, 1:r, k), view(V, :, 1:r, k)
 end
 
-@inline outer_factors(A::TLRMatrix, ::InteriorRegion) = A.int_U
-@inline inner_factors(A::TLRMatrix, ::InteriorRegion) = A.int_V
-@inline outer_factors(A::TLRMatrix, ::RightRegion) = A.right_U
-@inline inner_factors(A::TLRMatrix, ::RightRegion) = A.right_V
-@inline outer_factors(A::TLRMatrix, ::BottomRegion) = A.bottom_U
-@inline inner_factors(A::TLRMatrix, ::BottomRegion) = A.bottom_V
-@inline outer_factors(A::TLRMatrix, ::CornerRegion) = A.corner_U
-@inline inner_factors(A::TLRMatrix, ::CornerRegion) = A.corner_V
-@inline lowrank_regions(::TLRMatrix) = (_INTERIOR, _RIGHT, _BOTTOM, _CORNER)
+@inline outer_factors(A::PaddedFTLRMatrix, ::InteriorRegion) = A.int_U
+@inline inner_factors(A::PaddedFTLRMatrix, ::InteriorRegion) = A.int_V
+@inline outer_factors(A::PaddedFTLRMatrix, ::RightRegion) = A.right_U
+@inline inner_factors(A::PaddedFTLRMatrix, ::RightRegion) = A.right_V
+@inline outer_factors(A::PaddedFTLRMatrix, ::BottomRegion) = A.bottom_U
+@inline inner_factors(A::PaddedFTLRMatrix, ::BottomRegion) = A.bottom_V
+@inline outer_factors(A::PaddedFTLRMatrix, ::CornerRegion) = A.corner_U
+@inline inner_factors(A::PaddedFTLRMatrix, ::CornerRegion) = A.corner_V
+@inline lowrank_regions(::PaddedFTLRMatrix) = (_INTERIOR, _RIGHT, _BOTTOM, _CORNER)
 
 """
-    TLRMatrix(backend, T, m, n, tile_size, maxrank; rank_type=Int32, tile_order=TileRowMajor)
+    PaddedFTLRMatrix(backend, T, m, n, tile_size, maxrank; rank_type=Int32, tile_order=TileRowMajor)
 
 Allocate an empty fully low-rank TLR container for an `m×n` matrix with nominal
 tile size `tile_size == (bm, bn)` and maximum per-tile rank `maxrank`.
 """
-function TLRMatrix(
+function PaddedFTLRMatrix(
     backend::Backend, ::Type{T},
     m::Int, n::Int, tile_size::NTuple{2,Int}, maxrank::Int;
     rank_type::Type{<:Integer}=Int32,
@@ -137,25 +137,25 @@ function TLRMatrix(
     ranks = Base.zeros(rank_type, mt * nt)
     resid = Base.zeros(Float64, mt * nt)
 
-    return TLRMatrix{typeof(backend),T,typeof(int_U),rank_type,typeof(order)}(
+    return PaddedFTLRMatrix{typeof(backend),T,typeof(int_U),rank_type,typeof(order)}(
         backend, order, m, n, tile_size, tail_size,
         int_U, int_V, right_U, right_V, bottom_U, bottom_V, corner_U, corner_V,
         ranks, resid, maxrank,
     )
 end
 
-function TLRMatrix(
+function PaddedFTLRMatrix(
     backend::Backend, ::Type{T},
     m::Int, n::Int, b::Int, maxrank::Int;
     kwargs...,
 ) where {T}
-    return TLRMatrix(backend, T, m, n, (b, b), maxrank; kwargs...)
+    return PaddedFTLRMatrix(backend, T, m, n, (b, b), maxrank; kwargs...)
 end
 
-function TLRMatrix(A::AbstractMatrix{T}, b::Int, maxrank::Int; kwargs...) where {T}
-    return TLRMatrix(get_backend(A), T, size(A, 1), size(A, 2), b, maxrank; kwargs...)
+function PaddedFTLRMatrix(A::AbstractMatrix{T}, b::Int, maxrank::Int; kwargs...) where {T}
+    return PaddedFTLRMatrix(get_backend(A), T, size(A, 1), size(A, 2), b, maxrank; kwargs...)
 end
 
-function TLRMatrix(A::AbstractMatrix{T}, tile_size::NTuple{2,Int}, maxrank::Int; kwargs...) where {T}
-    return TLRMatrix(get_backend(A), T, size(A, 1), size(A, 2), tile_size, maxrank; kwargs...)
+function PaddedFTLRMatrix(A::AbstractMatrix{T}, tile_size::NTuple{2,Int}, maxrank::Int; kwargs...) where {T}
+    return PaddedFTLRMatrix(get_backend(A), T, size(A, 1), size(A, 2), tile_size, maxrank; kwargs...)
 end

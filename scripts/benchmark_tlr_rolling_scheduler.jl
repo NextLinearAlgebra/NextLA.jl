@@ -8,7 +8,7 @@ const TLRM = NextLA.TLRmodule
 
 function graded_tlr(::Type{T}, n, b, rmax; seed) where {T}
     rng = MersenneTwister(seed)
-    X = NextLA.TLRMatrix(CUDA.zeros(T, n, n), b, rmax)
+    X = NextLA.PaddedFTLRMatrix(CUDA.zeros(T, n, n), b, rmax)
     U = randn(rng, T, size(X.int_U))
     V = randn(rng, T, size(X.int_V))
     ntile = length(X.ranks)
@@ -55,7 +55,7 @@ n = q * b
 
 A = graded_tlr(T, n, b, rA; seed=41)
 B = graded_tlr(T, n, b, rB; seed=73)
-C = NextLA.TLRMatrix(CUDA.zeros(T, n, n), b, rC)
+C = NextLA.PaddedFTLRMatrix(CUDA.zeros(T, n, n), b, rC)
 minimum = NextLA.tlr_gemm_minimum_workspace_bytes(C, A, B; block)
 maximum = NextLA.tlr_gemm_maximum_workspace_bytes(C, A, B; block)
 

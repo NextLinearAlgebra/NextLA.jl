@@ -23,7 +23,7 @@ end
 Populate `A_tlr`'s dense diagonal storage from the corresponding tiles of the
 dense matrix `A`.
 """
-function _copy_diagonal_from_dense!(A_tlr::TLRDenseDiagMatrix{<:Any,T},
+function _copy_diagonal_from_dense!(A_tlr::TLRMatrix{<:Any,T},
                                     A::AbstractMatrix{T},
 ) where {T}
     n_full_diag = _nfull_diag_tiles(A_tlr)
@@ -273,7 +273,7 @@ higher precision.
 compress!(A_tlr::AbstractTLRMatrix{<:Any,T}, A::AbstractMatrix{T}; kwargs...) where {T} =
     compress!(A_tlr, A, alloc_workspace(A_tlr); kwargs...)
 
-function compress!(A_tlr::TLRDenseDiagMatrix{<:Any,T}, A::AbstractMatrix{T},
+function compress!(A_tlr::TLRMatrix{<:Any,T}, A::AbstractMatrix{T},
     ws::CompressWorkspace;
     tol::Real=0.0, rel::Bool=false) where {T}
 
@@ -291,7 +291,7 @@ function compress!(A_tlr::TLRDenseDiagMatrix{<:Any,T}, A::AbstractMatrix{T},
     A_tlr
 end
 
-function compress!(A_tlr::TLRMatrix{<:Any,T}, A::AbstractMatrix{T},
+function compress!(A_tlr::PaddedFTLRMatrix{<:Any,T}, A::AbstractMatrix{T},
     ws::CompressWorkspace;
     tol::Real=0.0, rel::Bool=false) where {T}
 

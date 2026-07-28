@@ -34,7 +34,7 @@ end
 HAS_CUDA || error("CUDA is not available. Run with a CUDA-enabled project, for example: julia --project=../gpuenv benchmark_compress.jl")
 
 using NextLA
-using NextLA: TLRDenseDiagMatrix, compress!, get_factors, dense_diag, dense_diag_corner,
+using NextLA: TLRMatrix, compress!, get_factors, dense_diag, dense_diag_corner,
               ranks, residuals, ndiag_tiles, tile_origin_coords,
               tile_size, tilegrid_size, alloc_workspace
 
@@ -109,7 +109,7 @@ end
 
 # Tile-by-tile relative Frobenius error, preserving the previous benchmark's
 # reconstruction metric.
-function rel_error(A_cpu::AbstractMatrix, A_tlr::TLRDenseDiagMatrix)
+function rel_error(A_cpu::AbstractMatrix, A_tlr::TLRMatrix)
     D = Array(dense_diag(A_tlr))
     D_corner = Array(dense_diag_corner(A_tlr))
     err_sq = 0.0
@@ -141,7 +141,7 @@ function rel_error(A_cpu::AbstractMatrix, A_tlr::TLRDenseDiagMatrix)
     return sqrt(err_sq / norm_sq)
 end
 
-function ortho_errors(A_tlr::TLRDenseDiagMatrix)
+function ortho_errors(A_tlr::TLRMatrix)
     rk = Array(ranks(A_tlr))
     errs = Float64[]
     mt, nt = tilegrid_size(A_tlr)
@@ -163,7 +163,7 @@ function summary_stats(xs)
     return (minimum(xs), median(xs), maximum(xs))
 end
 
-function rank_recovery(A_tlr::TLRDenseDiagMatrix, true_ranks::AbstractMatrix{<:Integer})
+function rank_recovery(A_tlr::TLRMatrix, true_ranks::AbstractMatrix{<:Integer})
     rk = Array(ranks(A_tlr))
     noff = _noffdiag_tiles(A_tlr)
     exact = 0
@@ -185,7 +185,7 @@ function rank_recovery(A_tlr::TLRDenseDiagMatrix, true_ranks::AbstractMatrix{<:I
     return exact, noff, exact_recoverable, recoverable
 end
 
-function offdiag_diagnostics(A_tlr::TLRDenseDiagMatrix)
+function offdiag_diagnostics(A_tlr::TLRMatrix)
     rk_all = Array(ranks(A_tlr))
     resid_all = Array(residuals(A_tlr))
     rk = eltype(rk_all)[]
@@ -200,14 +200,14 @@ function offdiag_diagnostics(A_tlr::TLRDenseDiagMatrix)
     return rk, resid
 end
 
-function finite_factors(A_tlr::TLRDenseDiagMatrix)
+function finite_factors(A_tlr::TLRMatrix)
     arrays = (A_tlr.int_U, A_tlr.int_V, A_tlr.right_U, A_tlr.right_V,
               A_tlr.bottom_U, A_tlr.bottom_V)
     return all(A -> !any(isnan, A), arrays)
 end
 
 function run_algorithm(A_gpu, A_cpu, true_ranks, b::Int, maxrank::Int, sketch_seed::Int)
-    A_tlr = TLRDenseDiagMatrix(A_gpu, b, maxrank)
+    A_tlr = TLRMatrix(A_gpu, b, maxrank)
     ws = alloc_workspace(A_tlr)
 
     for _ in 1:warmup_runs

@@ -53,7 +53,7 @@ const NREPS = 5
 const WARMUP = 2
 
 function make_tlr(backend, m, b, r, order)
-    X = M.TLRMatrix(backend, T, m, m, b, r; tile_order=order)
+    X = M.PaddedFTLRMatrix(backend, T, m, m, b, r; tile_order=order)
     randn!(X.int_U); randn!(X.int_V); randn!(X.D)
     size(X.D_corner, 3) != 0 && randn!(X.D_corner)
     size(X.right_U, 3)  != 0 && (randn!(X.right_U);  randn!(X.right_V))

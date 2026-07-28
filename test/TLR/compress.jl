@@ -25,7 +25,7 @@ end
 @testset "TLR compress!/uncompress! roundtrip on CPU" begin
     @testset "dense-diagonal boundary container" begin
         boundary = boundary_dense_fixture(Float64)
-        A_panel = NextLA.TLRDenseDiagMatrix(boundary.A, 4, 3)
+        A_panel = NextLA.TLRMatrix(boundary.A, 4, 3)
         ws_panel = _TLRM.alloc_workspace(A_panel)
         NextLA.compress!(A_panel, boundary.A, ws_panel; tol=1e-6)
 
@@ -53,7 +53,7 @@ end
         end
 
         # Row-major spot: the roundtrip must not depend on the tile order.
-        A_rm = NextLA.TLRDenseDiagMatrix(boundary.A, 4, 3; tile_order=NextLA.TileRowMajor())
+        A_rm = NextLA.TLRMatrix(boundary.A, 4, 3; tile_order=NextLA.TileRowMajor())
         ws_rm = _TLRM.alloc_workspace(A_rm)
         NextLA.compress!(A_rm, boundary.A, ws_rm; tol=1e-6)
         dense_rm = fill(-2.0, size(boundary.A))
@@ -63,7 +63,7 @@ end
 
     @testset "full low-rank container, rectangular tiles" begin
         full_rect = full_tlr_rectangular_fixture(Float64)
-        A_full = NextLA.TLRMatrix(full_rect.A, full_rect.tile_size, full_rect.maxrank)
+        A_full = NextLA.PaddedFTLRMatrix(full_rect.A, full_rect.tile_size, full_rect.maxrank)
         ws_full = _TLRM.alloc_workspace(A_full)
         NextLA.compress!(A_full, full_rect.A, ws_full; tol=1e-8)
 
@@ -88,7 +88,7 @@ end
     @testset "corner-only and zero-rank uncompress" begin
         # Smaller than one tile: everything lives in D_corner.
         small = Float64[2 1; -1 3]
-        A_small = NextLA.TLRDenseDiagMatrix(small, 4, 2)
+        A_small = NextLA.TLRMatrix(small, 4, 2)
         ws_small = _TLRM.alloc_workspace(A_small)
         NextLA.compress!(A_small, small, ws_small; tol=1e-12)
 
@@ -101,7 +101,7 @@ end
         # Never-compressed container (all off-diag ranks zero): uncompress! writes
         # the dense diagonal and zero-fills every off-diagonal tile.
         boundary = boundary_dense_fixture(Float64)
-        zero_rank = NextLA.TLRDenseDiagMatrix(boundary.A, 4, 3)
+        zero_rank = NextLA.TLRMatrix(boundary.A, 4, 3)
         for tile in 1:NextLA.ndiag_tiles(zero_rank)
             p0, q0 = NextLA.tile_origin_coords(zero_rank, tile, tile)
             tm, tn = NextLA.tile_size(zero_rank, tile, tile)
@@ -147,7 +147,7 @@ end
     A = assemble_block_matrix(
         make_dense_tile(Float64, b; seed=1), hard,
         easy, make_dense_tile(Float64, b; seed=3))
-    A_tlr = NextLA.TLRDenseDiagMatrix(A, b, maxr)
+    A_tlr = NextLA.TLRMatrix(A, b, maxr)
     NextLA.compress!(A_tlr, A; tol=1e-3)
 
     ob_hard = _TLRM._rank_index(A_tlr, 1, 2)
@@ -172,7 +172,7 @@ end
     At = assemble_block_matrix(
         make_dense_tile(Float64, b; seed=7), tiny12,
         tiny21, make_dense_tile(Float64, b; seed=8))
-    At_tlr = NextLA.TLRDenseDiagMatrix(At, b, maxr)
+    At_tlr = NextLA.TLRMatrix(At, b, maxr)
     NextLA.compress!(At_tlr, At; tol=1e-10)
     @test Int(NextLA.ranks(At_tlr)[_TLRM._rank_index(At_tlr, 1, 2)]) == 3
     @test Int(NextLA.ranks(At_tlr)[_TLRM._rank_index(At_tlr, 2, 1)]) == 5
@@ -182,7 +182,7 @@ end
     Az = assemble_block_matrix(
         make_dense_tile(Float64, b; seed=9), zeros(Float64, b, b),
         make_lowrank_tile(Float64, b, 2; seed=10), make_dense_tile(Float64, b; seed=11))
-    Az_tlr = NextLA.TLRDenseDiagMatrix(Az, b, maxr)
+    Az_tlr = NextLA.TLRMatrix(Az, b, maxr)
     NextLA.compress!(Az_tlr, Az; tol=0.0)
     ob_zero = _TLRM._rank_index(Az_tlr, 1, 2)
     @test Int(NextLA.ranks(Az_tlr)[ob_zero]) == 0
@@ -194,7 +194,7 @@ end
     Am = assemble_block_matrix(
         make_dense_tile(Float64, b; seed=13), make_lowrank_tile(Float64, b, 6; seed=14),
         small, make_dense_tile(Float64, b; seed=15))
-    Am_tlr = NextLA.TLRDenseDiagMatrix(Am, b, maxr)
+    Am_tlr = NextLA.TLRMatrix(Am, b, maxr)
     ob_small = _TLRM._rank_index(Am_tlr, 2, 1)
 
     NextLA.compress!(Am_tlr, Am; tol=1e-5)
@@ -222,7 +222,7 @@ end
         # Capacity 12 is deliberately tight (only one column beyond the larger
         # tile's rank), without repeating the same path at a roomy capacity.
         for maxr in (12,)
-            A_tlr = NextLA.TLRDenseDiagMatrix(A, b, maxr)
+            A_tlr = NextLA.TLRMatrix(A, b, maxr)
             ws = NextLA.alloc_workspace(A_tlr)
             # Keep the seed fixed to make the capacity-bound case reproducible.
             Random.seed!(T == Float64 ? 2 : 1000 + maxr + sizeof(T))
@@ -250,7 +250,7 @@ end
         backend_name in ("CUDA", "AMDGPU") || continue
         @testset "$backend_name" begin
             dense = ArrayType(boundary.A)
-            A_tlr = NextLA.TLRDenseDiagMatrix(dense, 4, 3)
+            A_tlr = NextLA.TLRMatrix(dense, 4, 3)
             ws = _TLRM.alloc_workspace(A_tlr)
             NextLA.compress!(A_tlr, dense, ws; tol=1f-4)
 

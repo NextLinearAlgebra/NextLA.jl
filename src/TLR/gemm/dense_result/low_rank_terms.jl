@@ -23,7 +23,7 @@ end
     (panel_operand(PanelColAxis(), outer_factors(A, _BOTTOM)),
      panel_operand(PanelColAxis(), inner_factors(A, _BOTTOM)))
 
-@inline _corner_pair(A::LogicalTLROperand{<:Any,<:TLRMatrix}) =
+@inline _corner_pair(A::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix}) =
     (corner_operand(outer_factors(A, _CORNER)),
      corner_operand(inner_factors(A, _CORNER)))
 
@@ -345,7 +345,7 @@ function _gemm_region_workspace_bound(A::AbstractTLRMatrix, B::AbstractTLRMatrix
     ]
 
     if has_k && has_j
-        if physical(LB) isa TLRMatrix
+        if physical(LB) isa PaddedFTLRMatrix
             push!(right, _lowrank_term_workspace(
                 Aright, _corner_pair(LB), qm, 1, 1, sizing))
         else
@@ -354,7 +354,7 @@ function _gemm_region_workspace_bound(A::AbstractTLRMatrix, B::AbstractTLRMatrix
         end
     end
     if has_i && has_k
-        if physical(LA) isa TLRMatrix
+        if physical(LA) isa PaddedFTLRMatrix
             push!(bottom, _lowrank_term_workspace(
                 _corner_pair(LA), Bbottom, 1, 1, qn, sizing))
         else
@@ -362,7 +362,7 @@ function _gemm_region_workspace_bound(A::AbstractTLRMatrix, B::AbstractTLRMatrix
                 qn, tail_tile_size(LA, 1), maxrank(LB), eltype(LB)))
         end
     end
-    if has_i && has_k && has_j && physical(LA) isa TLRMatrix && physical(LB) isa TLRMatrix
+    if has_i && has_k && has_j && physical(LA) isa PaddedFTLRMatrix && physical(LB) isa PaddedFTLRMatrix
         push!(corner, _lowrank_term_workspace(
             _corner_pair(LA), _corner_pair(LB), 1, 1, 1, sizing))
     end
@@ -370,7 +370,7 @@ function _gemm_region_workspace_bound(A::AbstractTLRMatrix, B::AbstractTLRMatrix
     # Dense-diagonal terms use complete, presently unpartitioned batches. They
     # are sequential with the regular term in their region, so each contributes
     # through a regional maximum rather than a sum.
-    if physical(LA) isa TLRDenseDiagMatrix && physical(LB) isa TLRDenseDiagMatrix
+    if physical(LA) isa TLRMatrix && physical(LB) isa TLRMatrix
         T = eltype(LA)
         n_int = size(outer_factors(LA, _INTERIOR), 3)
         diag_interior = n_int * nominal_tile_size(LA, 1) *

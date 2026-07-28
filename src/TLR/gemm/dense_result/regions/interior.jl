@@ -21,7 +21,7 @@
 # O_A D_B, fused Stage 1 (A stride-1 axis `:i`): column `j`'s off-diagonal tiles
 # are contiguous in `int_U/int_V` and share the right operand `B_jj`, so the A inner-factor
 # stacks fuse into one wide GEMM per column.
-function _offdiag_diag_interior_fused_gemm!(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha, tile_slots, a_outer_factors, a_inner_factors, workspace; beta=one(alpha), compute=default_gemm_compute_mode(T)) where {T}
+function _offdiag_diag_interior_fused_gemm!(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRMatrix}, alpha, tile_slots, a_outer_factors, a_inner_factors, workspace; beta=one(alpha), compute=default_gemm_compute_mode(T)) where {T}
     ntiles = length(tile_slots)
     rA = maxrank(A)
     (ntiles == 0 || rA == 0) && return C
@@ -47,7 +47,7 @@ function _offdiag_diag_interior_fused_gemm!(C, A::LogicalTLROperand{<:Any,<:TLRD
 end
 
 # O_A D_B, tilewise Stage 1 (A stride-1 axis `:k`): one r×r batched GEMM per tile.
-function _offdiag_diag_tilebatch_gemm!(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha, tile_slots, a_outer_factors, a_inner_factors, workspace; beta=one(alpha), compute=default_gemm_compute_mode(T)) where {T}
+function _offdiag_diag_tilebatch_gemm!(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRMatrix}, alpha, tile_slots, a_outer_factors, a_inner_factors, workspace; beta=one(alpha), compute=default_gemm_compute_mode(T)) where {T}
     ntiles = length(tile_slots)
     rA = maxrank(A)
     (ntiles == 0 || rA == 0) && return C
@@ -71,7 +71,7 @@ end
 # D_A O_B, fused Stage 1 (B stride-1 axis `:j`): row `i`'s off-diagonal tiles
 # are contiguous in `int_U/int_V` and share the left operand `A_ii`, so the B outer-factor
 # stacks fuse into one wide GEMM per row.
-function _diag_offdiag_interior_fused_gemm!(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha, tile_slots, b_outer_factors, b_inner_factors, workspace; beta=one(alpha), compute=default_gemm_compute_mode(T)) where {T}
+function _diag_offdiag_interior_fused_gemm!(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRMatrix}, alpha, tile_slots, b_outer_factors, b_inner_factors, workspace; beta=one(alpha), compute=default_gemm_compute_mode(T)) where {T}
     ntiles = length(tile_slots)
     rB = maxrank(B)
     (ntiles == 0 || rB == 0) && return C
@@ -97,7 +97,7 @@ function _diag_offdiag_interior_fused_gemm!(C, A::LogicalTLROperand{<:Any,<:TLRD
 end
 
 # D_A O_B, tilewise Stage 1 (B stride-1 axis `:k`): one b×r batched GEMM per tile.
-function _diag_offdiag_tilebatch_gemm!(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha, tile_slots, b_outer_factors, b_inner_factors, workspace; beta=one(alpha), compute=default_gemm_compute_mode(T)) where {T}
+function _diag_offdiag_tilebatch_gemm!(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRMatrix}, alpha, tile_slots, b_outer_factors, b_inner_factors, workspace; beta=one(alpha), compute=default_gemm_compute_mode(T)) where {T}
     ntiles = length(tile_slots)
     rB = maxrank(B)
     (ntiles == 0 || rB == 0) && return C
@@ -121,7 +121,7 @@ end
 # Component 2: O_A D_B then D_A O_B, interior category only, sharing ONE workspace.
 # `O_A D_B` is the first off-diagonal writer (folds β); `D_A O_B` then accumulates
 # with β = 1.  If A has zero off-diagonal rank, `D_A O_B` becomes the first writer.
-function _diag_times_offdiag_interior!(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha; beta=one(alpha), compute=default_gemm_compute_mode(T), arena=nothing) where {T}
+function _diag_times_offdiag_interior!(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRMatrix}, alpha; beta=one(alpha), compute=default_gemm_compute_mode(T), arena=nothing) where {T}
     a_outer_factors = outer_factors(A, _INTERIOR)
     a_inner_factors = inner_factors(A, _INTERIOR)
     b_outer_factors = outer_factors(B, _INTERIOR)
@@ -153,7 +153,7 @@ function _diag_times_offdiag_interior!(C, A::LogicalTLROperand{<:Any,<:TLRDenseD
     return C
 end
 
-function _diag_diag_gemm!(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha; beta=one(alpha), compute=default_gemm_compute_mode(T)) where {T}
+function _diag_diag_gemm!(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRMatrix}, alpha; beta=one(alpha), compute=default_gemm_compute_mode(T)) where {T}
     n_full_diag = min(_nfull_diag_tiles(A), _nfull_diag_tiles(B))
     n_full_diag == 0 && return C
 
@@ -202,11 +202,11 @@ splits as `D_A D_B + O_A D_B + D_A O_B + O_A O_B`; the hard term `O_A O_B` touch
 *every* interior tile, so it runs first and folds β (write-once row family, or
 region pre-scale in the column family — see `_offdiag_offdiag_gemm!`), and the three
 diagonal components then accumulate with β = 1. This inversion (β folded in `O_A O_B`
-rather than the diagonal terms) is what lets the `TLRMatrix` interior — which has
+rather than the diagonal terms) is what lets the `PaddedFTLRMatrix` interior — which has
 *only* `O_A O_B` — share the same β-folding path. Order-only dependencies — no host
 sync; the caller places this whole term on a region stream (see `gemm!`).
 """
-function tlr_gemm_int_by_int(C, A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha, beta; budget::Int, compute=default_gemm_compute_mode(T), arena=nothing) where {T}
+function tlr_gemm_int_by_int(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:TLRMatrix}, alpha, beta; budget::Int, compute=default_gemm_compute_mode(T), arena=nothing) where {T}
     _offdiag_offdiag_gemm!(C, A, B; alpha=alpha, beta=beta, budget=budget, compute, arena)  # O_A O_B (folds β)
     _diag_diag_gemm!(C, A, B, alpha; beta=one(T), compute)                           # D_A D_B
     _diag_times_offdiag_interior!(C, A, B, alpha; beta=one(T), compute, arena)       # O_A D_B + D_A O_B

@@ -36,8 +36,8 @@ const _BUDGET_HUGE = 128 * 1024 * 1024
 # panels and the corner are all non-empty.
 function fulllr_operand_pair(::Type{T}, b::Int, r::Int, nt::Int; order=NextLA.TileRowMajor()) where {T}
     mA, kk, nB = b * nt + 3, b * nt + 5, b * nt + 2
-    A = NextLA.TLRMatrix(zeros(T, mA, kk), b, r; tile_order=order)
-    B = NextLA.TLRMatrix(zeros(T, kk, nB), b, r; tile_order=order)
+    A = NextLA.PaddedFTLRMatrix(zeros(T, mA, kk), b, r; tile_order=order)
+    B = NextLA.PaddedFTLRMatrix(zeros(T, kk, nB), b, r; tile_order=order)
     fill_random_tlr!(A, Array; seed=101)
     fill_random_tlr!(B, Array; seed=202)
     return (NextLA.TLRmodule.logical_operand(A, 'N'),
@@ -47,8 +47,8 @@ end
 
 function densediag_operand_pair(::Type{T}, b::Int, r::Int, nt::Int; order=NextLA.TileRowMajor()) where {T}
     n = b * nt + 3
-    A = NextLA.TLRDenseDiagMatrix(zeros(T, n, n), b, r; tile_order=order)
-    B = NextLA.TLRDenseDiagMatrix(zeros(T, n, n), b, r; tile_order=order)
+    A = NextLA.TLRMatrix(zeros(T, n, n), b, r; tile_order=order)
+    B = NextLA.TLRMatrix(zeros(T, n, n), b, r; tile_order=order)
     fill_random_tlr!(A, Array; seed=101)
     fill_random_tlr!(B, Array; seed=202)
     return (NextLA.TLRmodule.logical_operand(A, 'N'),
@@ -58,7 +58,7 @@ end
 
 @testset "GEMM workspace budget compliance" begin
     @testset "budget-accepting terms respond to their scheduler budget" begin
-        @testset "TLRMatrix (full low-rank)" begin
+        @testset "PaddedFTLRMatrix (full low-rank)" begin
             LA, LB, C = fulllr_operand_pair(Float64, 8, 4, 10)
 
             @testset "_offdiag_offdiag_gemm!" begin
@@ -105,7 +105,7 @@ end
             end
         end
 
-        @testset "TLRDenseDiagMatrix" begin
+        @testset "TLRMatrix" begin
             LA, LB, C = densediag_operand_pair(Float64, 8, 4, 10)
 
             @testset "tlr_gemm_int_by_int" begin

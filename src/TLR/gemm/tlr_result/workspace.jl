@@ -105,9 +105,9 @@ function Base.sizeof(ws::TLRGemmWorkspace)
            ))
 end
 
-function TLRGemmWorkspace(C::TLRMatrix{BackendT,T},
-                          A::TLRMatrix{BackendT,T},
-                          B::TLRMatrix{BackendT,T};
+function TLRGemmWorkspace(C::PaddedFTLRMatrix{BackendT,T},
+                          A::PaddedFTLRMatrix{BackendT,T},
+                          B::PaddedFTLRMatrix{BackendT,T};
                           bytes=nothing,
                           transA::Char='N', transB::Char='N',
                           block::Int=32) where {BackendT,T}
@@ -169,7 +169,7 @@ Smallest numerical workspace for canonical TLR-output GEMM: fixed global
 diagnostics plus one rolling-scheduler slot.
 """
 function tlr_gemm_minimum_workspace_bytes(
-        C::TLRMatrix, A::TLRMatrix, B::TLRMatrix;
+        C::PaddedFTLRMatrix, A::PaddedFTLRMatrix, B::PaddedFTLRMatrix;
         transA::Char='N', transB::Char='N', block::Int=32)
     spec = _tlr_gemm_workspace_spec(C, A, B; transA, transB, block)
     return _tlr_gemm_workspace_bytes(spec, 1)
@@ -182,7 +182,7 @@ Smallest numerical workspace that admits the widest complete fixed-axis lane.
 Additional bytes cannot increase rolling-scheduler capacity.
 """
 function tlr_gemm_maximum_workspace_bytes(
-        C::TLRMatrix, A::TLRMatrix, B::TLRMatrix;
+        C::PaddedFTLRMatrix, A::PaddedFTLRMatrix, B::PaddedFTLRMatrix;
         transA::Char='N', transB::Char='N', block::Int=32)
     spec = _tlr_gemm_workspace_spec(C, A, B; transA, transB, block)
     return _tlr_gemm_workspace_bytes(spec, spec.nmember)

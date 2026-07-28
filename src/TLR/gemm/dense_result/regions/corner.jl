@@ -13,8 +13,8 @@ Accumulate the single logical corner × corner contraction into `C`'s corner til
 This is the corner region's first writer and therefore folds `beta`.
 """
 function tlr_gemm_corner_by_corner(C,
-        A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}},
-        B::LogicalTLROperand{<:Any,<:TLRMatrix}, alpha;
+        A::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix{<:Any,T}},
+        B::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix}, alpha;
         beta=one(alpha), compute=default_gemm_compute_mode(T),
         budget::Int=1, arena=nothing) where {T}
     mt, kt = grid_size(A)
@@ -28,8 +28,8 @@ function tlr_gemm_corner_by_corner(C,
 end
 
 function tlr_gemm_corner_by_corner(C,
-        A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix{<:Any,T}},
-        B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}, alpha;
+        A::LogicalTLROperand{<:Any,<:TLRMatrix{<:Any,T}},
+        B::LogicalTLROperand{<:Any,<:TLRMatrix}, alpha;
         beta=one(alpha), compute=default_gemm_compute_mode(T),
         budget::Int=1, arena=nothing) where {T}
     (size(physical(A).D_corner, 3) == 0 ||

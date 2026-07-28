@@ -100,11 +100,11 @@ end
 @inline _dense_op(::LogicalDenseTile{:N}) = 'N'
 @inline _dense_op(::LogicalDenseTile{:T}) = 'T'
 
-@inline function _diag_tile_ref(A::LogicalTLROperand{Op,<:TLRDenseDiagMatrix}, k::Int) where {Op}
+@inline function _diag_tile_ref(A::LogicalTLROperand{Op,<:TLRMatrix}, k::Int) where {Op}
     LogicalDenseTile{Op,typeof(_diag_tile_view(physical(A), k))}(_diag_tile_view(physical(A), k))
 end
-@inline ndiag_tiles(A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}) = ndiag_tiles(physical(A))
-@inline _nfull_diag_tiles(A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}) = _nfull_diag_tiles(physical(A))
+@inline ndiag_tiles(A::LogicalTLROperand{<:Any,<:TLRMatrix}) = ndiag_tiles(physical(A))
+@inline _nfull_diag_tiles(A::LogicalTLROperand{<:Any,<:TLRMatrix}) = _nfull_diag_tiles(physical(A))
 
 """Logical row/column range of one TLR tile along `axis`."""
 @inline function _tile_axis_range(A::LogicalTLROperand, tile::Int, axis::Int)
@@ -114,7 +114,7 @@ end
 end
 
 """Canonical full-rank-column factor views of logical full-LR tile `(i,j)`."""
-@inline function logical_tile_factors(A::LogicalTLROperand{<:Any,<:TLRMatrix}, i::Int, j::Int)
+@inline function logical_tile_factors(A::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix}, i::Int, j::Int)
     qm, qn = regular_grid_size(A)
     region, slot = if i <= qm && j <= qn
         (_INTERIOR, tile_linear_index(tile_order(A), qm, qn, i, j))
@@ -129,43 +129,43 @@ end
             view(inner_factors(A, region), :, :, slot))
 end
 
-# Exact-rank BCLR tile access through the same logical N/T view.  A transpose
+# Exact-rank CompressedFTLR tile access through the same logical N/T view.  A transpose
 # swaps factor roles and tile coordinates; the physical column packing of V/Z
 # thereby becomes logical row packing, and conversely for U/W.
-@inline _bclr_logical_coords(::LogicalTLROperand{:N,<:BCLRMatrix}, i::Int, j::Int) = (i, j)
-@inline _bclr_logical_coords(::LogicalTLROperand{:T,<:BCLRMatrix}, i::Int, j::Int) = (j, i)
+@inline _compressed_ftlr_logical_coords(::LogicalTLROperand{:N,<:CompressedFTLRMatrix}, i::Int, j::Int) = (i, j)
+@inline _compressed_ftlr_logical_coords(::LogicalTLROperand{:T,<:CompressedFTLRMatrix}, i::Int, j::Int) = (j, i)
 
-@inline _bclr_rank(A::LogicalTLROperand{:N,<:BCLRMatrix}, i::Int, j::Int) =
-    _bclr_rank(physical(A), i, j)
-@inline _bclr_rank(A::LogicalTLROperand{:T,<:BCLRMatrix}, i::Int, j::Int) =
-    _bclr_rank(physical(A), j, i)
+@inline _compressed_ftlr_rank(A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}, i::Int, j::Int) =
+    _compressed_ftlr_rank(physical(A), i, j)
+@inline _compressed_ftlr_rank(A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}, i::Int, j::Int) =
+    _compressed_ftlr_rank(physical(A), j, i)
 
-@inline bclr_outer(A::LogicalTLROperand{:N,<:BCLRMatrix}, i::Int, j::Int) =
-    bclr_outer(physical(A), i, j)
-@inline bclr_outer(A::LogicalTLROperand{:T,<:BCLRMatrix}, i::Int, j::Int) =
-    bclr_inner(physical(A), j, i)
-@inline bclr_inner(A::LogicalTLROperand{:N,<:BCLRMatrix}, i::Int, j::Int) =
-    bclr_inner(physical(A), i, j)
-@inline bclr_inner(A::LogicalTLROperand{:T,<:BCLRMatrix}, i::Int, j::Int) =
-    bclr_outer(physical(A), j, i)
+@inline compressed_ftlr_outer(A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}, i::Int, j::Int) =
+    compressed_ftlr_outer(physical(A), i, j)
+@inline compressed_ftlr_outer(A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}, i::Int, j::Int) =
+    compressed_ftlr_inner(physical(A), j, i)
+@inline compressed_ftlr_inner(A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}, i::Int, j::Int) =
+    compressed_ftlr_inner(physical(A), i, j)
+@inline compressed_ftlr_inner(A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}, i::Int, j::Int) =
+    compressed_ftlr_outer(physical(A), j, i)
 
-@inline bclr_outer_order(A::LogicalTLROperand{:N,<:BCLRMatrix}) =
-    bclr_outer_order(physical(A))
-@inline bclr_outer_order(A::LogicalTLROperand{:T,<:BCLRMatrix}) =
-    _transpose_order(bclr_inner_order(physical(A)))
-@inline bclr_inner_order(A::LogicalTLROperand{:N,<:BCLRMatrix}) =
-    bclr_inner_order(physical(A))
-@inline bclr_inner_order(A::LogicalTLROperand{:T,<:BCLRMatrix}) =
-    _transpose_order(bclr_outer_order(physical(A)))
+@inline compressed_ftlr_outer_order(A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}) =
+    compressed_ftlr_outer_order(physical(A))
+@inline compressed_ftlr_outer_order(A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}) =
+    _transpose_order(compressed_ftlr_inner_order(physical(A)))
+@inline compressed_ftlr_inner_order(A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}) =
+    compressed_ftlr_inner_order(physical(A))
+@inline compressed_ftlr_inner_order(A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}) =
+    _transpose_order(compressed_ftlr_outer_order(physical(A)))
 
-@inline _bclr_outer_storage(A::BCLRMatrix) = A.outer
-@inline _bclr_inner_storage(A::BCLRMatrix) = A.inner
-@inline _bclr_parent(A::BCLRMatrix) = A
-@inline _bclr_outer_storage(A::LogicalTLROperand{:N,<:BCLRMatrix}) = physical(A).outer
-@inline _bclr_outer_storage(A::LogicalTLROperand{:T,<:BCLRMatrix}) = physical(A).inner
-@inline _bclr_inner_storage(A::LogicalTLROperand{:N,<:BCLRMatrix}) = physical(A).inner
-@inline _bclr_inner_storage(A::LogicalTLROperand{:T,<:BCLRMatrix}) = physical(A).outer
-@inline _bclr_parent(A::LogicalTLROperand{<:Any,<:BCLRMatrix}) = physical(A)
+@inline _compressed_ftlr_outer_storage(A::CompressedFTLRMatrix) = A.outer
+@inline _compressed_ftlr_inner_storage(A::CompressedFTLRMatrix) = A.inner
+@inline _compressed_ftlr_parent(A::CompressedFTLRMatrix) = A
+@inline _compressed_ftlr_outer_storage(A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}) = physical(A).outer
+@inline _compressed_ftlr_outer_storage(A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}) = physical(A).inner
+@inline _compressed_ftlr_inner_storage(A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}) = physical(A).inner
+@inline _compressed_ftlr_inner_storage(A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}) = physical(A).outer
+@inline _compressed_ftlr_parent(A::LogicalTLROperand{<:Any,<:CompressedFTLRMatrix}) = physical(A)
 
 # ─── Interior operand ─────────────────────────────────────────────────────────
 
@@ -245,8 +245,8 @@ end
     return InteriorOperand{typeof(kind),typeof(order),typeof(data)}(data, order, qm, qn)
 end
 
-@inline interior_grid_kind(::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix}) = SkipDiag()
-@inline interior_grid_kind(::LogicalTLROperand{<:Any,<:TLRMatrix}) = FullGrid()
+@inline interior_grid_kind(::LogicalTLROperand{<:Any,<:TLRMatrix}) = SkipDiag()
+@inline interior_grid_kind(::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix}) = FullGrid()
 
 # Boundary factor accessors. A right panel is row-live (`X[i,bnd]`), a bottom panel is
 # column-live (`X[bnd,j]`), and a corner has no live coordinate. They expose the same
@@ -355,8 +355,8 @@ transpose awareness.
 logical_operands(A::AbstractTLRMatrix, B::AbstractTLRMatrix) =
     logical_operands(logical_operand(A), logical_operand(B))
 
-function logical_operands(A::LogicalTLROperand{<:Any,<:TLRMatrix},
-                          B::LogicalTLROperand{<:Any,<:TLRMatrix})
+function logical_operands(A::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix},
+                          B::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix})
     qmA, qnA = regular_grid_size(A)
     qmB, qnB = regular_grid_size(B)
     ordA = tile_order(A)
@@ -369,8 +369,8 @@ function logical_operands(A::LogicalTLROperand{<:Any,<:TLRMatrix},
     )
 end
 
-function logical_operands(A::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix},
-                          B::LogicalTLROperand{<:Any,<:TLRDenseDiagMatrix})
+function logical_operands(A::LogicalTLROperand{<:Any,<:TLRMatrix},
+                          B::LogicalTLROperand{<:Any,<:TLRMatrix})
     qmA, qnA = regular_grid_size(A)
     qmB, qnB = regular_grid_size(B)
     ordA = tile_order(A)

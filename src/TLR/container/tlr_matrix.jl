@@ -1,5 +1,5 @@
 """
-    TLRDenseDiagMatrix{BackendT, T, Arr3T, RankT, OrderT}
+    TLRMatrix{BackendT, T, Arr3T, RankT, OrderT}
 
 Dense-diagonal TLR matrix. Diagonal tiles are dense; off-diagonal tiles are split
 into regular interior, right boundary, and bottom boundary low-rank factors.
@@ -22,7 +22,7 @@ Dense diagonal entries report `min(tile_m, tile_n)` rank and zero residual:
 these are diagnostics for the represented dense tile, not low-rank storage
 metadata.
 """
-struct TLRDenseDiagMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},RankT<:Integer,OrderT<:TileOrderStyle} <: AbstractTLRMatrix{BackendT,T,OrderT}
+struct TLRMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},RankT<:Integer,OrderT<:TileOrderStyle} <: AbstractTLRMatrix{BackendT,T,OrderT}
     backend::BackendT
     order::OrderT
     m::Int
@@ -48,18 +48,18 @@ struct TLRDenseDiagMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},RankT<:I
 
 end
 
-@inline outer_factors(A::TLRDenseDiagMatrix, ::InteriorRegion) = A.int_U
-@inline inner_factors(A::TLRDenseDiagMatrix, ::InteriorRegion) = A.int_V
-@inline outer_factors(A::TLRDenseDiagMatrix, ::RightRegion) = A.right_U
-@inline inner_factors(A::TLRDenseDiagMatrix, ::RightRegion) = A.right_V
-@inline outer_factors(A::TLRDenseDiagMatrix, ::BottomRegion) = A.bottom_U
-@inline inner_factors(A::TLRDenseDiagMatrix, ::BottomRegion) = A.bottom_V
-@inline lowrank_regions(::TLRDenseDiagMatrix) = (_INTERIOR, _RIGHT, _BOTTOM)
+@inline outer_factors(A::TLRMatrix, ::InteriorRegion) = A.int_U
+@inline inner_factors(A::TLRMatrix, ::InteriorRegion) = A.int_V
+@inline outer_factors(A::TLRMatrix, ::RightRegion) = A.right_U
+@inline inner_factors(A::TLRMatrix, ::RightRegion) = A.right_V
+@inline outer_factors(A::TLRMatrix, ::BottomRegion) = A.bottom_U
+@inline inner_factors(A::TLRMatrix, ::BottomRegion) = A.bottom_V
+@inline lowrank_regions(::TLRMatrix) = (_INTERIOR, _RIGHT, _BOTTOM)
 
-@inline ndiag_tiles(A::TLRDenseDiagMatrix) = min(grid_size(A)...)
-@inline dense_diag(A::TLRDenseDiagMatrix) = A.D
-@inline dense_diag_corner(A::TLRDenseDiagMatrix) = A.D_corner
-@inline _nfull_diag_tiles(A::TLRDenseDiagMatrix) = size(A.D, 3)
+@inline ndiag_tiles(A::TLRMatrix) = min(grid_size(A)...)
+@inline dense_diag(A::TLRMatrix) = A.D
+@inline dense_diag_corner(A::TLRMatrix) = A.D_corner
+@inline _nfull_diag_tiles(A::TLRMatrix) = size(A.D, 3)
 
 """
     _diag_tile_view(A, tile_k)
@@ -68,7 +68,7 @@ Return the dense diagonal tile view for diagonal tile `tile_k`. Full-size
 diagonal tiles live in `A.D`; a smaller final diagonal tile lives in
 `A.D_corner`.
 """
-@inline function _diag_tile_view(A::TLRDenseDiagMatrix, tile_k::Int)
+@inline function _diag_tile_view(A::TLRMatrix, tile_k::Int)
     1 <= tile_k <= ndiag_tiles(A) || throw(BoundsError(1:ndiag_tiles(A), tile_k))
     if tile_k <= _nfull_diag_tiles(A)
         return view(A.D, :, :, tile_k)
@@ -78,13 +78,13 @@ diagonal tiles live in `A.D`; a smaller final diagonal tile lives in
 end
 
 """
-    get_factors(A::TLRDenseDiagMatrix, i, j) -> (U, V)
+    get_factors(A::TLRMatrix, i, j) -> (U, V)
 
 Return the low-rank factors for off-diagonal tile `(i, j)`, trimmed to the
 tile's effective rank. Diagonal tiles are stored densely, so `i == j` throws.
 The returned views alias the underlying storage.
 """
-@inline function get_factors(A::TLRDenseDiagMatrix, i::Int, j::Int)
+@inline function get_factors(A::TLRMatrix, i::Int, j::Int)
     i == j && throw(ArgumentError("tile ($i, $j) is diagonal and stored densely"))
     region, k = region_slot(A, i, j)
     r = Int(A.ranks[_rank_index(A, region, k)])
@@ -100,7 +100,7 @@ Map global tile coordinates to dense-diagonal storage. Right boundary slots are
 indexed by row `i`, bottom boundary slots by column `j`, and regular interior
 slots use the requested tile order on the full-size interior grid.
 """
-@inline function region_slot(A::TLRDenseDiagMatrix, i::Int, j::Int)
+@inline function region_slot(A::TLRMatrix, i::Int, j::Int)
     mt, nt = grid_size(A)
     checkbounds_tile(mt, nt, i, j)
     i == j && throw(ArgumentError("tile ($i, $j) is diagonal and stored densely"))
@@ -119,7 +119,7 @@ end
 
 Inverse of the dense-diagonal region mapping for region-local slot `k`.
 """
-@inline function region_tile_coords(A::TLRDenseDiagMatrix, ::InteriorRegion, k::Int)
+@inline function region_tile_coords(A::TLRMatrix, ::InteriorRegion, k::Int)
     q_m, q_n = regular_grid_size(A)
     return _offdiag_coords(A.order, q_m, q_n, k)
 end
@@ -131,7 +131,7 @@ Initialize or refresh the diagnostic entries for dense diagonal tiles. The
 rank is recorded as the tile's full possible rank (`min(tile_m, tile_n)`) and
 the residual is zero because the dense tile is copied exactly.
 """
-function _set_dense_diagonal_diagnostics!(A::TLRDenseDiagMatrix)
+function _set_dense_diagonal_diagnostics!(A::TLRMatrix)
     @inbounds for k in 1:ndiag_tiles(A)
         idx = _rank_index(A, k, k)
         A.ranks[idx] = min(tile_size(A, k, k)...)
@@ -205,12 +205,12 @@ end
 end
 
 """
-    TLRDenseDiagMatrix(backend, T, m, n, tile_size, maxrank; rank_type=Int32, tile_order=TileColMajor)
+    TLRMatrix(backend, T, m, n, tile_size, maxrank; rank_type=Int32, tile_order=TileColMajor)
 
 Allocate an empty dense-diagonal TLR container for an `m×n` matrix with nominal
 tile size `tile_size == (bm, bn)` and maximum per-tile rank `maxrank`.
 """
-function TLRDenseDiagMatrix(
+function TLRMatrix(
     backend::Backend, ::Type{T},
     m::Int, n::Int, tile_size::NTuple{2,Int}, maxrank::Int;
     rank_type::Type{<:Integer}=Int32,
@@ -254,7 +254,7 @@ function TLRDenseDiagMatrix(
     ranks = Base.zeros(rank_type, mt * nt)
     resid = Base.zeros(Float64, mt * nt)
 
-    A_tlr = TLRDenseDiagMatrix{typeof(backend),T,typeof(int_U),rank_type,typeof(order)}(
+    A_tlr = TLRMatrix{typeof(backend),T,typeof(int_U),rank_type,typeof(order)}(
         backend, order, m, n, tile_size, tail_size,
         int_U, int_V, right_U, right_V, bottom_U, bottom_V,
         D, D_corner, ranks, resid, maxrank,
@@ -262,23 +262,23 @@ function TLRDenseDiagMatrix(
     return _set_dense_diagonal_diagnostics!(A_tlr)
 end
 
-function TLRDenseDiagMatrix(
+function TLRMatrix(
     backend::Backend, ::Type{T},
     m::Int, n::Int, b::Int, maxrank::Int;
     kwargs...,
 ) where {T}
-    return TLRDenseDiagMatrix(backend, T, m, n, (b, b), maxrank; kwargs...)
+    return TLRMatrix(backend, T, m, n, (b, b), maxrank; kwargs...)
 end
 
 """
-    TLRDenseDiagMatrix(A, b, maxrank; kwargs...)
+    TLRMatrix(A, b, maxrank; kwargs...)
 
 Allocate a dense-diagonal TLR container on the same backend as dense matrix `A`.
 """
-function TLRDenseDiagMatrix(A::AbstractMatrix{T}, b::Int, maxrank::Int; kwargs...) where {T}
-    return TLRDenseDiagMatrix(get_backend(A), T, size(A, 1), size(A, 2), b, maxrank; kwargs...)
+function TLRMatrix(A::AbstractMatrix{T}, b::Int, maxrank::Int; kwargs...) where {T}
+    return TLRMatrix(get_backend(A), T, size(A, 1), size(A, 2), b, maxrank; kwargs...)
 end
 
-function TLRDenseDiagMatrix(A::AbstractMatrix{T}, tile_size::NTuple{2,Int}, maxrank::Int; kwargs...) where {T}
-    return TLRDenseDiagMatrix(get_backend(A), T, size(A, 1), size(A, 2), tile_size, maxrank; kwargs...)
+function TLRMatrix(A::AbstractMatrix{T}, tile_size::NTuple{2,Int}, maxrank::Int; kwargs...) where {T}
+    return TLRMatrix(get_backend(A), T, size(A, 1), size(A, 2), tile_size, maxrank; kwargs...)
 end

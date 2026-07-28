@@ -3,7 +3,7 @@
 # single_tile_sampling.jl/rolling_schedule.jl). Sampling-side selection, run
 # scatter, and the reusable-workspace-driven traversal loop live here.
 
-@inline _active_rank_cap(A::TLRMatrix) =
+@inline _active_rank_cap(A::PaddedFTLRMatrix) =
     isempty(A.ranks) ? 0 : min(maxrank(A), maximum(Int, A.ranks))
 
 @inline function _right_sampling_workspace_elems(qm::Int, qk::Int,
@@ -77,7 +77,7 @@ reused across the driver's traversal of `C`'s rows/columns) rather than
 allocated here, since every run in that traversal needs an identically-sized
 buffer.
 """
-function _store_tlr_run!(C::TLRMatrix, U, V, ranks_run, err_run,
+function _store_tlr_run!(C::PaddedFTLRMatrix, U, V, ranks_run, err_run,
                          slots::AbstractVector{Int}, ranks_dev, err_dev,
                          slots_dev, slots_host)
     backend = get_backend(C)
@@ -99,9 +99,9 @@ function _store_tlr_run!(C::TLRMatrix, U, V, ranks_run, err_run,
     return nothing
 end
 
-function _validate_canonical_tlr_gemm(C::TLRMatrix,
-                                      A::TLRMatrix,
-                                      B::TLRMatrix,
+function _validate_canonical_tlr_gemm(C::PaddedFTLRMatrix,
+                                      A::PaddedFTLRMatrix,
+                                      B::PaddedFTLRMatrix,
                                       LA::LogicalTLROperand,
                                       LB::LogicalTLROperand)
     all(tile_order(X) isa TileRowMajor for X in (C, A, B)) ||
@@ -122,9 +122,9 @@ function _validate_canonical_tlr_gemm(C::TLRMatrix,
     return nothing
 end
 
-function _tlr_gemm_workspace_spec(C::TLRMatrix{BackendT,T},
-                                  A::TLRMatrix{BackendT,T},
-                                  B::TLRMatrix{BackendT,T};
+function _tlr_gemm_workspace_spec(C::PaddedFTLRMatrix{BackendT,T},
+                                  A::PaddedFTLRMatrix{BackendT,T},
+                                  B::PaddedFTLRMatrix{BackendT,T};
                                   transA::Char='N', transB::Char='N',
                                   block::Int=32) where {BackendT,T}
     LA = logical_operand(A, transA)
@@ -176,7 +176,7 @@ function _prepare_tlr_gemm_workspace(C, A, B, workspace;
 end
 
 """
-    gemm!(C::TLRMatrix, A::TLRMatrix, B::TLRMatrix;
+    gemm!(C::PaddedFTLRMatrix, A::PaddedFTLRMatrix, B::PaddedFTLRMatrix;
           alpha=true, beta=false, transA='N', transB='N',
           tol=0, rel=false, eps_rel=nothing, r_required=10, block=32,
           compute=nothing, workspace=nothing) -> C
@@ -195,9 +195,9 @@ capture and defaults to `max(tol, ara_stopping_floor(promoted_type))`.
 `workspace` accepts a byte count or a reusable `TLRGemmWorkspace`; omitting
 it constructs one temporary workspace for convenience.
 """
-function _gemm_tlr!(C::TLRMatrix{BackendT,T},
-                    A::TLRMatrix{BackendT,T},
-                    B::TLRMatrix{BackendT,T};
+function _gemm_tlr!(C::PaddedFTLRMatrix{BackendT,T},
+                    A::PaddedFTLRMatrix{BackendT,T},
+                    B::PaddedFTLRMatrix{BackendT,T};
                alpha=true, beta=false,
                transA::Char='N', transB::Char='N',
                tol::Real=0.0, rel::Bool=false,
@@ -305,9 +305,9 @@ function _gemm_tlr!(C::TLRMatrix{BackendT,T},
     return C
 end
 
-function gemm!(C::TLRMatrix{BackendT,T},
-               A::TLRMatrix{BackendT,T},
-               B::TLRMatrix{BackendT,T};
+function gemm!(C::PaddedFTLRMatrix{BackendT,T},
+               A::PaddedFTLRMatrix{BackendT,T},
+               B::PaddedFTLRMatrix{BackendT,T};
                alpha=true, beta=false,
                transA::Char='N', transB::Char='N',
                tol::Real=0.0, rel::Bool=false,
@@ -324,7 +324,7 @@ end
 Internal profiling entry point for the R4a scheduler. It intentionally keeps
 instrumentation out of the public `gemm!` keyword contract.
 """
-function _tlr_gemm_schedule_stats!(C::TLRMatrix, A::TLRMatrix, B::TLRMatrix;
+function _tlr_gemm_schedule_stats!(C::PaddedFTLRMatrix, A::PaddedFTLRMatrix, B::PaddedFTLRMatrix;
                                    kwargs...)
     stats = TLRGemmScheduleStats()
     _gemm_tlr!(C, A, B; kwargs..., stats)
