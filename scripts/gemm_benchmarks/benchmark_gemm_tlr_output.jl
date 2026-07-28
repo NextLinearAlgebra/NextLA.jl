@@ -1,11 +1,5 @@
 # Compare dense GEMM, TLR GEMM followed by compression, and direct TLR-output GEMM.
 #
-# Example:
-#
-#   NEXTLA_TLR_GEMM_N=1024,2048 NEXTLA_TLR_GEMM_B=128 \
-#   NEXTLA_TLR_GEMM_RANK_A=16 NEXTLA_TLR_GEMM_RANK_B=24 \
-#   julia --project=../gpuenv scripts/benchmark_gemm_tlr_output.jl
-#
 # All input tiles are populated with rank exactly maxrank.  C has capacity
 # min(maxrank_A, maxrank_B).  The dense-plus-compression time includes both
 # the dense-output TLR GEMM and compress!; reconstruction errors are measured
@@ -15,6 +9,11 @@ using LinearAlgebra
 using Printf
 using Random
 using KernelAbstractions
+
+if !isdefined(@__MODULE__, :GemmBenchmarksConfig)
+    include(joinpath(@__DIR__, "config.jl"))
+end
+using .GemmBenchmarksConfig
 
 const HAS_CUDA = try
     using CUDA
@@ -26,23 +25,17 @@ end
 using NextLA
 const TLRM = NextLA.TLRmodule
 
-parse_ints(name, default) = parse.(Int, split(get(ENV, name, default), ','))
+const CONFIG = load_config(; default_benchmark=Symbol("tlr-output"))
+const NS = CONFIG.sizes
+const BS = CONFIG.tiles
+const RANKS_A = CONFIG.ranks_a
+const RANKS_B = CONFIG.ranks_b
+const NREPS = CONFIG.reps
+const WARMUP = CONFIG.warmup
+const BLOCK = CONFIG.block
+const OUTPUT = output_path(CONFIG, Symbol("tlr-output"))
+const SEED = CONFIG.seed
 
-const NS = parse_ints("NEXTLA_TLR_GEMM_N", "8192")
-const BS = parse_ints("NEXTLA_TLR_GEMM_B", "1024")
-const RANKS_A = parse_ints("NEXTLA_TLR_GEMM_RANK_A", "64")
-const RANKS_B = parse_ints("NEXTLA_TLR_GEMM_RANK_B", "32")
-const NREPS = parse(Int, get(ENV, "NEXTLA_TLR_GEMM_REPS", "3"))
-const WARMUP = parse(Int, get(ENV, "NEXTLA_TLR_GEMM_WARMUP", "2"))
-const BLOCK = parse(Int, get(ENV, "NEXTLA_TLR_GEMM_BLOCK", "32"))
-const OUTPUT = get(ENV, "NEXTLA_TLR_GEMM_OUTPUT", "tlr_gemm_output_benchmark.csv")
-const SEED = parse(Int, get(ENV, "NEXTLA_TLR_GEMM_SEED", "20260728"))
-
-NREPS >= 1 || error("NEXTLA_TLR_GEMM_REPS must be positive")
-WARMUP >= 0 || error("NEXTLA_TLR_GEMM_WARMUP must be nonnegative")
-all(n > 0 for n in NS) || error("all sizes must be positive")
-all(b > 0 for b in BS) || error("all tile sizes must be positive")
-all(r > 0 for r in vcat(RANKS_A, RANKS_B)) || error("all ranks must be positive")
 all(n % b == 0 for n in NS, b in BS) ||
     error("every size must be divisible by every tile size")
 
@@ -183,26 +176,38 @@ function benchmark_case(backend, n, b, rank_A, rank_B)
 end
 
 function main()
-    backend_name = lowercase(get(ENV, "NEXTLA_TLR_GEMM_BACKEND", HAS_CUDA ? "cuda" : "cpu"))
+    backend_name = CONFIG.backend === :auto ? (HAS_CUDA ? "cuda" : "cpu") :
+                    string(CONFIG.backend)
     backend = if backend_name == "cuda"
         HAS_CUDA || error("CUDA was requested but is not functional")
         CUDA.CUDABackend()
     elseif backend_name == "cpu"
         KernelAbstractions.CPU()
     else
-        error("NEXTLA_TLR_GEMM_BACKEND must be `cuda` or `cpu`")
+        error("backend must be `auto`, `cuda`, or `cpu`")
     end
 
     write_header_if_needed(OUTPUT)
     done = completed_cases(OUTPUT)
-    @printf("NextLA TLR-output GEMM benchmark: backend=%s reps=%d warmup=%d output=%s\n",
-            backend_name, NREPS, WARMUP, OUTPUT)
+    cases = NamedTuple[]
     for n in NS, b in BS, rank_A in RANKS_A, rank_B in RANKS_B
         max(rank_A, rank_B) <= b ||
             error("ranks must not exceed tile size (n=$n, b=$b, " *
                   "rank_A=$rank_A, rank_B=$rank_B)")
         id = "n$(n)__b$(b)__ra$(rank_A)__rb$(rank_B)"
-        id in done && continue
+        push!(cases, (; id, n, b, rank_A, rank_B))
+    end
+    selected = [
+        case for (index, case) in enumerate(cases)
+        if mod1(index, CONFIG.shard_count) == CONFIG.shard_index &&
+           occursin(CONFIG.case_regex, case.id) && !(case.id in done)
+    ]
+    @printf("NextLA TLR-output GEMM benchmark: backend=%s cases=%d/%d reps=%d warmup=%d shard=%d/%d output=%s\n",
+            backend_name, length(selected), length(cases), NREPS, WARMUP,
+            CONFIG.shard_index, CONFIG.shard_count, OUTPUT)
+    for case in selected
+        id, n, b, rank_A, rank_B = case.id, case.n, case.b,
+                                   case.rank_A, case.rank_B
         result = benchmark_case(backend, n, b, rank_A, rank_B)
         row = (id, n, b, rank_A, rank_B, min(rank_A, rank_B), "fp32", NREPS,
                result.dense_ms, result.dense_compress_ms, result.tlr_output_ms,

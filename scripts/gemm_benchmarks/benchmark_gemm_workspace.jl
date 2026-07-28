@@ -1,23 +1,14 @@
 # Workspace-scaling study for the largest dense-output TLR GEMMs.
-#
-#   julia --project=../gpuenv -e \
-#     'include("scripts/benchmark_gemm_workspace.jl")'
-#
-# This imports the case generator and measurement utilities from
-# `benchmark_gemm.jl` without running its main study.
 
-ENV["NEXTLA_BENCH_LIBRARY_ONLY"] = "1"
-include("benchmark_gemm.jl")
+if !isdefined(@__MODULE__, :GemmBenchmarksConfig)
+    include(joinpath(@__DIR__, "config.jl"))
+end
+using .GemmBenchmarksConfig
 
-const WORKSPACE_OUTPUT = get(
-    ENV, "NEXTLA_WORKSPACE_BENCH_OUTPUT",
-    "tlr_gemm_workspace_benchmark.csv")
-const WORKSPACE_FRACTIONS = Tuple(parse.(
-    Float32,
-    split(get(ENV, "NEXTLA_WORKSPACE_FRACTIONS", "0.125,0.25,0.5,0.75,1.0"), ','),
-))
-const MEMORY_SAFETY_FRACTION = parse(
-    Float32, get(ENV, "NEXTLA_WORKSPACE_MEMORY_SAFETY", "0.90"))
+const CONFIG = load_config(; default_benchmark=:workspace)
+const WORKSPACE_OUTPUT = output_path(CONFIG, :workspace)
+const WORKSPACE_FRACTIONS = Tuple(CONFIG.workspace_fractions)
+const MEMORY_SAFETY_FRACTION = CONFIG.workspace_memory_safety
 const LARGE_SHAPES = Set((
     "square_4096",
     "square_8192",
@@ -28,7 +19,7 @@ const LARGE_SHAPES = Set((
 all(0 < f <= 1 for f in WORKSPACE_FRACTIONS) ||
     error("workspace fractions must lie in (0,1]")
 0 < MEMORY_SAFETY_FRACTION <= 1 ||
-    error("NEXTLA_WORKSPACE_MEMORY_SAFETY must lie in (0,1]")
+    error("memory-safety must lie in (0,1]")
 
 const WORKSPACE_CSV_COLUMNS = (
     "workspace_case_id", "case_id", "shape", "m", "k", "n",
@@ -64,7 +55,7 @@ function write_workspace_header_if_needed(path)
         actual = open(readline, path)
         actual == expected || error(
             "workspace benchmark CSV schema mismatch in $path; choose a new " *
-            "NEXTLA_WORKSPACE_BENCH_OUTPUT or remove the obsolete file")
+            "output directory or remove the obsolete file")
     else
         open(path, "w") do io
             println(io, expected)
@@ -217,6 +208,8 @@ end
 
 function workspace_main()
     HAS_CUDA || error("the large workspace study requires a functional CUDA backend")
+    CONFIG.backend in (:auto, :cuda) ||
+        error("the workspace study requires --backend auto or --backend cuda")
     backend = CUDA.CUDABackend()
     write_workspace_header_if_needed(WORKSPACE_OUTPUT)
     done = workspace_completed_cases(WORKSPACE_OUTPUT)
@@ -256,4 +249,6 @@ function workspace_main()
     return nothing
 end
 
+const GEMM_BENCHMARK_LIBRARY_ONLY = true
+include(joinpath(@__DIR__, "benchmark_gemm.jl"))
 workspace_main()

@@ -1,19 +1,16 @@
-# Large TLR × TLR → dense GEMM benchmark.
-#
-# Recommended invocation:
-#
-#   julia --project=../gpuenv -e 'include("scripts/benchmark_gemm.jl")'
-#
-# Results are appended to `NEXTLA_BENCH_OUTPUT` (default:
-# `tlr_gemm_benchmark.csv`). Existing case IDs are skipped, so an interrupted
-# run can be resumed. The full grid is intentionally large; use
-# `NEXTLA_BENCH_SHARD_COUNT` and `NEXTLA_BENCH_SHARD_INDEX` to distribute it.
+# Large TLR × TLR → dense GEMM benchmark. Run this file directly or use
+# `run_gemm_benchmark.sh`; both use the shared configuration in `config.jl`.
 
 using LinearAlgebra
 using Printf
 using Random
 using Statistics
 using KernelAbstractions
+
+if !isdefined(@__MODULE__, :GemmBenchmarksConfig)
+    include(joinpath(@__DIR__, "config.jl"))
+end
+using .GemmBenchmarksConfig
 
 const HAS_CUDA = try
     using CUDA
@@ -25,18 +22,16 @@ end
 using NextLA
 const TLRM = NextLA.TLRmodule
 
-const NREPS = parse(Int, get(ENV, "NEXTLA_BENCH_NREPS", "10"))
-const WARMUP = parse(Int, get(ENV, "NEXTLA_BENCH_WARMUP", "2"))
-const OUTPUT = get(ENV, "NEXTLA_BENCH_OUTPUT", "tlr_gemm_benchmark.csv")
-const SHARD_COUNT = parse(Int, get(ENV, "NEXTLA_BENCH_SHARD_COUNT", "1"))
-const SHARD_INDEX = parse(Int, get(ENV, "NEXTLA_BENCH_SHARD_INDEX", "1"))
-const CASE_REGEX = Regex(get(ENV, "NEXTLA_BENCH_CASE_REGEX", ".*"))
-const SEED = parse(Int, get(ENV, "NEXTLA_BENCH_SEED", "20260727"))
-
-NREPS >= 1 || error("NEXTLA_BENCH_NREPS must be positive")
-WARMUP >= 0 || error("NEXTLA_BENCH_WARMUP must be nonnegative")
-1 <= SHARD_INDEX <= SHARD_COUNT ||
-    error("shard index must lie in 1:shard count")
+if !isdefined(@__MODULE__, :CONFIG)
+    const CONFIG = load_config(; default_benchmark=:dense)
+end
+const NREPS = CONFIG.reps
+const WARMUP = CONFIG.warmup
+const OUTPUT = output_path(CONFIG, :dense)
+const SHARD_COUNT = CONFIG.shard_count
+const SHARD_INDEX = CONFIG.shard_index
+const CASE_REGEX = CONFIG.case_regex
+const SEED = CONFIG.seed
 
 # (m, k, n): four square products and four rectangular-A products against a
 # square B. All dimensions divide exactly under both tile ratios.
@@ -278,7 +273,7 @@ function write_header_if_needed(path)
         actual = open(readline, path)
         actual == expected || error(
             "benchmark CSV schema mismatch in $path; choose a new " *
-            "NEXTLA_BENCH_OUTPUT or remove the obsolete file")
+            "output directory or remove the obsolete file")
     else
         open(path, "w") do io
             println(io, expected)
@@ -316,15 +311,15 @@ function append_result(path, case, dense, tlr)
 end
 
 function main()
-    backend_name = lowercase(get(
-        ENV, "NEXTLA_BENCH_BACKEND", HAS_CUDA ? "cuda" : "cpu"))
+    backend_name = CONFIG.backend === :auto ? (HAS_CUDA ? "cuda" : "cpu") :
+                    string(CONFIG.backend)
     backend = if backend_name == "cuda"
         HAS_CUDA || error("CUDA was requested but is not functional")
         CUDA.CUDABackend()
     elseif backend_name == "cpu"
         KernelAbstractions.CPU()
     else
-        error("NEXTLA_BENCH_BACKEND must be `cuda` or `cpu`")
+        error("backend must be `auto`, `cuda`, or `cpu`")
     end
 
     write_header_if_needed(OUTPUT)
@@ -355,4 +350,4 @@ function main()
     return nothing
 end
 
-get(ENV, "NEXTLA_BENCH_LIBRARY_ONLY", "0") == "1" || main()
+isdefined(@__MODULE__, :GEMM_BENCHMARK_LIBRARY_ONLY) || main()
