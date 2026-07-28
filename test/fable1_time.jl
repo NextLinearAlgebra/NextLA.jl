@@ -1,12 +1,13 @@
 using CUDA
-using CUDA.CUBLAS
 using LinearAlgebra
 using Plots
 using KernelAbstractions
 
-# Include the file where you saved your lu_nopiv_recursive_mixed! implementation
-# include("lu_mixed_leaf_cusolver.jl") # <-- Ensure this filename matches your implementation file
-include("benchmark.jl")              # Must contain run_single_benchmark
+# Include the file where you saved the RecursiveMixedLU module
+include("RecursiveMixedLU.jl") # <-- Ensure this filename matches your implementation file
+using .RecursiveMixedLU        # Bring mixed_lu! and MixedLUWorkspace into scope
+
+include("benchmark.jl")        # Must contain run_single_benchmark
 
 # ==============================================================================
 # --- Performance Timing Helper Functions ---
@@ -27,18 +28,23 @@ function benchmark_op(op, reset_op, backend)
     return min_time_ns
 end
 
-function run_time_lu_mixed(
-    A_input::CuMatrix{Thi}, 
-    leaf_size::Int, 
+function run_time_recursive_mixed_lu(
+    A_input::CuMatrix{Twork}, 
+    nb_val::Int, 
     ::Type{Tlow}
-) where {Thi<:AbstractFloat, Tlow<:Union{Float32,Float64}}
+) where {Twork<:Union{Float32,Float64}, Tlow}
     backend = KernelAbstractions.get_backend(A_input)
+    n = size(A_input, 1)
 
     A_work  = copy(A_input)
     A_clean = copy(A_input)
     
-    # Hits lu_nopiv_recursive_mixed!(A; leaf, Tlow, check=false to avoid D2H sync overhead in timing loop)
-    op       = () -> lu_nopiv_recursive_mixed!(A_work; leaf=leaf_size, Tlow=Tlow, check=false)
+    # Preallocate workspace during warm-up/setup so scratch buffer allocation 
+    # and view reshaping overhead are strictly excluded from the timing loop
+    ws = MixedLUWorkspace(Tlow, Twork, n)
+    
+    # Hits mixed_lu!(A; nb, Tlow, ws)
+    op       = () -> mixed_lu!(A_work; nb=nb_val, Tlow=Tlow, ws=ws)
     reset_op = () -> copyto!(A_work, A_clean)
 
     time_ns = benchmark_op(op, reset_op, backend)
@@ -49,16 +55,16 @@ end
 # --- Main Timing Driver ---
 # ==============================================================================
 
-function check_lu_time_leaf_mixed()
+function check_lu_time_panel_mixed()
     # 2k to 16k matrix sizes as requested
     n_values = [2048, 4096, 8192, 16384]
 
-    # Configure precision scenarios: (Thi, Tlow, leaf_size)
-    # Using leaf=512 as a robust GPU baseline for cuSOLVER dense block execution
+    # Configure precision scenarios: (Label, Twork, Tlow, nb_size)
     scenarios = [
-        ("Pure Float64 (leaf=512)",    Float64, Float64, 512),
-        ("Mixed F64 / F32 (leaf=512)", Float64, Float32, 512),
-        ("Pure Float32 (leaf=512)",    Float32, Float32, 512)
+        ("Pure Float64 (nb=512)",    Float64, Float64, 512),
+        ("Mixed F64 / F32 (nb=512)", Float64, Float32, 512),
+        ("Pure Float32 (nb=512)",    Float32, Float32, 512),
+        ("Mixed F32 / F16 (nb=512)", Float32, Float16, 512)
     ]
 
     all_results = Dict{String, Vector{Float64}}()
@@ -67,7 +73,7 @@ function check_lu_time_leaf_mixed()
     end
 
     println("="^65)
-    println("Starting Leaf-Downcast Recursive LU Performance Benchmark")
+    println("Starting Panel-Downcast RecursiveLU Performance Benchmark")
     println("="^65)
 
     for n in n_values
@@ -81,10 +87,10 @@ function check_lu_time_leaf_mixed()
         A_cpu_f32 = Float32.(A_cpu_f64)
         A_gpu_f32 = CuArray(A_cpu_f32)
 
-        for (name, Thi, Tlow, leaf_val) in scenarios
-            A_target = (Thi == Float64) ? A_gpu_f64 : A_gpu_f32
+        for (name, Twork, Tlow, nb_val) in scenarios
+            A_target = (Twork == Float64) ? A_gpu_f64 : A_gpu_f32
             
-            runtime_ms = run_time_lu_mixed(A_target, leaf_val, Tlow)
+            runtime_ms = run_time_recursive_mixed_lu(A_target, nb_val, Tlow)
             push!(all_results[name], runtime_ms)
             
             println("    $(rpad(name, 30)) | Runtime: $(round(runtime_ms, sigdigits=4)) ms")
@@ -100,7 +106,7 @@ function check_lu_time_leaf_mixed()
     # --- Plotting Results ---
     # ==========================================================================
     plt = plot(
-        title="Leaf-Downcast LU Performance vs. Matrix Size",
+        title="Panel-Downcast LU Performance vs. Matrix Size",
         xlabel="Matrix Size (n x n)",
         ylabel="Runtime (ms) [Lower is Better]",
         xaxis=:log2,
@@ -122,8 +128,8 @@ function check_lu_time_leaf_mixed()
         plot!(plt, n_values, results, label=name, lw=2, linestyle=linestyle, marker=marker_style)
     end
 
-    savefig(plt, "lu_mixed_leaf_cusolver_runtimes.png")
-    println("\nPlot saved as lu_mixed_leaf_cusolver_runtimes.png")
+    savefig(plt, "recursive_mixed_lu_panel_runtimes.png")
+    println("\nPlot saved as recursive_mixed_lu_panel_runtimes.png")
 end
 
-check_lu_time_leaf_mixed()
+check_lu_time_panel_mixed()

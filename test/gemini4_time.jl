@@ -2,10 +2,11 @@ using CUDA
 using LinearAlgebra
 using Plots
 using KernelAbstractions
+using StochasticRounding
 
-# Include the file where you saved the abstract types, FullMixedPrec, and lu_recursive! implementation
-# include("lu_fullmixed_implementation.jl") # <-- Ensure this filename matches your implementation file
-include("benchmark.jl")                   # Must contain run_single_benchmark
+# Include the file where you saved this latest getrf_recursive! implementation
+# include("lu_fullmixed_latest.jl") # <-- Ensure this filename matches your implementation file
+include("benchmark.jl")           # Must contain run_single_benchmark
 
 # ==============================================================================
 # --- Performance Timing Helper Functions ---
@@ -26,14 +27,14 @@ function benchmark_op(op, reset_op, backend)
     return min_time_ns
 end
 
-function run_time_pure_lu(A_fp32::CuMatrix{Float32}, block_size::Int=256)
+function run_time_pure_lu(A_fp32::CuMatrix{Float32}, block_size::Int=4096)
     backend = KernelAbstractions.get_backend(A_fp32)
 
     A_work  = copy(A_fp32)
     A_clean = copy(A_fp32)
     
-    # Hits lu_recursive!(A::AbstractMatrix, block_size)
-    op       = () -> lu_recursive!(A_work, block_size)
+    # Hits getrf_recursive!(A::AbstractMatrix, block_size)
+    op       = () -> getrf_recursive!(A_work, block_size)
     reset_op = () -> copyto!(A_work, A_clean)
 
     time_ns = benchmark_op(op, reset_op, backend)
@@ -44,15 +45,15 @@ function run_time_mixed_lu(A_fp32::CuMatrix{Float32}, precisions::Vector{DataTyp
     backend = KernelAbstractions.get_backend(A_fp32)
     local A_mixed_input
     
-    # Construct FullMixedPrec hierarchy during the reset phase so structure 
-    # allocation and quantization overhead is excluded from the actual LU kernel timing
+    # Construct FullMixedPrec tree hierarchy during the reset phase so dynamic 
+    # FP16 quantization, stochastic rounding, and structure allocation are excluded from LU kernel timing
     reset_op = () -> begin
         A_mixed_input = FullMixedPrec(copy(A_fp32); precisions=precisions)
         KernelAbstractions.synchronize(backend)
     end
     
-    # Hits lu_recursive!(A::FullMixedPrec)
-    op = () -> lu_recursive!(A_mixed_input)
+    # Hits getrf_recursive!(A::FullMixedPrec) which passes A.A11 directly to unified_rectrxm!
+    op = () -> getrf_recursive!(A_mixed_input)
     
     time_ns = benchmark_op(op, reset_op, backend)
     return time_ns / 1_000_000
@@ -73,13 +74,13 @@ function check_lu_time_hierarchical()
     )
 
     all_results = Dict()
-    all_results["Pure F32 (block=256)"] = Float64[]
+    all_results["Pure F32 (block=4096)"] = Float64[]
     for name in keys(mixed_scenarios)
         all_results[name] = Float64[]
     end
 
     println("="^60)
-    println("Starting Hierarchical LU Performance Benchmark (2k - 16k)")
+    println("Starting Latest getrf_recursive! Benchmark (2k - 16k)")
     println("="^60)
 
     for n in n_values
@@ -90,10 +91,10 @@ function check_lu_time_hierarchical()
         A_cpu .+= Diagonal(fill(Float32(n * 2.0), n))
         A_fp32 = CuArray(A_cpu)
 
-        # 1. Benchmark Pure Float32 Baseline
-        runtime_ms = run_time_pure_lu(A_fp32, 256)
-        push!(all_results["Pure F32 (block=256)"], runtime_ms)
-        println("    $(rpad("Pure F32 (block=256)", 32)) | Runtime: $(round(runtime_ms, sigdigits=4)) ms")
+        # 1. Benchmark Pure Float32 Baseline (block_size = 4096 matches BaseCase threshold)
+        runtime_ms = run_time_pure_lu(A_fp32, 4096)
+        push!(all_results["Pure F32 (block=4096)"], runtime_ms)
+        println("    $(rpad("Pure F32 (block=4096)", 32)) | Runtime: $(round(runtime_ms, sigdigits=4)) ms")
 
         # 2. Benchmark Mixed-Precision Hierarchies
         for (name, prec_list) in mixed_scenarios
@@ -102,7 +103,7 @@ function check_lu_time_hierarchical()
             println("    $(rpad(name, 32)) | Runtime: $(round(runtime_ms, sigdigits=4)) ms")
         end
 
-        # Aggressive memory cleanup between scaling steps
+        # Aggressive memory cleanup between scaling steps to prevent VRAM fragmentation
         A_cpu = nothing; A_fp32 = nothing; GC.gc(true); CUDA.reclaim()
     end
 
@@ -131,8 +132,8 @@ function check_lu_time_hierarchical()
         plot!(plt, n_values, results, label=name, lw=2, linestyle=linestyle, marker=marker_style)
     end
 
-    savefig(plt, "fullmixedprec_lu_runtimes.png")
-    println("\nPlot saved as fullmixedprec_lu_runtimes.png")
+    savefig(plt, "getrf_recursive_latest_runtimes.png")
+    println("\nPlot saved as getrf_recursive_latest_runtimes.png")
 end
 
 check_lu_time_hierarchical()

@@ -1,11 +1,13 @@
 using CUDA
+using CUDA.CUSOLVER
 using LinearAlgebra
 using Plots
 using KernelAbstractions
+using StochasticRounding
 
-# Include the file where you saved the FullMixedPrec / getrf_recursive! implementation above
-# include("lu_fullmixed.jl") # <-- Ensure this filename matches your implementation file
-include("benchmark.jl")    # Must contain run_single_benchmark
+# Include the file where you saved this latest zero-copy getrf_recursive! implementation
+# include("lu_fullmixed_zero_copy.jl") # <-- Ensure this filename matches your implementation file
+include("benchmark.jl")              # Must contain run_single_benchmark
 
 # ==============================================================================
 # --- Performance Timing Helper Functions ---
@@ -26,7 +28,7 @@ function benchmark_op(op, reset_op, backend)
     return min_time_ns
 end
 
-function run_time_pure_lu(A_fp32::CuMatrix{Float32}, block_size::Int=256)
+function run_time_pure_lu(A_fp32::CuMatrix{Float32}, block_size::Int=4096)
     backend = KernelAbstractions.get_backend(A_fp32)
 
     A_work  = copy(A_fp32)
@@ -44,14 +46,14 @@ function run_time_mixed_lu(A_fp32::CuMatrix{Float32}, precisions::Vector{DataTyp
     backend = KernelAbstractions.get_backend(A_fp32)
     local A_mixed_input
     
-    # Construct FullMixedPrec tree hierarchy during the reset phase so structure 
-    # allocation overhead is excluded from the actual LU timing kernel
+    # Construct FullMixedPrec tree hierarchy during the reset phase so dynamic 
+    # FP16 quantization, stochastic rounding, and structure allocation are excluded from LU kernel timing
     reset_op = () -> begin
         A_mixed_input = FullMixedPrec(copy(A_fp32); precisions=precisions)
         KernelAbstractions.synchronize(backend)
     end
     
-    # Hits getrf_recursive!(A::FullMixedPrec)
+    # Hits getrf_recursive!(A::FullMixedPrec), utilizing zero-copy lower/upper_tri_mixed extraction
     op = () -> getrf_recursive!(A_mixed_input)
     
     time_ns = benchmark_op(op, reset_op, backend)
@@ -66,43 +68,43 @@ function check_lu_time_hierarchical()
     # 2k to 16k captures asymptotic GPU Tensor Core scaling without excessive runtimes
     n_values = [2048, 4096, 8192, 16384]
 
-    # Map target scenarios to precision vectors
+    # Map your specific target scenarios to precision vectors
     mixed_scenarios = Dict(
-        "Mixed [F16, F16, F32]"           => [Float16, Float16, Float32],
-        "Mixed [F16, F16, F16, F32]"      => [Float16, Float16, Float16, Float32],
-        "Mixed [F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float32]
+        "Mixed [F16, F16, F32]"      => [Float16, Float16, Float32],
+        "Mixed [F16, F16, F16, F32]" => [Float16, Float16, Float16, Float32]
     )
 
     all_results = Dict()
-    all_results["Pure F32 (block=256)"] = Float64[]
+    all_results["Pure F32 (block=4096)"] = Float64[]
     for name in keys(mixed_scenarios)
         all_results[name] = Float64[]
     end
 
     println("="^60)
-    println("Starting FullMixedPrec LU Performance Benchmark (2k - 16k)")
+    println("Starting Zero-Copy getrf_recursive! Benchmark (2k - 16k)")
     println("="^60)
 
     for n in n_values
         println("\n--- Testing Matrix Size: $n x $n ---")
         
-        # Diagonally dominant matrix ensures stability without row pivoting
+        # Diagonally dominant matrix ensures stability for non-pivoted LU
         A_cpu = rand(Float32, n, n)
         A_cpu .+= Diagonal(fill(Float32(n * 2.0), n))
         A_fp32 = CuArray(A_cpu)
 
-        # 1. Benchmark Pure Float32
-        runtime_ms = run_time_pure_lu(A_fp32, 256)
-        push!(all_results["Pure F32 (block=256)"], runtime_ms)
-        println("    $(rpad("Pure F32 (block=256)", 36)) | Runtime: $(round(runtime_ms, sigdigits=4)) ms")
+        # 1. Benchmark Pure Float32 Baseline (block_size = 4096 matches BaseCase threshold)
+        runtime_ms = run_time_pure_lu(A_fp32, 4096)
+        push!(all_results["Pure F32 (block=4096)"], runtime_ms)
+        println("    $(rpad("Pure F32 (block=4096)", 32)) | Runtime: $(round(runtime_ms, sigdigits=4)) ms")
 
         # 2. Benchmark Mixed-Precision Hierarchies
         for (name, prec_list) in mixed_scenarios
             runtime_ms = run_time_mixed_lu(A_fp32, prec_list)
             push!(all_results[name], runtime_ms)
-            println("    $(rpad(name, 36)) | Runtime: $(round(runtime_ms, sigdigits=4)) ms")
+            println("    $(rpad(name, 32)) | Runtime: $(round(runtime_ms, sigdigits=4)) ms")
         end
 
+        # Aggressive memory cleanup between scaling steps to prevent VRAM fragmentation
         A_cpu = nothing; A_fp32 = nothing; GC.gc(true); CUDA.reclaim()
     end
 
@@ -110,7 +112,7 @@ function check_lu_time_hierarchical()
     # --- Plotting Results ---
     # ==========================================================================
     plt = plot(
-        title="FullMixedPrec LU Performance vs. Matrix Size",
+        title="Zero-Copy Hierarchical LU Performance vs. Matrix Size",
         xlabel="Matrix Size (n x n)",
         ylabel="Runtime (ms) [Lower is Better]",
         xaxis=:log2,
@@ -131,8 +133,8 @@ function check_lu_time_hierarchical()
         plot!(plt, n_values, results, label=name, lw=2, linestyle=linestyle, marker=marker_style)
     end
 
-    savefig(plt, "fullmixedprec_lu_runtimes.png")
-    println("\nPlot saved as fullmixedprec_lu_runtimes.png")
+    savefig(plt, "getrf_recursive_zero_copy_runtimes.png")
+    println("\nPlot saved as getrf_recursive_zero_copy_runtimes.png")
 end
 
 check_lu_time_hierarchical()
