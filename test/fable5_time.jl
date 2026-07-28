@@ -71,7 +71,9 @@ function check_lu_time_hierarchical()
     # Map your specific target scenarios to precision vectors
     mixed_scenarios = Dict(
         "Mixed [F16, F16, F32]"      => [Float16, Float16, Float32],
-        "Mixed [F16, F16, F16, F32]" => [Float16, Float16, Float16, Float32]
+        "Mixed [F16, F16, F16, F32]" => [Float16, Float16, Float16, Float32],
+        "Mixed [F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float32],
+        "Mixed [F16, F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float16, Float32]
     )
 
     all_results = Dict()
