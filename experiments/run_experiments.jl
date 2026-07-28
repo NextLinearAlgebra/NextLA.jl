@@ -29,6 +29,21 @@ const DTYPES = (Float32, Float64)
 
 const RUN = RunConfig(DTYPES, 1, 10, 2, 20260728, BACKEND)
 
+# The same sweep definitions can be reused for the exact-rank format.  Change
+# only these fields to compare padded storage with variable-rank storage.
+const COMPRESSED_RUN = RunConfig(
+    DTYPES, 1, 10, 2, 20260728, BACKEND;
+    format=:compressed, rank_distribution=:uniform, min_rank=8, max_rank=32,
+)
+const COMPRESSED_CONSTANT_RUN = RunConfig(
+    DTYPES, 1, 10, 2, 20260728, BACKEND;
+    format=:compressed, rank_distribution=:constant,
+)
+const COMPRESSED_SKEWED_RUN = RunConfig(
+    DTYPES, 1, 10, 2, 20260728, BACKEND;
+    format=:compressed, rank_distribution=:skewed, min_rank=8, max_rank=32,
+)
+
 const STRONG_SCALING = StrongScalingConfig(
     [4096, 8192, 16384, 32768],
     512,
@@ -57,6 +72,25 @@ const MATRIX_SHAPE_SWEEP = MatrixShapeSweepConfig(
     [(1, 1, 1), (4, 1, 1), (1, 1, 4), (1, 4, 1), (1, 0.25, 1)],
     RUN,
 )
+
+const COMPRESSED_STRONG_SCALING = StrongScalingConfig(
+    [4096, 8192, 16384, 32768], 512, (32, 32), COMPRESSED_RUN)
+const COMPRESSED_CONSTANT_STRONG_SCALING = StrongScalingConfig(
+    [4096, 8192, 16384, 32768], 512, (32, 32), COMPRESSED_CONSTANT_RUN)
+const COMPRESSED_SKEWED_STRONG_SCALING = StrongScalingConfig(
+    [4096, 8192, 16384, 32768], 512, (32, 32), COMPRESSED_SKEWED_RUN)
+const COMPRESSED_RANK_SWEEP = RankSweepConfig(
+    16384, 512, [8, 16, 32, 64, 128, 256],
+    RunConfig(DTYPES, 1, 10, 2, 20260728, BACKEND;
+              format=:compressed, rank_distribution=:constant))
+const COMPRESSED_TILE_SIZE_SWEEP = TileSizeSweepConfig(
+    16384, [128, 256, 512, 1024, 2048], 32,
+    RunConfig(DTYPES, 1, 10, 2, 20260728, BACKEND;
+              format=:compressed, rank_distribution=:constant))
+const COMPRESSED_MATRIX_SHAPE_SWEEP = MatrixShapeSweepConfig(
+    16384, 512, 32, [(1, 1, 1), (4, 1, 1), (1, 4, 1), (1, 1, 4), (1, 0.25, 1)],
+    RunConfig(DTYPES, 1, 10, 2, 20260728, BACKEND;
+              format=:compressed, rank_distribution=:constant))
 
 const OUTPUT_RUN = TLROutputRunConfig(
     DTYPES, 1, 10, 2, 20260728, BACKEND;
@@ -100,11 +134,13 @@ end
 
 function _write_dense_experiment(path, results)
     header = [
-        "experiment", "dtype", "m", "k", "n", "tile_size", "rank_A", "rank_B",
+        "experiment", "format", "rank_distribution", "min_rank", "max_rank",
+        "dtype", "m", "k", "n", "tile_size", "rank_A", "rank_B",
         "tlr_dense_ms", "dense_tlr_ms", "tlr_tlr_ms", "dense_dense_ms",
     ]
     rows = ([
-        r.experiment, r.dtype, r.m, r.k, r.n, r.tile_size, r.rank_A, r.rank_B,
+        r.experiment, r.format, r.rank_distribution, r.min_rank, r.max_rank,
+        r.dtype, r.m, r.k, r.n, r.tile_size, r.rank_A, r.rank_B,
         r.timing.tlr_dense_ms, r.timing.dense_tlr_ms,
         r.timing.tlr_tlr_ms, r.timing.dense_dense_ms,
     ] for r in results)
@@ -141,6 +177,24 @@ function main()
     _write_dense_experiment(
         joinpath(OUTPUT_DIR, "matrix_shape_sweep.csv"),
         matrix_shape_sweep(MATRIX_SHAPE_SWEEP))
+    _write_dense_experiment(
+        joinpath(OUTPUT_DIR, "compressed_strong_scaling.csv"),
+        strong_scaling(COMPRESSED_STRONG_SCALING))
+    _write_dense_experiment(
+        joinpath(OUTPUT_DIR, "compressed_constant_strong_scaling.csv"),
+        strong_scaling(COMPRESSED_CONSTANT_STRONG_SCALING))
+    _write_dense_experiment(
+        joinpath(OUTPUT_DIR, "compressed_skewed_strong_scaling.csv"),
+        strong_scaling(COMPRESSED_SKEWED_STRONG_SCALING))
+    _write_dense_experiment(
+        joinpath(OUTPUT_DIR, "compressed_rank_sweep.csv"),
+        rank_sweep(COMPRESSED_RANK_SWEEP))
+    _write_dense_experiment(
+        joinpath(OUTPUT_DIR, "compressed_tile_size_sweep.csv"),
+        tile_size_sweep(COMPRESSED_TILE_SIZE_SWEEP))
+    _write_dense_experiment(
+        joinpath(OUTPUT_DIR, "compressed_matrix_shape_sweep.csv"),
+        matrix_shape_sweep(COMPRESSED_MATRIX_SHAPE_SWEEP))
     _write_tlr_output_experiment(
         joinpath(OUTPUT_DIR, "tlr_output_strong_scaling.csv"),
         tlr_output_strong_scaling(TLR_OUTPUT_STRONG_SCALING))

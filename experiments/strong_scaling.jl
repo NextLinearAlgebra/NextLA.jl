@@ -14,7 +14,7 @@ catch
 end
 
 include(joinpath(@__DIR__, "matrix_generation.jl"))
-using .ExperimentMatrixGeneration: generate_tlr_operands
+using .ExperimentMatrixGeneration: generate_ftlr_operands
 
 export RunConfig, StrongScalingConfig, RankSweepConfig, TileSizeSweepConfig,
        MatrixShapeSweepConfig, GemmTiming, GemmResult
@@ -27,12 +27,20 @@ struct RunConfig{B}
     nwarmup::Int
     seed::Int
     backend::B
+    format::Symbol
+    rank_distribution::Symbol
+    min_rank::Union{Nothing,Int}
+    max_rank::Union{Nothing,Int}
 end
 
 function RunConfig(dtypes, workspace_factor::Integer, nreps::Integer,
-                   nwarmup::Integer, seed::Integer, backend)
+                   nwarmup::Integer, seed::Integer, backend;
+                   format::Symbol=:padded, rank_distribution::Symbol=:constant,
+                   min_rank=nothing, max_rank=nothing)
     return RunConfig(DataType[dtypes...], Int(workspace_factor), Int(nreps),
-                     Int(nwarmup), Int(seed), backend)
+                     Int(nwarmup), Int(seed), backend, format, rank_distribution,
+                     isnothing(min_rank) ? nothing : Int(min_rank),
+                     isnothing(max_rank) ? nothing : Int(max_rank))
 end
 
 struct StrongScalingConfig{B}
@@ -98,6 +106,10 @@ struct GemmResult
     tile_size::Int
     rank_A::Int
     rank_B::Int
+    format::Symbol
+    rank_distribution::Symbol
+    min_rank::Int
+    max_rank::Int
     timing::GemmTiming
 end
 
@@ -163,8 +175,12 @@ function _run_cases(experiment::Symbol, shapes::Vector{NTuple{3,Int}},
             m % b == 0 && k % b == 0 && n % b == 0 ||
                 throw(ArgumentError("$shape must be divisible by tile_size=$b"))
 
-            A_tlr, B_tlr = generate_tlr_operands(
-                m, k, n, b, ranks, T; seed=run.seed + case_index, backend=run.backend)
+            lo = isnothing(run.min_rank) ? min(rA, rB) : run.min_rank
+            hi = isnothing(run.max_rank) ? max(rA, rB) : run.max_rank
+            A_tlr, B_tlr = generate_ftlr_operands(
+                m, k, n, b, ranks, T; seed=run.seed + case_index, backend=run.backend,
+                format=run.format, rank_distribution=run.rank_distribution,
+                min_rank=lo, max_rank=hi)
             C = _backend_zeros(run.backend, T, m, n)
 
             workspace = DenseGemmWorkspace(
@@ -207,7 +223,8 @@ function _run_cases(experiment::Symbol, shapes::Vector{NTuple{3,Int}},
             end
 
             push!(results, GemmResult(
-                experiment, T, m, k, n, b, rA, rB,
+                experiment, T, m, k, n, b, rA, rB, run.format,
+                run.rank_distribution, lo, hi,
                 GemmTiming(tlr_dense_ms, dense_tlr_ms, tlr_tlr_ms, dense_dense_ms)))
             A_dense = nothing
             B_dense = nothing
