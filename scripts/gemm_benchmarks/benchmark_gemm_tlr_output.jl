@@ -26,21 +26,22 @@ using NextLA
 const TLRM = NextLA.TLRmodule
 
 const CONFIG = load_config(; default_benchmark=Symbol("tlr-output"))
-const NS = CONFIG.sizes
-const BS = CONFIG.tiles
-const RANKS_A = CONFIG.ranks_a
-const RANKS_B = CONFIG.ranks_b
+const M = CONFIG.m
+const K = CONFIG.k
+const N = CONFIG.n
+const BM = CONFIG.bm
+const BK = CONFIG.bk
+const BN = CONFIG.bn
+const MAX_RANK_A = CONFIG.max_rank_a
+const MAX_RANK_B = CONFIG.max_rank_b
 const NREPS = CONFIG.reps
 const WARMUP = CONFIG.warmup
-const BLOCK = CONFIG.block
+const BLOCK = CONFIG.tile_size
 const OUTPUT = output_path(CONFIG, Symbol("tlr-output"))
 const SEED = CONFIG.seed
 
-all(n % b == 0 for n in NS, b in BS) ||
-    error("every size must be divisible by every tile size")
-
 const CSV_COLUMNS = (
-    "case_id", "n", "tile", "rank_A", "rank_B", "rank_C", "precision",
+    "case_id", "m", "k", "n", "bm", "bk", "bn", "rank_A", "rank_B", "rank_C", "precision",
     "nreps", "dense_ms", "tlr_dense_compress_ms", "tlr_output_ms",
     "dense_plus_compress_speedup", "tlr_output_speedup",
     "error_dense_compress_abs", "error_dense_compress_rel",
@@ -75,10 +76,11 @@ function best_time_ms(f, backend)
     return best
 end
 
-function make_full_rank_tlr(backend, ::Type{T}, n, b, rank, seed) where {T}
-    n % b == 0 || error("n=$n must be divisible by tile size b=$b")
+function make_full_rank_tlr(backend, ::Type{T}, m, n, bm, bn, rank, seed) where {T}
+    m % bm == 0 || error("m=$m must be divisible by tile size bm=$bm")
+    n % bn == 0 || error("n=$n must be divisible by tile size bn=$bn")
     X = TLRM.TLRMatrix(
-        backend, T, n, n, (b, b), rank; tile_order=TLRM.TileRowMajor)
+        backend, T, m, n, (bm, bn), rank; tile_order=TLRM.TileRowMajor)
     Random.seed!(seed)
     randn!(X.int_U)
     randn!(X.int_V)
@@ -129,21 +131,22 @@ function completed_cases(path)
     return ids
 end
 
-function benchmark_case(backend, ::Type{T}, n, b, rank_A, rank_B) where {T}
+function benchmark_case(backend, ::Type{T}, m, k, n, bm, bk, bn,
+                        rank_A, rank_B) where {T}
     rank_C = min(rank_A, rank_B)
-    A = make_full_rank_tlr(backend, T, n, b, rank_A, SEED + 11)
-    B = make_full_rank_tlr(backend, T, n, b, rank_B, SEED + 29)
+    A = make_full_rank_tlr(backend, T, m, k, bm, bk, rank_A, SEED + 11)
+    B = make_full_rank_tlr(backend, T, k, n, bk, bn, rank_B, SEED + 29)
     A_dense = uncompressed(A, backend, T)
     B_dense = uncompressed(B, backend, T)
-    reference = backend_zeros(backend, T, n, n)
+    reference = backend_zeros(backend, T, m, n)
     oneT, zeroT = one(T), zero(T)
     dense_gemm = () -> NextLA._gemm_compute!(
         NextLA.GEMMCompute{T}(), 'N', 'N', oneT, A_dense, B_dense, zeroT, reference)
     dense_ms = best_time_ms(dense_gemm, backend)
 
-    C_dense = backend_zeros(backend, T, n, n)
+    C_dense = backend_zeros(backend, T, m, n)
     C_compressed = TLRM.TLRMatrix(
-        backend, T, n, n, (b, b), rank_C; tile_order=TLRM.TileRowMajor)
+        backend, T, m, n, (bm, bn), rank_C; tile_order=TLRM.TileRowMajor)
     dense_ws = TLRM.DenseGemmWorkspace(
         A, B; bytes=TLRM.gemm_maximum_workspace_bytes(A, B))
     compress_ws = TLRM.alloc_workspace(C_compressed)
@@ -154,7 +157,7 @@ function benchmark_case(backend, ::Type{T}, n, b, rank_A, rank_B) where {T}
     dense_compress_ms = best_time_ms(dense_plus_compress, backend)
 
     C_tlr = TLRM.TLRMatrix(
-        backend, T, n, n, (b, b), rank_C; tile_order=TLRM.TileRowMajor)
+        backend, T, m, n, (bm, bn), rank_C; tile_order=TLRM.TileRowMajor)
     tlr_ws = TLRM.TLRGemmWorkspace(C_tlr, A, B; block=BLOCK)
     tlr_output = () -> TLRM.gemm!(
         C_tlr, A, B; alpha=oneT, beta=zeroT, tol=0.0, rel=false,
@@ -189,15 +192,20 @@ function main()
     write_header_if_needed(OUTPUT)
     done = completed_cases(OUTPUT)
     cases = NamedTuple[]
-    for precision in CONFIG.precisions, n in NS, b in BS,
-        rank_A in RANKS_A, rank_B in RANKS_B
-        max(rank_A, rank_B) <= b ||
-            error("ranks must not exceed tile size (n=$n, b=$b, " *
+    for precision in CONFIG.precisions
+        m, k, n = M, K, N
+        bm, bk, bn = BM, BK, BN
+        rank_A, rank_B = MAX_RANK_A, MAX_RANK_B
+        max(rank_A, rank_B) <= min(bm, bk, bn) ||
+            error("ranks must not exceed tile sizes (m=$m, k=$k, n=$n, " *
+                  "bm=$bm, bk=$bk, bn=$bn, " *
                   "rank_A=$rank_A, rank_B=$rank_B)")
-        precision_name = precision === :float32 ? "fp32" : "fp64"
-        base_id = "n$(n)__b$(b)__ra$(rank_A)__rb$(rank_B)"
-        id = precision === :float32 ? base_id : "fp64__$(base_id)"
-        push!(cases, (; id, precision, precision_name, n, b, rank_A, rank_B))
+        precision_name = precision === :float16 ? "fp16" :
+                         precision === :float32 ? "fp32" : "fp64"
+        base_id = "m$(m)__k$(k)__n$(n)__bm$(bm)__bk$(bk)__bn$(bn)__ra$(rank_A)__rb$(rank_B)"
+        id = precision === :float16 ? "fp16__$(base_id)" :
+             precision === :float32 ? base_id : "fp64__$(base_id)"
+        push!(cases, (; id, precision, precision_name, m, k, n, bm, bk, bn, rank_A, rank_B))
     end
     selected = [
         case for (index, case) in enumerate(cases)
@@ -209,10 +217,13 @@ function main()
             CONFIG.shard_index, CONFIG.shard_count, OUTPUT)
     for case in selected
         id, precision, precision_name = case.id, case.precision, case.precision_name
-        n, b, rank_A, rank_B = case.n, case.b, case.rank_A, case.rank_B
-        T = precision === :float32 ? Float32 : Float64
-        result = benchmark_case(backend, T, n, b, rank_A, rank_B)
-        row = (id, n, b, rank_A, rank_B, min(rank_A, rank_B), precision_name, NREPS,
+        m, k, n = case.m, case.k, case.n
+        bm, bk, bn = case.bm, case.bk, case.bn
+        rank_A, rank_B = case.rank_A, case.rank_B
+        T = precision === :float16 ? Float16 :
+            precision === :float32 ? Float32 : Float64
+        result = benchmark_case(backend, T, m, k, n, bm, bk, bn, rank_A, rank_B)
+        row = (id, m, k, n, bm, bk, bn, rank_A, rank_B, min(rank_A, rank_B), precision_name, NREPS,
                result.dense_ms, result.dense_compress_ms, result.tlr_output_ms,
                result.dense_ms / result.dense_compress_ms,
                result.dense_ms / result.tlr_output_ms,

@@ -22,14 +22,18 @@ const DEFAULT_SEED = "20260728"
 const DEFAULT_SHARD_COUNT = "1"
 const DEFAULT_SHARD_INDEX = "1"
 const DEFAULT_CASE_REGEX = ".*"
-const DEFAULT_PRECISIONS = "float16, float32,float64"
+const DEFAULT_PRECISIONS = "float16,float32,float64"
 const DEFAULT_WORKSPACE_FRACTIONS = "0.125,0.25,0.5,0.75,1.0"
 const DEFAULT_MEMORY_SAFETY = "0.90"
-const DEFAULT_SIZES = "8192"
-const DEFAULT_TILES = "1024"
-const DEFAULT_RANKS_A = "64"
-const DEFAULT_RANKS_B = "32"
-const DEFAULT_BLOCK = "32"
+const DEFAULT_M = "8192"
+const DEFAULT_K = "8192"
+const DEFAULT_N = "8192"
+const DEFAULT_BM = "1024"
+const DEFAULT_BK = "1024"
+const DEFAULT_BN = "1024"
+const DEFAULT_TILE_SIZE = "32"
+const DEFAULT_MAX_RANK_A = "64"
+const DEFAULT_MAX_RANK_B = "32"
 
 struct GemmBenchmarkConfig
     benchmark::Symbol
@@ -44,11 +48,15 @@ struct GemmBenchmarkConfig
     precisions::Vector{Symbol}
     workspace_fractions::Vector{Float64}
     workspace_memory_safety::Float64
-    sizes::Vector{Int}
-    tiles::Vector{Int}
-    ranks_a::Vector{Int}
-    ranks_b::Vector{Int}
-    block::Int
+    m::Int
+    k::Int
+    n::Int
+    bm::Int
+    bk::Int
+    bn::Int
+    tile_size::Int
+    max_rank_a::Int
+    max_rank_b::Int
 end
 
 function print_help(io::IO=stdout)
@@ -65,16 +73,11 @@ function print_help(io::IO=stdout)
     println(io, "  --shard-count N        number of job-array shards (default: 1)")
     println(io, "  --shard-index N        one-based shard index (default: 1)")
     println(io, "  --case-regex REGEX     restrict case IDs (default: .*)")
-    println(io, "  --precisions LIST      float32,float64 (default: float32,float64)")
+    println(io, "  precisions, dimensions, tiles, and ranks are set in config.jl")
     println(io, "Workspace options:")
     println(io, "  --workspace-fractions LIST   e.g. 0.125,0.25,0.5,1.0")
     println(io, "  --memory-safety FRACTION     GPU safety fraction (default: 0.90)")
     println(io, "TLR-output options:")
-    println(io, "  --sizes LIST            square matrix sizes (default: 8192)")
-    println(io, "  --tiles LIST            tile sizes (default: 1024)")
-    println(io, "  --ranks-a LIST          A ranks (default: 64)")
-    println(io, "  --ranks-b LIST          B ranks (default: 32)")
-    println(io, "  --block N               TLR-output block size (default: 32)")
     println(io)
     println(io, "The same common options apply to all three benchmarks. Each option may")
     println(io, "also be supplied through the NEXTLA_GEMM_* environment variables.")
@@ -86,8 +89,8 @@ function _options(args)
     options = Dict{String,String}()
     allowed = Set((
         "benchmark", "backend", "reps", "warmup", "seed", "output_dir",
-        "shard_count", "shard_index", "case_regex", "precisions", "workspace_fractions",
-        "memory_safety", "sizes", "tiles", "ranks_a", "ranks_b", "block",
+        "shard_count", "shard_index", "case_regex", "workspace_fractions",
+        "memory_safety",
     ))
     i = 1
     while i <= length(args)
@@ -138,8 +141,8 @@ function _precisions(value)
         normalized = lowercase(strip(item))
         normalized = normalized == "fp32" ? "float32" :
                      normalized == "fp64" ? "float64" : normalized
-        normalized in ("float32", "float64") ||
-            error("precisions must contain only float32 and float64")
+        normalized in ("float16", "float32", "float64") ||
+            error("precisions must contain only float16, float32, and float64")
         precision = Symbol(normalized)
         precision in result || push!(result, precision)
     end
@@ -168,8 +171,7 @@ function load_config(args=ARGS; default_benchmark::Symbol=:dense)
     shard_count = parse(Int, _value(options, "shard_count", ("NEXTLA_GEMM_SHARD_COUNT",), DEFAULT_SHARD_COUNT))
     shard_index = parse(Int, _value(options, "shard_index", ("NEXTLA_GEMM_SHARD_INDEX",), DEFAULT_SHARD_INDEX))
     case_regex = Regex(_value(options, "case_regex", ("NEXTLA_GEMM_CASE_REGEX",), DEFAULT_CASE_REGEX))
-    precisions = _precisions(_value(
-        options, "precisions", ("NEXTLA_GEMM_PRECISIONS",), DEFAULT_PRECISIONS))
+    precisions = _precisions(DEFAULT_PRECISIONS)
     output_dir = abspath(expanduser(_value(
         options, "output_dir", ("NEXTLA_GEMM_OUTPUT_DIR",), DEFAULT_OUTPUT_DIR)))
 
@@ -178,11 +180,15 @@ function load_config(args=ARGS; default_benchmark::Symbol=:dense)
         DEFAULT_WORKSPACE_FRACTIONS), "workspace fractions")
     workspace_memory_safety = parse(Float64, _value(
         options, "memory_safety", ("NEXTLA_GEMM_MEMORY_SAFETY",), DEFAULT_MEMORY_SAFETY))
-    sizes = _list(Int, _value(options, "sizes", ("NEXTLA_GEMM_SIZES",), DEFAULT_SIZES), "sizes")
-    tiles = _list(Int, _value(options, "tiles", ("NEXTLA_GEMM_TILES",), DEFAULT_TILES), "tiles")
-    ranks_a = _list(Int, _value(options, "ranks_a", ("NEXTLA_GEMM_RANKS_A",), DEFAULT_RANKS_A), "A ranks")
-    ranks_b = _list(Int, _value(options, "ranks_b", ("NEXTLA_GEMM_RANKS_B",), DEFAULT_RANKS_B), "B ranks")
-    block = parse(Int, _value(options, "block", ("NEXTLA_GEMM_BLOCK",), DEFAULT_BLOCK))
+    m = parse(Int, DEFAULT_M)
+    k = parse(Int, DEFAULT_K)
+    n = parse(Int, DEFAULT_N)
+    bm = parse(Int, DEFAULT_BM)
+    bk = parse(Int, DEFAULT_BK)
+    bn = parse(Int, DEFAULT_BN)
+    tile_size = parse(Int, DEFAULT_TILE_SIZE)
+    max_rank_a = parse(Int, DEFAULT_MAX_RANK_A)
+    max_rank_b = parse(Int, DEFAULT_MAX_RANK_B)
 
     reps >= 1 || error("reps must be positive")
     warmup >= 0 || error("warmup must be nonnegative")
@@ -192,16 +198,19 @@ function load_config(args=ARGS; default_benchmark::Symbol=:dense)
         error("workspace fractions must lie in (0, 1]")
     0 < workspace_memory_safety <= 1 ||
         error("memory-safety must lie in (0, 1]")
-    all(>(0), sizes) || error("all sizes must be positive")
-    all(>(0), tiles) || error("all tiles must be positive")
-    all(>(0), vcat(ranks_a, ranks_b)) || error("all ranks must be positive")
-    block > 0 || error("block must be positive")
+    all(>(0), (m, k, n, bm, bk, bn, tile_size, max_rank_a, max_rank_b)) ||
+        error("all dimensions, tile sizes, and ranks must be positive")
+    m % bm == 0 && k % bk == 0 && n % bn == 0 ||
+        error("m, k, and n must be divisible by bm, bk, and bn respectively")
+    max(max_rank_a, max_rank_b) <= min(bm, bk, bn) ||
+        error("maximum ranks must not exceed the tile sizes")
 
     mkpath(output_dir)
     return GemmBenchmarkConfig(
         benchmark, backend, reps, warmup, seed, output_dir, shard_count,
         shard_index, case_regex, precisions, workspace_fractions,
-        workspace_memory_safety, sizes, tiles, ranks_a, ranks_b, block)
+        workspace_memory_safety, m, k, n, bm, bk, bn, tile_size,
+        max_rank_a, max_rank_b)
 end
 
 load_config(; default_benchmark::Symbol=:dense) =

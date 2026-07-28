@@ -33,42 +33,12 @@ const SHARD_INDEX = CONFIG.shard_index
 const CASE_REGEX = CONFIG.case_regex
 const SEED = CONFIG.seed
 
-# (m, k, n): four square products and four rectangular-A products against a
-# square B. All dimensions divide exactly under both tile ratios.
-const SHAPES = (
-    (name="square_1024", m=1024, k=1024, n=1024),
-    (name="square_2048", m=2048, k=2048, n=2048),
-    (name="square_4096", m=4096, k=4096, n=4096),
-    (name="square_8192", m=8192, k=8192, n=8192),
-    (name="rect_512x1024", m=512, k=1024, n=1024),
-    (name="rect_1024x2048", m=1024, k=2048, n=2048),
-    (name="rect_2048x4096", m=2048, k=4096, n=4096),
-    (name="rect_4096x8192", m=4096, k=8192, n=8192),
-)
+const AXIS = (name="kj", orderA=TLRM.TileRowMajor, orderB=TLRM.TileRowMajor)
 
-# bm/m = bk/k = bn/n. The denominator is also the number of tiles along
-# every dimension.
-const TILE_DENOMINATORS = (8, 4)
-const RANK_DENOMINATORS = (2, 4, 8)
-
-# The four physical-axis combinations. These are storage layouts, not
-# transpose operations.
-const AXIS_COMBINATIONS = (
-    (name="kj", orderA=TLRM.TileRowMajor, orderB=TLRM.TileRowMajor),
-    (name="kk", orderA=TLRM.TileRowMajor, orderB=TLRM.TileColMajor),
-    (name="ik", orderA=TLRM.TileColMajor, orderB=TLRM.TileColMajor),
-    (name="ij", orderA=TLRM.TileColMajor, orderB=TLRM.TileRowMajor),
-)
-
-# Actual ranks are deterministic, strictly below maxrank, and vary by tile.
-# Factor columns above the actual rank are explicitly zeroed. Override this
-# distribution without changing the case grid if another rank profile is
-# desired.
-const ACTUAL_RANK_FRACTIONS = (0.25, 0.50, 0.75)
-
-const PRECISION_TYPES = (float32=Float32, float64=Float64)
+const PRECISION_TYPES = (float16=Float16, float32=Float32, float64=Float64)
 const PRECISIONS = Tuple(
-    (name=p === :float32 ? "fp32" : "fp64", T=getproperty(PRECISION_TYPES, p),
+    (name=p === :float16 ? "fp16" : p === :float32 ? "fp32" : "fp64",
+     T=getproperty(PRECISION_TYPES, p),
      compute=NextLA.GEMMCompute{getproperty(PRECISION_TYPES, p)}())
     for p in CONFIG.precisions)
 
@@ -106,8 +76,7 @@ end
 end
 
 @inline function actual_rank(maxrank::Int, i::Int, j::Int, seed::Int)
-    f = ACTUAL_RANK_FRACTIONS[mod1(3i + 5j + seed, length(ACTUAL_RANK_FRACTIONS))]
-    return clamp(round(Int, f * maxrank), 1, maxrank - 1)
+    return maxrank
 end
 
 function make_tlr(backend, ::Type{T}, m, n, bm, bn, maxrank, order;
@@ -220,36 +189,23 @@ end
 
 function case_id(case)
     return join((
-        case.shape, "t$(case.tile_den)", "ra$(case.rank_den_A)",
-        "rb$(case.rank_den_B)", case.axis, case.precision,
+        "m$(case.m)", "k$(case.k)", "n$(case.n)",
+        "bm$(case.bm)", "bk$(case.bk)", "bn$(case.bn)",
+        "ra$(case.maxrank_A)", "rb$(case.maxrank_B)", case.precision,
     ), "__")
 end
 
 function all_cases()
     cases = NamedTuple[]
-    for shape in SHAPES
-        for tile_den in TILE_DENOMINATORS
-            bm, bk, bn = shape.m ÷ tile_den, shape.k ÷ tile_den, shape.n ÷ tile_den
-            minb = min(bm, bk, bn)
-            for rank_den_A in RANK_DENOMINATORS
-                for rank_den_B in RANK_DENOMINATORS
-                    maxrank_A = minb ÷ rank_den_A
-                    maxrank_B = minb ÷ rank_den_B
-                    for axes in AXIS_COMBINATIONS
-                        for precision in PRECISIONS
-                            push!(cases, (
-                                shape=shape.name, m=shape.m, k=shape.k, n=shape.n,
-                                tile_den, bm, bk, bn,
-                                rank_den_A, rank_den_B, maxrank_A, maxrank_B,
-                                axis=axes.name, orderA=axes.orderA,
-                                orderB=axes.orderB, precision=precision.name,
-                                T=precision.T, compute=precision.compute,
-                            ))
-                        end
-                    end
-                end
-            end
-        end
+    for precision in PRECISIONS
+        push!(cases, (
+            shape="m$(CONFIG.m)xk$(CONFIG.k)xn$(CONFIG.n)",
+            m=CONFIG.m, k=CONFIG.k, n=CONFIG.n,
+            bm=CONFIG.bm, bk=CONFIG.bk, bn=CONFIG.bn,
+            maxrank_A=CONFIG.max_rank_a, maxrank_B=CONFIG.max_rank_b,
+            axis=AXIS.name, orderA=AXIS.orderA, orderB=AXIS.orderB,
+            precision=precision.name, T=precision.T, compute=precision.compute,
+        ))
     end
     return cases
 end
@@ -291,8 +247,8 @@ function append_result(path, case, dense, tlr)
     rate_ratio = tlr_executed / dense.gflops
     row = (
         case_id(case), case.shape, case.m, case.k, case.n,
-        "1/$(case.tile_den)", case.bm, case.bk, case.bn,
-        "1/$(case.rank_den_A)", "1/$(case.rank_den_B)",
+        "explicit", case.bm, case.bk, case.bn,
+        "explicit", "explicit",
         case.maxrank_A, case.maxrank_B, case.axis, case.precision,
         NREPS, tlr.bytes, dense.ms, tlr.ms, speedup,
         100 * work_ratio, arithmetic_reduction, 100 * rate_ratio,

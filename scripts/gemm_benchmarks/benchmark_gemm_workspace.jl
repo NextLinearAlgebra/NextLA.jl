@@ -9,13 +9,6 @@ const CONFIG = load_config(; default_benchmark=:workspace)
 const WORKSPACE_OUTPUT = output_path(CONFIG, :workspace)
 const WORKSPACE_FRACTIONS = Tuple(CONFIG.workspace_fractions)
 const MEMORY_SAFETY_FRACTION = CONFIG.workspace_memory_safety
-const LARGE_SHAPES = Set((
-    "square_4096",
-    "square_8192",
-    "rect_2048x4096",
-    "rect_4096x8192",
-))
-
 all(0 < f <= 1 for f in WORKSPACE_FRACTIONS) ||
     error("workspace fractions must lie in (0,1]")
 0 < MEMORY_SAFETY_FRACTION <= 1 ||
@@ -100,9 +93,9 @@ function skipped_workspace_row(case, fraction, minimum_bytes, maximum_bytes,
     actual_fraction = maximum_bytes == 0 ? 0.0 : bytes / maximum_bytes
     return (
         workspace_case_id(case, fraction), case_id(case), case.shape,
-        case.m, case.k, case.n, "1/$(case.tile_den)",
+        case.m, case.k, case.n, "explicit",
         case.bm, case.bk, case.bn,
-        "1/$(case.rank_den_A)", "1/$(case.rank_den_B)",
+        "explicit", "explicit",
         case.maxrank_A, case.maxrank_B, case.axis, case.precision, NREPS,
         fraction, actual_fraction, minimum_bytes, maximum_bytes, bytes,
         status, reason, available,
@@ -121,9 +114,9 @@ function measured_workspace_row(case, fraction, minimum_bytes, maximum_bytes,
     rate_ratio = executed_rate / dense.gflops
     return (
         workspace_case_id(case, fraction), case_id(case), case.shape,
-        case.m, case.k, case.n, "1/$(case.tile_den)",
+        case.m, case.k, case.n, "explicit",
         case.bm, case.bk, case.bn,
-        "1/$(case.rank_den_A)", "1/$(case.rank_den_B)",
+        "explicit", "explicit",
         case.maxrank_A, case.maxrank_B, case.axis, case.precision, NREPS,
         fraction, bytes / maximum_bytes, minimum_bytes, maximum_bytes, bytes,
         "ok", "", available,
@@ -215,8 +208,7 @@ function workspace_main()
     done = workspace_completed_cases(WORKSPACE_OUTPUT)
     candidates = [
         case for (index, case) in enumerate(all_cases())
-        if case.shape in LARGE_SHAPES &&
-           mod1(index, SHARD_COUNT) == SHARD_INDEX &&
+        if mod1(index, SHARD_COUNT) == SHARD_INDEX &&
            occursin(CASE_REGEX, case_id(case))
     ]
     @printf(
