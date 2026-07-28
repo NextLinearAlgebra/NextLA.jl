@@ -337,7 +337,7 @@ Wrap a caller-owned basis panel `Q` (`m × maxrank × count`), so the loop can
 write straight into storage the caller already has — `compress!` keeps its basis
 inside the output factor panels this way. Everything else is allocated on `Q`'s
 backend, drawn from `arena` when one is supplied (see `ARARunArena` in
-`algorithms/gemm/tlr_result/workspace.jl`) and via plain `allocate` otherwise.
+`gemm/padded_result/workspace.jl`) and via plain `allocate` otherwise.
 """
 function ARAWorkspace(Q::AbstractArray{T,3}; block::Int=32, arena=nothing,
                       state_storage=nothing) where {T}

@@ -20,7 +20,7 @@
 #
 # The budget is not zero and is not meant to be: `ara_cholesky_pass!`'s
 # `trsm_batched!`/`potrfBatched!` calls allocate a transient device pointer
-# array on every ARA pass independent of anything in `tlr_result/run_coupling.jl`, and
+# array on every ARA pass independent of anything in `padded_result/run_coupling.jl`, and
 # a few same-call operands that are run-owned but not reshape-representable
 # as a strided batch (T-formation/W-formation in `RowRightRunCoupling`/
 # `RowLeftRunCoupling`) are left on the `Vector`-of-views path -- both are

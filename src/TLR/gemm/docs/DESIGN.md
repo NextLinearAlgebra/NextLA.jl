@@ -161,6 +161,17 @@ older CUDA device rejects the BF16 grouped path clearly. Current cuBLAS rejects 
 mixed storage signature is explicitly rejected rather than falling back to
 ordinary or stream-batched GEMM.
 
+## GEMM source layout
+
+`gemm/common/` contains operand-independent precision, workspace, axis-strategy,
+and dense-product helpers. `gemm/dense_result/fixed_rank/` contains the existing
+fixed-`maxrank` lowering shared by dense-diagonal `TLRMatrix` and
+`PaddedFTLRMatrix`, including their boundary-region methods. The exact-rank grouped
+path is isolated in `gemm/dense_result/compressed_ftlr/`. Finally,
+`gemm/padded_result/` owns the ARA-style algorithm whose destination is a
+`PaddedFTLRMatrix`; its name deliberately describes the result representation,
+not the historical generic term “TLR result.”
+
 ## TLR result integration boundary
 
 The predictable TLR-result API requires physical `TileRowMajor` storage for

@@ -83,7 +83,7 @@ An empty co-range returns empty factors directly and never enters LAPACK or a
 GPU solver.
 
 The factor-application layer (`ColumnRunCoupling`, `RowRightRunCoupling`,
-`RowLeftRunCoupling` in `tlr_result/run_coupling.jl`) extends the same contract to the
+`RowLeftRunCoupling` in `padded_result/run_coupling.jl`) extends the same contract to the
 couplings and their applies, on the run's hot per-pass sampler specifically.
 No sampling pass allocates numeric storage: `S`, the per-column/row coupling
 stacks, and the `H`/`T`/`G`/`W` scratch are sized once at run construction
@@ -234,7 +234,7 @@ Focused verification:
 
 ## R3 performance closure — 2026-07-27
 
-An audit of `tlr_result/run_coupling.jl` found the R3 sampling couplers rebuilding
+An audit of `padded_result/run_coupling.jl` found the R3 sampling couplers rebuilding
 `Vector`-of-views batch-pointer lists from scratch on every ARA sampling
 pass — on CUDA/AMDGPU each such call allocates and frees a fresh device
 pointer array (`_unsafe_batch_strided`/`_device_batch_strided`), several
