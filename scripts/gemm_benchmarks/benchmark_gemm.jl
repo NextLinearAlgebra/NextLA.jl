@@ -66,11 +66,11 @@ const AXIS_COMBINATIONS = (
 # desired.
 const ACTUAL_RANK_FRACTIONS = (0.25, 0.50, 0.75)
 
-const PRECISIONS = (
-    (name="fp32", T=Float32, compute=NextLA.GEMMCompute{Float32}()),
-    #(name="fp64", T=Float64, compute=NextLA.GEMMCompute{Float64}()),
-    #(name="fp32_tf32", T=Float32, compute=NextLA.TF32()),
-)
+const PRECISION_TYPES = (float32=Float32, float64=Float64)
+const PRECISIONS = Tuple(
+    (name=p === :float32 ? "fp32" : "fp64", T=getproperty(PRECISION_TYPES, p),
+     compute=NextLA.GEMMCompute{getproperty(PRECISION_TYPES, p)}())
+    for p in CONFIG.precisions)
 
 const CSV_COLUMNS = (
     "case_id", "shape", "m", "k", "n", "tile_ratio", "bm", "bk", "bn",

@@ -2,7 +2,8 @@
 
 The three related GEMM studies are kept here and use one configuration entry
 point. Common settings (`backend`, `reps`, `warmup`, `seed`, output directory,
-and sharding) therefore behave the same for every study.
+precision, and sharding) therefore behave the same for every study. Both
+`float32` and `float64` run by default.
 
 From the repository root, a CPU smoke run is:
 
@@ -20,6 +21,11 @@ JULIA_PROJECT=/path/to/gpuenv \
   scripts/gemm_benchmarks/run_gemm_benchmark.sh \
   --benchmark dense --backend cuda --shard-count 8 --shard-index "$SLURM_ARRAY_TASK_ID"
 ```
+
+Select one precision or both with `--precisions float32` or
+`--precisions float32,float64`. Float64 needs more memory and is typically
+slower, so use a smaller matrix or more job-array shards if GPU memory is
+limited.
 
 The default output directory is `scripts/gemm_benchmarks/results/`; use
 `--output-dir` to put results on scratch storage. Existing case IDs are

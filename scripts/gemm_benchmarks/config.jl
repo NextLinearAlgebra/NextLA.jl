@@ -22,6 +22,7 @@ const DEFAULT_SEED = "20260728"
 const DEFAULT_SHARD_COUNT = "1"
 const DEFAULT_SHARD_INDEX = "1"
 const DEFAULT_CASE_REGEX = ".*"
+const DEFAULT_PRECISIONS = "float16, float32,float64"
 const DEFAULT_WORKSPACE_FRACTIONS = "0.125,0.25,0.5,0.75,1.0"
 const DEFAULT_MEMORY_SAFETY = "0.90"
 const DEFAULT_SIZES = "8192"
@@ -40,6 +41,7 @@ struct GemmBenchmarkConfig
     shard_count::Int
     shard_index::Int
     case_regex::Regex
+    precisions::Vector{Symbol}
     workspace_fractions::Vector{Float64}
     workspace_memory_safety::Float64
     sizes::Vector{Int}
@@ -63,6 +65,7 @@ function print_help(io::IO=stdout)
     println(io, "  --shard-count N        number of job-array shards (default: 1)")
     println(io, "  --shard-index N        one-based shard index (default: 1)")
     println(io, "  --case-regex REGEX     restrict case IDs (default: .*)")
+    println(io, "  --precisions LIST      float32,float64 (default: float32,float64)")
     println(io, "Workspace options:")
     println(io, "  --workspace-fractions LIST   e.g. 0.125,0.25,0.5,1.0")
     println(io, "  --memory-safety FRACTION     GPU safety fraction (default: 0.90)")
@@ -83,7 +86,7 @@ function _options(args)
     options = Dict{String,String}()
     allowed = Set((
         "benchmark", "backend", "reps", "warmup", "seed", "output_dir",
-        "shard_count", "shard_index", "case_regex", "workspace_fractions",
+        "shard_count", "shard_index", "case_regex", "precisions", "workspace_fractions",
         "memory_safety", "sizes", "tiles", "ranks_a", "ranks_b", "block",
     ))
     i = 1
@@ -129,6 +132,21 @@ function _list(::Type{T}, value, name) where {T}
     return values
 end
 
+function _precisions(value)
+    result = Symbol[]
+    for item in split(value, ',')
+        normalized = lowercase(strip(item))
+        normalized = normalized == "fp32" ? "float32" :
+                     normalized == "fp64" ? "float64" : normalized
+        normalized in ("float32", "float64") ||
+            error("precisions must contain only float32 and float64")
+        precision = Symbol(normalized)
+        precision in result || push!(result, precision)
+    end
+    isempty(result) && error("precisions must not be empty")
+    return result
+end
+
 function _symbol(value, name, allowed)
     result = Symbol(lowercase(strip(value)))
     result in allowed || error("$name must be one of $(join(allowed, ", "))")
@@ -150,6 +168,8 @@ function load_config(args=ARGS; default_benchmark::Symbol=:dense)
     shard_count = parse(Int, _value(options, "shard_count", ("NEXTLA_GEMM_SHARD_COUNT",), DEFAULT_SHARD_COUNT))
     shard_index = parse(Int, _value(options, "shard_index", ("NEXTLA_GEMM_SHARD_INDEX",), DEFAULT_SHARD_INDEX))
     case_regex = Regex(_value(options, "case_regex", ("NEXTLA_GEMM_CASE_REGEX",), DEFAULT_CASE_REGEX))
+    precisions = _precisions(_value(
+        options, "precisions", ("NEXTLA_GEMM_PRECISIONS",), DEFAULT_PRECISIONS))
     output_dir = abspath(expanduser(_value(
         options, "output_dir", ("NEXTLA_GEMM_OUTPUT_DIR",), DEFAULT_OUTPUT_DIR)))
 
@@ -180,8 +200,8 @@ function load_config(args=ARGS; default_benchmark::Symbol=:dense)
     mkpath(output_dir)
     return GemmBenchmarkConfig(
         benchmark, backend, reps, warmup, seed, output_dir, shard_count,
-        shard_index, case_regex, workspace_fractions, workspace_memory_safety,
-        sizes, tiles, ranks_a, ranks_b, block)
+        shard_index, case_regex, precisions, workspace_fractions,
+        workspace_memory_safety, sizes, tiles, ranks_a, ranks_b, block)
 end
 
 load_config(; default_benchmark::Symbol=:dense) =

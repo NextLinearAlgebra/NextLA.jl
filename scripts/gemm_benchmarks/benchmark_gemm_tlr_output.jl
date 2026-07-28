@@ -129,8 +129,7 @@ function completed_cases(path)
     return ids
 end
 
-function benchmark_case(backend, n, b, rank_A, rank_B)
-    T = Float32
+function benchmark_case(backend, ::Type{T}, n, b, rank_A, rank_B) where {T}
     rank_C = min(rank_A, rank_B)
     A = make_full_rank_tlr(backend, T, n, b, rank_A, SEED + 11)
     B = make_full_rank_tlr(backend, T, n, b, rank_B, SEED + 29)
@@ -190,12 +189,15 @@ function main()
     write_header_if_needed(OUTPUT)
     done = completed_cases(OUTPUT)
     cases = NamedTuple[]
-    for n in NS, b in BS, rank_A in RANKS_A, rank_B in RANKS_B
+    for precision in CONFIG.precisions, n in NS, b in BS,
+        rank_A in RANKS_A, rank_B in RANKS_B
         max(rank_A, rank_B) <= b ||
             error("ranks must not exceed tile size (n=$n, b=$b, " *
                   "rank_A=$rank_A, rank_B=$rank_B)")
-        id = "n$(n)__b$(b)__ra$(rank_A)__rb$(rank_B)"
-        push!(cases, (; id, n, b, rank_A, rank_B))
+        precision_name = precision === :float32 ? "fp32" : "fp64"
+        base_id = "n$(n)__b$(b)__ra$(rank_A)__rb$(rank_B)"
+        id = precision === :float32 ? base_id : "fp64__$(base_id)"
+        push!(cases, (; id, precision, precision_name, n, b, rank_A, rank_B))
     end
     selected = [
         case for (index, case) in enumerate(cases)
@@ -206,10 +208,11 @@ function main()
             backend_name, length(selected), length(cases), NREPS, WARMUP,
             CONFIG.shard_index, CONFIG.shard_count, OUTPUT)
     for case in selected
-        id, n, b, rank_A, rank_B = case.id, case.n, case.b,
-                                   case.rank_A, case.rank_B
-        result = benchmark_case(backend, n, b, rank_A, rank_B)
-        row = (id, n, b, rank_A, rank_B, min(rank_A, rank_B), "fp32", NREPS,
+        id, precision, precision_name = case.id, case.precision, case.precision_name
+        n, b, rank_A, rank_B = case.n, case.b, case.rank_A, case.rank_B
+        T = precision === :float32 ? Float32 : Float64
+        result = benchmark_case(backend, T, n, b, rank_A, rank_B)
+        row = (id, n, b, rank_A, rank_B, min(rank_A, rank_B), precision_name, NREPS,
                result.dense_ms, result.dense_compress_ms, result.tlr_output_ms,
                result.dense_ms / result.dense_compress_ms,
                result.dense_ms / result.tlr_output_ms,
