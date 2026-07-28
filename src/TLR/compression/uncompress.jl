@@ -25,7 +25,7 @@ end
 
 function _uncompress_region!(
     A::AbstractMatrix{T},
-    A_tlr::TLRDenseDiagMatrix{<:Any,T},
+    A_tlr::AbstractTLRMatrix{<:Any,T},
     region::TLRRegion,
 ) where {T}
     U = outer_factors(A_tlr, region)
@@ -55,6 +55,24 @@ function uncompress!(A::AbstractMatrix{T}, A_tlr::TLRDenseDiagMatrix{<:Any,T}) w
         throw(ArgumentError("uncompress! currently requires square matrices"))
 
     _copy_diagonal_to_dense!(A, A_tlr)
+
+    @inbounds foreach(lowrank_regions(A_tlr)) do region
+        _uncompress_region!(A, A_tlr, region)
+    end
+
+    return A
+end
+
+"""
+    uncompress!(A, A_tlr::TLRMatrix)
+
+Write a fully tile-low-rank matrix into the dense matrix `A` in-place. Unlike
+`TLRDenseDiagMatrix`, every tile, including diagonal and boundary tiles, is
+reconstructed from its factor pair.
+"""
+function uncompress!(A::AbstractMatrix{T}, A_tlr::TLRMatrix{<:Any,T}) where {T}
+    size(A, 1) == A_tlr.m && size(A, 2) == A_tlr.n ||
+        throw(DimensionMismatch("A dimensions must match A_tlr"))
 
     @inbounds foreach(lowrank_regions(A_tlr)) do region
         _uncompress_region!(A, A_tlr, region)

@@ -1,0 +1,3 @@
+case_id,n,tile,rank_A,rank_B,rank_C,precision,nreps,dense_ms,tlr_dense_compress_ms,tlr_output_ms,dense_plus_compress_speedup,tlr_output_speedup,error_dense_compress_abs,error_dense_compress_rel,error_tlr_output_abs,error_tlr_output_rel
+n4096__b512__ra64__rb32,4096,512,64,32,32,fp32,3,79.750093,43.613694,64.469359,1.8285562557484814,1.237023203534566,1.0043243e7,0.8446634047732126,1.003803e7,0.8442249776307963
+n8192__b1024__ra64__rb32,8192,1024,64,32,32,fp32,3,670.16224,82.235077,68.433733,8.149347753392387,9.792863995889277,2.9376e7,0.8751782919556171,2.9359964e7,0.874700542803595

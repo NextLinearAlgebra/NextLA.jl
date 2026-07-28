@@ -485,10 +485,6 @@ function ara_build_basis!(ws::ARAWorkspace, sample_right!;
         # fraction in at `O(1)`. Interleaved, the second projection runs *after*
         # that amplification and removes it; batched together, both projections
         # happen before it and nothing ever does.
-        #
-        # Measured on a rank-6 operator at block width 4: `P²CQR²` produced
-        # `‖QᵀQ−I‖ > 1e-10` on 97/300 seeds (worst 0.998); `(P·CQR)²` on
-        # 0/300 (worst 3.7e-12). See docs/TODO.md worklog item 9.
         Qc = grown > 0 ? view(ws.Q, :, 1:grown, :) : nothing
         D = grown > 0 ? view(ws.Dproj, 1:grown, :, :) : nothing
         fill!(ws.status, Int32(0))
@@ -538,23 +534,6 @@ end
 #     yet pivots 5–12 sat at `~5e-7` against a leading `6.6`. The triangular
 #     solve then produces garbage (or, on an exactly zero panel, `NaN` from
 #     `0/0`).
-#
-# The second cut is the CholeskyQR2 validity condition itself, applied per
-# column: the `O(u)` orthogonality guarantee holds for `κ(Y) ≤ u^{-1/2}`, and
-# `κ(R) = κ(Y)`, so a pivot below `√u · R_max` is outside the regime where the
-# factorization means anything. It is the same `√u` that bounds the stopping
-# tolerance — not a separate constant.
-#
-# Everything from the cut onward is zeroed. That is not over-eager: `R` is upper
-# triangular, so column `j` of `Y R⁻¹` is built from the leading `j×j` block,
-# and once a pivot is invalid every later column inherits it. The zeros then
-# read as "no new content", which is what they are.
-# The cut must be read off the **first** Cholesky-QR pass. `dR` is the composite
-# `R₂R₁` diagonal, and once pass 1's triangular solve has produced garbage
-# columns, pass 2's Gram is computed from them — so a contaminated `R₂` can drag
-# the composite below threshold on columns that were perfectly valid. Measured:
-# a rank-20 operator sampled at width 8 gave `potrf` status 5 (four genuine new
-# directions) while the composite-based cut fired at column 1, losing them.
 @kernel function _ara_cut_kernel!(kcut, R1::AbstractArray{T,3}, status,
                                   width::Int, floor_rel::Float64) where {T}
     b = @index(Global, Linear)
@@ -1034,8 +1013,7 @@ count`, orthonormal columns) and `V` (`b_n × maxrank × count`).
 `tol` is the Frobenius error budget, squared internally; with `relative=true` it
 is taken against each member's reference energy. `err_sq[b]` returns the
 **achieved** squared error, and `ranks[b] == maxrank` flags a member whose
-spectrum did not fit — no separate residual pass is needed to report either (see
-`docs/TODO.md`, worklog item 4).
+spectrum did not fit — no separate residual pass is needed to report either
 
 `energy[b] = ‖X‖_F²` of the original operator may be supplied when it is known
 independently, as it is when compressing an explicit matrix. The range-capture
