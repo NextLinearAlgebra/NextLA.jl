@@ -81,16 +81,18 @@ function uncompress!(A::AbstractMatrix{T}, A_tlr::PaddedFTLRMatrix{<:Any,T}) whe
     return A
 end
 
-"""Write an exact-rank regular-grid CompressedFTLR matrix into dense storage."""
+"""Write an exact-rank CompressedFTLR matrix into dense storage."""
 function uncompress!(A::AbstractMatrix{T}, A_tlr::CompressedFTLRMatrix{<:Any,T}) where {T}
     size(A) == size(A_tlr) || throw(DimensionMismatch("A dimensions must match A_tlr"))
     fill!(A, zero(T))
-    qm, qn = regular_grid_size(A_tlr)
+    qm, qn = grid_size(A_tlr)
     mode = default_gemm_compute_mode(T)
     # Exact ranks make the tile reconstructions heterogeneous. On CUDA submit
     # their factor/destination views through GEMMGroupedBatchedEx in one call;
     # the generic path remains an explicit CPU-compatible tile loop.
     if supports_grouped_gemm(get_backend(A_tlr))
+        T === Core.BFloat16 && !supports_bfloat16_grouped_gemm(get_backend(A_tlr)) &&
+            throw(ArgumentError("CompressedFTLR BF16 grouped GEMMEx requires an NVIDIA SM80 or newer device"))
         tasks = nothing
         @inbounds for j in 1:qn, i in 1:qm
             _compressed_ftlr_rank(A_tlr, i, j) == 0 && continue

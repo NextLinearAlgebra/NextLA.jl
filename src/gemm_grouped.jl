@@ -23,6 +23,9 @@ end
 """Whether a backend has the heterogeneous grouped-GEMM primitive used by compressed FTLR."""
 @inline supports_grouped_gemm(::Type) = false
 @inline supports_grouped_gemm(backend) = supports_grouped_gemm(typeof(backend))
+"""Whether this backend/device has native BF16 grouped GEMMEx support."""
+@inline supports_bfloat16_grouped_gemm(::Type) = false
+@inline supports_bfloat16_grouped_gemm(backend) = supports_bfloat16_grouped_gemm(typeof(backend))
 
 """
     precision_gemm_grouped!(tasks, mode)

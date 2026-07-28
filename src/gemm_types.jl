@@ -41,6 +41,7 @@ Representative supported `compute_type` combinations:
 | --- | --- | --- | --- | --- | --- | --- |
 | `Float16` | `Float16` | `Float32` | yes | yes | unsupported | unsupported |
 | `Float16` | `Float32` | `Float32` | yes | yes | unsupported | unsupported |
+| `BFloat16` | `BFloat16` | `Float32` | CUDA grouped GEMMEx (SM80+) | unsupported | unsupported | unsupported |
 | `Int8` | `Int32` | `Int32` | yes | yes | unsupported | unsupported |
 
 TF32 and other backend-specific fast-math modes are intentionally excluded from

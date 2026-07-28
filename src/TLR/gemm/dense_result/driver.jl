@@ -173,8 +173,8 @@ end
 """
     gemm!(C, A::CompressedFTLRMatrix, B::CompressedFTLRMatrix; workspace, alpha=true, beta=false)
 
-CUDA-only exact-rank CompressedFTLR dense accumulation. The initial implementation
-supports a full regular grid and logical `N/T` operands, using grouped GEMM
+CUDA-only exact-rank CompressedFTLR dense accumulation. Supports nominal grids
+with trailing boundary tiles and logical `N/T` operands, using grouped GEMM
 for all three stages and selecting FoldRight/FoldLeft from packed layouts.
 """
 function gemm!(C::AbstractMatrix, A::CompressedFTLRMatrix{BackendT,T}, B::CompressedFTLRMatrix{BackendT,T};
@@ -207,7 +207,9 @@ end
 Compute `C := alpha·op(A)·op(B) + beta·C` with a fully low-rank left operand
 and a standalone dense right operand. Intermediates retain the operand storage type.
 """
-function gemm!(C::AbstractMatrix, A::PaddedFTLRMatrix{BackendT,T}, B::AbstractMatrix{T};
+function gemm!(C::AbstractMatrix,
+    A::Union{PaddedFTLRMatrix{BackendT,T},CompressedFTLRMatrix{BackendT,T}},
+    B::AbstractMatrix{T};
     workspace, alpha=true, beta=false,
     transA::Char='N', transB::Char='N', compute=nothing) where {BackendT,T}
     LA = logical_operand(A, transA)
@@ -230,7 +232,8 @@ end
 Compute `C := alpha·op(A)·op(B) + beta·C` with a standalone dense left operand
 and a fully low-rank right operand. Intermediates retain the operand storage type.
 """
-function gemm!(C::AbstractMatrix, A::AbstractMatrix{T}, B::PaddedFTLRMatrix{BackendT,T};
+function gemm!(C::AbstractMatrix, A::AbstractMatrix{T},
+    B::Union{PaddedFTLRMatrix{BackendT,T},CompressedFTLRMatrix{BackendT,T}};
     workspace, alpha=true, beta=false,
     transA::Char='N', transB::Char='N', compute=nothing) where {BackendT,T}
     LA = logical_dense_operand(A, transA)

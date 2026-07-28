@@ -139,7 +139,7 @@ inner factors are independently packed one-dimensional allocations with host
 prefix offsets in their own tile orders. A factor span is therefore a compact
 matrix view of its active rank, not a `maxrank` prefix with a zero tail.
 
-The initial CUDA path is full-grid, CompressedFTLR × CompressedFTLR → dense with any logical
+The CUDA path is CompressedFTLR × CompressedFTLR → dense with any logical
 `N/T` combination. It forms a ragged run plan and invokes
 `cublasGemmGroupedBatchedEx` for all stages. A row-packed A
 outer factor enables FoldRight's U stack; row-packed B outer factors retain
@@ -154,8 +154,10 @@ for the best full-region fold. A budget between them greedily admits contiguous
 rows while a single numerical arena is reset and reused per run. Host rank,
 offset, and cuBLAS grouped-pointer metadata are outside this numerical bound.
 The grouped API uses device-resident pointer tables and host group metadata.
-It supports homogeneous Float16 (Float32 compute), Float32, and Float64 CompressedFTLR
-storage here; current cuBLAS rejects grouped Float16 → Float32 output, so that
+It supports homogeneous Float16 (Float32 compute), BF16 (Float32 compute on SM80+),
+Float32, and Float64 CompressedFTLR storage here. BF16 factors have leading dimensions
+rounded to eight elements so every packed factor starts at a 16-byte boundary; an SM75 or
+older CUDA device rejects the BF16 grouped path clearly. Current cuBLAS rejects grouped Float16 → Float32 output, so that
 mixed storage signature is explicitly rejected rather than falling back to
 ordinary or stream-batched GEMM.
 

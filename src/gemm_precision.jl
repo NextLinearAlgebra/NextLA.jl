@@ -30,6 +30,7 @@ Float32 compute type, and native Float32/Float64.
                                              ::Type{T}) where {TA,TB,TC,T}
     T === Float16 && return TA === TB === TC === Float16
     T === Float32 && return (TA === TB === Float16 && TC in (Float16, Float32)) ||
+                            (TA === TB === Core.BFloat16 && TC === Core.BFloat16) ||
                             (TA === TB === TC === Float32)
     T === Float64 && return TA === TB === TC === Float64
     return false

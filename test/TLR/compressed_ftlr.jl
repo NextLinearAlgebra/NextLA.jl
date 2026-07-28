@@ -54,7 +54,23 @@ end
     dense_packed = zeros(Float64, size(A))
     NextLA.uncompress!(dense_packed, packed)
     @test dense_packed ≈ dense
-    @test_throws ArgumentError NextLA.CompressedFTLRMatrix(KernelAbstractions.CPU(), Float64, 9, 8, 4, ones(Int, 2, 2))
+    tailed = NextLA.CompressedFTLRMatrix(KernelAbstractions.CPU(), Float64, 9, 10, (4, 4),
+                                         Int[2 1 1; 1 2 1; 1 1 1])
+    @test NextLA.grid_size(tailed) == (3, 3)
+    @test NextLA.tail_tile_size(tailed) == (1, 2)
+    @test size(NextLA.get_factors(tailed, 3, 3)[1]) == (1, 1)
+    @test size(NextLA.get_factors(tailed, 3, 3)[2]) == (2, 1)
+    padded_tail = NextLA.PaddedFTLRMatrix(KernelAbstractions.CPU(), Float64, 9, 10, (4, 4), 2)
+    padded_tail.ranks .= NextLA.ranks(tailed)
+    for j in 1:3, i in 1:3
+        U, V = NextLA.get_factors(tailed, i, j)
+        Up, Vp = NextLA.get_factors(padded_tail, i, j)
+        copyto!(Up, U); copyto!(Vp, V)
+    end
+    packed_tail = NextLA.pack_compressed_ftlr(padded_tail)
+    @test size(NextLA.get_factors(packed_tail, 3, 3)[1]) == (1, 1)
+    @test size(NextLA.get_factors(packed_tail, 3, 3)[2]) == (2, 1)
+    @test_throws ArgumentError NextLA.CompressedFTLRMatrix(KernelAbstractions.CPU(), Float64, 9, 8, 4, Int[1 1; 1 1; 1 2])
 end
 
 @testset "CompressedFTLR ragged workspace profile" begin

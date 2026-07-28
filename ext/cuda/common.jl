@@ -24,6 +24,9 @@ function NextLA.gemm_signature_supported(::CUDA.CUDABackend,
     return NextLA._tensor_core_gemm_supported(TA, TB, TC, T)
 end
 
+@inline NextLA.supports_bfloat16_grouped_gemm(::CUDA.CUDABackend) =
+    CUDA.capability(CUDA.device()) >= v"8.0"
+
 @inline NextLA.gemm_signature_supported(::CUDA.CUDABackend,
                                         ::Type{Float32}, ::Type{Float32}, ::Type{Float32},
                                         ::NextLA.TF32) = true

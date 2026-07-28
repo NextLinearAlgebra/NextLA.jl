@@ -1,5 +1,5 @@
 @inline function _compressed_ftlr_row_outer_stack(A, i::Int, rho::Int)
-    qm, qk = regular_grid_size(A)
+    qm, qk = grid_size(A)
     1 <= i <= qm || throw(BoundsError(A, (i, :)))
     f = _compressed_ftlr_outer_storage(A)
     fi, fj = _compressed_ftlr_logical_coords(A, i, 1)
@@ -8,12 +8,15 @@
     last_slot = _compressed_ftlr_slot(f, li, lj)
     first = f.offsets[first_slot]
     last = f.offsets[last_slot + 1] - 1
-    rho == 0 && return reshape(view(f.data, 1:0), nominal_tile_size(A, 1), 0)
-    return reshape(view(f.data, first:last), nominal_tile_size(A, 1), rho)
+    rows = length(_compressed_ftlr_axis_range(A, i, 1))
+    rho == 0 && return reshape(view(f.data, 1:0), rows, 0)
+    axis = f.dimension_axis === :row ? fi : fj
+    packed = reshape(view(f.data, first:last), f.leading_dimensions[axis], rho)
+    return view(packed, 1:rows, :)
 end
 
 @inline function _compressed_ftlr_row_w_stack(B, k::Int, rho::Int)
-    _, qn = regular_grid_size(B)
+    _, qn = grid_size(B)
     f = _compressed_ftlr_outer_storage(B)
     fi, fj = _compressed_ftlr_logical_coords(B, k, 1)
     li, lj = _compressed_ftlr_logical_coords(B, k, qn)
@@ -21,8 +24,11 @@ end
     last_slot = _compressed_ftlr_slot(f, li, lj)
     first = f.offsets[first_slot]
     last = f.offsets[last_slot + 1] - 1
-    rho == 0 && return reshape(view(f.data, 1:0), nominal_tile_size(B, 1), 0)
-    return reshape(view(f.data, first:last), nominal_tile_size(B, 1), rho)
+    rows = length(_compressed_ftlr_axis_range(B, k, 1))
+    rho == 0 && return reshape(view(f.data, 1:0), rows, 0)
+    axis = f.dimension_axis === :row ? fi : fj
+    packed = reshape(view(f.data, first:last), f.leading_dimensions[axis], rho)
+    return view(packed, 1:rows, :)
 end
 
 @inline function _ragged_view(data, offset::Int, rows::Int, cols::Int)
@@ -38,11 +44,9 @@ the Stage-3 `rho_i × (qn*bn)` stack.
 function _execute_compressed_ftlr_foldright_run!(C, A, B, plan::CompressedFTLRRankPlan, irange,
                                        alpha, beta, mode, arena)
     T = eltype(A)
-    qm, qk = regular_grid_size(A)
-    qkB, qn = regular_grid_size(B)
+    qm, qk = grid_size(A)
+    qkB, qn = grid_size(B)
     qk == qkB || throw(DimensionMismatch("CompressedFTLR contraction grids do not match"))
-    bm = nominal_tile_size(A, 1)
-    bn = nominal_tile_size(B, 2)
     nr = length(irange)
 
     # Host offsets into one run-local S/T arena.
@@ -63,14 +67,14 @@ function _execute_compressed_ftlr_foldright_run!(C, A, B, plan::CompressedFTLRRa
     tbase[1] = 1
     @inbounds for (ii, i) in enumerate(irange)
         rho = plan.a_k_prefix[i, end]
-        tbase[ii + 1] = tbase[ii] + rho * qn * bn
+        tbase[ii + 1] = tbase[ii] + rho * plan.output_col_prefix[end]
     end
     t_total = tbase[end] - 1
 
     # No active tile pair can contribute to this output-row run.
     if s_total == 0
         @inbounds for i in irange
-            _scale_output!(view(C, ((i - 1) * bm + 1):(i * bm), :), beta)
+            _scale_output!(view(C, _compressed_ftlr_axis_range(A, i, 1), :), beta)
         end
         return C
     end
@@ -106,12 +110,12 @@ function _execute_compressed_ftlr_foldright_run!(C, A, B, plan::CompressedFTLRRa
         (rA == 0 || rB == 0) && continue
         rho_before_k = plan.a_k_prefix[i, k]
         rho = plan.a_k_prefix[i, end]
-        tstack = _ragged_view(tdata, tbase[ii], rho, qn * bn)
+        tstack = _ragged_view(tdata, tbase[ii], rho, plan.output_col_prefix[end])
         task = GroupedGemmTask('N', 'T', one(T),
                                _ragged_view(sdata, soff[ii, k, j], rA, rB),
                                compressed_ftlr_inner(B, k, j), zero(T),
                                view(tstack, (rho_before_k + 1):(rho_before_k + rA),
-                                    ((j - 1) * bn + 1):(j * bn)))
+                                    (plan.output_col_prefix[j] + 1):plan.output_col_prefix[j + 1]))
         if s2 === nothing
             s2 = typeof(task)[task]
         else
@@ -124,13 +128,13 @@ function _execute_compressed_ftlr_foldright_run!(C, A, B, plan::CompressedFTLRRa
     s3 = nothing
     @inbounds for (ii, i) in enumerate(irange)
         rho = plan.a_k_prefix[i, end]
-        Crow = view(C, ((i - 1) * bm + 1):(i * bm), :)
+        Crow = view(C, _compressed_ftlr_axis_range(A, i, 1), :)
         if rho == 0
             _scale_output!(Crow, beta)
             continue
         end
         task = GroupedGemmTask('N', 'N', alpha, _compressed_ftlr_row_outer_stack(A, i, rho),
-                               _ragged_view(tdata, tbase[ii], rho, qn * bn), beta, Crow)
+                               _ragged_view(tdata, tbase[ii], rho, plan.output_col_prefix[end]), beta, Crow)
         if s3 === nothing
             s3 = typeof(task)[task]
         else
@@ -142,7 +146,7 @@ function _execute_compressed_ftlr_foldright_run!(C, A, B, plan::CompressedFTLRRa
 end
 
 @inline function _compressed_ftlr_col_z_stack(B, j::Int, gamma::Int)
-    qk, qn = regular_grid_size(B)
+    qk, qn = grid_size(B)
     1 <= j <= qn || throw(BoundsError(B, (:, j)))
     f = _compressed_ftlr_inner_storage(B)
     fi, fj = _compressed_ftlr_logical_coords(B, 1, j)
@@ -151,18 +155,20 @@ end
     last_slot = _compressed_ftlr_slot(f, li, lj)
     first = f.offsets[first_slot]
     last = f.offsets[last_slot + 1] - 1
-    gamma == 0 && return reshape(view(f.data, 1:0), nominal_tile_size(B, 2), 0)
-    return reshape(view(f.data, first:last), nominal_tile_size(B, 2), gamma)
+    rows = length(_compressed_ftlr_axis_range(B, j, 2))
+    gamma == 0 && return reshape(view(f.data, 1:0), rows, 0)
+    axis = f.dimension_axis === :row ? fi : fj
+    packed = reshape(view(f.data, first:last), f.leading_dimensions[axis], gamma)
+    return view(packed, 1:rows, :)
 end
 
 """FoldLeft companion: the T' arena is packed directly into each `(i,j)` K-stack."""
 function _execute_compressed_ftlr_foldleft_run!(C, A, B, plan::CompressedFTLRRankPlan, irange,
                                       alpha, beta, mode, arena)
     T = eltype(A)
-    _, qk = regular_grid_size(A)
-    qkB, qn = regular_grid_size(B)
+    _, qk = grid_size(A)
+    qkB, qn = grid_size(B)
     qk == qkB || throw(DimensionMismatch("CompressedFTLR contraction grids do not match"))
-    bm = nominal_tile_size(A, 1); bn = nominal_tile_size(B, 2)
     nr = length(irange)
     soff = Base.zeros(Int, nr, qk, qn)
     s_total = 0
@@ -173,10 +179,14 @@ function _execute_compressed_ftlr_foldleft_run!(C, A, B, plan::CompressedFTLRRan
             s_total += rA * rB
         end
     end
-    t_total = nr * bm * plan.b_total_rank
+    tbase_rows = Base.zeros(Int, nr + 1); tbase_rows[1] = 1
+    @inbounds for (ii, i) in enumerate(irange)
+        tbase_rows[ii + 1] = tbase_rows[ii] + plan.output_row_heights[i] * plan.b_total_rank
+    end
+    t_total = tbase_rows[end] - 1
     if s_total == 0
         @inbounds for i in irange
-            _scale_output!(view(C, ((i - 1) * bm + 1):(i * bm), :), beta)
+            _scale_output!(view(C, _compressed_ftlr_axis_range(A, i, 1), :), beta)
         end
         return C
     end
@@ -203,7 +213,8 @@ function _execute_compressed_ftlr_foldleft_run!(C, A, B, plan::CompressedFTLRRan
     @inbounds for (ii, i) in enumerate(irange), k in 1:qk, j in 1:qn
         rA = _compressed_ftlr_rank(A, i, k); rB = _compressed_ftlr_rank(B, k, j)
         (rA == 0 || rB == 0) && continue
-        tbase = (ii - 1) * bm * plan.b_total_rank + bm * plan.b_col_prefix[j] + 1
+        bm = plan.output_row_heights[i]
+        tbase = tbase_rows[ii] + bm * plan.b_col_prefix[j]
         toff = tbase + bm * plan.b_col_k_prefix[j, k]
         task = GroupedGemmTask('N', 'N', one(T), compressed_ftlr_outer(A, i, k),
                                _ragged_view(sdata, soff[ii, k, j], rA, rB), zero(T),
@@ -215,12 +226,13 @@ function _execute_compressed_ftlr_foldleft_run!(C, A, B, plan::CompressedFTLRRan
     s3 = nothing
     @inbounds for (ii, i) in enumerate(irange), j in 1:qn
         gamma = plan.b_col_ranks[j]
-        Cij = view(C, ((i - 1) * bm + 1):(i * bm), ((j - 1) * bn + 1):(j * bn))
+        bm = plan.output_row_heights[i]
+        Cij = view(C, _compressed_ftlr_axis_range(A, i, 1), _compressed_ftlr_axis_range(B, j, 2))
         if gamma == 0
             _scale_output!(Cij, beta)
             continue
         end
-        tbase = (ii - 1) * bm * plan.b_total_rank + bm * plan.b_col_prefix[j] + 1
+        tbase = tbase_rows[ii] + bm * plan.b_col_prefix[j]
         task = GroupedGemmTask('N', 'T', alpha,
                                _ragged_view(tdata, tbase, bm, gamma),
                                _compressed_ftlr_col_z_stack(B, j, gamma), beta, Cij)

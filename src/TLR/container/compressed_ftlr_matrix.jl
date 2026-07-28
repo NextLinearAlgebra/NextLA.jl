@@ -10,7 +10,9 @@ struct CompressedFTLRPackedFactors{AT<:AbstractVector,O<:TileOrderStyle}
     data::AT
     offsets::Vector{Int}                 # scalar offsets, 1-based, length ntile + 1
     order::O
-    rows::Int
+    leading_dimensions::Vector{Int}
+    logical_dimensions::Vector{Int}
+    dimension_axis::Symbol
     qm::Int
     qn::Int
 end
@@ -41,11 +43,15 @@ end
 end
 
 @inline function _compressed_ftlr_factor_view(f::CompressedFTLRPackedFactors, r::Int, i::Int, j::Int)
-    r == 0 && return reshape(view(f.data, 1:0), f.rows, 0)
+    axis_index = f.dimension_axis === :row ? i : j
+    logical_rows = f.logical_dimensions[axis_index]
+    r == 0 && return reshape(view(f.data, 1:0), logical_rows, 0)
     slot = _compressed_ftlr_slot(f, i, j)
     first = f.offsets[slot]
     last = f.offsets[slot + 1] - 1
-    return reshape(view(f.data, first:last), f.rows, r)
+    ld = f.leading_dimensions[axis_index]
+    packed = reshape(view(f.data, first:last), ld, r)
+    return view(packed, 1:logical_rows, :)
 end
 
 @inline compressed_ftlr_outer(A::CompressedFTLRMatrix, i::Int, j::Int) =
@@ -56,12 +62,12 @@ end
 @inline compressed_ftlr_inner_order(A::CompressedFTLRMatrix) = A.inner.order
 
 @inline function _compressed_ftlr_offsets(order::TileOrderStyle, qm::Int, qn::Int,
-                                rows::Int, rank_at)
+                                leading_dimension_at, rank_at)
     offsets = Vector{Int}(undef, qm * qn + 1)
     offsets[1] = 1
     @inbounds for slot in 1:(qm * qn)
         i, j = inverse_tile_index(order, qm, qn, slot)
-        offsets[slot + 1] = offsets[slot] + rows * rank_at(i, j)
+        offsets[slot + 1] = offsets[slot] + leading_dimension_at(i, j) * rank_at(i, j)
     end
     return offsets
 end
@@ -81,8 +87,8 @@ end
                outer_order=TileRowMajor, inner_order=TileColMajor,
                rank_type=Int32)
 
-Allocate an exact-rank CompressedFTLR matrix. Initial CompressedFTLR support intentionally accepts
-only a full regular tile grid; boundary tiles are a later extension.
+Allocate an exact-rank CompressedFTLR matrix. A regular nominal grid may have
+one trailing row and/or column tile.
 """
 function CompressedFTLRMatrix(backend::Backend, ::Type{T}, m::Int, n::Int,
                     tile_size::NTuple{2,Int}, ranks_in::AbstractMatrix{<:Integer};
@@ -91,30 +97,35 @@ function CompressedFTLRMatrix(backend::Backend, ::Type{T}, m::Int, n::Int,
     bm, bn = tile_size
     m > 0 && n > 0 && bm > 0 && bn > 0 ||
         throw(ArgumentError("m, n, and tile dimensions must be positive"))
-    m % bm == 0 && n % bn == 0 ||
-        throw(ArgumentError("CompressedFTLRMatrix currently requires a full regular tile grid"))
-    qm, qn = div(m, bm), div(n, bn)
+    qm, qn = cld(m, bm), cld(n, bn)
     size(ranks_in) == (qm, qn) ||
         throw(DimensionMismatch("ranks must be a $qm × $qn matrix"))
     all(>=(0), ranks_in) || throw(ArgumentError("CompressedFTLR ranks must be nonnegative"))
-    all(r -> r <= min(bm, bn), ranks_in) ||
-        throw(ArgumentError("CompressedFTLR ranks must not exceed min(tile_size)"))
+    rowdims = [min(bm, m - (i - 1) * bm) for i in 1:qm]
+    coldims = [min(bn, n - (j - 1) * bn) for j in 1:qn]
+    @inbounds for j in 1:qn, i in 1:qm
+        ranks_in[i, j] <= min(rowdims[i], coldims[j]) ||
+            throw(ArgumentError("CompressedFTLR rank at ($i, $j) exceeds its logical tile extent"))
+    end
 
     outer_style = _order_instance(outer_order)
     inner_style = _order_instance(inner_order)
     rank_style = outer_style
     rank_at = (i, j) -> Int(ranks_in[i, j])
-    uoffsets = _compressed_ftlr_offsets(outer_style, qm, qn, bm, rank_at)
-    voffsets = _compressed_ftlr_offsets(inner_style, qm, qn, bn, rank_at)
+    alignld = T === Core.BFloat16
+    uld = alignld ? [cld(x, 8) * 8 for x in rowdims] : copy(rowdims)
+    vld = alignld ? [cld(x, 8) * 8 for x in coldims] : copy(coldims)
+    uoffsets = _compressed_ftlr_offsets(outer_style, qm, qn, (i, j) -> uld[i], rank_at)
+    voffsets = _compressed_ftlr_offsets(inner_style, qm, qn, (i, j) -> vld[j], rank_at)
     udata = zeros(backend, T, uoffsets[end] - 1)
     vdata = zeros(backend, T, voffsets[end] - 1)
-    outer = CompressedFTLRPackedFactors(udata, uoffsets, outer_style, bm, qm, qn)
-    inner = CompressedFTLRPackedFactors(vdata, voffsets, inner_style, bn, qm, qn)
+    outer = CompressedFTLRPackedFactors(udata, uoffsets, outer_style, uld, rowdims, :row, qm, qn)
+    inner = CompressedFTLRPackedFactors(vdata, voffsets, inner_style, vld, coldims, :col, qm, qn)
     rankvec = _compressed_ftlr_rank_vector(rank_style, ranks_in, rank_type)
     resid = Base.zeros(Float64, qm * qn)
     return CompressedFTLRMatrix{typeof(backend),T,typeof(udata),rank_type,typeof(outer_style),
                       typeof(inner_style),typeof(rank_style)}(
-        backend, rank_style, m, n, tile_size, (0, 0), outer, inner, rankvec, resid,
+        backend, rank_style, m, n, tile_size, (m % bm, n % bn), outer, inner, rankvec, resid,
         isempty(rankvec) ? 0 : maximum(rankvec))
 end
 
@@ -123,12 +134,10 @@ function CompressedFTLRMatrix(backend::Backend, ::Type{T}, m::Int, n::Int, b::In
     return CompressedFTLRMatrix(backend, T, m, n, (b, b), ranks_in; kwargs...)
 end
 
-"""Pack a padded, full-grid `PaddedFTLRMatrix` into exact-rank CompressedFTLR storage."""
+"""Pack a padded `PaddedFTLRMatrix` into exact-rank CompressedFTLR storage."""
 function pack_compressed_ftlr(A::PaddedFTLRMatrix{<:Any,T}; outer_order=TileRowMajor,
                    inner_order=TileColMajor, rank_type::Type{<:Integer}=Int32) where {T}
-    tail_tile_size(A) == (0, 0) ||
-        throw(ArgumentError("pack_compressed_ftlr currently requires a full regular tile grid"))
-    qm, qn = regular_grid_size(A)
+    qm, qn = grid_size(A)
     rank_grid = Matrix{Int}(undef, qm, qn)
     @inbounds for j in 1:qn, i in 1:qm
         rank_grid[i, j] = Int(ranks(A)[_rank_index(A, i, j)])
@@ -155,4 +164,4 @@ end
 @inline inner_factors(A::CompressedFTLRMatrix, ::InteriorRegion) = A.inner
 @inline region_tile_count(A::CompressedFTLRMatrix, ::InteriorRegion) = length(A.ranks)
 @inline region_tile_coords(A::CompressedFTLRMatrix, ::InteriorRegion, k::Int) =
-    inverse_tile_index(A.order, regular_grid_size(A)..., k)
+    inverse_tile_index(A.order, grid_size(A)..., k)

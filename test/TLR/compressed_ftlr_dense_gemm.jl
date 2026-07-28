@@ -14,6 +14,31 @@ function _compressed_ftlr_to_backend(A::NextLA.CompressedFTLRMatrix, AT)
     return B
 end
 
+@testset "CompressedFTLR CUDA dense GEMM with tails" begin
+    ranksA = Int[2 1 1; 1 2 1; 1 1 1]
+    ranksB = Int[1 2 1; 2 1 1; 1 1 1]
+    Ahost = NextLA.CompressedFTLRMatrix(KernelAbstractions.CPU(), Float32, 9, 10, (4, 4), ranksA)
+    Bhost = NextLA.CompressedFTLRMatrix(KernelAbstractions.CPU(), Float32, 10, 11, (4, 4), ranksB)
+    rng = MersenneTwister(419)
+    for X in (Ahost, Bhost), j in 1:NextLA.grid_size(X)[2], i in 1:NextLA.grid_size(X)[1]
+        U, V = NextLA.get_factors(X, i, j)
+        U .= randn(rng, Float32, size(U)); V .= randn(rng, Float32, size(V))
+    end
+    refA = zeros(Float32, size(Ahost)); refB = zeros(Float32, size(Bhost))
+    NextLA.uncompress!(refA, Ahost); NextLA.uncompress!(refB, Bhost)
+    for (name, AT, sync) in backends
+        name == "CUDA" || continue
+        A = _compressed_ftlr_to_backend(Ahost, AT); B = _compressed_ftlr_to_backend(Bhost, AT)
+        for bytes in unique((NextLA.gemm_minimum_workspace_bytes(A, B),
+                             NextLA.gemm_maximum_workspace_bytes(A, B)))
+            C0 = rand(rng, Float32, 9, 11); C = AT(copy(C0))
+            _TLRM.gemm!(C, A, B; workspace=bytes, alpha=1.25f0, beta=-0.5f0)
+            sync(C)
+            @test Array(C) ≈ 1.25f0 .* (refA * refB) .- 0.5f0 .* C0 rtol=3f-4 atol=3f-4
+        end
+    end
+end
+
 @testset "CompressedFTLR CUDA logical transpose combinations" begin
     Ahost = _compressed_ftlr_fixture(Float32, Int[1 2; 3 1])
     Bhost = _compressed_ftlr_fixture(Float32, Int[2 1; 1 3])

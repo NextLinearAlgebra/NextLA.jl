@@ -23,12 +23,23 @@ struct CompressedFTLRRankPlan
     b_first_active_col::Vector{Int}
     pair_ranks::Vector{Int}      # p_i = Σ_k rA_ik σ_k
     b_total_rank::Int
+    output_row_heights::Vector{Int}
+    output_col_widths::Vector{Int}
+    output_col_prefix::Vector{Int}
     profile::RaggedWorkspaceProfile
 end
 
 struct RaggedRowRun
     rows::UnitRange{Int}
     fold::Symbol
+end
+
+@inline _compressed_ftlr_axis_range(A::LogicalTLROperand, tile::Int, axis::Int) =
+    _tile_axis_range(A, tile, axis)
+@inline function _compressed_ftlr_axis_range(A::CompressedFTLRMatrix, tile::Int, axis::Int)
+    width = axis == 1 ? tile_size(A, tile, 1)[1] : tile_size(A, 1, tile)[2]
+    first = (tile - 1) * nominal_tile_size(A, axis) + 1
+    return first:(first + width - 1)
 end
 
 @inline _compressed_ftlr_right_valid(A, B) =
@@ -48,8 +59,8 @@ end
     prefix[last(rows) + 1] - prefix[first(rows)]
 
 function _compressed_ftlr_rank_plan(A, B)
-    qm, qk = regular_grid_size(A)
-    qkB, qn = regular_grid_size(B)
+    qm, qk = grid_size(A)
+    qkB, qn = grid_size(B)
     qk == qkB || throw(DimensionMismatch("CompressedFTLR contraction grids do not match"))
     a_k_prefix = Base.zeros(Int, qm, qk + 1)
     b_row_ranks = Base.zeros(Int, qk)
@@ -73,22 +84,24 @@ function _compressed_ftlr_rank_plan(A, B)
     end
     b_total_rank = sum(b_row_ranks)
     b_col_prefix = _compressed_ftlr_prefix(b_col_ranks)
-    bm, bn = nominal_tile_size(A, 1), nominal_tile_size(B, 2)
+    row_heights = [length(_compressed_ftlr_axis_range(A, i, 1)) for i in 1:qm]
+    col_widths = [length(_compressed_ftlr_axis_range(B, j, 2)) for j in 1:qn]
+    col_prefix = _compressed_ftlr_prefix(col_widths)
     Tbytes = sizeof(eltype(A))
     right = _compressed_ftlr_right_valid(A, B) ?
         [pair_ranks[i] == 0 ? 0 :
-         (pair_ranks[i] + qn * bn * a_k_prefix[i, end]) * Tbytes for i in 1:qm] : nothing
+         (pair_ranks[i] + col_prefix[end] * a_k_prefix[i, end]) * Tbytes for i in 1:qm] : nothing
     left = _compressed_ftlr_left_valid(A, B) ?
         [pair_ranks[i] == 0 ? 0 :
-         (pair_ranks[i] + bm * b_total_rank) * Tbytes for i in 1:qm] : nothing
+         (pair_ranks[i] + row_heights[i] * b_total_rank) * Tbytes for i in 1:qm] : nothing
     (right === nothing && left === nothing) && throw(ArgumentError(
         "CompressedFTLR needs row-packed B outer factors and either row-packed A outer factors or column-packed B inner factors"))
     row_bytes = [min(right === nothing ? typemax(Int) : right[i],
                      left === nothing ? typemax(Int) : left[i]) for i in 1:qm]
     right_flops = right === nothing ? nothing :
-        [bn * pair_ranks[i] + bm * qn * bn * a_k_prefix[i, end] for i in 1:qm]
+        [col_prefix[end] * pair_ranks[i] + row_heights[i] * col_prefix[end] * a_k_prefix[i, end] for i in 1:qm]
     left_flops = left === nothing ? nothing :
-        [bm * pair_ranks[i] + bm * bn * b_total_rank for i in 1:qm]
+        [row_heights[i] * pair_ranks[i] + row_heights[i] * col_prefix[end] * b_total_rank for i in 1:qm]
     maximum_bytes = min(right === nothing ? typemax(Int) : sum(right),
                         left === nothing ? typemax(Int) : sum(left))
     profile = RaggedWorkspaceProfile(
@@ -101,6 +114,7 @@ function _compressed_ftlr_rank_plan(A, B)
     )
     return CompressedFTLRRankPlan(a_k_prefix, b_row_ranks, b_col_ranks, b_col_k_prefix,
                         b_col_prefix, b_first_active_col, pair_ranks, b_total_rank,
+                        row_heights, col_widths, col_prefix,
                         profile)
 end
 

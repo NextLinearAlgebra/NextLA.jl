@@ -14,7 +14,7 @@ using KernelAbstractions.Extras: @unroll
 
 using ..NextLA: gemm_batched!, trsm_batched!, potrf_batched!
 using ..NextLA: precision_gemm!, precision_gemm_batched!, precision_gemm_grouped!, GroupedGemmTask
-using ..NextLA: gemm_compute_mode, gemm_compute_type, supports_grouped_gemm
+using ..NextLA: gemm_compute_mode, gemm_compute_type, supports_grouped_gemm, supports_bfloat16_grouped_gemm
 using ..NextLA: GEMMCompute, validate_gemm_signature
 using ..NextLA: create_streams, with_stream, sync_stream, sync_streams_with_default
 using ..NextLA: SUBGROUP_SIZE, unwrap
