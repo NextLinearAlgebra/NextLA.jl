@@ -5,6 +5,7 @@ const CUSOLVER = CUDA.CUSOLVER
 @inline NextLA.supports_pointer_batched(::Type{<:CUDA.CUDABackend}) = true
 
 @inline _cublas_compute_type(::Type{Float16}) = CUBLAS.CUBLAS_COMPUTE_16F
+@inline _cublas_compute_type(::Type{Core.BFloat16}) = CUBLAS.CUBLAS_COMPUTE_32F
 @inline _cublas_compute_type(::Type{Float32}) = CUBLAS.CUBLAS_COMPUTE_32F
 @inline _cublas_compute_type(::Type{Float64}) = CUBLAS.CUBLAS_COMPUTE_64F
 @inline _cublas_compute_type(::Type{ComplexF32}) = CUBLAS.CUBLAS_COMPUTE_32F
@@ -12,6 +13,7 @@ const CUSOLVER = CUDA.CUSOLVER
 @inline _cublas_compute_type(::Type{Int32}) = CUBLAS.CUBLAS_COMPUTE_32I
 
 @inline _cublas_scalar_type(::Type{Float16}) = Float16
+@inline _cublas_scalar_type(::Type{Core.BFloat16}) = Float32
 @inline _cublas_scalar_type(::Type{Float32}) = Float32
 @inline _cublas_scalar_type(::Type{Float64}) = Float64
 @inline _cublas_scalar_type(::Type{ComplexF32}) = ComplexF32

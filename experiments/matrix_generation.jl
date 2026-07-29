@@ -14,7 +14,8 @@ catch
     false
 end
 
-export generate_tlr_operands, generate_ftlr_operands, generate_tlr_matrix
+export allocate_tlr_matrix, generate_tlr_operands, generate_ftlr_operands,
+       generate_tlr_matrix
 
 """
     generate_tlr_operands(m, k, n, tile_size, ranks, ::Type{T};
@@ -107,9 +108,26 @@ function generate_tlr_matrix(
     m::Integer, n::Integer, tile_size::Integer, rank::Integer, ::Type{T};
     seed::Integer=0, backend=CPU(),
 ) where {T}
-    A, unused = generate_tlr_operands(
-        m, n, n, tile_size, (rank, rank), T; seed, backend)
-    unused = nothing
+    A = allocate_tlr_matrix(m, n, tile_size, rank, T; backend)
+    if _HAS_CUDA && backend isa CUDA.CUDABackend
+        _fill_factors_gpu!(A, seed)
+    else
+        _fill_factors(A, MersenneTwister(seed))
+    end
+    return A
+end
+
+function allocate_tlr_matrix(
+    m::Integer, n::Integer, tile_size::Integer, rank::Integer, ::Type{T};
+    backend=CPU(),
+) where {T}
+    m, n, b, r = Int.((m, n, tile_size, rank))
+    m > 0 && n > 0 && b > 0 || throw(ArgumentError("dimensions must be positive"))
+    m % b == 0 && n % b == 0 ||
+        throw(ArgumentError("matrix dimensions must be divisible by tile_size"))
+    0 <= r <= b || throw(ArgumentError("rank must be in 0:tile_size"))
+    A = PaddedFTLRMatrix(backend, T, m, n, b, r; tile_order=TileRowMajor)
+    A.ranks .= r
     return A
 end
 
@@ -149,12 +167,12 @@ function _fill_factors(
     mt_B, nt_B = grid_size(B)
     seed = rand(rng, UInt)
 
-    shared_u = [
+    shared_u = shared_rank == 0 ? nothing : [
         _orthonormal_basis(MersenneTwister(_factor_seed(seed, 1, i, 0)), T,
                            tile_size(A, i, 1)[1], shared_rank)
         for i in 1:mt_A
     ]
-    shared_v = [
+    shared_v = shared_rank == 0 ? nothing : [
         _orthonormal_basis(MersenneTwister(_factor_seed(seed, 2, 0, j)), T,
                            tile_size(B, 1, j)[2], shared_rank)
         for j in 1:nt_B
@@ -163,8 +181,11 @@ function _fill_factors(
     fill_A = function (i, j)
         U, V = get_factors(A, i, j)
         tm, tn = tile_size(A, i, j)
-        copyto!(U, _family_basis(MersenneTwister(_factor_seed(seed, 3, i, j)),
-                                 T, tm, size(U, 2), shared_u[i]))
+        copyto!(U, shared_rank == 0 ?
+            _orthonormal_basis(MersenneTwister(_factor_seed(seed, 3, i, j)),
+                               T, tm, size(U, 2)) :
+            _family_basis(MersenneTwister(_factor_seed(seed, 3, i, j)),
+                          T, tm, size(U, 2), shared_u[i]))
         copyto!(V, _orthonormal_basis(MersenneTwister(_factor_seed(seed, 4, i, j)),
                                       T, tn, size(V, 2)))
     end
@@ -173,8 +194,11 @@ function _fill_factors(
         tm, tn = tile_size(B, i, j)
         copyto!(U, _orthonormal_basis(MersenneTwister(_factor_seed(seed, 5, i, j)),
                                       T, tm, size(U, 2)))
-        copyto!(V, _family_basis(MersenneTwister(_factor_seed(seed, 6, i, j)),
-                                 T, tn, size(V, 2), shared_v[j]))
+        copyto!(V, shared_rank == 0 ?
+            _orthonormal_basis(MersenneTwister(_factor_seed(seed, 6, i, j)),
+                               T, tn, size(V, 2)) :
+            _family_basis(MersenneTwister(_factor_seed(seed, 6, i, j)),
+                          T, tn, size(V, 2), shared_v[j]))
     end
     _foreach_tile!(mt_A, nt_A, fill_A)
     _foreach_tile!(mt_B, nt_B, fill_B)
@@ -186,11 +210,11 @@ function _fill_factors_gpu!(A, B, seed::Integer, shared_rank::Int)
     T = eltype(A)
     mt_A, nt_A = grid_size(A)
     mt_B, nt_B = grid_size(B)
-    shared_u = [
+    shared_u = shared_rank == 0 ? nothing : [
         _orthonormal_basis_gpu(T, tile_size(A, i, 1)[1], shared_rank)
         for i in 1:mt_A
     ]
-    shared_v = [
+    shared_v = shared_rank == 0 ? nothing : [
         _orthonormal_basis_gpu(T, tile_size(B, 1, j)[2], shared_rank)
         for j in 1:nt_B
     ]
@@ -198,17 +222,47 @@ function _fill_factors_gpu!(A, B, seed::Integer, shared_rank::Int)
     for i in 1:mt_A, j in 1:nt_A
         U, V = get_factors(A, i, j)
         tm, tn = tile_size(A, i, j)
-        _store_basis!(U, _family_basis_gpu(T, tm, size(U, 2), shared_u[i]))
+        _store_basis!(U, shared_rank == 0 ?
+            _orthonormal_basis_gpu(T, tm, size(U, 2)) :
+            _family_basis_gpu(T, tm, size(U, 2), shared_u[i]))
         _store_basis!(V, _orthonormal_basis_gpu(T, tn, size(V, 2)))
     end
     for i in 1:mt_B, j in 1:nt_B
         U, V = get_factors(B, i, j)
         tm, tn = tile_size(B, i, j)
         _store_basis!(U, _orthonormal_basis_gpu(T, tm, size(U, 2)))
-        _store_basis!(V, _family_basis_gpu(T, tn, size(V, 2), shared_v[j]))
+        _store_basis!(V, shared_rank == 0 ?
+            _orthonormal_basis_gpu(T, tn, size(V, 2)) :
+            _family_basis_gpu(T, tn, size(V, 2), shared_v[j]))
     end
     CUDA.synchronize()
     return nothing
+end
+
+function _fill_factors(A, rng)
+    seed = rand(rng, UInt)
+    mt, nt = grid_size(A)
+    fill_tile = function (i, j)
+        U, V = get_factors(A, i, j)
+        copyto!(U, _orthonormal_basis(
+            MersenneTwister(_factor_seed(seed, 1, i, j)), eltype(A), size(U)...))
+        copyto!(V, _orthonormal_basis(
+            MersenneTwister(_factor_seed(seed, 2, i, j)), eltype(A), size(V)...))
+    end
+    _foreach_tile!(mt, nt, fill_tile)
+    return A
+end
+
+function _fill_factors_gpu!(A, seed::Integer)
+    CUDA.seed!(seed)
+    mt, nt = grid_size(A)
+    for i in 1:mt, j in 1:nt
+        U, V = get_factors(A, i, j)
+        _store_basis!(U, _orthonormal_basis_gpu(eltype(A), size(U)...))
+        _store_basis!(V, _orthonormal_basis_gpu(eltype(A), size(V)...))
+    end
+    CUDA.synchronize()
+    return A
 end
 
 function _orthonormal_basis_gpu(::Type{T}, dimension::Int, rank::Int) where {T}
@@ -225,6 +279,7 @@ function _family_basis_gpu(::Type{T}, dimension::Int, rank::Int, shared) where {
     private_rank = rank - shared_rank
     private_rank == 0 && return shared
     private = _orthonormal_basis_gpu(T, dimension, private_rank)
+    shared_rank == 0 && return private
     if shared_rank > 0
         private .-= shared * (adjoint(shared) * private)
         factors, tau = CUDA.CUSOLVER.geqrf!(private)
@@ -293,8 +348,9 @@ function _family_basis(
 
     S = _basis_type(T)
     G = randn(rng, S, dimension, private_rank)
+    isempty(shared) && return Matrix{T}(Matrix(qr(G).Q)[:, 1:private_rank])
     shared_basis = Matrix{S}(shared)
-    isempty(shared) || (G .-= shared_basis * (adjoint(shared_basis) * G))
+    G .-= shared_basis * (adjoint(shared_basis) * G)
     private = Matrix(qr(G).Q)[:, 1:private_rank]
     return Matrix{T}(hcat(shared, private))
 end

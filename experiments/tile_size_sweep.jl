@@ -1,9 +1,6 @@
 """Tile-size sweep experiment implementation."""
 module TileSizeSweepExperiment
 
-if !isdefined(Main, :DenseGemmCommon)
-    include(joinpath(@__DIR__, "common.jl"))
-end
 using Main.DenseGemmCommon
 
 export TileSizeSweepConfig, tile_size_sweep

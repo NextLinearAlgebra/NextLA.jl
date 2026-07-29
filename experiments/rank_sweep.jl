@@ -1,9 +1,6 @@
 """Rank-sweep experiment implementation."""
 module RankSweepExperiment
 
-if !isdefined(Main, :DenseGemmCommon)
-    include(joinpath(@__DIR__, "common.jl"))
-end
 using Main.DenseGemmCommon
 
 export RankSweepConfig, rank_sweep

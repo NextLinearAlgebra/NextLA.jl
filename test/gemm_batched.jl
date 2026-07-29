@@ -101,6 +101,21 @@ _apply_transpose(A::AbstractMatrix, trans::Char) =
                 @test Array(C_batch_dev[i]) ≈ expected_batch[i]
             end
 
+            if name == "CUDA"
+                cuda = Base.require(Main, :CUDA)
+                if cuda.capability(cuda.device()) >= v"8.0"
+                    Ab = _to_backend(AT, reshape(Core.BFloat16[1 2; 3 4], 2, 2, 1))
+                    Bb = _to_backend(AT, reshape(Core.BFloat16[1 0; 0 1], 2, 2, 1))
+                    Cb = _to_backend(AT, zeros(Core.BFloat16, 2, 2, 1))
+                    NextLA.gemm_batched!(
+                        'N', 'N', one(Core.BFloat16), [view(Ab, :, :, 1)],
+                        [view(Bb, :, :, 1)], zero(Core.BFloat16),
+                        [view(Cb, :, :, 1)])
+                    sync(Cb)
+                    @test Float32.(Array(Cb[:, :, 1])) ≈ Float32[1 2; 3 4]
+                end
+            end
+
             A_batch_ex_dev = _to_backend(AT, deepcopy(A_batch))
             B_batch_ex_dev = _to_backend(AT, deepcopy(B_batch))
             C_batch_ex_dev = _to_backend(AT, deepcopy(C_batch))

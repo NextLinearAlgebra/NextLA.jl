@@ -146,11 +146,15 @@ function tlr_flop_model(case, ranksA, ranksB)
     qkB, qn = size(ranksB)
     qk == qkB || error("rank grids have incompatible contraction dimensions")
 
-    # This is the global fold predicate used by choose_fold for the canonical
-    # factors. Keeping it fixed in the ideal-rank count isolates work wasted
-    # by padding from work changed by selecting another algorithm.
-    fold_left = case.bm * case.maxrank_B <
-                case.maxrank_A * case.bn
+    # Mirror `choose_fold`: FoldRight is available when A is row-major,
+    # FoldLeft when B is column-major, and intermediate size breaks the tie
+    # only when both write-once stacks are available.
+    can_right = case.orderA === TLRM.TileRowMajor
+    can_left = case.orderB === TLRM.TileColMajor
+    fold_left = can_left &&
+        (!can_right ||
+         case.bm * case.maxrank_B <
+         case.maxrank_A * case.bn)
     per_padded = tile_product_flops(
         case.bm, case.bk, case.bn,
         case.maxrank_A, case.maxrank_B, fold_left)

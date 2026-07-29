@@ -1,9 +1,6 @@
 """Strong-scaling experiment implementation."""
 module StrongScalingExperiment
 
-if !isdefined(Main, :DenseGemmCommon)
-    include(joinpath(@__DIR__, "common.jl"))
-end
 using Main.DenseGemmCommon
 
 export StrongScalingConfig, strong_scaling

@@ -46,15 +46,12 @@ compile() {
 }
 
 run_case() {
-    local executable=$1 mode=$2 m=$3 k=$4 n=$5 b=$6 rank_A=$7 rank_B=$8 rank_C=$9 precision=${10}
-    local result="$output_dir/strong_scaling_${mode}_${precision}.csv"
-    if [[ ! -f "$result" ]]; then
-        echo "mode,precision,m,k,n,tile_size,rank_A,rank_B,rank_C,final_rank,dense_ms,tlr_ms,speedup,dense_gflops,tlr_gflops" > "$result"
-    fi
-    "$executable" "$mode" "$m" "$k" "$n" "$b" "$rank_A" "$rank_B" "$rank_C" "$WARMUP" "$REPS" >> "$result"
+    local executable=$1 mode=$2 m=$3 k=$4 n=$5 b=$6 rank_A=$7 rank_B=$8 rank_C=$9
+    "$executable" "$mode" "$m" "$k" "$n" "$b" "$rank_A" "$rank_B" "$rank_C" "$WARMUP" "$REPS"
 }
 
 IFS=',' read -r -a selected_precisions <<< "$PRECISIONS"
+header="mode,precision,m,k,n,tile_size,rank_A,rank_B,rank_C,final_rank,dense_ms,tlr_ms,speedup,dense_gflops,tlr_gflops"
 for precision in "${selected_precisions[@]}"; do
     case "$precision" in
         float|double) executable=$(compile "$precision") ;;
@@ -62,10 +59,12 @@ for precision in "${selected_precisions[@]}"; do
     esac
 
     for mode in lld lll; do
+        result="$output_dir/strong_scaling_${mode}_${precision}.csv"
+        echo "$header" > "$result"
         for n in "${STRONG_SIZES[@]}"; do
             run_case "$executable" "$mode" "$n" "$n" "$n" \
                 "$STRONG_TILE_SIZE" "$STRONG_RANK_A" "$STRONG_RANK_B" \
-                "$STRONG_OUTPUT_RANK" "$precision"
+                "$STRONG_OUTPUT_RANK" >> "$result"
         done
     done
 done

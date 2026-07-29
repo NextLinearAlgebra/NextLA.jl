@@ -2,10 +2,16 @@
 module DenseGemmCommon
 
 using LinearAlgebra
+using Printf
 using KernelAbstractions
 using NextLA: DenseGemmWorkspace, GEMMCompute, TF32,
-              gemm_minimum_workspace_bytes, precision_gemm!, uncompress!
-using NextLA.TLRmodule: gemm!, get_factors, grid_size, tile_size, maxrank
+              gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes,
+              precision_gemm!, uncompress!
+using NextLA.TLRmodule: gemm!, get_factors, grid_size, tile_size, maxrank,
+                        PaddedFTLRMatrix, CompressedFTLRMatrix,
+                        logical_operand, logical_operands, choose_fold, FoldRight,
+                        _compressed_ftlr_rank_plan, _compressed_ftlr_row_runs,
+                        _compressed_ftlr_rank, _compressed_ftlr_axis_range
 
 const _HAS_CUDA = try
     @eval import CUDA
@@ -33,7 +39,7 @@ _precision_config(::Type{T}) where {T} = PrecisionConfig(Symbol(T), T, GEMMCompu
 
 struct RunConfig{B}
     precisions::Vector{PrecisionConfig}
-    workspace_factor::Int
+    rows_per_run::Int
     nreps::Int
     nwarmup::Int
     seed::Int
@@ -42,14 +48,14 @@ struct RunConfig{B}
     show_progress::Bool
 end
 
-function RunConfig(precisions, workspace_factor::Integer, nreps::Integer,
+function RunConfig(precisions, rows_per_run::Integer, nreps::Integer,
                    nwarmup::Integer, seed::Integer, backend;
                    check_results::Bool=false, show_progress::Bool=true)
     modes = PrecisionConfig[
         p isa PrecisionConfig ? p : _precision_config(p)
         for p in precisions
     ]
-    return RunConfig(modes, Int(workspace_factor), Int(nreps), Int(nwarmup),
+    return RunConfig(modes, Int(rows_per_run), Int(nreps), Int(nwarmup),
                      Int(seed), backend, check_results, show_progress)
 end
 
@@ -115,7 +121,7 @@ function run_cases(experiment::Symbol, shapes, tile_size::Int, ranks::NTuple{2,I
                    cases, run::RunConfig; square=false)
     b = tile_size
     b > 0 || throw(ArgumentError("tile_size must be positive"))
-    run.workspace_factor >= 1 || throw(ArgumentError("workspace_factor must be positive"))
+    run.rows_per_run >= 1 || throw(ArgumentError("rows_per_run must be positive"))
     run.nreps >= 1 || throw(ArgumentError("nreps must be positive"))
     run.nwarmup >= 0 || throw(ArgumentError("nwarmup must be nonnegative"))
     results = GemmResult[]
@@ -126,7 +132,7 @@ function run_cases(experiment::Symbol, shapes, tile_size::Int, ranks::NTuple{2,I
         if run.show_progress
             println("[$experiment] case=$(case.name) precision=$(precision.name) " *
                     "size=($m,$k,$n) tile=$b ranks=$(ranks)")
-            println("  generating orthonormal factors on the GPU")
+            println("  generating orthonormal factors on $(_backend_name(run.backend))")
             flush(stdout)
         end
         (!square || m == k == n) || throw(ArgumentError("square experiment received $shape"))
@@ -142,54 +148,65 @@ function run_cases(experiment::Symbol, shapes, tile_size::Int, ranks::NTuple{2,I
             backend=run.backend, format=case.format,
             rank_distribution=case.distribution, min_rank=lo, max_rank=hi)
         C = _backend_zeros(run.backend, T, m, n)
-        reference_host = run.check_results ?
-            Array(_reference_result(run.backend, T, A_tlr, B_tlr, m, n)) : nothing
-        if run.show_progress
-            println("  timing TLR and dense GEMM variants")
-            flush(stdout)
-        end
+        reference = run.check_results ?
+            _reference_result(run.backend, T, A_tlr, B_tlr, m, n) : nothing
+        reference_norm = reference === nothing ? NaN : Float64(norm(reference))
+        workspace_bytes = _row_run_workspace_bytes(
+            A_tlr, B_tlr, run.rows_per_run)
         dense_flops, tlr_dense_flops, dense_tlr_flops, tlr_tlr_flops =
-            _flop_counts(A_tlr, B_tlr, m, k, n)
-
+            _flop_counts(A_tlr, B_tlr, m, k, n, workspace_bytes)
         workspace = DenseGemmWorkspace(A_tlr, B_tlr;
-            bytes=run.workspace_factor * gemm_minimum_workspace_bytes(A_tlr, B_tlr))
+            bytes=workspace_bytes)
+        _announce_measurement(run, "TLR × TLR → Dense")
         tlr_tlr_ms = _time_gemm!(C, T, run) do
             gemm!(C, A_tlr, B_tlr; workspace, alpha=one(T), beta=one(T),
                   compute=precision.compute)
         end
-        tlr_tlr_error = _relative_error(C, reference_host)
+        _report_measurement(run, "TLR × TLR → Dense", tlr_tlr_ms, tlr_tlr_flops)
+        tlr_tlr_error = _relative_error(C, reference, reference_norm)
         workspace = nothing
-        _collect_large_temporaries!()
+        _collect_large_temporaries!(run.backend)
 
+        _announce_measurement(run, "uncompressing B for TLR × Dense")
         B_dense = _uncompress(run.backend, T, B_tlr)
-        workspace = DenseGemmWorkspace(
-            A_tlr, run.workspace_factor * maxrank(A_tlr) * sizeof(T))
+        workspace = DenseGemmWorkspace(A_tlr,
+            _single_tlr_workspace_bytes(A_tlr, n))
+        _announce_measurement(run, "TLR × Dense → Dense")
         tlr_dense_ms = _time_gemm!(C, T, run) do
             gemm!(C, A_tlr, B_dense; workspace, alpha=one(T), beta=one(T),
                   compute=precision.compute)
         end
-        tlr_dense_error = _relative_error(C, reference_host)
-        workspace = nothing; B_dense = nothing; _collect_large_temporaries!()
+        _report_measurement(run, "TLR × Dense → Dense", tlr_dense_ms, tlr_dense_flops)
+        tlr_dense_error = _relative_error(C, reference, reference_norm)
+        workspace = nothing; B_dense = nothing
+        _collect_large_temporaries!(run.backend)
 
+        _announce_measurement(run, "uncompressing A for Dense × TLR")
         A_dense = _uncompress(run.backend, T, A_tlr)
-        workspace = DenseGemmWorkspace(
-            B_tlr, run.workspace_factor * maxrank(B_tlr) * sizeof(T))
+        workspace = DenseGemmWorkspace(B_tlr,
+            _single_tlr_workspace_bytes(B_tlr, m))
+        _announce_measurement(run, "Dense × TLR → Dense")
         dense_tlr_ms = _time_gemm!(C, T, run) do
             gemm!(C, A_dense, B_tlr; workspace, alpha=one(T), beta=one(T),
                   compute=precision.compute)
         end
-        dense_tlr_error = _relative_error(C, reference_host)
-        workspace = nothing; A_dense = nothing; _collect_large_temporaries!()
+        _report_measurement(run, "Dense × TLR → Dense", dense_tlr_ms, dense_tlr_flops)
+        dense_tlr_error = _relative_error(C, reference, reference_norm)
+        workspace = nothing; A_dense = nothing
+        _collect_large_temporaries!(run.backend)
 
+        _announce_measurement(run, "uncompressing A and B for Dense × Dense")
         A_dense = _uncompress(run.backend, T, A_tlr); A_tlr = nothing
-        _collect_large_temporaries!()
+        _collect_large_temporaries!(run.backend)
         B_dense = _uncompress(run.backend, T, B_tlr); B_tlr = nothing
-        _collect_large_temporaries!()
+        _collect_large_temporaries!(run.backend)
+        _announce_measurement(run, "Dense × Dense → Dense")
         dense_dense_ms = _time_gemm!(C, T, run) do
             precision_gemm!('N', 'N', one(T), A_dense, B_dense, one(T), C,
                             precision.compute)
         end
-        dense_dense_error = _relative_error(C, reference_host)
+        _report_measurement(run, "Dense × Dense → Dense", dense_dense_ms, dense_flops)
+        dense_dense_error = _relative_error(C, reference, reference_norm)
 
         dense_gflops = _gflops(dense_flops, dense_dense_ms)
         tlr_dense_gflops = _gflops(tlr_dense_flops, tlr_dense_ms)
@@ -207,48 +224,174 @@ function run_cases(experiment::Symbol, shapes, tile_size::Int, ranks::NTuple{2,I
         push!(results, GemmResult(experiment, case.name, precision.name, T, m, k, n, b,
             ranks[1], ranks[2], case.format, case.distribution, lo, hi,
             GemmTiming(tlr_dense_ms, dense_tlr_ms, tlr_tlr_ms, dense_dense_ms), metrics))
-        A_dense = nothing; B_dense = nothing; C = nothing; reference_host = nothing
-        _collect_large_temporaries!()
+        A_dense = nothing; B_dense = nothing; C = nothing; reference = nothing
+        _collect_large_temporaries!(run.backend)
     end
     return results
 end
 
 function _reference_result(backend, ::Type{T}, A, B, m, n) where {T}
-    A_storage = _uncompress(backend, T, A)
-    B_storage = _uncompress(backend, T, B)
-    A_ref = _backend_zeros(backend, Float32, size(A)...)
-    B_ref = _backend_zeros(backend, Float32, size(B)...)
-    copyto!(A_ref, A_storage); copyto!(B_ref, B_storage)
-    C_ref = _backend_zeros(backend, Float32, m, n)
-    fill!(C_ref, 1.0f0)
-    mul!(C_ref, A_ref, B_ref, 1.0f0, 1.0f0)
+    R = T === Float64 ? Float64 : Float32
+    A_ref = _reference_operand(backend, R, T, A)
+    B_ref = _reference_operand(backend, R, T, B)
+    C_ref = _backend_zeros(backend, R, m, n)
+    fill!(C_ref, one(R))
+    mul!(C_ref, A_ref, B_ref, one(R), one(R))
+    _synchronize(backend)
+    A_ref = B_ref = nothing
+    _collect_large_temporaries!(backend)
     return C_ref
 end
 
-function _flop_counts(A, B, m, k, n)
+function _reference_operand(backend, ::Type{T}, ::Type{T}, A) where {T}
+    return _uncompress(backend, T, A)
+end
+
+function _reference_operand(backend, ::Type{R}, ::Type{T}, A) where {R,T}
+    storage = _uncompress(backend, T, A)
+    reference = _backend_zeros(backend, R, size(A)...)
+    copyto!(reference, storage)
+    _synchronize(backend)
+    storage = nothing
+    _collect_large_temporaries!(backend)
+    return reference
+end
+
+@inline _execution_rank(A::PaddedFTLRMatrix, i, j) = maxrank(A)
+@inline _execution_rank(A, i, j) = size(get_factors(A, i, j)[1], 2)
+
+function _flop_counts(A, B, m, k, n, workspace_bytes)
     mt, kt = grid_size(A); _, nt = grid_size(B)
     tlr_dense = dense_tlr = tlr_tlr = 0.0
+    for i in 1:mt, l in 1:kt
+        tm = tile_size(A, i, l)[1]
+        tk = tile_size(A, i, l)[2]
+        ra = _execution_rank(A, i, l)
+        tlr_dense += 2.0 * ra * (tk * n + tm * n)
+    end
+    for l in 1:kt, j in 1:nt
+        tk = tile_size(A, 1, l)[2]
+        tn = tile_size(B, l, j)[2]
+        rb = _execution_rank(B, l, j)
+        dense_tlr += 2.0 * rb * (m * tk + m * tn)
+    end
+    tlr_tlr = _tlr_tlr_executed_flops(A, B, workspace_bytes)
+    return 2.0 * m * k * n, tlr_dense, dense_tlr, tlr_tlr
+end
+
+function _tlr_tlr_executed_flops(A::PaddedFTLRMatrix,
+                                  B::PaddedFTLRMatrix, workspace_bytes)
+    mt, kt = grid_size(A); _, nt = grid_size(B)
+    fold = choose_fold(logical_operands(logical_operand(A), logical_operand(B)))
+    right = fold isa FoldRight
+    rA, rB = maxrank(A), maxrank(B)
+    flops = 0.0
     for i in 1:mt, l in 1:kt, j in 1:nt
         tm = tile_size(A, i, l)[1]
         tk = tile_size(A, i, l)[2]
         tn = tile_size(B, l, j)[2]
-        ra = size(get_factors(A, i, l)[1], 2)
-        rb = size(get_factors(B, l, j)[1], 2)
-        tlr_dense += 2.0 * ra * (tk * n + tm * n)
-        dense_tlr += 2.0 * rb * (m * tk + m * tn)
-        tlr_tlr += 2.0 * (tk * ra * rb + tm * ra * rb + tm * rb * tn)
+        flops += right ?
+            2.0 * (tk * rA * rB + tn * rA * rB + tm * rA * tn) :
+            2.0 * (tk * rA * rB + tm * rA * rB + tm * rB * tn)
     end
-    return 2.0 * m * k * n, tlr_dense, dense_tlr, tlr_tlr
+    return flops
+end
+
+function _tlr_tlr_executed_flops(A::CompressedFTLRMatrix,
+                                  B::CompressedFTLRMatrix, workspace_bytes)
+    LA, LB = logical_operand(A), logical_operand(B)
+    plan = _compressed_ftlr_rank_plan(LA, LB)
+    budget = min(Int(workspace_bytes), plan.profile.maximum)
+    flops = 0.0
+    _, qk = grid_size(LA)
+    _, qn = grid_size(LB)
+    N = size(LB, 2)
+    for run in _compressed_ftlr_row_runs(plan.profile, budget), i in run.rows
+        plan.pair_ranks[i] == 0 && continue
+        mi = length(_compressed_ftlr_axis_range(LA, i, 1))
+        common = 0.0
+        fold_specific = 0.0
+        for l in 1:qk, j in 1:qn
+            ra = _compressed_ftlr_rank(LA, i, l)
+            rb = _compressed_ftlr_rank(LB, l, j)
+            (ra == 0 || rb == 0) && continue
+            tk = length(_compressed_ftlr_axis_range(LA, l, 2))
+            nj = length(_compressed_ftlr_axis_range(LB, j, 2))
+            common += tk * ra * rb
+            fold_specific += run.fold === :right ? nj * ra * rb : mi * ra * rb
+        end
+        terminal = if run.fold === :right
+            mi * N * plan.a_k_prefix[i, end]
+        else
+            sum(mi * plan.output_col_widths[j] * plan.b_col_ranks[j]
+                for j in 1:qn)
+        end
+        flops += 2.0 * (common + fold_specific + terminal)
+    end
+    return flops
 end
 
 @inline _gflops(flops, milliseconds) = flops / (milliseconds * 1.0e6)
 
-_relative_error(_, ::Nothing) = NaN
+# The one-TLR drivers use a `rank × batch_width` temporary.  A single element
+# is technically sufficient, but it degenerates into one tiny GEMM per output
+# column/row.  The experiment baseline is therefore one complete output panel;
+# The full panel is the intended production baseline.
+@inline function _single_tlr_workspace_bytes(A, panel_length::Int)
+    maxrank(A) * panel_length * sizeof(eltype(A))
+end
 
-function _relative_error(C, reference_host)
-    result = Array(C)
-    denominator = max(norm(reference_host), eps(Float32))
-    norm(result .- reference_host) / denominator
+function _row_run_workspace_bytes(A::PaddedFTLRMatrix,
+                                  B::PaddedFTLRMatrix, rows::Int)
+    minimum = gemm_minimum_workspace_bytes(A, B)
+    maximum = gemm_maximum_workspace_bytes(A, B)
+    qm = grid_size(A)[1]
+    target = cld(min(rows, qm) * maximum, qm)
+    aligned = cld(target, sizeof(eltype(A))) * sizeof(eltype(A))
+    return clamp(aligned, minimum, maximum)
+end
+
+function _row_run_workspace_bytes(A::CompressedFTLRMatrix,
+                                  B::CompressedFTLRMatrix, rows::Int)
+    profile = _compressed_ftlr_rank_plan(
+        logical_operand(A), logical_operand(B)).profile
+    width = min(rows, length(profile.row_bytes))
+    best = 0
+    for first in 1:(length(profile.row_bytes) - width + 1)
+        last = first + width - 1
+        right = profile.right_byte_prefix === nothing ? typemax(Int) :
+            profile.right_byte_prefix[last + 1] - profile.right_byte_prefix[first]
+        left = profile.left_byte_prefix === nothing ? typemax(Int) :
+            profile.left_byte_prefix[last + 1] - profile.left_byte_prefix[first]
+        best = max(best, min(right, left))
+    end
+    return clamp(best, profile.minimum, profile.maximum)
+end
+
+function _announce_measurement(run::RunConfig, label)
+    run.show_progress || return nothing
+    println("  $label")
+    flush(stdout)
+    return nothing
+end
+
+function _report_measurement(run::RunConfig, label, milliseconds, flops)
+    run.show_progress || return nothing
+    @printf("    %-24s %10.3f ms  %12.2f executed GFLOP/s\n",
+            label, milliseconds, _gflops(flops, milliseconds))
+    flush(stdout)
+    return nothing
+end
+
+_relative_error(_, ::Nothing, _) = NaN
+
+function _relative_error(C, reference, reference_norm)
+    difference = similar(reference)
+    copyto!(difference, C)
+    difference .-= reference
+    error = norm(difference) / max(reference_norm, eps(eltype(reference)))
+    difference = nothing
+    return Float64(error)
 end
 
 function _time_gemm!(f, C, ::Type{T}, run::RunConfig) where {T}
@@ -276,9 +419,13 @@ function _backend_zeros(backend, ::Type{T}, dims...) where {T}
 end
 _synchronize(::KernelAbstractions.CPU) = nothing
 _synchronize(backend) = KernelAbstractions.synchronize(backend)
+_backend_name(::KernelAbstractions.CPU) = "the CPU"
+_backend_name(_) = "the GPU"
 
-function _collect_large_temporaries!()
-    GC.gc(true); _HAS_CUDA && CUDA.reclaim(); nothing
+function _collect_large_temporaries!(backend)
+    GC.gc(true)
+    _HAS_CUDA && !(backend isa KernelAbstractions.CPU) && CUDA.reclaim()
+    return nothing
 end
 
 function write_dense_csv(path, results)

@@ -71,6 +71,26 @@ function benchmark_case(label, dims)
     @printf("%s grouped / batched: %.3fx\n", label, grouped_time / batched_time)
 end
 
+function benchmark_individual_case(label, dims)
+    tasks = grouped_tasks(dims)
+    flops = sum(2.0 * m * k * n for (m, k, n) in dims)
+    individual = () -> foreach(tasks) do task
+        NextLA.precision_gemm!(task.transA, task.transB, task.alpha, task.A,
+                               task.B, task.beta, task.C,
+                               NextLA.GEMMCompute{Float32}())
+    end
+    grouped_time = summarize(
+        "precision_gemm_grouped!",
+        () -> NextLA.precision_gemm_grouped!(
+            tasks, NextLA.GEMMCompute{Float32}()),
+        flops)
+    individual_time = summarize("individual precision_gemm!", individual, flops)
+    @printf("%s grouped / individual: %.3fx\n",
+            label, grouped_time / individual_time)
+end
+
+release_gpu_memory!() = (GC.gc(true); CUDA.reclaim(); nothing)
+
 function main()
     m, k, n = FIXED_SIZE
     println("CUDA device: ", CUDA.name(CUDA.device()))
@@ -78,41 +98,21 @@ function main()
 
     println("\n$BATCH × fixed $(m)×$(k)×$(n)")
     benchmark_case("fixed", fill(FIXED_SIZE, BATCH))
+    release_gpu_memory!()
 
     nlo, nhi = RAGGED_N_RANGE
     ns = round.(Int, range(nlo, nhi; length=BATCH))
     println("\n$BATCH × $(m)×$(k)×n, n=$nlo:$nhi (grouped vs individual)")
-    ragged = grouped_tasks([(m, k, ni) for ni in ns])
-    ragged_flops = sum(2.0 * m * k * ni for ni in ns)
-    individual = () -> foreach(ragged) do task
-        NextLA.precision_gemm!(task.transA, task.transB, task.alpha, task.A,
-                               task.B, task.beta, task.C,
-                               NextLA.GEMMCompute{Float32}())
-    end
-    grouped_time = summarize("precision_gemm_grouped!", 
-        () -> NextLA.precision_gemm_grouped!(ragged, NextLA.GEMMCompute{Float32}()),
-        ragged_flops)
-    individual_time = summarize("individual precision_gemm!", individual, ragged_flops)
-    @printf("ragged grouped / individual: %.3fx\n", grouped_time / individual_time)
+    benchmark_individual_case("ragged", [(m, k, ni) for ni in ns])
+    release_gpu_memory!()
 
     (mlo, mhi), (klo, khi), (nlo, nhi) = HETEROGENEOUS_RANGES
     dims = collect(zip(round.(Int, range(mlo, mhi; length=BATCH)),
                        reverse(round.(Int, range(klo, khi; length=BATCH))),
                        round.(Int, range(nlo, nhi; length=BATCH))))
     println("\n$BATCH × heterogeneous m,k,n (grouped vs individual)")
-    heterogeneous = grouped_tasks(dims)
-    heterogeneous_flops = sum(2.0 * mi * ki * ni for (mi, ki, ni) in dims)
-    individual = () -> foreach(heterogeneous) do task
-        NextLA.precision_gemm!(task.transA, task.transB, task.alpha, task.A,
-                               task.B, task.beta, task.C,
-                               NextLA.GEMMCompute{Float32}())
-    end
-    grouped_time = summarize("precision_gemm_grouped!", 
-        () -> NextLA.precision_gemm_grouped!(heterogeneous, NextLA.GEMMCompute{Float32}()),
-        heterogeneous_flops)
-    individual_time = summarize("individual precision_gemm!", individual,
-                                heterogeneous_flops)
-    @printf("heterogeneous grouped / individual: %.3fx\n", grouped_time / individual_time)
+    benchmark_individual_case("heterogeneous", dims)
+    release_gpu_memory!()
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__

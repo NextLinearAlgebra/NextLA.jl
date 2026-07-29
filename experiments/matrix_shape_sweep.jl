@@ -1,9 +1,6 @@
 """Matrix-shape sweep experiment implementation."""
 module MatrixShapeSweepExperiment
 
-if !isdefined(Main, :DenseGemmCommon)
-    include(joinpath(@__DIR__, "common.jl"))
-end
 using Main.DenseGemmCommon
 
 export MatrixShapeSweepConfig, matrix_shape_sweep

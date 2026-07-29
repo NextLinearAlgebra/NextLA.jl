@@ -1,6 +1,6 @@
 """Orchestrate the dense-output benchmark campaign."""
 
-using KernelAbstractions
+using CUDA
 
 include(joinpath(@__DIR__, "..", "common.jl"))
 include(joinpath(@__DIR__, "..", "strong_scaling.jl"))
@@ -31,24 +31,18 @@ const PRECISIONS = (
 )
 const NWARMUP = 1
 const NREPS = 3
-const WORKSPACE_FACTOR = 2
+const ROWS_PER_RUN = 1
 const SEED = 20260728
-# A dense Float32 reference at 32768 is several GiB; enable only for a
-# deliberately small validation campaign.
-const CHECK_RESULTS = false
+const CHECK_RESULTS = true
 const SHOW_PROGRESS = true
 const OUTPUT_DIR = joinpath(@__DIR__, "results")
 
-const BACKEND = let
-    try
-        @eval import CUDA
-        CUDA.functional() ? CUDA.CUDABackend() : KernelAbstractions.CPU()
-    catch
-        KernelAbstractions.CPU()
-    end
-end
+CUDA.functional() || error("the benchmark requires a functional CUDA device")
+CUDA.capability(CUDA.device()) >= v"8.0" ||
+    error("the BF16 campaign requires an NVIDIA SM80 or newer device")
+const BACKEND = CUDA.CUDABackend()
 
-const RUN = RunConfig(PRECISIONS, WORKSPACE_FACTOR, NREPS, NWARMUP, SEED, BACKEND;
+const RUN = RunConfig(PRECISIONS, ROWS_PER_RUN, NREPS, NWARMUP, SEED, BACKEND;
                       check_results=CHECK_RESULTS, show_progress=SHOW_PROGRESS)
 
 function main()

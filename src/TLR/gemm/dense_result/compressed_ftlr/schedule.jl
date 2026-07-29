@@ -99,9 +99,16 @@ function _compressed_ftlr_rank_plan(A, B)
     row_bytes = [min(right === nothing ? typemax(Int) : right[i],
                      left === nothing ? typemax(Int) : left[i]) for i in 1:qm]
     right_flops = right === nothing ? nothing :
-        [col_prefix[end] * pair_ranks[i] + row_heights[i] * col_prefix[end] * a_k_prefix[i, end] for i in 1:qm]
+        [sum(col_widths[j] * sum(_compressed_ftlr_rank(A, i, k) *
+                                  _compressed_ftlr_rank(B, k, j)
+                                  for k in 1:qk)
+             for j in 1:qn) +
+         row_heights[i] * col_prefix[end] * a_k_prefix[i, end]
+         for i in 1:qm]
     left_flops = left === nothing ? nothing :
-        [row_heights[i] * pair_ranks[i] + row_heights[i] * col_prefix[end] * b_total_rank for i in 1:qm]
+        [row_heights[i] * pair_ranks[i] +
+         sum(row_heights[i] * col_widths[j] * b_col_ranks[j] for j in 1:qn)
+         for i in 1:qm]
     maximum_bytes = min(right === nothing ? typemax(Int) : sum(right),
                         left === nothing ? typemax(Int) : sum(left))
     profile = RaggedWorkspaceProfile(

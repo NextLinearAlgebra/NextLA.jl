@@ -1,12 +1,16 @@
-"""Experiments for TLR-output GEMM and output-quality measurements."""
+"""TLR-output GEMM experiments and output-quality measurements."""
 module TLROutputExperiment
 
 using LinearAlgebra
+using Printf
 using KernelAbstractions
-using NextLA: DenseGemmWorkspace, TLRGemmWorkspace, GEMMCompute, TF32,
-              alloc_workspace, compress!, gemm_minimum_workspace_bytes,
-              tlr_gemm_minimum_workspace_bytes, precision_gemm!, uncompress!
-using NextLA.TLRmodule: gemm!, grid_size, get_factors, tile_size
+using NextLA: DenseGemmWorkspace, TLRGemmWorkspace, GEMMCompute,
+              alloc_workspace, compress!, precision_gemm!, uncompress!,
+              tlr_gemm_maximum_workspace_bytes
+using NextLA.TLRmodule: gemm!, get_factors, grid_size, maxrank, tile_size
+using Main.DenseGemmCommon: PrecisionConfig, _row_run_workspace_bytes
+using Main.DenseGemmCommon.ExperimentMatrixGeneration:
+    allocate_tlr_matrix, generate_tlr_operands
 
 const _HAS_CUDA = try
     @eval import CUDA
@@ -15,21 +19,14 @@ catch
     false
 end
 
-include(joinpath(@__DIR__, "matrix_generation.jl"))
-using .ExperimentMatrixGeneration: generate_tlr_matrix, generate_tlr_operands
-
-if !isdefined(Main, :DenseGemmCommon)
-    include(joinpath(@__DIR__, "common.jl"))
-end
-using Main.DenseGemmCommon: PrecisionConfig
-
 export TLROutputRunConfig, TLROutputStrongScalingConfig,
-       TLROutputOverlapConfig, TLROutputTiming, TLROutputMetrics, TLROutputResult
-export tlr_output_strong_scaling, tlr_output_overlap_sweep
+       TLROutputOverlapConfig, TLROutputTiming, TLROutputMetrics,
+       TLROutputResult, tlr_output_strong_scaling,
+       tlr_output_overlap_sweep, write_tlr_output_csv
 
 struct TLROutputRunConfig{B}
     precisions::Vector{PrecisionConfig}
-    workspace_factor::Int
+    rows_per_run::Int
     nreps::Int
     nwarmup::Int
     seed::Int
@@ -37,16 +34,19 @@ struct TLROutputRunConfig{B}
     block::Int
     tol::Float64
     rel::Bool
+    show_progress::Bool
 end
 
-function TLROutputRunConfig(precisions, workspace_factor, nreps, nwarmup, seed,
-                            backend; block=32, tol=0.0, rel=false)
+function TLROutputRunConfig(precisions, rows_per_run, nreps, nwarmup, seed,
+                            backend; block=32, tol=0.0, rel=false,
+                            show_progress=true)
+    modes = PrecisionConfig[
+        p isa PrecisionConfig ? p :
+        PrecisionConfig(Symbol(p), p, GEMMCompute{p}()) for p in precisions
+    ]
     return TLROutputRunConfig(
-        PrecisionConfig[p isa PrecisionConfig ? p :
-                       PrecisionConfig(Symbol(p), p, GEMMCompute{p}())
-                       for p in precisions],
-        Int(workspace_factor), Int(nreps), Int(nwarmup),
-        Int(seed), backend, Int(block), Float64(tol), rel)
+        modes, Int(rows_per_run), Int(nreps), Int(nwarmup), Int(seed), backend,
+        Int(block), Float64(tol), Bool(rel), Bool(show_progress))
 end
 
 struct TLROutputStrongScalingConfig{B}
@@ -57,11 +57,10 @@ struct TLROutputStrongScalingConfig{B}
     run::TLROutputRunConfig{B}
 end
 
-function TLROutputStrongScalingConfig(sizes, tile_size, ranks, output_rank,
-                                      run::TLROutputRunConfig)
-    return TLROutputStrongScalingConfig(Int.(sizes), Int(tile_size), Int.(ranks),
-                                        Int(output_rank), run)
-end
+TLROutputStrongScalingConfig(sizes, tile_size, ranks, output_rank,
+                             run::TLROutputRunConfig) =
+    TLROutputStrongScalingConfig(
+        Int.(sizes), Int(tile_size), Int.(ranks), Int(output_rank), run)
 
 struct TLROutputOverlapConfig{B}
     matrix_size::Int
@@ -72,11 +71,11 @@ struct TLROutputOverlapConfig{B}
     run::TLROutputRunConfig{B}
 end
 
-function TLROutputOverlapConfig(matrix_size, tile_size, ranks, output_rank,
-                                shared_ranks, run::TLROutputRunConfig)
-    return TLROutputOverlapConfig(Int(matrix_size), Int(tile_size), Int.(ranks),
-                                  Int(output_rank), Int.(shared_ranks), run)
-end
+TLROutputOverlapConfig(matrix_size, tile_size, ranks, output_rank, shared_ranks,
+                       run::TLROutputRunConfig) =
+    TLROutputOverlapConfig(
+        Int(matrix_size), Int(tile_size), Int.(ranks), Int(output_rank),
+        Int.(shared_ranks), run)
 
 struct TLROutputTiming
     tlr_tlr_ms::Float64
@@ -112,68 +111,67 @@ struct TLROutputResult
     metrics::TLROutputMetrics
 end
 
-function tlr_output_strong_scaling(config::TLROutputStrongScalingConfig)
-    return _run_cases(:tlr_output_strong_scaling, config.sizes, config.tile_size,
-                      config.ranks, config.output_rank, 0, config.run)
-end
+tlr_output_strong_scaling(config::TLROutputStrongScalingConfig) =
+    _run_cases(:tlr_output_strong_scaling, config.sizes, config.tile_size,
+               config.ranks, config.output_rank, 0, config.run)
 
 function tlr_output_overlap_sweep(config::TLROutputOverlapConfig)
     results = TLROutputResult[]
-    for shared_rank in config.shared_ranks
-        shared_rank <= min(config.ranks...) ||
-            throw(ArgumentError("shared_rank must not exceed either operand rank"))
+    for shared in config.shared_ranks
+        0 <= shared <= min(config.ranks...) ||
+            throw(ArgumentError("shared_rank must be in 0:min(ranks)"))
         append!(results, _run_cases(
-            :tlr_output_overlap_sweep,
-            [config.matrix_size], config.tile_size, config.ranks,
-            config.output_rank, shared_rank, config.run))
+            :tlr_output_overlap_sweep, [config.matrix_size], config.tile_size,
+            config.ranks, config.output_rank, shared, config.run))
     end
     return results
 end
 
-function _run_cases(experiment, sizes, tile_size, ranks, output_rank, shared_rank, run)
-    b = Int(tile_size)
+function _run_cases(experiment, sizes, b, ranks, output_rank, shared_rank, run)
     rA, rB = ranks
-    b > 0 && rA < b && rB < b && output_rank < b ||
-        throw(ArgumentError("all ranks must be smaller than tile_size"))
+    b > 0 && 0 < rA < b && 0 < rB < b && 0 < output_rank < b ||
+        throw(ArgumentError("tile size and ranks must satisfy 0 < rank < tile_size"))
+    run.rows_per_run >= 1 || throw(ArgumentError("rows_per_run must be positive"))
     run.block >= 1 || throw(ArgumentError("block must be positive"))
-    run.workspace_factor >= 1 || throw(ArgumentError("workspace_factor must be positive"))
     run.nreps >= 1 || throw(ArgumentError("nreps must be positive"))
     run.nwarmup >= 0 || throw(ArgumentError("nwarmup must be nonnegative"))
 
     results = TLROutputResult[]
     for precision in run.precisions, (case_index, n) in enumerate(sizes)
-        T = precision.storage_type
         n % b == 0 || throw(ArgumentError("size=$n must be divisible by tile_size=$b"))
-        seed = run.seed + case_index + 1000 * shared_rank
-
+        T = precision.storage_type
+        seed = run.seed + case_index + 1000shared_rank
+        _announce(run, "[$experiment] precision=$(precision.name) size=$n " *
+                       "tile=$b ranks=$ranks output_rank=$output_rank shared=$shared_rank")
+        _announce(run, "  generating orthonormal factors")
         A, B = generate_tlr_operands(
             n, n, n, b, ranks, T; seed, shared_rank, backend=run.backend)
-        tlr_flops = _tlr_tlr_flops(A, B, n, b)
-        dense_flops = 2.0 * n^3
-        C_template = generate_tlr_matrix(
-            n, n, b, output_rank, T; seed=seed + 1, backend=run.backend)
-        _fill_constant_tlr!(C_template, T, run.backend)
-        C_direct = generate_tlr_matrix(
-            n, n, b, output_rank, T; seed=seed + 2, backend=run.backend)
+        tlr_flops = _tlr_product_flops(A, B)
+        dense_flops = 2.0n^3
 
-        direct_workspace = TLRGemmWorkspace(
-            C_direct, A, B;
-            bytes=run.workspace_factor * tlr_gemm_minimum_workspace_bytes(
-                C_direct, A, B; block=run.block), block=run.block)
-        tlr_tlr_ms = _time!(
-            () -> gemm!(C_direct, A, B; workspace=direct_workspace,
+        C0 = allocate_tlr_matrix(n, n, b, output_rank, T; backend=run.backend)
+        _fill_initial_output!(C0, T, run.backend)
+        C_tlr = allocate_tlr_matrix(n, n, b, output_rank, T; backend=run.backend)
+        direct_workspace = TLRGemmWorkspace(C_tlr, A, B;
+            bytes=tlr_gemm_maximum_workspace_bytes(
+                C_tlr, A, B; block=run.block), block=run.block)
+        _announce(run, "  TLR × TLR → TLR")
+        direct_ms = _time!(
+            () -> gemm!(C_tlr, A, B; workspace=direct_workspace,
                         alpha=one(T), beta=one(T), tol=run.tol, rel=run.rel,
                         block=run.block, compute=precision.compute),
-            () -> _reset_tlr!(C_direct, C_template, run.backend), run)
+            () -> _reset_tlr!(C_tlr, C0, run.backend), run)
+        _report(run, "TLR × TLR → TLR", direct_ms, tlr_flops)
         direct_workspace = nothing
-        _collect!()
+        _collect!(run.backend)
 
-        C_dense = _uncompress(run.backend, T, C_template)
-        C_compressed = generate_tlr_matrix(
-            n, n, b, output_rank, T; seed=seed + 3, backend=run.backend)
+        C_dense = _uncompress(run.backend, T, C0)
+        C_compressed = allocate_tlr_matrix(
+            n, n, b, output_rank, T; backend=run.backend)
         dense_workspace = DenseGemmWorkspace(
-            A, B; bytes=run.workspace_factor * gemm_minimum_workspace_bytes(A, B))
+            A, B; bytes=_row_run_workspace_bytes(A, B, run.rows_per_run))
         compress_workspace = alloc_workspace(C_compressed)
+        _announce(run, "  TLR × TLR → Dense + compression")
         dense_compress_ms = _time!(
             () -> begin
                 gemm!(C_dense, A, B; workspace=dense_workspace,
@@ -181,137 +179,158 @@ function _run_cases(experiment, sizes, tile_size, ranks, output_rank, shared_ran
                 compress!(C_compressed, C_dense, compress_workspace;
                           tol=run.tol, rel=run.rel)
             end,
-            () -> _reset_dense!(C_dense, T), run)
-        dense_workspace = nothing
-        compress_workspace = nothing
-        C_dense = nothing
-        _collect!()
+            () -> fill!(C_dense, one(T)), run)
+        _report(run, "Dense + compression", dense_compress_ms, tlr_flops)
+        dense_workspace = compress_workspace = C_dense = nothing
+        _collect!(run.backend)
 
-        # Recreate dense operands from the same deterministic seed for the
-        # dense baseline and the common reference result.  This avoids holding
-        # dense and TLR versions of the operands simultaneously for longer than
-        # necessary.
-        A, B = nothing, nothing
-        _collect!()
-        A, B = generate_tlr_operands(
-            n, n, n, b, ranks, T; seed, shared_rank, backend=run.backend)
+        _announce(run, "  uncompressing operands for Dense × Dense")
         A_dense = _uncompress(run.backend, T, A)
         B_dense = _uncompress(run.backend, T, B)
-        C_reference = _uncompress(run.backend, T, C_template)
-        A, B, C_template = nothing, nothing, nothing
-        _collect!()
-
-        dense_dense_ms = _time!(
+        C_reference = _uncompress(run.backend, T, C0)
+        A = B = C0 = nothing
+        _collect!(run.backend)
+        _announce(run, "  Dense × Dense → Dense")
+        dense_ms = _time!(
             () -> precision_gemm!('N', 'N', one(T), A_dense, B_dense,
                                   one(T), C_reference, precision.compute),
-            () -> _reset_dense!(C_reference, T), run)
-        tlr_error = _relative_error(C_direct, C_reference, run.backend, T)
-        compressed_error = _relative_error(C_compressed, C_reference, run.backend, T)
-        dense_gflops = dense_flops / (dense_dense_ms * 1.0e6)
-        tlr_gflops = tlr_flops / (tlr_tlr_ms * 1.0e6)
-        dense_compress_gflops = dense_flops / (dense_compress_ms * 1.0e6)
+            () -> fill!(C_reference, one(T)), run)
+        _report(run, "Dense × Dense → Dense", dense_ms, dense_flops)
+
+        reference_norm = Float64(norm(C_reference))
+        direct_error = _relative_error(
+            C_tlr, C_reference, reference_norm, run.backend)
+        compressed_error = _relative_error(
+            C_compressed, C_reference, reference_norm, run.backend)
+        dense_gflops = _gflops(dense_flops, dense_ms)
+        direct_gflops = _gflops(tlr_flops, direct_ms)
+        compressed_gflops = _gflops(tlr_flops, dense_compress_ms)
         metrics = TLROutputMetrics(
-            dense_gflops, tlr_gflops, dense_compress_gflops,
-            dense_dense_ms / tlr_tlr_ms, dense_dense_ms / dense_compress_ms,
-            tlr_gflops / dense_gflops, dense_compress_gflops / dense_gflops)
-
+            dense_gflops, direct_gflops, compressed_gflops,
+            dense_ms / direct_ms, dense_ms / dense_compress_ms,
+            direct_gflops / dense_gflops, compressed_gflops / dense_gflops)
         push!(results, TLROutputResult(
-            experiment, precision.name, T, n, n, n, b, rA, rB, output_rank, shared_rank,
-            TLROutputTiming(tlr_tlr_ms, dense_compress_ms, dense_dense_ms,
-                            tlr_error, compressed_error), metrics))
+            experiment, precision.name, T, n, n, n, b, rA, rB, output_rank,
+            shared_rank,
+            TLROutputTiming(direct_ms, dense_compress_ms, dense_ms,
+                            direct_error, compressed_error), metrics))
 
-        A_dense, B_dense, C_reference = nothing, nothing, nothing
-        C_direct, C_compressed = nothing, nothing
-        _collect!()
+        A_dense = B_dense = C_reference = C_tlr = C_compressed = nothing
+        _collect!(run.backend)
     end
     return results
 end
 
-function _tlr_tlr_flops(A, B, n, b)
-    mt, kt = grid_size(A); _, nt = grid_size(B)
+function _tlr_product_flops(A, B)
+    mt, kt = grid_size(A)
+    nt = grid_size(B)[2]
     flops = 0.0
     for i in 1:mt, l in 1:kt, j in 1:nt
         tm, tk = tile_size(A, i, l)
-        _, tn = tile_size(B, l, j)
+        tn = tile_size(B, l, j)[2]
         ra = size(get_factors(A, i, l)[1], 2)
         rb = size(get_factors(B, l, j)[1], 2)
         flops += 2.0 * (tk * ra * rb + tm * ra * rb + tm * rb * tn)
     end
-    flops
+    return flops
 end
 
-function _time!(f, reset, run::TLROutputRunConfig{B}) where {B}
+@inline _gflops(flops, milliseconds) = flops / (milliseconds * 1.0e6)
+
+function _time!(f, reset, run)
     for _ in 1:run.nwarmup
-        reset()
-        _synchronize(run.backend)
-        f()
-        _synchronize(run.backend)
+        reset(); _synchronize(run.backend); f(); _synchronize(run.backend)
     end
     best = Inf
     for _ in 1:run.nreps
-        reset()
-        _synchronize(run.backend)
+        reset(); _synchronize(run.backend)
         start = time_ns()
-        f()
-        _synchronize(run.backend)
+        f(); _synchronize(run.backend)
         best = min(best, (time_ns() - start) / 1.0e6)
     end
     return best
 end
 
+const _TLR_FIELDS = (
+    :int_U, :int_V, :right_U, :right_V, :bottom_U, :bottom_V,
+    :corner_U, :corner_V, :ranks, :resid)
+
 function _reset_tlr!(C, template, backend)
-    for field in (:int_U, :int_V, :right_U, :right_V,
-                  :bottom_U, :bottom_V, :corner_U, :corner_V, :ranks, :resid)
-        copyto!(getproperty(C, field), getproperty(template, field))
+    foreach(field -> copyto!(getproperty(C, field), getproperty(template, field)),
+            _TLR_FIELDS)
+    _synchronize(backend)
+    return C
+end
+
+function _fill_initial_output!(C, ::Type{T}, backend) where {T}
+    C.ranks .= min(1, maxrank(C))
+    foreach(field -> fill!(getproperty(C, field), zero(T)), _TLR_FIELDS[1:8])
+    if maxrank(C) > 0
+        for i in 1:grid_size(C)[1], j in 1:grid_size(C)[2]
+            U, V = get_factors(C, i, j)
+            U[:, 1] .= one(T)
+            V[:, 1] .= one(T)
+        end
     end
     _synchronize(backend)
     return C
 end
 
-@inline _reset_dense!(C, ::Type{T}) where {T} = fill!(C, one(T))
-
-function _fill_constant_tlr!(C, ::Type{T}, backend) where {T}
-    C.ranks .= C.maxrank
-    for field in (:int_U, :int_V, :right_U, :right_V,
-                  :bottom_U, :bottom_V, :corner_U, :corner_V)
-        fill!(getproperty(C, field), zero(T))
-    end
-    for i in 1:grid_size(C)[1], j in 1:grid_size(C)[2]
-        U, V = get_factors(C, i, j)
-        U[:, 1] .= one(T)
-        V[:, 1] .= one(T)
-    end
+function _relative_error(A_tlr, reference, reference_norm, backend)
+    difference = similar(reference)
+    uncompress!(difference, A_tlr)
+    difference .-= reference
     _synchronize(backend)
-    return C
-end
-
-function _relative_error(A_tlr, reference, backend, ::Type{T}) where {T}
-    got = similar(reference)
-    uncompress!(got, A_tlr)
-    _synchronize(backend)
-    return norm(got - reference) / max(norm(reference), eps(real(T)))
+    return Float64(norm(difference) /
+                   max(reference_norm, eps(eltype(reference))))
 end
 
 function _uncompress(backend, ::Type{T}, A) where {T}
-    dense = if backend isa KernelAbstractions.CPU
-        zeros(T, size(A)...)
-    elseif _HAS_CUDA
-        CUDA.zeros(T, size(A)...)
-    else
-        throw(ArgumentError("non-CPU backend requires CUDA"))
-    end
+    dense = backend isa KernelAbstractions.CPU ?
+        zeros(T, size(A)...) :
+        (_HAS_CUDA ? CUDA.zeros(T, size(A)...) :
+         throw(ArgumentError("non-CPU backend requires CUDA")))
     uncompress!(dense, A)
     _synchronize(backend)
     return dense
 end
 
-@inline _synchronize(::KernelAbstractions.CPU) = nothing
-@inline _synchronize(backend) = KernelAbstractions.synchronize(backend)
+function _announce(run, message)
+    run.show_progress || return nothing
+    println(message)
+    flush(stdout)
+end
 
-function _collect!()
+function _report(run, label, milliseconds, flops)
+    run.show_progress || return nothing
+    @printf("    %-28s %10.3f ms  %12.2f effective GFLOP/s\n",
+            label, milliseconds, _gflops(flops, milliseconds))
+    flush(stdout)
+end
+
+_synchronize(::KernelAbstractions.CPU) = nothing
+_synchronize(backend) = KernelAbstractions.synchronize(backend)
+
+function _collect!(backend)
     GC.gc(true)
-    _HAS_CUDA && CUDA.reclaim()
+    _HAS_CUDA && !(backend isa KernelAbstractions.CPU) && CUDA.reclaim()
     return nothing
+end
+
+function write_tlr_output_csv(path, results)
+    header = fieldnames(TLROutputResult)[1:11]
+    timing = fieldnames(TLROutputTiming)
+    metrics = fieldnames(TLROutputMetrics)
+    open(path, "w") do io
+        println(io, join((header..., timing..., metrics...), ','))
+        for r in results
+            row = (getfield.(Ref(r), header)...,
+                   getfield.(Ref(r.timing), timing)...,
+                   getfield.(Ref(r.metrics), metrics)...)
+            println(io, join(row, ','))
+        end
+    end
+    return path
 end
 
 end
