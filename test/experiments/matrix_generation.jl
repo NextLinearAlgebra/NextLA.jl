@@ -41,8 +41,8 @@ end
     A, B = generate_ftlr_operands(8, 8, 8, 4, (2, 2), Float64;
         seed=5, format=:compressed, rank_distribution=:constant,
         min_rank=2, max_rank=2)
-    U1, V1 = get_factors(A, 1, 1)
-    U2, V2 = get_factors(B, 1, 1)
+    U1, V1 = NextLA.get_factors(A, 1, 1)
+    U2, V2 = NextLA.get_factors(B, 1, 1)
     @test size(U1, 2) == size(V1, 2) == 2
     @test size(U2, 2) == size(V2, 2) == 2
 end

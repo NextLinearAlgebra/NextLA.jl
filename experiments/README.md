@@ -9,10 +9,12 @@ julia --project=experiments experiments/run_experiments.jl
 
 The all-campaign runner starts fresh Julia processes for:
 
-- `dense/run_experiments.jl`: padded and variable-rank compressed inputs,
-  dense output;
-- `PackedFTLR/run_experiments.jl`: the asymmetric-rank padded-input cases;
-- `tlr_output/run_experiments.jl`: direct TLR output and dense recompression.
+- `dense_output/run_experiments.jl`: dense output from padded and packed
+  (variable-rank compressed) FTLR operands, using FP16/FP32, BF16/FP32, and
+  FP32/TF32. Padded operands are included only in strong scaling as the
+  old-format comparison; the other sweeps use compressed operands only;
+- `padded_ftlr_output/run_experiments.jl`: padded FTLR output from padded FTLR
+  operands, using full FP32.
 
 Each experiment's sweep parameters are at the top of its own file. Shared
 precision, repetition, seed, workspace, and output settings are at the top of

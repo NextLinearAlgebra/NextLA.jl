@@ -1,4 +1,4 @@
-module DenseTileSizeSweep
+module DenseOutputTileSizeSweep
 using Main.DenseGemmCommon
 using Main.TileSizeSweepExperiment
 
@@ -6,7 +6,6 @@ const MATRIX_SIZE = 16384
 const TILE_SIZES = [128, 256, 512, 1024, 2048]
 const RANK_TILE_RATIO = 1 / 8
 const CASES = [
-    MatrixCase(:padded_constant, :padded, :constant, nothing, nothing),
     MatrixCase(:compressed_constant, :compressed, :constant, nothing, nothing),
 ]
 

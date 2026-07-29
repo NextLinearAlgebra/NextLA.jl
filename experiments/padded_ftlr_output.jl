@@ -1,5 +1,5 @@
-"""TLR-output GEMM experiments and output-quality measurements."""
-module TLROutputExperiment
+"""Padded-FTLR-output GEMM experiments and output-quality measurements."""
+module PaddedFTLROutputExperiment
 
 using LinearAlgebra
 using Printf
@@ -19,12 +19,13 @@ catch
     false
 end
 
-export TLROutputRunConfig, TLROutputStrongScalingConfig,
-       TLROutputOverlapConfig, TLROutputTiming, TLROutputMetrics,
-       TLROutputResult, tlr_output_strong_scaling,
-       tlr_output_overlap_sweep, write_tlr_output_csv
+export PaddedFTLROutputRunConfig, PaddedFTLROutputStrongScalingConfig,
+       PaddedFTLROutputOverlapConfig, PaddedFTLROutputTiming,
+       PaddedFTLROutputMetrics, PaddedFTLROutputResult,
+       padded_ftlr_output_strong_scaling,
+       padded_ftlr_output_overlap_sweep, write_padded_ftlr_output_csv
 
-struct TLROutputRunConfig{B}
+struct PaddedFTLROutputRunConfig{B}
     precisions::Vector{PrecisionConfig}
     rows_per_run::Int
     nreps::Int
@@ -37,47 +38,48 @@ struct TLROutputRunConfig{B}
     show_progress::Bool
 end
 
-function TLROutputRunConfig(precisions, rows_per_run, nreps, nwarmup, seed,
-                            backend; block=32, tol=0.0, rel=false,
-                            show_progress=true)
+function PaddedFTLROutputRunConfig(precisions, rows_per_run, nreps, nwarmup,
+                                   seed, backend; block=32, tol=0.0, rel=false,
+                                   show_progress=true)
     modes = PrecisionConfig[
         p isa PrecisionConfig ? p :
         PrecisionConfig(Symbol(p), p, GEMMCompute{p}()) for p in precisions
     ]
-    return TLROutputRunConfig(
+    return PaddedFTLROutputRunConfig(
         modes, Int(rows_per_run), Int(nreps), Int(nwarmup), Int(seed), backend,
         Int(block), Float64(tol), Bool(rel), Bool(show_progress))
 end
 
-struct TLROutputStrongScalingConfig{B}
+struct PaddedFTLROutputStrongScalingConfig{B}
     sizes::Vector{Int}
     tile_size::Int
     ranks::NTuple{2,Int}
     output_rank::Int
-    run::TLROutputRunConfig{B}
+    run::PaddedFTLROutputRunConfig{B}
 end
 
-TLROutputStrongScalingConfig(sizes, tile_size, ranks, output_rank,
-                             run::TLROutputRunConfig) =
-    TLROutputStrongScalingConfig(
+PaddedFTLROutputStrongScalingConfig(sizes, tile_size, ranks, output_rank,
+                                    run::PaddedFTLROutputRunConfig) =
+    PaddedFTLROutputStrongScalingConfig(
         Int.(sizes), Int(tile_size), Int.(ranks), Int(output_rank), run)
 
-struct TLROutputOverlapConfig{B}
+struct PaddedFTLROutputOverlapConfig{B}
     matrix_size::Int
     tile_size::Int
     ranks::NTuple{2,Int}
     output_rank::Int
     shared_ranks::Vector{Int}
-    run::TLROutputRunConfig{B}
+    run::PaddedFTLROutputRunConfig{B}
 end
 
-TLROutputOverlapConfig(matrix_size, tile_size, ranks, output_rank, shared_ranks,
-                       run::TLROutputRunConfig) =
-    TLROutputOverlapConfig(
+PaddedFTLROutputOverlapConfig(matrix_size, tile_size, ranks, output_rank,
+                              shared_ranks,
+                              run::PaddedFTLROutputRunConfig) =
+    PaddedFTLROutputOverlapConfig(
         Int(matrix_size), Int(tile_size), Int.(ranks), Int(output_rank),
         Int.(shared_ranks), run)
 
-struct TLROutputTiming
+struct PaddedFTLROutputTiming
     tlr_tlr_ms::Float64
     dense_compress_ms::Float64
     dense_dense_ms::Float64
@@ -85,7 +87,7 @@ struct TLROutputTiming
     dense_compress_rel_fro_error::Float64
 end
 
-struct TLROutputMetrics
+struct PaddedFTLROutputMetrics
     dense_gflops::Float64
     tlr_tlr_gflops::Float64
     dense_compress_gflops::Float64
@@ -95,7 +97,7 @@ struct TLROutputMetrics
     dense_compress_efficiency::Float64
 end
 
-struct TLROutputResult
+struct PaddedFTLROutputResult
     experiment::Symbol
     precision::Symbol
     dtype::DataType
@@ -107,21 +109,25 @@ struct TLROutputResult
     rank_B::Int
     output_rank::Int
     shared_rank::Int
-    timing::TLROutputTiming
-    metrics::TLROutputMetrics
+    timing::PaddedFTLROutputTiming
+    metrics::PaddedFTLROutputMetrics
 end
 
-tlr_output_strong_scaling(config::TLROutputStrongScalingConfig) =
-    _run_cases(:tlr_output_strong_scaling, config.sizes, config.tile_size,
-               config.ranks, config.output_rank, 0, config.run)
+padded_ftlr_output_strong_scaling(
+    config::PaddedFTLROutputStrongScalingConfig) =
+    _run_cases(:padded_ftlr_output_strong_scaling, config.sizes,
+               config.tile_size, config.ranks, config.output_rank, 0,
+               config.run)
 
-function tlr_output_overlap_sweep(config::TLROutputOverlapConfig)
-    results = TLROutputResult[]
+function padded_ftlr_output_overlap_sweep(
+    config::PaddedFTLROutputOverlapConfig)
+    results = PaddedFTLROutputResult[]
     for shared in config.shared_ranks
         0 <= shared <= min(config.ranks...) ||
             throw(ArgumentError("shared_rank must be in 0:min(ranks)"))
         append!(results, _run_cases(
-            :tlr_output_overlap_sweep, [config.matrix_size], config.tile_size,
+            :padded_ftlr_output_overlap_sweep, [config.matrix_size],
+            config.tile_size,
             config.ranks, config.output_rank, shared, config.run))
     end
     return results
@@ -136,7 +142,7 @@ function _run_cases(experiment, sizes, b, ranks, output_rank, shared_rank, run)
     run.nreps >= 1 || throw(ArgumentError("nreps must be positive"))
     run.nwarmup >= 0 || throw(ArgumentError("nwarmup must be nonnegative"))
 
-    results = TLROutputResult[]
+    results = PaddedFTLROutputResult[]
     for precision in run.precisions, (case_index, n) in enumerate(sizes)
         n % b == 0 || throw(ArgumentError("size=$n must be divisible by tile_size=$b"))
         T = precision.storage_type
@@ -205,15 +211,15 @@ function _run_cases(experiment, sizes, b, ranks, output_rank, shared_rank, run)
         dense_gflops = _gflops(dense_flops, dense_ms)
         direct_gflops = _gflops(tlr_flops, direct_ms)
         compressed_gflops = _gflops(tlr_flops, dense_compress_ms)
-        metrics = TLROutputMetrics(
+        metrics = PaddedFTLROutputMetrics(
             dense_gflops, direct_gflops, compressed_gflops,
             dense_ms / direct_ms, dense_ms / dense_compress_ms,
             direct_gflops / dense_gflops, compressed_gflops / dense_gflops)
-        push!(results, TLROutputResult(
+        push!(results, PaddedFTLROutputResult(
             experiment, precision.name, T, n, n, n, b, rA, rB, output_rank,
             shared_rank,
-            TLROutputTiming(direct_ms, dense_compress_ms, dense_ms,
-                            direct_error, compressed_error), metrics))
+            PaddedFTLROutputTiming(direct_ms, dense_compress_ms, dense_ms,
+                                   direct_error, compressed_error), metrics))
 
         A_dense = B_dense = C_reference = C_tlr = C_compressed = nothing
         _collect!(run.backend)
@@ -317,10 +323,10 @@ function _collect!(backend)
     return nothing
 end
 
-function write_tlr_output_csv(path, results)
-    header = fieldnames(TLROutputResult)[1:11]
-    timing = fieldnames(TLROutputTiming)
-    metrics = fieldnames(TLROutputMetrics)
+function write_padded_ftlr_output_csv(path, results)
+    header = fieldnames(PaddedFTLROutputResult)[1:11]
+    timing = fieldnames(PaddedFTLROutputTiming)
+    metrics = fieldnames(PaddedFTLROutputMetrics)
     open(path, "w") do io
         println(io, join((header..., timing..., metrics...), ','))
         for r in results

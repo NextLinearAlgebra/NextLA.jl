@@ -1,4 +1,4 @@
-"""Orchestrate the dense-output benchmark campaign."""
+"""Run dense-output benchmarks with padded and packed FTLR operands."""
 
 using CUDA
 
@@ -17,17 +17,16 @@ using .StrongScalingExperiment
 using .RankSweepExperiment
 using .TileSizeSweepExperiment
 using .MatrixShapeSweepExperiment
-using .DenseStrongScaling
-using .DenseRankSweep
-using .DenseTileSizeSweep
-using .DenseMatrixShapeSweep
+using .DenseOutputStrongScaling
+using .DenseOutputRankSweep
+using .DenseOutputTileSizeSweep
+using .DenseOutputMatrixShapeSweep
 
 # ── Common campaign configuration ────────────────────────────────────────────
 const PRECISIONS = (
-    PrecisionConfig(:fp16_full, Float16, GEMMCompute{Float16}()),
+    PrecisionConfig(:fp16_fp32, Float16, GEMMCompute{Float32}()),
     PrecisionConfig(:bf16_fp32, Core.BFloat16, GEMMCompute{Float32}()),
     PrecisionConfig(:fp32_tf32, Float32, TF32()),
-    PrecisionConfig(:fp32_full, Float32, GEMMCompute{Float32}()),
 )
 const NWARMUP = 1
 const NREPS = 3
@@ -47,10 +46,14 @@ const RUN = RunConfig(PRECISIONS, ROWS_PER_RUN, NREPS, NWARMUP, SEED, BACKEND;
 
 function main()
     mkpath(OUTPUT_DIR)
-    write_dense_csv(joinpath(OUTPUT_DIR, "strong_scaling.csv"), DenseStrongScaling.run(RUN))
-    write_dense_csv(joinpath(OUTPUT_DIR, "rank_sweep.csv"), DenseRankSweep.run(RUN))
-    write_dense_csv(joinpath(OUTPUT_DIR, "tile_size_sweep.csv"), DenseTileSizeSweep.run(RUN))
-    write_dense_csv(joinpath(OUTPUT_DIR, "matrix_shape_sweep.csv"), DenseMatrixShapeSweep.run(RUN))
+    write_dense_csv(joinpath(OUTPUT_DIR, "strong_scaling.csv"),
+                    DenseOutputStrongScaling.run(RUN))
+    write_dense_csv(joinpath(OUTPUT_DIR, "rank_sweep.csv"),
+                    DenseOutputRankSweep.run(RUN))
+    write_dense_csv(joinpath(OUTPUT_DIR, "tile_size_sweep.csv"),
+                    DenseOutputTileSizeSweep.run(RUN))
+    write_dense_csv(joinpath(OUTPUT_DIR, "matrix_shape_sweep.csv"),
+                    DenseOutputMatrixShapeSweep.run(RUN))
     nothing
 end
 

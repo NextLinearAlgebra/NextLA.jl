@@ -1,11 +1,10 @@
-module DenseMatrixShapeSweep
+module DenseOutputStrongScaling
 using Main.DenseGemmCommon
-using Main.MatrixShapeSweepExperiment
+using Main.StrongScalingExperiment
 
-const BASE_SIZE = 16384
+const SIZES = [1024, 2048, 4096, 8192, 16384, 32768]
 const TILE_SIZE = 512
-const RANK = 64
-const RATIOS = [(1, 1, 1), (4, 1, 1), (1, 4, 1), (1, 1, 4), (1, 0.25, 1)]
+const RANKS = (64, 64)
 const CASES = [
     MatrixCase(:padded_constant, :padded, :constant, 64, 64),
     MatrixCase(:compressed_constant, :compressed, :constant, 64, 64),
@@ -13,6 +12,6 @@ const CASES = [
     MatrixCase(:compressed_skewed, :compressed, :skewed, 16, 64),
 ]
 
-run(run_config) = matrix_shape_sweep(MatrixShapeSweepConfig(
-    BASE_SIZE, TILE_SIZE, RANK, RATIOS, CASES, run_config))
+run(run_config) = strong_scaling(StrongScalingConfig(
+    SIZES, TILE_SIZE, RANKS, CASES, run_config))
 end

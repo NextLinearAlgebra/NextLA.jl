@@ -1,9 +1,8 @@
 """Run every Julia benchmark campaign in a fresh process."""
 
 const RUNNERS = (
-    joinpath(@__DIR__, "dense", "run_experiments.jl"),
-    joinpath(@__DIR__, "PackedFTLR", "run_experiments.jl"),
-    joinpath(@__DIR__, "tlr_output", "run_experiments.jl"),
+    joinpath(@__DIR__, "dense_output", "run_experiments.jl"),
+    joinpath(@__DIR__, "padded_ftlr_output", "run_experiments.jl"),
 )
 
 function main()
