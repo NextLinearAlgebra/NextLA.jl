@@ -14,6 +14,27 @@ function _compressed_ftlr_to_backend(A::NextLA.CompressedFTLRMatrix, AT)
     return B
 end
 
+@testset "dense × compressed aligned row-run sizing" begin
+    height = _TLRM._dense_compressed_row_run_height
+    @test height(25 * 10, 10, 100, Float16) == 24
+    @test height(25 * 10, 10, 100, Float32) == 24
+    @test height(25 * 10, 10, 100, Float64) == 24
+    @test height(8 * 10, 10, 100, Float16) == 8
+    @test height(7 * 10, 10, 100, Float16) == 7
+    @test height(23 * 10, 10, 23, Float16) == 23
+    @test height(10, 10, 100, Float16) == 1
+    @test_throws ArgumentError height(100, 0, 100, Float16)
+    @test_throws ArgumentError height(100, 10, 0, Float16)
+
+    for (T, quantum) in ((Float16, 8), (Float32, 4), (Float64, 2)),
+        capacity in quantum:40
+        selected = height(capacity * 3, 3, 100, T)
+        @test selected % quantum == 0
+        @test selected <= capacity
+        @test selected + quantum > capacity
+    end
+end
+
 @testset "CompressedFTLR CUDA dense GEMM with tails" begin
     ranksA = Int[2 1 1; 1 2 1; 1 1 1]
     ranksB = Int[1 2 1; 2 1 1; 1 1 1]
@@ -118,6 +139,7 @@ end
                 analysis = NextLA.analyze_compressed_gemm(
                     C, G, X; workspace,
                     transA=trans_compressed, transB=trans_dense)
+                @test !analysis.has_fallback
                 _TLRM.gemm!(
                     C, G, X; workspace, alpha=1.25f0, beta=-0.5f0,
                     transA=trans_compressed, transB=trans_dense, analysis)
@@ -127,6 +149,7 @@ end
                 analysis = NextLA.analyze_compressed_gemm(
                     C, X, G; workspace,
                     transA=trans_dense, transB=trans_compressed)
+                @test !analysis.has_fallback
                 _TLRM.gemm!(
                     C, X, G; workspace, alpha=1.25f0, beta=-0.5f0,
                     transA=trans_dense, transB=trans_compressed, analysis)
