@@ -19,6 +19,7 @@ mutable struct CompressedMixedGemmAnalysis{CT,AT,BT,WT,ModeT}
     execution_ranks::Vector{Int}
     workspace_bytes::Int
     runs::Vector{PreparedCompressedMixedRun}
+    has_fallback::Bool
     closed::Bool
 end
 
@@ -34,6 +35,24 @@ end
         throw(ArgumentError(
             "CompressedFTLR BF16 grouped GEMMEx requires an NVIDIA SM80 or newer device"))
     return nothing
+end
+
+"""
+Choose the largest row-run height that fits the workspace and keeps every
+noninitial dense row origin 16-byte aligned.  A short final run is safe because
+its origin is aligned by the preceding full runs.  If the workspace cannot hold
+one alignment quantum, preserve the low-workspace contract and let the grouped
+adapter route unsafe tasks through ordinary GEMM.
+"""
+@inline function _dense_compressed_row_run_height(
+    budget_elements::Int, total_rank::Int, rows::Int, ::Type{T}) where {T}
+    total_rank > 0 || throw(ArgumentError("total rank must be positive"))
+    rows > 0 || throw(ArgumentError("row count must be positive"))
+    height = clamp(fld(budget_elements, total_rank), 1, rows)
+    height == rows && return height
+    alignment_rows = 16 ÷ gcd(16, sizeof(T))
+    height < alignment_rows && return height
+    return fld(height, alignment_rows) * alignment_rows
 end
 
 function _compressed_col_rank_plan(B)
@@ -106,7 +125,8 @@ function _dense_compressed_prepared_runs(C, A, B, budget, mode, arena)
         "dense × compressed symbolic analysis requires at least " *
         "$(total_rank * sizeof(T)) workspace bytes for one fused row"))
     m = size(A, 1)
-    height = clamp(fld(budget_elements, total_rank), 1, m)
+    height = _dense_compressed_row_run_height(
+        budget_elements, total_rank, m, T)
     _arena_reset!(arena)
     work = _workspace_array!(arena, get_backend(B), T, height, total_rank)
     qk, qn = grid_size(B)
@@ -199,7 +219,10 @@ function _new_compressed_mixed_analysis(
     analysis = CompressedMixedGemmAnalysis(
         C, A, B, workspace, transA, transB, mode, side,
         Int.(ranks(compressed)), Int.(execution_ranks(compressed)),
-        sizeof(workspace), runs, false)
+        sizeof(workspace), runs,
+        any(run -> run.stage1 isa PreparedGroupedGemmBundle ||
+                   run.stage2 isa PreparedGroupedGemmBundle, runs),
+        false)
     finalizer(analysis) do object
         try
             _destroy_compressed_mixed_analysis!(object)
@@ -255,6 +278,19 @@ function analyze_compressed_gemm(
         mode, :left, A, runs)
 end
 
+function _execute_compressed_mixed_runs!(
+    analysis::CompressedMixedGemmAnalysis, C, alpha, beta, backend, manage_pointer_mode)
+    for run in analysis.runs
+        @inbounds for (rows, cols) in run.scale_targets
+            _scale_output!(view(C, rows, cols), beta)
+        end
+        _submit_analysis_stage(run.stage1, backend, manage_pointer_mode)
+        _submit_analysis_stage(
+            run.stage2, backend, manage_pointer_mode, alpha, beta)
+    end
+    return C
+end
+
 function _execute_compressed_mixed_analysis!(
     analysis::CompressedMixedGemmAnalysis, C, A, B, workspace,
     alpha, beta, transA, transB, mode)
@@ -273,14 +309,14 @@ function _execute_compressed_mixed_analysis!(
         Int.(execution_ranks(compressed)) == analysis.execution_ranks ||
         throw(ArgumentError("compressed operand ranks changed after analysis"))
     backend = get_backend(compressed)
-    for run in analysis.runs
-        @inbounds for (rows, cols) in run.scale_targets
-            _scale_output!(view(C, rows, cols), beta)
-        end
-        _submit_analysis_stage(run.stage1, backend, true)
-        _submit_analysis_stage(run.stage2, backend, true, alpha, beta)
+    if analysis.has_fallback
+        return _execute_compressed_mixed_runs!(
+            analysis, C, alpha, beta, backend, true)
     end
-    return C
+    return _with_grouped_host_pointer_mode(backend) do
+        _execute_compressed_mixed_runs!(
+            analysis, C, alpha, beta, backend, false)
+    end
 end
 
 function _dense_compressed_grouped!(
@@ -298,7 +334,8 @@ function _dense_compressed_grouped!(
         C, A, B, alpha, beta, budget, mode, arena)
 
     m = size(A, 1)
-    height = clamp(fld(budget_elements, total_rank), 1, m)
+    height = _dense_compressed_row_run_height(
+        budget_elements, total_rank, m, T)
     _arena_reset!(arena)
     work = _workspace_array!(arena, get_backend(B), T, height, total_rank)
     qk, qn = grid_size(B)

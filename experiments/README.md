@@ -18,7 +18,7 @@ reusable symbolic analysis and no experimental pipeline. The default grid is:
 - one warmup and three measured repetitions.
 
 Results are appended to
-`experiments/results/compressed_dense.csv`. Completed case
+`experiments/results/compressed_dense_v2.csv`. Completed case
 IDs are skipped when restarting. Environment variables prefixed
 `NEXTLA_DENSE_` can override the defaults; see
 `compressed_dense.jl`.
@@ -34,12 +34,16 @@ execution with reused two-stage grouped-GEMM descriptors:
 julia --project=experiments experiments/dense_compressed.jl
 ```
 
+Results are appended to `experiments/results/dense_compressed_v2.csv`.
+
 The scheduler sweep uses `N = 2^11,…,2^15`, `b=N/8`, `r=b/8`, and rows/run
 from one through eight:
 
 ```bash
 julia --project=experiments experiments/rows_per_run.jl
 ```
+
+Results are appended to `experiments/results/rows_per_run_v2.csv`.
 
 Run all three sequentially with:
 

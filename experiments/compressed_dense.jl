@@ -23,7 +23,7 @@ const REPS = parse(Int, get(ENV, "NEXTLA_DENSE_REPS", "3"))
 const ANALYSIS_REPS = parse(Int, get(ENV, "NEXTLA_DENSE_ANALYSIS_REPS", "3"))
 const ROWS_PER_RUN = parse(Int, get(ENV, "NEXTLA_DENSE_ROWS", "4"))
 const OUTPUT = get(ENV, "NEXTLA_DENSE_OUTPUT",
-    joinpath(@__DIR__, "results", "compressed_dense.csv"))
+    joinpath(@__DIR__, "results", "compressed_dense_v2.csv"))
 const CASE_FILTER = Regex(get(ENV, "NEXTLA_DENSE_FILTER", ".*"))
 
 const PRECISIONS = (
@@ -59,7 +59,7 @@ end
 function dense_timing(N, T, compute)
     A = CUDA.randn(T, N, N); B = CUDA.randn(T, N, N); C = CUDA.zeros(T, N, N)
     timing = samples_ms(C, T) do
-        NextLA.precision_gemm!('N', 'N', one(T), A, B, zero(T), C, compute)
+        NextLA.precision_gemm!('N', 'N', one(T), A, B, one(T), C, compute)
     end
     A = B = C = nothing
     GC.gc(true); CUDA.reclaim()
@@ -140,12 +140,12 @@ function benchmark_case(N, b, profile, precision, dense)
     workspace = NextLA.DenseGemmWorkspace(A, B; bytes=workspace_bytes)
 
     transient = samples_ms(C, T) do
-        TLRM.gemm!(C, A, B; workspace, alpha=one(T), beta=zero(T), compute)
+        TLRM.gemm!(C, A, B; workspace, alpha=one(T), beta=one(T), compute)
     end
 
     analysis, analysis_timing = time_analysis(C, A, B, workspace, compute)
     analyzed = samples_ms(C, T) do
-        TLRM.gemm!(C, A, B; workspace, alpha=one(T), beta=zero(T), compute, analysis)
+        TLRM.gemm!(C, A, B; workspace, alpha=one(T), beta=one(T), compute, analysis)
     end
 
     executed = DenseGemmCommon._tlr_tlr_executed_flops(A, B, workspace_bytes)
