@@ -12,8 +12,14 @@ using .PaddedFTLROutputExperiment
         block=2, tol=1e-8, rel=true, show_progress=false)
 
     strong = PaddedFTLROutputStrongScalingConfig([8], 4, (1, 1), 2, run)
-    strong_results = padded_ftlr_output_strong_scaling(strong)
+    csv_path = joinpath(mktempdir(), "strong_scaling.csv")
+    strong_results = padded_ftlr_output_strong_scaling(
+        strong; output_path=csv_path)
     @test length(strong_results) == 1
+    @test length(readlines(csv_path)) == 2
+    @test isempty(padded_ftlr_output_strong_scaling(
+        strong; output_path=csv_path))
+    @test length(readlines(csv_path)) == 2
     result = only(strong_results)
     @test result.experiment == :padded_ftlr_output_strong_scaling
     @test result.timing.tlr_tlr_ms > 0

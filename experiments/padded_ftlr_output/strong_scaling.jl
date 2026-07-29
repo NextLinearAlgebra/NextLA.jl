@@ -7,7 +7,8 @@ const TILE_SIZE = 512
 const RANKS = (64, 128)
 const OUTPUT_RANK = 128
 
-run(run_config) = padded_ftlr_output_strong_scaling(PaddedFTLROutputStrongScalingConfig(
-    SIZES, TILE_SIZE, RANKS, OUTPUT_RANK, run_config))
+run(run_config, output_path) = padded_ftlr_output_strong_scaling(
+    PaddedFTLROutputStrongScalingConfig(
+        SIZES, TILE_SIZE, RANKS, OUTPUT_RANK, run_config); output_path)
 
 end

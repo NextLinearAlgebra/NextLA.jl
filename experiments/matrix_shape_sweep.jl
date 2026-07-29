@@ -19,7 +19,7 @@ function MatrixShapeSweepConfig(base_size, tile_size, rank, ratios, cases, run::
         [Tuple(Float64.(x)) for x in ratios], MatrixCase[cases...], run)
 end
 
-function matrix_shape_sweep(config::MatrixShapeSweepConfig)
+function matrix_shape_sweep(config::MatrixShapeSweepConfig; output_path=nothing)
     shapes = NTuple{3,Int}[]
     for ratio in config.ratios
         length(ratio) == 3 || throw(ArgumentError("shape ratios must have length three"))
@@ -34,7 +34,8 @@ function matrix_shape_sweep(config::MatrixShapeSweepConfig)
         for c in config.cases
     ]
     run_cases(:matrix_shape_sweep, shapes, config.tile_size,
-              (config.rank, config.rank), cases, config.run; square=false)
+              (config.rank, config.rank), cases, config.run;
+              square=false, output_path)
 end
 
 end

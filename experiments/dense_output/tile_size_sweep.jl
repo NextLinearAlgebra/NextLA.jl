@@ -9,6 +9,6 @@ const CASES = [
     MatrixCase(:compressed_constant, :compressed, :constant, nothing, nothing),
 ]
 
-run(run_config) = tile_size_sweep(TileSizeSweepConfig(
-    MATRIX_SIZE, TILE_SIZES, RANK_TILE_RATIO, CASES, run_config))
+run(run_config, output_path) = tile_size_sweep(TileSizeSweepConfig(
+    MATRIX_SIZE, TILE_SIZES, RANK_TILE_RATIO, CASES, run_config); output_path)
 end

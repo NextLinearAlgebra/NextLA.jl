@@ -26,7 +26,7 @@ TileSizeSweepConfig(matrix_size, tile_sizes, rank_tile_ratio::Real, cases,
                     run::RunConfig) = TileSizeSweepConfig(
     matrix_size, tile_sizes, (rank_tile_ratio, rank_tile_ratio), cases, run)
 
-function tile_size_sweep(config::TileSizeSweepConfig)
+function tile_size_sweep(config::TileSizeSweepConfig; output_path=nothing)
     results = GemmResult[]
     for tile_size in config.tile_sizes
         rank_A = round(Int, config.rank_tile_ratios[1] * tile_size)
@@ -43,7 +43,8 @@ function tile_size_sweep(config::TileSizeSweepConfig)
             for c in config.cases
         ]
         append!(results, run_cases(:tile_size_sweep, [shape], tile_size,
-                                   (rank_A, rank_B), cases, config.run; square=true))
+                                   (rank_A, rank_B), cases, config.run;
+                                   square=true, output_path))
     end
     results
 end

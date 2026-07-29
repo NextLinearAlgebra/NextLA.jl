@@ -9,6 +9,6 @@ const CASES = [
     MatrixCase(:compressed_constant, :compressed, :constant, nothing, nothing),
 ]
 
-run(run_config) = rank_sweep(RankSweepConfig(
-    MATRIX_SIZE, TILE_SIZE, RANKS, CASES, run_config))
+run(run_config, output_path) = rank_sweep(RankSweepConfig(
+    MATRIX_SIZE, TILE_SIZE, RANKS, CASES, run_config); output_path)
 end

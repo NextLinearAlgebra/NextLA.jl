@@ -32,12 +32,10 @@ const RUN = PaddedFTLROutputRunConfig(
 
 function main()
     mkpath(OUTPUT_DIR)
-    write_padded_ftlr_output_csv(
-        joinpath(OUTPUT_DIR, "strong_scaling.csv"),
-        PaddedFTLROutputStrongScaling.run(RUN))
-    write_padded_ftlr_output_csv(
-        joinpath(OUTPUT_DIR, "overlap_sweep.csv"),
-        PaddedFTLROutputOverlapSweep.run(RUN))
+    PaddedFTLROutputStrongScaling.run(
+        RUN, joinpath(OUTPUT_DIR, "strong_scaling.csv"))
+    PaddedFTLROutputOverlapSweep.run(
+        RUN, joinpath(OUTPUT_DIR, "overlap_sweep.csv"))
     return nothing
 end
 

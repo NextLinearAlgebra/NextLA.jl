@@ -12,6 +12,6 @@ const CASES = [
     MatrixCase(:compressed_skewed, :compressed, :skewed, 16, 64),
 ]
 
-run(run_config) = strong_scaling(StrongScalingConfig(
-    SIZES, TILE_SIZE, RANKS, CASES, run_config))
+run(run_config, output_path) = strong_scaling(StrongScalingConfig(
+    SIZES, TILE_SIZE, RANKS, CASES, run_config); output_path)
 end

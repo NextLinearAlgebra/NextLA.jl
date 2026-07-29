@@ -19,7 +19,8 @@ The all-campaign runner starts fresh Julia processes for:
 Each experiment's sweep parameters are at the top of its own file. Shared
 precision, repetition, seed, workspace, and output settings are at the top of
 the corresponding `run_experiments.jl`. Results are written below that
-campaign's `results/` directory.
+campaign's `results/` directory after every completed configuration. Restarting
+a campaign preserves those files and skips configurations already recorded.
 
 Dense-output correctness checks retain a dense reference on the GPU. Set
 `CHECK_RESULTS = false` in a campaign runner only when the largest case cannot

@@ -24,7 +24,8 @@ include(joinpath(@__DIR__, "matrix_generation.jl"))
 using .ExperimentMatrixGeneration: generate_ftlr_operands
 
 export PrecisionConfig, RunConfig, MatrixCase, GemmTiming, GemmMetrics,
-       GemmResult, run_cases, write_dense_csv, GEMMCompute, TF32
+       GemmResult, run_cases, write_dense_csv, append_dense_csv,
+       GEMMCompute, TF32
 
 struct PrecisionConfig
     name::Symbol
@@ -118,23 +119,18 @@ struct GemmResult
 end
 
 function run_cases(experiment::Symbol, shapes, tile_size::Int, ranks::NTuple{2,Int},
-                   cases, run::RunConfig; square=false)
+                   cases, run::RunConfig; square=false, output_path=nothing)
     b = tile_size
     b > 0 || throw(ArgumentError("tile_size must be positive"))
     run.rows_per_run >= 1 || throw(ArgumentError("rows_per_run must be positive"))
     run.nreps >= 1 || throw(ArgumentError("nreps must be positive"))
     run.nwarmup >= 0 || throw(ArgumentError("nwarmup must be nonnegative"))
     results = GemmResult[]
+    completed = _dense_completed_keys(output_path)
 
     for case in cases, precision in run.precisions, (shape_index, shape) in enumerate(shapes)
         T = precision.storage_type
         m, k, n = shape
-        if run.show_progress
-            println("[$experiment] case=$(case.name) precision=$(precision.name) " *
-                    "size=($m,$k,$n) tile=$b ranks=$(ranks)")
-            println("  generating orthonormal factors on $(_backend_name(run.backend))")
-            flush(stdout)
-        end
         (!square || m == k == n) || throw(ArgumentError("square experiment received $shape"))
         m % b == 0 && k % b == 0 && n % b == 0 ||
             throw(ArgumentError("$shape must be divisible by tile_size=$b"))
@@ -142,6 +138,19 @@ function run_cases(experiment::Symbol, shapes, tile_size::Int, ranks::NTuple{2,I
         hi = isnothing(case.max_rank) ? max(ranks...) : case.max_rank
         lo >= 0 && lo <= hi <= b || throw(ArgumentError("invalid rank range in $(case.name)"))
         ranks[1] < b && ranks[2] < b || throw(ArgumentError("ranks must be smaller than tile_size"))
+        key = _dense_result_key(experiment, case, precision, m, k, n, b,
+                                ranks, lo, hi)
+        if key in completed
+            _announce_measurement(run, "skipping completed case=$(case.name) " *
+                "precision=$(precision.name) size=($m,$k,$n)")
+            continue
+        end
+        if run.show_progress
+            println("[$experiment] case=$(case.name) precision=$(precision.name) " *
+                    "size=($m,$k,$n) tile=$b ranks=$(ranks)")
+            println("  generating orthonormal factors on $(_backend_name(run.backend))")
+            flush(stdout)
+        end
 
         A_tlr, B_tlr = generate_ftlr_operands(
             m, k, n, b, ranks, T; seed=run.seed + shape_index,
@@ -221,9 +230,12 @@ function run_cases(experiment::Symbol, shapes, tile_size::Int, ranks::NTuple{2,I
             tlr_tlr_gflops / dense_gflops,
             tlr_dense_error, dense_tlr_error, tlr_tlr_error, dense_dense_error)
 
-        push!(results, GemmResult(experiment, case.name, precision.name, T, m, k, n, b,
+        result = GemmResult(experiment, case.name, precision.name, T, m, k, n, b,
             ranks[1], ranks[2], case.format, case.distribution, lo, hi,
-            GemmTiming(tlr_dense_ms, dense_tlr_ms, tlr_tlr_ms, dense_dense_ms), metrics))
+            GemmTiming(tlr_dense_ms, dense_tlr_ms, tlr_tlr_ms, dense_dense_ms), metrics)
+        push!(results, result)
+        isnothing(output_path) || append_dense_csv(output_path, result)
+        push!(completed, key)
         A_dense = nothing; B_dense = nothing; C = nothing; reference = nothing
         _collect_large_temporaries!(run.backend)
     end
@@ -428,38 +440,83 @@ function _collect_large_temporaries!(backend)
     return nothing
 end
 
+const _DENSE_CSV_HEADER = [
+    "experiment", "case", "precision", "dtype", "m", "k", "n", "tile_size",
+    "rank_A", "rank_B", "format", "rank_distribution", "min_rank", "max_rank",
+    "tlr_dense_ms", "dense_tlr_ms", "tlr_tlr_ms", "dense_dense_ms",
+    "dense_gflops", "tlr_dense_gflops", "dense_tlr_gflops", "tlr_tlr_gflops",
+    "tlr_dense_speedup", "dense_tlr_speedup", "tlr_tlr_speedup",
+    "tlr_dense_efficiency", "dense_tlr_efficiency", "tlr_tlr_efficiency",
+    "tlr_dense_rel_error", "dense_tlr_rel_error", "tlr_tlr_rel_error",
+    "dense_dense_rel_error",
+]
+
+_csv_value(x) = begin
+    s = string(x)
+    occursin(',', s) || occursin('"', s) ?
+        "\"" * replace(s, '"' => "\"\"") * "\"" : s
+end
+
+_dense_row(r::GemmResult) =
+    (r.experiment, r.case, r.precision, r.dtype, r.m, r.k, r.n, r.tile_size,
+     r.rank_A, r.rank_B, r.format, r.rank_distribution, r.min_rank, r.max_rank,
+     r.timing.tlr_dense_ms, r.timing.dense_tlr_ms, r.timing.tlr_tlr_ms,
+     r.timing.dense_dense_ms, r.metrics.dense_gflops,
+     r.metrics.tlr_dense_gflops, r.metrics.dense_tlr_gflops,
+     r.metrics.tlr_tlr_gflops, r.metrics.tlr_dense_speedup,
+     r.metrics.dense_tlr_speedup, r.metrics.tlr_tlr_speedup,
+     r.metrics.tlr_dense_efficiency, r.metrics.dense_tlr_efficiency,
+     r.metrics.tlr_tlr_efficiency, r.metrics.tlr_dense_rel_error,
+     r.metrics.dense_tlr_rel_error, r.metrics.tlr_tlr_rel_error,
+     r.metrics.dense_dense_rel_error)
+
 function write_dense_csv(path, results)
-    header = ["experiment", "case", "precision", "dtype", "m", "k", "n", "tile_size",
-              "rank_A", "rank_B", "format", "rank_distribution", "min_rank",
-              "max_rank", "tlr_dense_ms", "dense_tlr_ms", "tlr_tlr_ms",
-              "dense_dense_ms", "dense_gflops", "tlr_dense_gflops",
-              "dense_tlr_gflops", "tlr_tlr_gflops", "tlr_dense_speedup",
-              "dense_tlr_speedup", "tlr_tlr_speedup", "tlr_dense_efficiency",
-              "dense_tlr_efficiency", "tlr_tlr_efficiency", "tlr_dense_rel_error",
-              "dense_tlr_rel_error", "tlr_tlr_rel_error", "dense_dense_rel_error"]
-    csv_value(x) = begin
-        s = string(x)
-        occursin(',', s) || occursin('"', s) ?
-            "\"" * replace(s, '"' => "\"\"") * "\"" : s
-    end
     open(path, "w") do io
-        println(io, join(header, ','))
+        println(io, join(_DENSE_CSV_HEADER, ','))
         for r in results
-            row = (r.experiment, r.case, r.precision, r.dtype, r.m, r.k, r.n, r.tile_size,
-                   r.rank_A, r.rank_B, r.format, r.rank_distribution, r.min_rank,
-                   r.max_rank, r.timing.tlr_dense_ms, r.timing.dense_tlr_ms,
-                   r.timing.tlr_tlr_ms, r.timing.dense_dense_ms,
-                   r.metrics.dense_gflops, r.metrics.tlr_dense_gflops,
-                   r.metrics.dense_tlr_gflops, r.metrics.tlr_tlr_gflops,
-                   r.metrics.tlr_dense_speedup, r.metrics.dense_tlr_speedup,
-                   r.metrics.tlr_tlr_speedup, r.metrics.tlr_dense_efficiency,
-                   r.metrics.dense_tlr_efficiency, r.metrics.tlr_tlr_efficiency,
-                   r.metrics.tlr_dense_rel_error, r.metrics.dense_tlr_rel_error,
-                   r.metrics.tlr_tlr_rel_error, r.metrics.dense_dense_rel_error)
-            println(io, join(csv_value.(row), ','))
+            println(io, join(_csv_value.(_dense_row(r)), ','))
         end
     end
     path
+end
+
+function append_dense_csv(path, result::GemmResult)
+    new_file = _prepare_csv_append(path)
+    open(path, "a") do io
+        new_file && println(io, join(_DENSE_CSV_HEADER, ','))
+        println(io, join(_csv_value.(_dense_row(result)), ','))
+        flush(io)
+    end
+    return path
+end
+
+function _prepare_csv_append(path)
+    mkpath(dirname(path))
+    new_file = !isfile(path) || filesize(path) == 0
+    if !new_file
+        open(path, "r+") do io
+            seekend(io)
+            seek(io, position(io) - 1)
+            read(io, UInt8) == UInt8('\n') || (seekend(io); println(io))
+        end
+    end
+    return new_file
+end
+
+_dense_result_key(experiment, case, precision, m, k, n, b, ranks, lo, hi) =
+    string.((experiment, case.name, precision.name, precision.storage_type,
+             m, k, n, b, ranks[1], ranks[2], case.format,
+             case.distribution, lo, hi))
+
+function _dense_completed_keys(path)
+    keys = Set{NTuple{14,String}}()
+    (isnothing(path) || !isfile(path)) && return keys
+    for line in Iterators.drop(eachline(path), 1)
+        fields = split(line, ',')
+        length(fields) == length(_DENSE_CSV_HEADER) || continue
+        push!(keys, Tuple(fields[1:14]))
+    end
+    return keys
 end
 
 end

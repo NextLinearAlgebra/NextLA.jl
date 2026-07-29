@@ -8,7 +8,8 @@ using NextLA: DenseGemmWorkspace, TLRGemmWorkspace, GEMMCompute,
               alloc_workspace, compress!, precision_gemm!, uncompress!,
               tlr_gemm_maximum_workspace_bytes
 using NextLA.TLRmodule: gemm!, get_factors, grid_size, maxrank, tile_size
-using Main.DenseGemmCommon: PrecisionConfig, _row_run_workspace_bytes
+using Main.DenseGemmCommon: PrecisionConfig, _row_run_workspace_bytes,
+                            _prepare_csv_append
 using Main.DenseGemmCommon.ExperimentMatrixGeneration:
     allocate_tlr_matrix, generate_tlr_operands
 
@@ -23,7 +24,8 @@ export PaddedFTLROutputRunConfig, PaddedFTLROutputStrongScalingConfig,
        PaddedFTLROutputOverlapConfig, PaddedFTLROutputTiming,
        PaddedFTLROutputMetrics, PaddedFTLROutputResult,
        padded_ftlr_output_strong_scaling,
-       padded_ftlr_output_overlap_sweep, write_padded_ftlr_output_csv
+       padded_ftlr_output_overlap_sweep, write_padded_ftlr_output_csv,
+       append_padded_ftlr_output_csv
 
 struct PaddedFTLROutputRunConfig{B}
     precisions::Vector{PrecisionConfig}
@@ -114,13 +116,13 @@ struct PaddedFTLROutputResult
 end
 
 padded_ftlr_output_strong_scaling(
-    config::PaddedFTLROutputStrongScalingConfig) =
+    config::PaddedFTLROutputStrongScalingConfig; output_path=nothing) =
     _run_cases(:padded_ftlr_output_strong_scaling, config.sizes,
                config.tile_size, config.ranks, config.output_rank, 0,
-               config.run)
+               config.run; output_path)
 
 function padded_ftlr_output_overlap_sweep(
-    config::PaddedFTLROutputOverlapConfig)
+    config::PaddedFTLROutputOverlapConfig; output_path=nothing)
     results = PaddedFTLROutputResult[]
     for shared in config.shared_ranks
         0 <= shared <= min(config.ranks...) ||
@@ -128,12 +130,13 @@ function padded_ftlr_output_overlap_sweep(
         append!(results, _run_cases(
             :padded_ftlr_output_overlap_sweep, [config.matrix_size],
             config.tile_size,
-            config.ranks, config.output_rank, shared, config.run))
+            config.ranks, config.output_rank, shared, config.run; output_path))
     end
     return results
 end
 
-function _run_cases(experiment, sizes, b, ranks, output_rank, shared_rank, run)
+function _run_cases(experiment, sizes, b, ranks, output_rank, shared_rank, run;
+                    output_path=nothing)
     rA, rB = ranks
     b > 0 && 0 < rA < b && 0 < rB < b && 0 < output_rank < b ||
         throw(ArgumentError("tile size and ranks must satisfy 0 < rank < tile_size"))
@@ -143,9 +146,16 @@ function _run_cases(experiment, sizes, b, ranks, output_rank, shared_rank, run)
     run.nwarmup >= 0 || throw(ArgumentError("nwarmup must be nonnegative"))
 
     results = PaddedFTLROutputResult[]
+    completed = _padded_output_completed_keys(output_path)
     for precision in run.precisions, (case_index, n) in enumerate(sizes)
         n % b == 0 || throw(ArgumentError("size=$n must be divisible by tile_size=$b"))
         T = precision.storage_type
+        key = string.((experiment, precision.name, T, n, n, n, b, rA, rB,
+                       output_rank, shared_rank))
+        if key in completed
+            _announce(run, "  skipping completed precision=$(precision.name) size=$n")
+            continue
+        end
         seed = run.seed + case_index + 1000shared_rank
         _announce(run, "[$experiment] precision=$(precision.name) size=$n " *
                        "tile=$b ranks=$ranks output_rank=$output_rank shared=$shared_rank")
@@ -215,11 +225,14 @@ function _run_cases(experiment, sizes, b, ranks, output_rank, shared_rank, run)
             dense_gflops, direct_gflops, compressed_gflops,
             dense_ms / direct_ms, dense_ms / dense_compress_ms,
             direct_gflops / dense_gflops, compressed_gflops / dense_gflops)
-        push!(results, PaddedFTLROutputResult(
+        result = PaddedFTLROutputResult(
             experiment, precision.name, T, n, n, n, b, rA, rB, output_rank,
             shared_rank,
             PaddedFTLROutputTiming(direct_ms, dense_compress_ms, dense_ms,
-                                   direct_error, compressed_error), metrics))
+                                   direct_error, compressed_error), metrics)
+        push!(results, result)
+        isnothing(output_path) || append_padded_ftlr_output_csv(output_path, result)
+        push!(completed, key)
 
         A_dense = B_dense = C_reference = C_tlr = C_compressed = nothing
         _collect!(run.backend)
@@ -337,6 +350,35 @@ function write_padded_ftlr_output_csv(path, results)
         end
     end
     return path
+end
+
+function append_padded_ftlr_output_csv(path, result::PaddedFTLROutputResult)
+    header = fieldnames(PaddedFTLROutputResult)[1:11]
+    timing = fieldnames(PaddedFTLROutputTiming)
+    metrics = fieldnames(PaddedFTLROutputMetrics)
+    row = (getfield.(Ref(result), header)...,
+           getfield.(Ref(result.timing), timing)...,
+           getfield.(Ref(result.metrics), metrics)...)
+    new_file = _prepare_csv_append(path)
+    open(path, "a") do io
+        new_file && println(io, join((header..., timing..., metrics...), ','))
+        println(io, join(row, ','))
+        flush(io)
+    end
+    return path
+end
+
+function _padded_output_completed_keys(path)
+    keys = Set{NTuple{11,String}}()
+    (isnothing(path) || !isfile(path)) && return keys
+    expected = 11 + fieldcount(PaddedFTLROutputTiming) +
+               fieldcount(PaddedFTLROutputMetrics)
+    for line in Iterators.drop(eachline(path), 1)
+        fields = split(line, ',')
+        length(fields) == expected || continue
+        push!(keys, Tuple(fields[1:11]))
+    end
+    return keys
 end
 
 end

@@ -20,9 +20,9 @@ function StrongScalingConfig(sizes, tile_size, ranks, cases, run::RunConfig)
                                MatrixCase[cases...], run)
 end
 
-function strong_scaling(config::StrongScalingConfig)
+function strong_scaling(config::StrongScalingConfig; output_path=nothing)
     run_cases(:strong_scaling, config.sizes, config.tile_size, config.ranks,
-              config.cases, config.run; square=true)
+              config.cases, config.run; square=true, output_path)
 end
 
 end

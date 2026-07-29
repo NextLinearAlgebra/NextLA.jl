@@ -17,13 +17,14 @@ RankSweepConfig(matrix_size, tile_size, ranks, cases, run::RunConfig) =
     RankSweepConfig(Int(matrix_size), Int(tile_size), Int.(ranks),
                     MatrixCase[cases...], run)
 
-function rank_sweep(config::RankSweepConfig)
+function rank_sweep(config::RankSweepConfig; output_path=nothing)
     results = GemmResult[]
     for rank in config.ranks
         rank < config.tile_size || throw(ArgumentError("rank must be smaller than tile_size"))
         shape = (config.matrix_size, config.matrix_size, config.matrix_size)
         append!(results, run_cases(:rank_sweep, [shape], config.tile_size,
-                                   (rank, rank), config.cases, config.run; square=true))
+                                   (rank, rank), config.cases, config.run;
+                                   square=true, output_path))
     end
     results
 end

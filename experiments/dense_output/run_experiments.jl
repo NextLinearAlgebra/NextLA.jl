@@ -46,14 +46,10 @@ const RUN = RunConfig(PRECISIONS, ROWS_PER_RUN, NREPS, NWARMUP, SEED, BACKEND;
 
 function main()
     mkpath(OUTPUT_DIR)
-    write_dense_csv(joinpath(OUTPUT_DIR, "strong_scaling.csv"),
-                    DenseOutputStrongScaling.run(RUN))
-    write_dense_csv(joinpath(OUTPUT_DIR, "rank_sweep.csv"),
-                    DenseOutputRankSweep.run(RUN))
-    write_dense_csv(joinpath(OUTPUT_DIR, "tile_size_sweep.csv"),
-                    DenseOutputTileSizeSweep.run(RUN))
-    write_dense_csv(joinpath(OUTPUT_DIR, "matrix_shape_sweep.csv"),
-                    DenseOutputMatrixShapeSweep.run(RUN))
+    DenseOutputStrongScaling.run(RUN, joinpath(OUTPUT_DIR, "strong_scaling.csv"))
+    DenseOutputRankSweep.run(RUN, joinpath(OUTPUT_DIR, "rank_sweep.csv"))
+    DenseOutputTileSizeSweep.run(RUN, joinpath(OUTPUT_DIR, "tile_size_sweep.csv"))
+    DenseOutputMatrixShapeSweep.run(RUN, joinpath(OUTPUT_DIR, "matrix_shape_sweep.csv"))
     nothing
 end
 

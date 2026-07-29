@@ -12,6 +12,6 @@ const CASES = [
     MatrixCase(:compressed_skewed, :compressed, :skewed, 16, 64),
 ]
 
-run(run_config) = matrix_shape_sweep(MatrixShapeSweepConfig(
-    BASE_SIZE, TILE_SIZE, RANK, RATIOS, CASES, run_config))
+run(run_config, output_path) = matrix_shape_sweep(MatrixShapeSweepConfig(
+    BASE_SIZE, TILE_SIZE, RANK, RATIOS, CASES, run_config); output_path)
 end

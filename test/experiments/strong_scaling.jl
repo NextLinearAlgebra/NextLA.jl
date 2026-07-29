@@ -19,8 +19,12 @@ using .MatrixShapeSweepExperiment
 
     cases = [MatrixCase(:padded, :padded, :constant, 2, 2)]
     strong = StrongScalingConfig([8], 4, (2, 2), cases, run)
-    results = strong_scaling(strong)
+    csv_path = joinpath(mktempdir(), "strong_scaling.csv")
+    results = strong_scaling(strong; output_path=csv_path)
     @test length(results) == 1
+    @test length(readlines(csv_path)) == 2
+    @test isempty(strong_scaling(strong; output_path=csv_path))
+    @test length(readlines(csv_path)) == 2
     @test (only(results).m, only(results).k, only(results).n) == (8, 8, 8)
     @test all(r -> r.experiment == :strong_scaling, results)
     @test all(r -> r.dtype === Float64, results)
