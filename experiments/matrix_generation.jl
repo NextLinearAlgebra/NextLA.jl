@@ -7,6 +7,13 @@ using KernelAbstractions
 using NextLA.TLRmodule: PaddedFTLRMatrix, CompressedFTLRMatrix, TileRowMajor,
                         TileColMajor, grid_size, get_factors, tile_size
 
+const _HAS_CUDA = try
+    @eval import CUDA
+    CUDA.functional()
+catch
+    false
+end
+
 export generate_tlr_operands, generate_ftlr_operands, generate_tlr_matrix
 
 """
@@ -22,8 +29,9 @@ shared across each fixed tile column.  The shared bases remain local to those
 families; there is no global basis.
 
 Factor generation is deterministic for a fixed `(seed, m, k, n, tile_size,
-ranks, T)`.  Basis construction happens on the CPU, while the returned TLR
-factors are stored on `backend`.
+ranks, T)`.  With a CUDA backend, Gaussian draws and QR orthogonalization are
+performed directly on the GPU through CUDA.jl/CUSOLVER.  The CPU path is only a
+fallback for CPU-backend tests.
 """
 function generate_tlr_operands(
     m::Integer,
@@ -83,10 +91,15 @@ function generate_ftlr_operands(
         throw(ArgumentError("unknown rank distribution: $rank_distribution"))
     rankA = _rank_grid(cld(m, b), cld(k, b), rA, lo, hi, rank_distribution, rng)
     rankB = _rank_grid(cld(k, b), cld(n, b), rB, lo, hi, rank_distribution, rng)
-    A, B = _allocate_pair(backend, T, m, k, n, b, rankA, rankB, format)
     shared <= min(minimum(rankA), minimum(rankB)) ||
         throw(ArgumentError("shared_rank exceeds a generated tile rank"))
-    _fill_factors(A, B, rng, shared)
+
+    A, B = _allocate_pair(backend, T, m, k, n, b, rankA, rankB, format)
+    if _HAS_CUDA && backend isa CUDA.CUDABackend
+        _fill_factors_gpu!(A, B, seed, shared)
+    else
+        _fill_factors(A, B, rng, shared)
+    end
     return A, B
 end
 
@@ -130,30 +143,133 @@ function _fill_factors(
     A, B,
     rng,
     shared_rank::Int,
-) where {T}
+)
+    T = eltype(A)
     mt_A, nt_A = grid_size(A)
     mt_B, nt_B = grid_size(B)
+    seed = rand(rng, UInt)
 
     shared_u = [
-        _orthonormal_basis(rng, T, tile_size(A, i, 1)[1], shared_rank)
+        _orthonormal_basis(MersenneTwister(_factor_seed(seed, 1, i, 0)), T,
+                           tile_size(A, i, 1)[1], shared_rank)
         for i in 1:mt_A
     ]
     shared_v = [
-        _orthonormal_basis(rng, T, tile_size(B, 1, j)[2], shared_rank)
+        _orthonormal_basis(MersenneTwister(_factor_seed(seed, 2, 0, j)), T,
+                           tile_size(B, 1, j)[2], shared_rank)
+        for j in 1:nt_B
+    ]
+
+    fill_A = function (i, j)
+        U, V = get_factors(A, i, j)
+        tm, tn = tile_size(A, i, j)
+        copyto!(U, _family_basis(MersenneTwister(_factor_seed(seed, 3, i, j)),
+                                 T, tm, size(U, 2), shared_u[i]))
+        copyto!(V, _orthonormal_basis(MersenneTwister(_factor_seed(seed, 4, i, j)),
+                                      T, tn, size(V, 2)))
+    end
+    fill_B = function (i, j)
+        U, V = get_factors(B, i, j)
+        tm, tn = tile_size(B, i, j)
+        copyto!(U, _orthonormal_basis(MersenneTwister(_factor_seed(seed, 5, i, j)),
+                                      T, tm, size(U, 2)))
+        copyto!(V, _family_basis(MersenneTwister(_factor_seed(seed, 6, i, j)),
+                                 T, tn, size(V, 2), shared_v[j]))
+    end
+    _foreach_tile!(mt_A, nt_A, fill_A)
+    _foreach_tile!(mt_B, nt_B, fill_B)
+    return nothing
+end
+
+function _fill_factors_gpu!(A, B, seed::Integer, shared_rank::Int)
+    CUDA.seed!(seed)
+    T = eltype(A)
+    mt_A, nt_A = grid_size(A)
+    mt_B, nt_B = grid_size(B)
+    shared_u = [
+        _orthonormal_basis_gpu(T, tile_size(A, i, 1)[1], shared_rank)
+        for i in 1:mt_A
+    ]
+    shared_v = [
+        _orthonormal_basis_gpu(T, tile_size(B, 1, j)[2], shared_rank)
         for j in 1:nt_B
     ]
 
     for i in 1:mt_A, j in 1:nt_A
         U, V = get_factors(A, i, j)
         tm, tn = tile_size(A, i, j)
-        U .= _family_basis(rng, T, tm, size(U, 2), shared_u[i])
-        V .= _orthonormal_basis(rng, T, tn, size(V, 2))
+        _store_basis!(U, _family_basis_gpu(T, tm, size(U, 2), shared_u[i]))
+        _store_basis!(V, _orthonormal_basis_gpu(T, tn, size(V, 2)))
     end
     for i in 1:mt_B, j in 1:nt_B
         U, V = get_factors(B, i, j)
         tm, tn = tile_size(B, i, j)
-        U .= _orthonormal_basis(rng, T, tm, size(U, 2))
-        V .= _family_basis(rng, T, tn, size(V, 2), shared_v[j])
+        _store_basis!(U, _orthonormal_basis_gpu(T, tm, size(U, 2)))
+        _store_basis!(V, _family_basis_gpu(T, tn, size(V, 2), shared_v[j]))
+    end
+    CUDA.synchronize()
+    return nothing
+end
+
+function _orthonormal_basis_gpu(::Type{T}, dimension::Int, rank::Int) where {T}
+    S = _basis_type(T)
+    rank == 0 && return CUDA.zeros(S, dimension, 0)
+    basis = CUDA.randn(S, dimension, rank)
+    factors, tau = CUDA.CUSOLVER.geqrf!(basis)
+    CUDA.CUSOLVER.orgqr!(factors, tau)
+    return factors
+end
+
+function _family_basis_gpu(::Type{T}, dimension::Int, rank::Int, shared) where {T}
+    shared_rank = size(shared, 2)
+    private_rank = rank - shared_rank
+    private_rank == 0 && return shared
+    private = _orthonormal_basis_gpu(T, dimension, private_rank)
+    if shared_rank > 0
+        private .-= shared * (adjoint(shared) * private)
+        factors, tau = CUDA.CUSOLVER.geqrf!(private)
+        CUDA.CUSOLVER.orgqr!(factors, tau)
+        private = factors
+    end
+    basis = CUDA.CuArray{_basis_type(T)}(undef, dimension, rank)
+    shared_rank > 0 && copyto!(view(basis, :, 1:shared_rank), shared)
+    private_rank > 0 && copyto!(view(basis, :, (shared_rank + 1):rank), private)
+    return basis
+end
+
+function _store_basis!(destination, source)
+    if eltype(destination) === eltype(source)
+        copyto!(destination, source)
+    else
+        destination .= source
+    end
+    return destination
+end
+
+@inline function _factor_seed(seed::UInt, tag::Integer, i::Integer, j::Integer)
+    x = seed ⊻ (UInt(tag) * 0x9e3779b97f4a7c15) ⊻
+        (UInt(i) * 0xbf58476d1ce4e5b9) ⊻ (UInt(j) * 0x94d049bb133111eb)
+    x ⊻= x >> 30
+    x *= 0xbf58476d1ce4e5b9
+    x ⊻= x >> 27
+    x *= 0x94d049bb133111eb
+    return x ⊻ (x >> 31)
+end
+
+function _foreach_tile!(mt::Int, nt::Int, f)
+    ntile = mt * nt
+    if Threads.nthreads() > 1 && LinearAlgebra.BLAS.get_num_threads() == 1
+        Threads.@threads for linear in 1:ntile
+            i = mod1(linear, mt)
+            j = cld(linear, mt)
+            f(i, j)
+        end
+    else
+        for linear in 1:ntile
+            i = mod1(linear, mt)
+            j = cld(linear, mt)
+            f(i, j)
+        end
     end
     return nothing
 end

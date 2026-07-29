@@ -27,6 +27,10 @@ const NWARMUP = 1
 const NREPS = 3
 const WORKSPACE_FACTOR = 2
 const SEED = 20260728
+# A dense Float32 reference at 32768 is several GiB; enable only for a
+# deliberately small validation campaign.
+const CHECK_RESULTS = false
+const SHOW_PROGRESS = true
 const OUTPUT_DIR = joinpath(@__DIR__, "results")
 
 const BACKEND = let
@@ -38,7 +42,8 @@ const BACKEND = let
     end
 end
 
-const RUN = RunConfig(PRECISIONS, WORKSPACE_FACTOR, NREPS, NWARMUP, SEED, BACKEND)
+const RUN = RunConfig(PRECISIONS, WORKSPACE_FACTOR, NREPS, NWARMUP, SEED, BACKEND;
+                      check_results=CHECK_RESULTS, show_progress=SHOW_PROGRESS)
 
 function main()
     mkpath(OUTPUT_DIR)

@@ -5,7 +5,7 @@ using LinearAlgebra
 using KernelAbstractions
 using NextLA: DenseGemmWorkspace, GEMMCompute, TF32,
               gemm_minimum_workspace_bytes, precision_gemm!, uncompress!
-using NextLA.TLRmodule: gemm!, get_factors, grid_size, tile_size
+using NextLA.TLRmodule: gemm!, get_factors, grid_size, tile_size, maxrank
 
 const _HAS_CUDA = try
     @eval import CUDA
@@ -38,16 +38,19 @@ struct RunConfig{B}
     nwarmup::Int
     seed::Int
     backend::B
+    check_results::Bool
+    show_progress::Bool
 end
 
 function RunConfig(precisions, workspace_factor::Integer, nreps::Integer,
-                   nwarmup::Integer, seed::Integer, backend)
+                   nwarmup::Integer, seed::Integer, backend;
+                   check_results::Bool=false, show_progress::Bool=true)
     modes = PrecisionConfig[
         p isa PrecisionConfig ? p : _precision_config(p)
         for p in precisions
     ]
     return RunConfig(modes, Int(workspace_factor), Int(nreps), Int(nwarmup),
-                     Int(seed), backend)
+                     Int(seed), backend, check_results, show_progress)
 end
 
 """A complete storage/rank-distribution choice for one experiment."""
@@ -120,6 +123,12 @@ function run_cases(experiment::Symbol, shapes, tile_size::Int, ranks::NTuple{2,I
     for case in cases, precision in run.precisions, (shape_index, shape) in enumerate(shapes)
         T = precision.storage_type
         m, k, n = shape
+        if run.show_progress
+            println("[$experiment] case=$(case.name) precision=$(precision.name) " *
+                    "size=($m,$k,$n) tile=$b ranks=$(ranks)")
+            println("  generating orthonormal factors on the GPU")
+            flush(stdout)
+        end
         (!square || m == k == n) || throw(ArgumentError("square experiment received $shape"))
         m % b == 0 && k % b == 0 && n % b == 0 ||
             throw(ArgumentError("$shape must be divisible by tile_size=$b"))
@@ -133,8 +142,12 @@ function run_cases(experiment::Symbol, shapes, tile_size::Int, ranks::NTuple{2,I
             backend=run.backend, format=case.format,
             rank_distribution=case.distribution, min_rank=lo, max_rank=hi)
         C = _backend_zeros(run.backend, T, m, n)
-        reference = _reference_result(run.backend, T, A_tlr, B_tlr, m, n)
-        reference_host = Array(reference)
+        reference_host = run.check_results ?
+            Array(_reference_result(run.backend, T, A_tlr, B_tlr, m, n)) : nothing
+        if run.show_progress
+            println("  timing TLR and dense GEMM variants")
+            flush(stdout)
+        end
         dense_flops, tlr_dense_flops, dense_tlr_flops, tlr_tlr_flops =
             _flop_counts(A_tlr, B_tlr, m, k, n)
 
@@ -149,7 +162,8 @@ function run_cases(experiment::Symbol, shapes, tile_size::Int, ranks::NTuple{2,I
         _collect_large_temporaries!()
 
         B_dense = _uncompress(run.backend, T, B_tlr)
-        workspace = DenseGemmWorkspace(A_tlr, run.workspace_factor * 3 * sizeof(T))
+        workspace = DenseGemmWorkspace(
+            A_tlr, run.workspace_factor * maxrank(A_tlr) * sizeof(T))
         tlr_dense_ms = _time_gemm!(C, T, run) do
             gemm!(C, A_tlr, B_dense; workspace, alpha=one(T), beta=one(T),
                   compute=precision.compute)
@@ -158,7 +172,8 @@ function run_cases(experiment::Symbol, shapes, tile_size::Int, ranks::NTuple{2,I
         workspace = nothing; B_dense = nothing; _collect_large_temporaries!()
 
         A_dense = _uncompress(run.backend, T, A_tlr)
-        workspace = DenseGemmWorkspace(B_tlr, run.workspace_factor * 3 * sizeof(T))
+        workspace = DenseGemmWorkspace(
+            B_tlr, run.workspace_factor * maxrank(B_tlr) * sizeof(T))
         dense_tlr_ms = _time_gemm!(C, T, run) do
             gemm!(C, A_dense, B_tlr; workspace, alpha=one(T), beta=one(T),
                   compute=precision.compute)
@@ -192,7 +207,7 @@ function run_cases(experiment::Symbol, shapes, tile_size::Int, ranks::NTuple{2,I
         push!(results, GemmResult(experiment, case.name, precision.name, T, m, k, n, b,
             ranks[1], ranks[2], case.format, case.distribution, lo, hi,
             GemmTiming(tlr_dense_ms, dense_tlr_ms, tlr_tlr_ms, dense_dense_ms), metrics))
-        A_dense = nothing; B_dense = nothing; C = nothing; reference = nothing
+        A_dense = nothing; B_dense = nothing; C = nothing; reference_host = nothing
         _collect_large_temporaries!()
     end
     return results
@@ -227,6 +242,8 @@ function _flop_counts(A, B, m, k, n)
 end
 
 @inline _gflops(flops, milliseconds) = flops / (milliseconds * 1.0e6)
+
+_relative_error(_, ::Nothing) = NaN
 
 function _relative_error(C, reference_host)
     result = Array(C)
