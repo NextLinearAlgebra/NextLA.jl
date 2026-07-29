@@ -28,6 +28,14 @@ end
     return tasks
 end
 
+@inline function _validate_compressed_mixed_grouped_precision(A)
+    eltype(A) === Core.BFloat16 &&
+        !supports_bfloat16_grouped_gemm(get_backend(A)) &&
+        throw(ArgumentError(
+            "CompressedFTLR BF16 grouped GEMMEx requires an NVIDIA SM80 or newer device"))
+    return nothing
+end
+
 function _compressed_col_rank_plan(B)
     qk, qn = grid_size(B)
     prefix = Base.zeros(Int, qn, qk + 1)
@@ -216,6 +224,7 @@ function analyze_compressed_gemm(
     backend = _validate_dense_backend(C, B, A)
     mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
     validate_tlr_gemm_precision(backend, T, eltype(C), mode)
+    _validate_compressed_mixed_grouped_precision(LB)
     _, arena, budget = _prepare_single_gemm_workspace(B, workspace)
     runs = _dense_compressed_prepared_runs(C, LA, LB, budget, mode, arena)
     return _new_compressed_mixed_analysis(
@@ -238,6 +247,7 @@ function analyze_compressed_gemm(
     backend = _validate_dense_backend(C, A, B)
     mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
     validate_tlr_gemm_precision(backend, T, eltype(C), mode)
+    _validate_compressed_mixed_grouped_precision(LA)
     _, arena, budget = _prepare_single_gemm_workspace(A, workspace)
     runs = _compressed_dense_prepared_runs(C, LA, LB, budget, mode, arena)
     return _new_compressed_mixed_analysis(
@@ -275,6 +285,7 @@ end
 
 function _dense_compressed_grouped!(
     C, A::LogicalDenseOperand, B, alpha, beta, budget::Int, mode, arena)
+    _validate_compressed_mixed_grouped_precision(B)
     prefix, totals, bases = _compressed_col_rank_plan(B)
     total_rank = bases[end]
     total_rank == 0 && return _scale_output!(C, beta)
@@ -333,6 +344,7 @@ end
 
 function _compressed_dense_grouped!(
     C, A, B::LogicalDenseOperand, alpha, beta, budget::Int, mode, arena)
+    _validate_compressed_mixed_grouped_precision(A)
     prefix, totals, bases = _compressed_row_rank_plan(A)
     total_rank = bases[end]
     total_rank == 0 && return _scale_output!(C, beta)
