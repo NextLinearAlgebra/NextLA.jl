@@ -3,10 +3,10 @@ module TLROutputExperiment
 
 using LinearAlgebra
 using KernelAbstractions
-using NextLA: DenseGemmWorkspace, TLRGemmWorkspace,
+using NextLA: DenseGemmWorkspace, TLRGemmWorkspace, GEMMCompute, TF32,
               alloc_workspace, compress!, gemm_minimum_workspace_bytes,
-              tlr_gemm_minimum_workspace_bytes, uncompress!
-using NextLA.TLRmodule: gemm!, grid_size, get_factors
+              tlr_gemm_minimum_workspace_bytes, precision_gemm!, uncompress!
+using NextLA.TLRmodule: gemm!, grid_size, get_factors, tile_size
 
 const _HAS_CUDA = try
     @eval import CUDA
@@ -18,12 +18,17 @@ end
 include(joinpath(@__DIR__, "matrix_generation.jl"))
 using .ExperimentMatrixGeneration: generate_tlr_matrix, generate_tlr_operands
 
+if !isdefined(Main, :DenseGemmCommon)
+    include(joinpath(@__DIR__, "common.jl"))
+end
+using Main.DenseGemmCommon: PrecisionConfig
+
 export TLROutputRunConfig, TLROutputStrongScalingConfig,
-       TLROutputOverlapConfig, TLROutputTiming, TLROutputResult
+       TLROutputOverlapConfig, TLROutputTiming, TLROutputMetrics, TLROutputResult
 export tlr_output_strong_scaling, tlr_output_overlap_sweep
 
 struct TLROutputRunConfig{B}
-    dtypes::Vector{DataType}
+    precisions::Vector{PrecisionConfig}
     workspace_factor::Int
     nreps::Int
     nwarmup::Int
@@ -34,10 +39,13 @@ struct TLROutputRunConfig{B}
     rel::Bool
 end
 
-function TLROutputRunConfig(dtypes, workspace_factor, nreps, nwarmup, seed,
+function TLROutputRunConfig(precisions, workspace_factor, nreps, nwarmup, seed,
                             backend; block=32, tol=0.0, rel=false)
     return TLROutputRunConfig(
-        DataType[dtypes...], Int(workspace_factor), Int(nreps), Int(nwarmup),
+        PrecisionConfig[p isa PrecisionConfig ? p :
+                       PrecisionConfig(Symbol(p), p, GEMMCompute{p}())
+                       for p in precisions],
+        Int(workspace_factor), Int(nreps), Int(nwarmup),
         Int(seed), backend, Int(block), Float64(tol), rel)
 end
 
@@ -78,8 +86,19 @@ struct TLROutputTiming
     dense_compress_rel_fro_error::Float64
 end
 
+struct TLROutputMetrics
+    dense_gflops::Float64
+    tlr_tlr_gflops::Float64
+    dense_compress_gflops::Float64
+    tlr_tlr_speedup::Float64
+    dense_compress_speedup::Float64
+    tlr_tlr_efficiency::Float64
+    dense_compress_efficiency::Float64
+end
+
 struct TLROutputResult
     experiment::Symbol
+    precision::Symbol
     dtype::DataType
     m::Int
     k::Int
@@ -90,6 +109,7 @@ struct TLROutputResult
     output_rank::Int
     shared_rank::Int
     timing::TLROutputTiming
+    metrics::TLROutputMetrics
 end
 
 function tlr_output_strong_scaling(config::TLROutputStrongScalingConfig)
@@ -121,12 +141,15 @@ function _run_cases(experiment, sizes, tile_size, ranks, output_rank, shared_ran
     run.nwarmup >= 0 || throw(ArgumentError("nwarmup must be nonnegative"))
 
     results = TLROutputResult[]
-    for T in run.dtypes, (case_index, n) in enumerate(sizes)
+    for precision in run.precisions, (case_index, n) in enumerate(sizes)
+        T = precision.storage_type
         n % b == 0 || throw(ArgumentError("size=$n must be divisible by tile_size=$b"))
         seed = run.seed + case_index + 1000 * shared_rank
 
         A, B = generate_tlr_operands(
             n, n, n, b, ranks, T; seed, shared_rank, backend=run.backend)
+        tlr_flops = _tlr_tlr_flops(A, B, n, b)
+        dense_flops = 2.0 * n^3
         C_template = generate_tlr_matrix(
             n, n, b, output_rank, T; seed=seed + 1, backend=run.backend)
         _fill_constant_tlr!(C_template, T, run.backend)
@@ -140,7 +163,7 @@ function _run_cases(experiment, sizes, tile_size, ranks, output_rank, shared_ran
         tlr_tlr_ms = _time!(
             () -> gemm!(C_direct, A, B; workspace=direct_workspace,
                         alpha=one(T), beta=one(T), tol=run.tol, rel=run.rel,
-                        block=run.block),
+                        block=run.block, compute=precision.compute),
             () -> _reset_tlr!(C_direct, C_template, run.backend), run)
         direct_workspace = nothing
         _collect!()
@@ -154,7 +177,7 @@ function _run_cases(experiment, sizes, tile_size, ranks, output_rank, shared_ran
         dense_compress_ms = _time!(
             () -> begin
                 gemm!(C_dense, A, B; workspace=dense_workspace,
-                      alpha=one(T), beta=one(T))
+                      alpha=one(T), beta=one(T), compute=precision.compute)
                 compress!(C_compressed, C_dense, compress_workspace;
                           tol=run.tol, rel=run.rel)
             end,
@@ -179,21 +202,42 @@ function _run_cases(experiment, sizes, tile_size, ranks, output_rank, shared_ran
         _collect!()
 
         dense_dense_ms = _time!(
-            () -> mul!(C_reference, A_dense, B_dense, one(T), one(T)),
+            () -> precision_gemm!('N', 'N', one(T), A_dense, B_dense,
+                                  one(T), C_reference, precision.compute),
             () -> _reset_dense!(C_reference, T), run)
         tlr_error = _relative_error(C_direct, C_reference, run.backend, T)
         compressed_error = _relative_error(C_compressed, C_reference, run.backend, T)
+        dense_gflops = dense_flops / (dense_dense_ms * 1.0e6)
+        tlr_gflops = tlr_flops / (tlr_tlr_ms * 1.0e6)
+        dense_compress_gflops = dense_flops / (dense_compress_ms * 1.0e6)
+        metrics = TLROutputMetrics(
+            dense_gflops, tlr_gflops, dense_compress_gflops,
+            dense_dense_ms / tlr_tlr_ms, dense_dense_ms / dense_compress_ms,
+            tlr_gflops / dense_gflops, dense_compress_gflops / dense_gflops)
 
         push!(results, TLROutputResult(
-            experiment, T, n, n, n, b, rA, rB, output_rank, shared_rank,
+            experiment, precision.name, T, n, n, n, b, rA, rB, output_rank, shared_rank,
             TLROutputTiming(tlr_tlr_ms, dense_compress_ms, dense_dense_ms,
-                            tlr_error, compressed_error)))
+                            tlr_error, compressed_error), metrics))
 
         A_dense, B_dense, C_reference = nothing, nothing, nothing
         C_direct, C_compressed = nothing, nothing
         _collect!()
     end
     return results
+end
+
+function _tlr_tlr_flops(A, B, n, b)
+    mt, kt = grid_size(A); _, nt = grid_size(B)
+    flops = 0.0
+    for i in 1:mt, l in 1:kt, j in 1:nt
+        tm, tk = tile_size(A, i, l)
+        _, tn = tile_size(B, l, j)
+        ra = size(get_factors(A, i, l)[1], 2)
+        rb = size(get_factors(B, l, j)[1], 2)
+        flops += 2.0 * (tk * ra * rb + tm * ra * rb + tm * rb * tn)
+    end
+    flops
 end
 
 function _time!(f, reset, run::TLROutputRunConfig{B}) where {B}

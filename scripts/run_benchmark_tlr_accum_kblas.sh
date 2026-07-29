@@ -12,6 +12,8 @@ exe="${build_dir}/kblas_tlr_accum_bench"
 source="${script_dir}/kblas_tlr_accum_bench.cu"
 smoke_args=()
 [[ "${1:-}" == "--smoke" ]] && smoke_args=(--smoke)
+size_args=()
+[[ -n "${KBLAS_TLR_SIZES:-}" ]] && size_args=(--sizes "$KBLAS_TLR_SIZES")
 
 [[ -f "${kblas_root}/lib/libkblas-gpu.a" ]] || { echo "KBLAS_ROOT is invalid: ${kblas_root}" >&2; exit 1; }
 [[ -f "${magma_root}/lib/libmagma.so" ]] || { echo "MAGMA_ROOT is invalid: ${magma_root}" >&2; exit 1; }
@@ -40,7 +42,7 @@ if [[ ! -x "${exe}" || "${source}" -nt "${exe}" ]]; then
 fi
 
 LD_LIBRARY_PATH="${magma_root}/lib:${cuda_root}/lib64:${LD_LIBRARY_PATH:-}" \
-  "${exe}" --output "${results_dir}" "${smoke_args[@]}"
+  "${exe}" --output "${results_dir}" "${smoke_args[@]}" "${size_args[@]}"
 export KBLAS_ROOT="${kblas_root}" MAGMA_ROOT="${magma_root}" CUDA_ROOT="${cuda_root}"
 echo "KBLAS: ${kblas_root}"
 echo "MAGMA: ${magma_root}"

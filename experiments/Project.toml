@@ -1,0 +1,14 @@
+name = "NextLAExperiments"
+uuid = "e18e4f6b-3d9c-4aa8-9d87-2c4e8e5b3d24"
+version = "0.1.0"
+
+[deps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+NextLA = "d37ed344-79c4-486d-9307-6d11355a15a3"
+
+[compat]
+CUDA = "5"
+KernelAbstractions = "0.9.34"
+NextLA = "0.2.3"
+julia = "1.9"

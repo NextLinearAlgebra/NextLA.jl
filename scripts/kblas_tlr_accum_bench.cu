@@ -264,15 +264,37 @@ void run_case(const Config &cfg, Profile profile, int beta, const fs::path &outd
 int main(int argc, char **argv) {
     fs::path outdir = "scripts/.kblas/results";
     bool smoke = false;
+    std::vector<int> requested_sizes;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--output") == 0 && i + 1 < argc) outdir = argv[++i];
         else if (std::strcmp(argv[i], "--smoke") == 0) smoke = true;
+        else if (std::strcmp(argv[i], "--sizes") == 0 && i + 1 < argc) {
+            std::string value = argv[++i];
+            size_t begin = 0;
+            while (begin < value.size()) {
+                size_t end = value.find(',', begin);
+                requested_sizes.push_back(std::stoi(value.substr(begin, end - begin)));
+                if (end == std::string::npos) break;
+                begin = end + 1;
+            }
+        }
         else { std::fprintf(stderr, "usage: %s [--output DIR] [--smoke]\n", argv[0]); return 2; }
     }
     fs::create_directories(outdir);
-    const std::vector<Config> configs = smoke ? std::vector<Config>{{32, 2, 2, 8}} :
+    std::vector<Config> configs = smoke ? std::vector<Config>{{32, 2, 2, 8}} :
         std::vector<Config>{{32,64,8,8}, {64,16,16,16}, {64,32,16,16},
                             {64,48,24,24}, {128,16,32,32}, {256,16,64,64}};
+    if (!requested_sizes.empty()) {
+        configs.clear();
+        const int b = 512, r = 32, rC = 32;
+        for (int n : requested_sizes) {
+            if (n <= 0 || n % b != 0) {
+                std::fprintf(stderr, "requested size %d must be positive and divisible by %d\n", n, b);
+                return 2;
+            }
+            configs.push_back(Config{b, n / b, r, rC});
+        }
+    }
     for (const auto &cfg : configs)
         for (Profile profile : {Uniform, ARowSkew, BColumnSkew})
             for (int beta : {0, 1}) run_case(cfg, profile, beta, outdir);

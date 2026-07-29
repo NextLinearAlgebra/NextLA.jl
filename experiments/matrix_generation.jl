@@ -160,7 +160,9 @@ end
 
 function _orthonormal_basis(rng, ::Type{T}, dimension::Int, rank::Int) where {T}
     rank == 0 && return Matrix{T}(undef, dimension, 0)
-    return Matrix(qr(randn(rng, T, dimension, rank)).Q)[:, 1:rank]
+    S = _basis_type(T)
+    Q = Matrix(qr(randn(rng, S, dimension, rank)).Q)[:, 1:rank]
+    return Matrix{T}(Q)
 end
 
 function _family_basis(
@@ -173,10 +175,15 @@ function _family_basis(
     private_rank = rank - size(shared, 2)
     private_rank == 0 && return shared
 
-    G = randn(rng, T, dimension, private_rank)
-    isempty(shared) || (G .-= shared * (adjoint(shared) * G))
+    S = _basis_type(T)
+    G = randn(rng, S, dimension, private_rank)
+    shared_basis = Matrix{S}(shared)
+    isempty(shared) || (G .-= shared_basis * (adjoint(shared_basis) * G))
     private = Matrix(qr(G).Q)[:, 1:private_rank]
-    return hcat(shared, private)
+    return Matrix{T}(hcat(shared, private))
 end
+
+@inline _basis_type(::Type{T}) where {T} =
+    T === Float16 || T === Core.BFloat16 ? Float32 : T
 
 end
