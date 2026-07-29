@@ -30,7 +30,7 @@ const PRECISIONS = (
 )
 const NWARMUP = 1
 const NREPS = 3
-const ROWS_PER_RUN = 1
+const ROWS_PER_RUN = 4
 const SEED = 20260728
 const CHECK_RESULTS = true
 const SHOW_PROGRESS = true

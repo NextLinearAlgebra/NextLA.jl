@@ -15,7 +15,7 @@ using .PaddedFTLROutputOverlapSweep
 const PRECISIONS = (PrecisionConfig(:fp32_full, Float32, GEMMCompute{Float32}()),)
 const NWARMUP = 1
 const NREPS = 3
-const ROWS_PER_RUN = 1
+const ROWS_PER_RUN = 4
 const SEED = 20260728
 const BLOCK = 32
 const TOL = 0.0
