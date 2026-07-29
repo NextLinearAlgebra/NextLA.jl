@@ -30,6 +30,10 @@ end
     @test A.outer.offsets[end] - 1 == 4 * sum(Int.(NextLA.ranks(A)))
     @test A.inner.offsets[end] - 1 == 4 * sum(Int.(NextLA.ranks(A)))
 
+    U, V = NextLA.get_factors(A, 1, 2)
+    @test _TLRM.logical_tile_factors(_TLRM.logical_operand(A), 1, 2) == (U, V)
+    @test _TLRM.logical_tile_factors(_TLRM.logical_operand(A, 'T'), 2, 1) == (V, U)
+
     dense = zeros(Float64, size(A))
     NextLA.uncompress!(dense, A)
     expected = zeros(Float64, size(A))

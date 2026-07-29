@@ -2,7 +2,7 @@ module PaddedFTLROutputStrongScaling
 
 using Main.PaddedFTLROutputExperiment
 
-const SIZES = [1024, 2048, 4096, 8192, 16384, 32768]
+const SIZES = [2048, 4096, 8192, 16384, 32768, 65536]
 const TILE_SIZE = 512
 const RANKS = (64, 128)
 const OUTPUT_RANK = 128

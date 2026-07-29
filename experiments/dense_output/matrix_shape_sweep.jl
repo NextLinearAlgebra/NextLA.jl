@@ -2,7 +2,7 @@ module DenseOutputMatrixShapeSweep
 using Main.DenseGemmCommon
 using Main.MatrixShapeSweepExperiment
 
-const BASE_SIZE = 16384
+const BASE_SIZE = 16384*2
 const TILE_SIZE = 512
 const RANK = 64
 const RATIOS = [(1, 1, 1), (4, 1, 1), (1, 4, 1), (1, 1, 4), (1, 0.25, 1)]

@@ -2,7 +2,7 @@ module DenseOutputRankSweep
 using Main.DenseGemmCommon
 using Main.RankSweepExperiment
 
-const MATRIX_SIZE = 16384
+const MATRIX_SIZE = 16384*2
 const TILE_SIZE = 512
 const RANKS = [8, 16, 32, 64, 128, 256]
 const CASES = [

@@ -2,7 +2,7 @@ module DenseOutputStrongScaling
 using Main.DenseGemmCommon
 using Main.StrongScalingExperiment
 
-const SIZES = [1024, 2048, 4096, 8192, 16384, 32768]
+const SIZES = [2048, 4096, 8192, 16384, 32768, 65536]
 const TILE_SIZE = 512
 const RANKS = (64, 64)
 const CASES = [

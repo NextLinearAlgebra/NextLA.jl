@@ -149,6 +149,10 @@ end
 @inline compressed_ftlr_inner(A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}, i::Int, j::Int) =
     compressed_ftlr_outer(physical(A), j, i)
 
+@inline logical_tile_factors(
+    A::LogicalTLROperand{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) =
+    (compressed_ftlr_outer(A, i, j), compressed_ftlr_inner(A, i, j))
+
 @inline compressed_ftlr_outer_order(A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}) =
     compressed_ftlr_outer_order(physical(A))
 @inline compressed_ftlr_outer_order(A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}) =
