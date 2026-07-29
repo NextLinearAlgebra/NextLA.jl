@@ -1,8 +1,12 @@
 # KBLAS experiments
 
-This folder contains the KBLAS-side launcher for the fixed-rank
-`TLR × TLR → dense` benchmark. It runs strong-size, rank, tile-size, and
-matrix-shape sweeps. It intentionally uses a standalone CUDA
+This folder contains the KBLAS-side launcher for the fixed-rank strong-scaling
+benchmark. It runs both KBLAS TLR output modes:
+
+- `lld`: TLR × TLR → dense
+- `lll`: TLR × TLR → TLR
+
+It intentionally uses a standalone CUDA
 executable instead of a Julia FFI layer. The KBLAS API contains C++ overloads,
 and the standalone executable is the simplest reproducible boundary on an HPC
 system.
@@ -69,17 +73,18 @@ bash experiments/KBLAS/run_experiments.sh
 Set `KBLAS_PRECISIONS=float,double` to choose the builds; the default runs
 both. `KBLAS_WARMUP` and `KBLAS_REPS` override the timing counts.
 
-The launcher writes one CSV per sweep and precision, for example:
+The launcher writes one CSV per output mode and precision:
 
 ```text
-experiments/KBLAS/results/strong_scaling_float.csv
-experiments/KBLAS/results/rank_sweep_double.csv
+experiments/KBLAS/results/strong_scaling_lld_float.csv
+experiments/KBLAS/results/strong_scaling_lll_double.csv
 ```
 
-The top of `run_experiments.sh` contains the sweep parameters, so the HPC
-campaign can be changed without editing the CUDA benchmark.
+The top of `run_experiments.sh` contains the strong-scaling parameters. Both
+input ranks are passed independently; the default campaign uses `rank_A=64`,
+`rank_B=128`, `tile_size=512`, and `output_rank=128` for LLL.
 
-This benchmark currently covers KBLAS `Float32` and `Float64` fixed-rank TLR
-GEMM. KBLAS does not currently provide a linked variable-rank implementation
-for the `CompressedFTLRMatrix` distributions, nor FP16/BF16/TF32 TLR entry
-points. Those cases must remain separate from the KBLAS comparison.
+This benchmark covers KBLAS `Float32` and `Float64` fixed-rank TLR GEMM.
+KBLAS does not currently provide a linked variable-rank implementation for the
+`CompressedFTLRMatrix` distributions, nor FP16/BF16/TF32 TLR entry points.
+Those cases remain separate from the KBLAS comparison.

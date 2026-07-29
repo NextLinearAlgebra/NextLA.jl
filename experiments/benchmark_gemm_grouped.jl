@@ -15,9 +15,9 @@ using Statistics
 
 # ── Configuration ────────────────────────────────────────────────────────────
 const BATCH = 128
-const FIXED_SIZE = (512, 512, 512)       # m, k, n for the fixed-size case
-const RAGGED_N_RANGE = (128, 512)        # n range for fixed m and k
-const HETEROGENEOUS_RANGES = ((256, 512), (256, 512), (128, 512)) # m, k, n
+const FIXED_SIZE = (1024, 1024, 1024)       # m, k, n for the fixed-size case
+const RAGGED_N_RANGE = (128, 1024)        # n range for fixed m and k
+const HETEROGENEOUS_RANGES = ((256, 1024), (256, 1024), (128, 1024)) # m, k, n
 const WARMUP = parse(Int, get(ENV, "NEXTLA_GEMM_GROUPED_WARMUP", "5"))
 const REPS = parse(Int, get(ENV, "NEXTLA_GEMM_GROUPED_REPS", "20"))
 
