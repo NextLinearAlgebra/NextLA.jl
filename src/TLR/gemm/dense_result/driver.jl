@@ -179,7 +179,7 @@ for all three stages and selecting FoldRight/FoldLeft from packed layouts.
 """
 function gemm!(C::AbstractMatrix, A::CompressedFTLRMatrix{BackendT,T}, B::CompressedFTLRMatrix{BackendT,T};
     workspace, alpha=true, beta=false,
-    transA::Char='N', transB::Char='N', compute=nothing,
+    transA::Char='N', transB::Char='N', compute=nothing, analysis=nothing,
     workspace_policy=InteriorFirstWorkspace()) where {BackendT,T}
     workspace_policy isa InteriorFirstWorkspace ||
         throw(ArgumentError("CompressedFTLR dense GEMM currently supports InteriorFirstWorkspace only"))
@@ -190,7 +190,15 @@ function gemm!(C::AbstractMatrix, A::CompressedFTLRMatrix{BackendT,T}, B::Compre
         throw(DimensionMismatch("C must be size(op(A),1) × size(op(B),2)"))
     mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
     ScalarT = gemm_compute_type(mode)
-    return _compressed_ftlr_gemm!(C, LA, LB; workspace, alpha=ScalarT(alpha), beta=ScalarT(beta), compute=mode)
+    α = ScalarT(alpha)
+    β = ScalarT(beta)
+    if analysis === nothing
+        return _compressed_ftlr_gemm!(C, LA, LB; workspace, alpha=α, beta=β, compute=mode)
+    elseif analysis isa CompressedGemmAnalysis
+        return _execute_compressed_gemm_analysis!(
+            analysis, C, A, B, workspace, α, β, transA, transB, mode)
+    end
+    throw(ArgumentError("analysis must be nothing or CompressedGemmAnalysis"))
 end
 
 @inline function _validate_dense_backend(C, tlr, dense)

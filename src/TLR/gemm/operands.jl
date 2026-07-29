@@ -65,6 +65,10 @@ Base.size(A::LogicalTLROperand, d::Int) = size(A)[d]
 @inline tile_order(A::LogicalTLROperand{:N}) = tile_order(physical(A))
 @inline tile_order(A::LogicalTLROperand{:T}) = _transpose_order(tile_order(physical(A)))
 @inline maxrank(A::LogicalTLROperand) = maxrank(physical(A))
+@inline execution_ranks(A::LogicalTLROperand{<:Any,<:CompressedFTLRMatrix}) =
+    execution_ranks(physical(A))
+@inline execution_maxrank(A::LogicalTLROperand{<:Any,<:CompressedFTLRMatrix}) =
+    execution_maxrank(physical(A))
 @inline KernelAbstractions.get_backend(A::LogicalTLROperand) = get_backend(physical(A))
 
 """Zero-copy logical `N/T` view of a standalone dense GEMM operand."""
@@ -139,6 +143,10 @@ end
     _compressed_ftlr_rank(physical(A), i, j)
 @inline _compressed_ftlr_rank(A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}, i::Int, j::Int) =
     _compressed_ftlr_rank(physical(A), j, i)
+@inline _compressed_ftlr_execution_rank(A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}, i::Int, j::Int) =
+    _compressed_ftlr_execution_rank(physical(A), i, j)
+@inline _compressed_ftlr_execution_rank(A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}, i::Int, j::Int) =
+    _compressed_ftlr_execution_rank(physical(A), j, i)
 
 @inline compressed_ftlr_outer(A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}, i::Int, j::Int) =
     compressed_ftlr_outer(physical(A), i, j)
@@ -148,6 +156,14 @@ end
     compressed_ftlr_inner(physical(A), i, j)
 @inline compressed_ftlr_inner(A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}, i::Int, j::Int) =
     compressed_ftlr_outer(physical(A), j, i)
+@inline compressed_ftlr_execution_outer(A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}, i::Int, j::Int) =
+    compressed_ftlr_execution_outer(physical(A), i, j)
+@inline compressed_ftlr_execution_outer(A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}, i::Int, j::Int) =
+    compressed_ftlr_execution_inner(physical(A), j, i)
+@inline compressed_ftlr_execution_inner(A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}, i::Int, j::Int) =
+    compressed_ftlr_execution_inner(physical(A), i, j)
+@inline compressed_ftlr_execution_inner(A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}, i::Int, j::Int) =
+    compressed_ftlr_execution_outer(physical(A), j, i)
 
 @inline logical_tile_factors(
     A::LogicalTLROperand{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) =

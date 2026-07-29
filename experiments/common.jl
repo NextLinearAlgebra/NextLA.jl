@@ -11,7 +11,8 @@ using NextLA.TLRmodule: gemm!, get_factors, grid_size, tile_size, maxrank,
                         PaddedFTLRMatrix, CompressedFTLRMatrix,
                         logical_operand, logical_operands, choose_fold, FoldRight,
                         _compressed_ftlr_rank_plan, _compressed_ftlr_row_runs,
-                        _compressed_ftlr_rank, _compressed_ftlr_axis_range
+                        _compressed_ftlr_rank, _compressed_ftlr_execution_rank,
+                        _compressed_ftlr_axis_range
 
 const _HAS_CUDA = try
     @eval import CUDA
@@ -270,6 +271,8 @@ function _reference_operand(backend, ::Type{R}, ::Type{T}, A) where {R,T}
 end
 
 @inline _execution_rank(A::PaddedFTLRMatrix, i, j) = maxrank(A)
+@inline _execution_rank(A::CompressedFTLRMatrix, i, j) =
+    _compressed_ftlr_execution_rank(A, i, j)
 @inline _execution_rank(A, i, j) = size(get_factors(A, i, j)[1], 2)
 
 function _flop_counts(A, B, m, k, n, workspace_bytes)
@@ -324,8 +327,8 @@ function _tlr_tlr_executed_flops(A::CompressedFTLRMatrix,
         common = 0.0
         fold_specific = 0.0
         for l in 1:qk, j in 1:qn
-            ra = _compressed_ftlr_rank(LA, i, l)
-            rb = _compressed_ftlr_rank(LB, l, j)
+            ra = _compressed_ftlr_execution_rank(LA, i, l)
+            rb = _compressed_ftlr_execution_rank(LB, l, j)
             (ra == 0 || rb == 0) && continue
             tk = length(_compressed_ftlr_axis_range(LA, l, 2))
             nj = length(_compressed_ftlr_axis_range(LB, j, 2))
@@ -338,6 +341,39 @@ function _tlr_tlr_executed_flops(A::CompressedFTLRMatrix,
             sum(mi * plan.output_col_widths[j] * plan.b_col_ranks[j]
                 for j in 1:qn)
         end
+        flops += 2.0 * (common + fold_specific + terminal)
+    end
+    return flops
+end
+
+function _tlr_tlr_exact_flops(A::CompressedFTLRMatrix,
+                               B::CompressedFTLRMatrix, workspace_bytes)
+    LA, LB = logical_operand(A), logical_operand(B)
+    plan = _compressed_ftlr_rank_plan(LA, LB)
+    budget = min(Int(workspace_bytes), plan.profile.maximum)
+    flops = 0.0
+    _, qk = grid_size(LA); _, qn = grid_size(LB)
+    N = size(LB, 2)
+    for run in _compressed_ftlr_row_runs(plan.profile, budget), i in run.rows
+        mi = length(_compressed_ftlr_axis_range(LA, i, 1))
+        common = 0.0; fold_specific = 0.0
+        exact_a_total = 0
+        exact_b_cols = zeros(Int, qn)
+        for l in 1:qk
+            exact_a_total += _compressed_ftlr_rank(LA, i, l)
+            for j in 1:qn
+                ra = _compressed_ftlr_rank(LA, i, l)
+                rb = _compressed_ftlr_rank(LB, l, j)
+                exact_b_cols[j] += rb
+                (ra == 0 || rb == 0) && continue
+                tk = length(_compressed_ftlr_axis_range(LA, l, 2))
+                nj = length(_compressed_ftlr_axis_range(LB, j, 2))
+                common += tk * ra * rb
+                fold_specific += run.fold === :right ? nj * ra * rb : mi * ra * rb
+            end
+        end
+        terminal = run.fold === :right ? mi * N * exact_a_total :
+            sum(mi * plan.output_col_widths[j] * exact_b_cols[j] for j in 1:qn)
         flops += 2.0 * (common + fold_specific + terminal)
     end
     return flops

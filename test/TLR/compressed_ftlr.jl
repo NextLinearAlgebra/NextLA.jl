@@ -24,11 +24,17 @@ end
     @test NextLA.grid_size(A) == (2, 3)
     @test NextLA.tail_tile_size(A) == (0, 0)
     @test NextLA.maxrank(A) == 3
+    @test NextLA.execution_maxrank(A) == 8
+    @test Int.(NextLA.execution_ranks(A)) == map(r -> iszero(r) ? 0 : 8, Int.(NextLA.ranks(A)))
     @test size(NextLA.get_factors(A, 1, 2)[1]) == (4, 2)
     @test size(NextLA.get_factors(A, 1, 2)[2]) == (4, 2)
     @test size(NextLA.get_factors(A, 1, 3)[1]) == (4, 0)
-    @test A.outer.offsets[end] - 1 == 4 * sum(Int.(NextLA.ranks(A)))
-    @test A.inner.offsets[end] - 1 == 4 * sum(Int.(NextLA.ranks(A)))
+    @test A.outer.offsets[end] - 1 == 8 * sum(Int.(NextLA.execution_ranks(A)))
+    @test A.inner.offsets[end] - 1 == 8 * sum(Int.(NextLA.execution_ranks(A)))
+    @test all(==(0), mod.((A.outer.offsets .- 1) .* sizeof(eltype(A)), 16))
+    @test all(==(0), mod.((A.inner.offsets .- 1) .* sizeof(eltype(A)), 16))
+    @test all(==(0), mod.(A.outer.leading_dimensions, 8))
+    @test all(==(0), mod.(A.inner.leading_dimensions, 8))
 
     U, V = NextLA.get_factors(A, 1, 2)
     @test _TLRM.logical_tile_factors(_TLRM.logical_operand(A), 1, 2) == (U, V)
@@ -42,6 +48,18 @@ end
         expected[(i - 1) * 4 + 1:i * 4, (j - 1) * 4 + 1:j * 4] .= U * V'
     end
     @test dense ≈ expected
+
+    mapped = NextLA.CompressedFTLRMatrix(
+        KernelAbstractions.CPU(), Float32, 16, 80, (16, 16),
+        reshape(Int[0, 1, 7, 8, 9], 1, 5))
+    @test Int.(NextLA.ranks(mapped)) == [0, 1, 7, 8, 9]
+    @test Int.(NextLA.execution_ranks(mapped)) == [0, 8, 8, 8, 16]
+    @test NextLA.maxrank(mapped) == 9
+    @test NextLA.execution_maxrank(mapped) == 16
+    @test size(NextLA.get_factors(mapped, 1, 5)[1]) == (16, 9)
+    execution_U = _TLRM.compressed_ftlr_execution_outer(mapped, 1, 5)
+    @test size(execution_U) == (16, 16)
+    @test all(iszero, execution_U[:, 10:16])
 
     padded = NextLA.PaddedFTLRMatrix(KernelAbstractions.CPU(), Float64, 8, 12, (4, 4), 3)
     padded.ranks .= NextLA.ranks(A)

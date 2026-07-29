@@ -38,3 +38,12 @@ category streams launching co-dependent work see the result.
 - On other GPU backends: falls back to a full device synchronise.
 """
 sync_streams_with_default(_, _) = nothing
+
+"""Create a reusable backend event for stream-to-stream and host dependencies."""
+create_event(_) = nothing
+"""Record `event` after work currently queued on `stream`."""
+record_event!(_, ::Nothing, ::Nothing) = nothing
+"""Make `stream` wait for `event` without blocking the host."""
+wait_event!(_, ::Nothing, ::Nothing) = nothing
+"""Block the host until `event` completes."""
+sync_event(_, ::Nothing) = nothing

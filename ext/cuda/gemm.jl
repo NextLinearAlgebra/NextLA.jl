@@ -37,86 +37,384 @@ function _cublas_gemm_grouped_batched_ex!(transa, transb, m, n, k, alpha,
     return nothing
 end
 
-function _cuda_grouped_gemm_ex!(tasks::AbstractVector{<:NextLA.GroupedGemmTask},
-                                 ::Type{ScalarT}, compute_enum) where {ScalarT}
-    isempty(tasks) && return tasks
-    TaskT = eltype(tasks)
-    AT = typeof(first(tasks).A)
-    BT = typeof(first(tasks).B)
-    CT = typeof(first(tasks).C)
-    keys = Tuple[]
-    buckets = Vector{Vector{TaskT}}()
-    @inbounds for task in tasks
-        m, n, k, lda, ldb, ldc = NextLA._gemm_dims(
+mutable struct CUDAPreparedGroupedGemm{ScalarT,AT,BT,CT} <: NextLA.AbstractPreparedGroupedGemm
+    transa::Vector{CUBLAS.cublasOperation_t}
+    transb::Vector{CUBLAS.cublasOperation_t}
+    m::Vector{Int32}
+    n::Vector{Int32}
+    k::Vector{Int32}
+    alpha::Vector{ScalarT}
+    beta::Vector{ScalarT}
+    lda::Vector{Int32}
+    ldb::Vector{Int32}
+    ldc::Vector{Int32}
+    group_size::Vector{Int32}
+    hostA::Vector{CUDA.CuPtr{Cvoid}}
+    hostB::Vector{CUDA.CuPtr{Cvoid}}
+    hostC::Vector{CUDA.CuPtr{Cvoid}}
+    Aptrs::AT
+    Bptrs::BT
+    Cptrs::CT
+    Atype::CUBLAS.cudaDataType_t
+    Btype::CUBLAS.cudaDataType_t
+    Ctype::CUBLAS.cudaDataType_t
+    compute::CUBLAS.cublasComputeType_t
+    closed::Bool
+end
+
+@inline _grouped_voidptr(A) = reinterpret(CUDA.CuPtr{Cvoid}, _grouped_cuptr(A))
+@inline _grouped_pointer_aligned(A) = iszero(UInt(_grouped_cuptr(A)) & UInt(0x0f))
+@inline NextLA._grouped_gemm_task_alignment_safe(task::NextLA.GroupedGemmTask, mode) =
+    _grouped_pointer_aligned(task.A) && _grouped_pointer_aligned(task.B) &&
+    _grouped_pointer_aligned(task.C)
+
+function _destroy_cuda_prepared_grouped_gemm!(prepared::CUDAPreparedGroupedGemm)
+    prepared.closed && return prepared
+    prepared.closed = true
+    CUDA.unsafe_free!(prepared.Cptrs)
+    CUDA.unsafe_free!(prepared.Bptrs)
+    CUDA.unsafe_free!(prepared.Aptrs)
+    return prepared
+end
+
+function NextLA._destroy_prepared_grouped_gemm!(prepared::CUDAPreparedGroupedGemm)
+    return _destroy_cuda_prepared_grouped_gemm!(prepared)
+end
+
+function _prepare_cuda_grouped_gemm_ex!(tasks::AbstractVector{<:NextLA.GroupedGemmTask},
+                                        ::Type{ScalarT}, compute_enum) where {ScalarT}
+    isempty(tasks) && return nothing
+    ntask = length(tasks)
+    keys = NextLA.GroupedGemmKey{ScalarT}[]
+    sizehint!(keys, min(ntask, 64))
+    lookup = Dict{NextLA.GroupedGemmKey{ScalarT},Int}()
+    sizehint!(lookup, min(ntask, 64))
+    task_group = Vector{Int}(undef, ntask)
+    group_size = Int32[]
+    sizehint!(group_size, min(ntask, 64))
+
+    Atype = convert(CUBLAS.cudaDataType_t, eltype(first(tasks).A))
+    Btype = convert(CUBLAS.cudaDataType_t, eltype(first(tasks).B))
+    Ctype = convert(CUBLAS.cudaDataType_t, eltype(first(tasks).C))
+    @inbounds for (task_index, task) in enumerate(tasks)
+        convert(CUBLAS.cudaDataType_t, eltype(task.A)) == Atype &&
+            convert(CUBLAS.cudaDataType_t, eltype(task.B)) == Btype &&
+            convert(CUBLAS.cudaDataType_t, eltype(task.C)) == Ctype ||
+            throw(ArgumentError("one prepared grouped GEMM requires uniform operand storage types"))
+        gm, gn, gk, glda, gldb, gldc = NextLA._gemm_dims(
             task.transA, task.transB, task.A, task.B, task.C)
-        # cuBLAS supplies alpha/beta once per group, not once per member.
-        # Shapes with different scalars therefore need distinct groups.
-        key = (task.transA, task.transB, m, n, k, lda, ldb, ldc,
-               ScalarT(task.alpha), ScalarT(task.beta))
-        pos = findfirst(isequal(key), keys)
-        if pos === nothing
+        key = NextLA.GroupedGemmKey{ScalarT}(
+            task.transA, task.transB, Int32(gm), Int32(gn), Int32(gk),
+            Int32(glda), Int32(gldb), Int32(gldc),
+            ScalarT(task.alpha), ScalarT(task.beta))
+        group = get(lookup, key, 0)
+        if group == 0
             push!(keys, key)
-            push!(buckets, TaskT[])
-            pos = length(buckets)
+            push!(group_size, 0)
+            group = length(keys)
+            lookup[key] = group
         end
-        push!(buckets[pos], task)
+        task_group[task_index] = group
+        group_size[group] += 1
     end
 
-    transA = Char[]; transB = Char[]; alpha = ScalarT[]; beta = ScalarT[]
-    m = Int32[]; n = Int32[]; k = Int32[]
-    lda = Int32[]; ldb = Int32[]; ldc = Int32[]; group_size = Int32[]
-    flatA = AT[]; flatB = BT[]; flatC = CT[]
-    for bucket in buckets
-        task0 = first(bucket)
-        gm, gn, gk, glda, gldb, gldc = NextLA._gemm_dims(
-            task0.transA, task0.transB, task0.A, task0.B, task0.C)
-        push!(transA, bucket[1].transA)
-        push!(transB, bucket[1].transB)
-        push!(alpha, ScalarT(bucket[1].alpha))
-        push!(beta, ScalarT(bucket[1].beta))
-        push!(m, Int32(gm)); push!(n, Int32(gn)); push!(k, Int32(gk))
-        push!(lda, Int32(glda)); push!(ldb, Int32(gldb)); push!(ldc, Int32(gldc))
-        push!(group_size, Int32(length(bucket)))
-        for task in bucket
-            push!(flatA, task.A); push!(flatB, task.B); push!(flatC, task.C)
+    ngroup = length(keys)
+    offsets = Vector{Int}(undef, ngroup + 1)
+    offsets[1] = 1
+    @inbounds for group in 1:ngroup
+        offsets[group + 1] = offsets[group] + group_size[group]
+    end
+    cursor = copy(offsets)
+    hostA = Vector{CUDA.CuPtr{Cvoid}}(undef, ntask)
+    hostB = similar(hostA)
+    hostC = similar(hostA)
+    @inbounds for (task_index, task) in enumerate(tasks)
+        group = task_group[task_index]
+        dest = cursor[group]
+        cursor[group] += 1
+        hostA[dest] = _grouped_voidptr(task.A)
+        hostB[dest] = _grouped_voidptr(task.B)
+        hostC[dest] = _grouped_voidptr(task.C)
+    end
+    # Registration is persistent for the descriptor's lifetime and allows the
+    # pipeline to refresh a slot with an asynchronous host-to-device copy.
+    CUDA.pin(hostA); CUDA.pin(hostB); CUDA.pin(hostC)
+    Aptrs = CUDA.CuArray(hostA)
+    Bptrs = CUDA.CuArray(hostB)
+    Cptrs = CUDA.CuArray(hostC)
+
+    transa = Vector{CUBLAS.cublasOperation_t}(undef, ngroup)
+    transb = similar(transa)
+    m = Vector{Int32}(undef, ngroup); n = similar(m); k = similar(m)
+    lda = similar(m); ldb = similar(m); ldc = similar(m)
+    alpha = Vector{ScalarT}(undef, ngroup)
+    beta = similar(alpha)
+    @inbounds for group in 1:ngroup
+        key = keys[group]
+        transa[group] = convert(CUBLAS.cublasOperation_t, key.transA)
+        transb[group] = convert(CUBLAS.cublasOperation_t, key.transB)
+        m[group] = key.m; n[group] = key.n; k[group] = key.k
+        lda[group] = key.lda; ldb[group] = key.ldb; ldc[group] = key.ldc
+        alpha[group] = key.alpha; beta[group] = key.beta
+    end
+    prepared = CUDAPreparedGroupedGemm(
+        transa, transb, m, n, k, alpha, beta, lda, ldb, ldc, group_size,
+        hostA, hostB, hostC, Aptrs, Bptrs, Cptrs,
+        Atype, Btype, Ctype, compute_enum, false)
+    finalizer(prepared) do descriptor
+        try
+            _destroy_cuda_prepared_grouped_gemm!(descriptor)
+        catch
+            # CUDA may already be torn down during process finalization.
         end
     end
-    # The grouped API consumes one flat device pointer table, ordered by
-    # groups. Group metadata and per-group scalars remain host arrays.
-    Aptrs = CUDA.CuArray(reinterpret.(CUDA.CuPtr{Cvoid}, _grouped_cuptr.(flatA)))
-    Bptrs = CUDA.CuArray(reinterpret.(CUDA.CuPtr{Cvoid}, _grouped_cuptr.(flatB)))
-    Cptrs = CUDA.CuArray(reinterpret.(CUDA.CuPtr{Cvoid}, _grouped_cuptr.(flatC)))
-    transa = convert.(CUBLAS.cublasOperation_t, transA)
-    transb = convert.(CUBLAS.cublasOperation_t, transB)
+    return prepared
+end
+
+function NextLA._prepare_precision_gemm_grouped(
+    tasks::AbstractVector{<:NextLA.GroupedGemmTask},
+    ::NextLA.GEMMCompute{ComputeT}) where {ComputeT}
+    return _prepare_cuda_grouped_gemm_ex!(
+        tasks, _cublas_scalar_type(ComputeT), _cublas_compute_type(ComputeT))
+end
+
+function NextLA._prepare_precision_gemm_grouped(
+    tasks::AbstractVector{<:NextLA.GroupedGemmTask}, ::NextLA.TF32)
+    return _prepare_cuda_grouped_gemm_ex!(
+        tasks, Float32, CUBLAS.CUBLAS_COMPUTE_32F_FAST_TF32)
+end
+
+function _submit_cuda_prepared_grouped_gemm!(prepared::CUDAPreparedGroupedGemm)
+    prepared.closed && throw(ArgumentError("prepared grouped GEMM descriptor is closed"))
+    _cublas_gemm_grouped_batched_ex!(
+        prepared.transa, prepared.transb, prepared.m, prepared.n, prepared.k,
+        prepared.alpha, prepared.Aptrs, prepared.Atype, prepared.lda,
+        prepared.Bptrs, prepared.Btype, prepared.ldb,
+        prepared.beta, prepared.Cptrs, prepared.Ctype, prepared.ldc,
+        Cint(length(prepared.group_size)), prepared.group_size, prepared.compute)
+    return prepared
+end
+
+function NextLA._precision_gemm_grouped_prepared!(prepared::CUDAPreparedGroupedGemm)
+    return _submit_cuda_prepared_grouped_gemm!(prepared)
+end
+
+function NextLA._precision_gemm_grouped_prepared!(prepared::CUDAPreparedGroupedGemm,
+                                                   alpha, beta)
+    fill!(prepared.alpha, convert(eltype(prepared.alpha), alpha))
+    fill!(prepared.beta, convert(eltype(prepared.beta), beta))
+    return _submit_cuda_prepared_grouped_gemm!(prepared)
+end
+
+function NextLA._with_grouped_host_pointer_mode(f, ::CUDA.CUDABackend)
+    CUBLAS.cublasSetPointerMode_v2(CUBLAS.handle(), CUBLAS.CUBLAS_POINTER_MODE_HOST)
     try
-        # cuBLAS grouped GEMM takes per-group scalars from host memory.
-        CUBLAS.cublasSetPointerMode_v2(CUBLAS.handle(), CUBLAS.CUBLAS_POINTER_MODE_HOST)
-        _cublas_gemm_grouped_batched_ex!(
-            transa, transb, m, n, k, alpha,
-            Aptrs, convert(CUBLAS.cudaDataType_t, eltype(first(flatA))), lda,
-            Bptrs, convert(CUBLAS.cudaDataType_t, eltype(first(flatB))), ldb,
-            beta, Cptrs, convert(CUBLAS.cudaDataType_t, eltype(first(flatC))), ldc,
-            Cint(length(buckets)), group_size, compute_enum,
-        )
+        return f()
     finally
         CUBLAS.cublasSetPointerMode_v2(CUBLAS.handle(), CUBLAS.CUBLAS_POINTER_MODE_DEVICE)
-        CUDA.unsafe_free!(Cptrs)
-        CUDA.unsafe_free!(Bptrs)
-        CUDA.unsafe_free!(Aptrs)
+    end
+end
+
+function NextLA._with_grouped_device_pointer_mode(f, ::CUDA.CUDABackend)
+    CUBLAS.cublasSetPointerMode_v2(CUBLAS.handle(), CUBLAS.CUBLAS_POINTER_MODE_DEVICE)
+    try
+        return f()
+    finally
+        CUBLAS.cublasSetPointerMode_v2(CUBLAS.handle(), CUBLAS.CUBLAS_POINTER_MODE_DEVICE)
+    end
+end
+
+function _cuda_grouped_gemm_ex!(tasks::AbstractVector{<:NextLA.GroupedGemmTask}, mode)
+    isempty(tasks) && return tasks
+    prepared = NextLA.prepare_precision_gemm_grouped(tasks, mode)
+    try
+        NextLA._with_grouped_host_pointer_mode(NextLA.get_backend(first(tasks).C)) do
+            NextLA.precision_gemm_grouped_prepared!(prepared)
+        end
+    finally
+        NextLA.destroy_prepared_grouped_gemm!(prepared)
     end
     return tasks
 end
 
 function NextLA._precision_gemm_grouped!(tasks::AbstractVector{<:NextLA.GroupedGemmTask},
-                                          mode::NextLA.GEMMCompute{ComputeT}) where {ComputeT}
-    return _cuda_grouped_gemm_ex!(tasks, _cublas_scalar_type(ComputeT),
-                                  _cublas_compute_type(ComputeT))
+                                         mode::Union{NextLA.GEMMCompute,NextLA.TF32})
+    return _cuda_grouped_gemm_ex!(tasks, mode)
 end
 
-function NextLA._precision_gemm_grouped!(tasks::AbstractVector{<:NextLA.GroupedGemmTask},
-                                          ::NextLA.TF32)
-    return _cuda_grouped_gemm_ex!(tasks, Float32,
-                                  CUBLAS.CUBLAS_COMPUTE_32F_FAST_TF32)
+mutable struct CUDAReusableGroupedGemmSlot{ScalarT,AT,BT,CT} <:
+               NextLA.AbstractReusableGroupedGemmSlot
+    max_tasks::Int
+    max_groups::Int
+    lookup::Dict{NextLA.GroupedGemmKey{ScalarT},Int}
+    task_group::Vector{Int}
+    offsets::Vector{Int}
+    cursor::Vector{Int}
+    transa::Vector{CUBLAS.cublasOperation_t}
+    transb::Vector{CUBLAS.cublasOperation_t}
+    m::Vector{Int32}
+    n::Vector{Int32}
+    k::Vector{Int32}
+    alpha::Vector{ScalarT}
+    beta::Vector{ScalarT}
+    lda::Vector{Int32}
+    ldb::Vector{Int32}
+    ldc::Vector{Int32}
+    group_size::Vector{Int32}
+    hostA::Vector{CUDA.CuPtr{Cvoid}}
+    hostB::Vector{CUDA.CuPtr{Cvoid}}
+    hostC::Vector{CUDA.CuPtr{Cvoid}}
+    Aptrs::AT
+    Bptrs::BT
+    Cptrs::CT
+    Atype::CUBLAS.cudaDataType_t
+    Btype::CUBLAS.cudaDataType_t
+    Ctype::CUBLAS.cudaDataType_t
+    compute::CUBLAS.cublasComputeType_t
+    ntask::Int
+    ngroup::Int
+    closed::Bool
+end
+
+function _destroy_cuda_reusable_grouped_gemm!(slot::CUDAReusableGroupedGemmSlot)
+    slot.closed && return slot
+    slot.closed = true
+    CUDA.unsafe_free!(slot.Cptrs)
+    CUDA.unsafe_free!(slot.Bptrs)
+    CUDA.unsafe_free!(slot.Aptrs)
+    return slot
+end
+
+NextLA._destroy_reusable_grouped_gemm!(slot::CUDAReusableGroupedGemmSlot) =
+    _destroy_cuda_reusable_grouped_gemm!(slot)
+
+@inline _reusable_compute(::NextLA.GEMMCompute{T}) where {T} =
+    (_cublas_scalar_type(T), _cublas_compute_type(T))
+@inline _reusable_compute(::NextLA.TF32) =
+    (Float32, CUBLAS.CUBLAS_COMPUTE_32F_FAST_TF32)
+
+function NextLA._create_reusable_grouped_gemm_slot(
+    ::CUDA.CUDABackend, max_tasks::Int, max_groups::Int,
+    ::Type{Tin}, ::Type{Tout}, mode::Union{NextLA.GEMMCompute,NextLA.TF32}) where {Tin,Tout}
+    ScalarT, compute_enum = _reusable_compute(mode)
+    lookup = Dict{NextLA.GroupedGemmKey{ScalarT},Int}()
+    sizehint!(lookup, max_groups)
+    task_group = Vector{Int}(undef, max_tasks)
+    offsets = Vector{Int}(undef, max_groups + 1)
+    cursor = Vector{Int}(undef, max_groups + 1)
+    transa = Vector{CUBLAS.cublasOperation_t}(undef, max_groups)
+    transb = similar(transa)
+    m = Vector{Int32}(undef, max_groups); n = similar(m); k = similar(m)
+    lda = similar(m); ldb = similar(m); ldc = similar(m)
+    alpha = Vector{ScalarT}(undef, max_groups); beta = similar(alpha)
+    group_size = Vector{Int32}(undef, max_groups)
+    hostA = Vector{CUDA.CuPtr{Cvoid}}(undef, max_tasks)
+    hostB = similar(hostA); hostC = similar(hostA)
+    CUDA.pin(hostA); CUDA.pin(hostB); CUDA.pin(hostC)
+    Aptrs = CUDA.CuArray{CUDA.CuPtr{Cvoid}}(undef, max_tasks)
+    Bptrs = similar(Aptrs); Cptrs = similar(Aptrs)
+    slot = CUDAReusableGroupedGemmSlot(
+        max_tasks, max_groups, lookup, task_group, offsets, cursor,
+        transa, transb, m, n, k, alpha, beta, lda, ldb, ldc, group_size,
+        hostA, hostB, hostC, Aptrs, Bptrs, Cptrs,
+        convert(CUBLAS.cudaDataType_t, Tin), convert(CUBLAS.cudaDataType_t, Tin),
+        convert(CUBLAS.cudaDataType_t, Tout), compute_enum, 0, 0, false)
+    finalizer(slot) do object
+        try
+            _destroy_cuda_reusable_grouped_gemm!(object)
+        catch
+        end
+    end
+    return slot
+end
+
+function NextLA._refresh_reusable_grouped_gemm!(
+    slot::CUDAReusableGroupedGemmSlot{ScalarT}, tasks, mode) where {ScalarT}
+    slot.closed && throw(ArgumentError("reusable grouped GEMM slot is closed"))
+    if tasks === nothing || isempty(tasks)
+        slot.ntask = 0
+        slot.ngroup = 0
+        return slot
+    end
+    ntask = length(tasks)
+    ntask <= slot.max_tasks || throw(ArgumentError(
+        "grouped metadata slot capacity $(slot.max_tasks) is smaller than $ntask tasks"))
+    empty!(slot.lookup)
+    ngroup = 0
+    @inbounds for (task_index, task) in enumerate(tasks)
+        convert(CUBLAS.cudaDataType_t, eltype(task.A)) == slot.Atype &&
+            convert(CUBLAS.cudaDataType_t, eltype(task.B)) == slot.Btype &&
+            convert(CUBLAS.cudaDataType_t, eltype(task.C)) == slot.Ctype ||
+            throw(ArgumentError("task storage types do not match reusable grouped slot"))
+        NextLA._grouped_gemm_task_alignment_safe(task, mode) || throw(ArgumentError(
+            "pipelined grouped GEMM encountered an unaligned task; use the transient fallback path"))
+        gm, gn, gk, glda, gldb, gldc = NextLA._gemm_dims(
+            task.transA, task.transB, task.A, task.B, task.C)
+        key = NextLA.GroupedGemmKey{ScalarT}(
+            task.transA, task.transB, Int32(gm), Int32(gn), Int32(gk),
+            Int32(glda), Int32(gldb), Int32(gldc),
+            ScalarT(task.alpha), ScalarT(task.beta))
+        group = get(slot.lookup, key, 0)
+        if group == 0
+            ngroup += 1
+            ngroup <= slot.max_groups || throw(ArgumentError(
+                "grouped metadata slot capacity $(slot.max_groups) is too small"))
+            group = ngroup
+            slot.lookup[key] = group
+            slot.transa[group] = convert(CUBLAS.cublasOperation_t, key.transA)
+            slot.transb[group] = convert(CUBLAS.cublasOperation_t, key.transB)
+            slot.m[group] = key.m; slot.n[group] = key.n; slot.k[group] = key.k
+            slot.lda[group] = key.lda; slot.ldb[group] = key.ldb; slot.ldc[group] = key.ldc
+            slot.alpha[group] = key.alpha; slot.beta[group] = key.beta
+            slot.group_size[group] = 0
+        end
+        slot.task_group[task_index] = group
+        slot.group_size[group] += 1
+    end
+    slot.offsets[1] = 1
+    @inbounds for group in 1:ngroup
+        slot.offsets[group + 1] = slot.offsets[group] + slot.group_size[group]
+        slot.cursor[group] = slot.offsets[group]
+    end
+    @inbounds for (task_index, task) in enumerate(tasks)
+        group = slot.task_group[task_index]
+        dest = slot.cursor[group]
+        slot.cursor[group] += 1
+        slot.hostA[dest] = _grouped_voidptr(task.A)
+        slot.hostB[dest] = _grouped_voidptr(task.B)
+        slot.hostC[dest] = _grouped_voidptr(task.C)
+    end
+    # With pinned host buffers these copies are enqueued on the current
+    # preparation stream; the pipeline records an event immediately afterward.
+    copyto!(slot.Aptrs, 1, slot.hostA, 1, ntask)
+    copyto!(slot.Bptrs, 1, slot.hostB, 1, ntask)
+    copyto!(slot.Cptrs, 1, slot.hostC, 1, ntask)
+    slot.ntask = ntask
+    slot.ngroup = ngroup
+    return slot
+end
+
+function _submit_cuda_reusable_grouped_gemm!(slot::CUDAReusableGroupedGemmSlot)
+    slot.closed && throw(ArgumentError("reusable grouped GEMM slot is closed"))
+    slot.ngroup == 0 && return slot
+    _cublas_gemm_grouped_batched_ex!(
+        slot.transa, slot.transb, slot.m, slot.n, slot.k, slot.alpha,
+        slot.Aptrs, slot.Atype, slot.lda, slot.Bptrs, slot.Btype, slot.ldb,
+        slot.beta, slot.Cptrs, slot.Ctype, slot.ldc,
+        Cint(slot.ngroup), slot.group_size, slot.compute)
+    return slot
+end
+
+NextLA._submit_reusable_grouped_gemm!(slot::CUDAReusableGroupedGemmSlot) =
+    _submit_cuda_reusable_grouped_gemm!(slot)
+
+function NextLA._submit_reusable_grouped_gemm!(slot::CUDAReusableGroupedGemmSlot,
+                                                alpha, beta)
+    @inbounds for group in 1:slot.ngroup
+        slot.alpha[group] = convert(eltype(slot.alpha), alpha)
+        slot.beta[group] = convert(eltype(slot.beta), beta)
+    end
+    return _submit_cuda_reusable_grouped_gemm!(slot)
 end
 
 function NextLA.gemm_batched!(transA::Char,

@@ -40,5 +40,23 @@ using Test
         sync(Ch)
         @test Float32.(Array(Ch)) ≈ 2f0 .* (Float32.(Float16[1 2; 3 4]) *
                                              Float32.(Float16[2 0 1; 1 3 4])) .+ 0.25f0
+
+        # Offset by one Float32 element: grouped cuBLAS kernels may fault on
+        # this pointer, so the adapter must route it through ordinary GEMMEx.
+        Astore = _to_backend(AT, Float32[0 0; 1 2; 3 4])
+        Aunsafe = view(Astore, 2:3, :)
+        Cunsafe = _to_backend(AT, zeros(Float32, 2, 3))
+        unsafe = [NextLA.GroupedGemmTask('N', 'N', 1f0, Aunsafe, B1, 0f0, Cunsafe)]
+        NextLA.precision_gemm_grouped!(unsafe, NextLA.GEMMCompute{Float32}())
+        sync(Cunsafe)
+        @test Array(Cunsafe) ≈ Float32[1 2; 3 4] * Float32[2 0 1; 1 3 4]
+        prepared_unsafe = NextLA.prepare_precision_gemm_grouped(
+            unsafe, NextLA.GEMMCompute{Float32}())
+        @test prepared_unsafe isa NextLA.PreparedGroupedGemmBundle
+        fill!(Cunsafe, 0f0)
+        NextLA.precision_gemm_grouped_prepared!(prepared_unsafe)
+        sync(Cunsafe)
+        @test Array(Cunsafe) ≈ Float32[1 2; 3 4] * Float32[2 0 1; 1 3 4]
+        NextLA.destroy_prepared_grouped_gemm!(prepared_unsafe)
     end
 end

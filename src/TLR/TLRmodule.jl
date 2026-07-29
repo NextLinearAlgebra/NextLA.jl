@@ -16,7 +16,15 @@ using ..NextLA: gemm_batched!, trsm_batched!, potrf_batched!
 using ..NextLA: precision_gemm!, precision_gemm_batched!, precision_gemm_grouped!, GroupedGemmTask
 using ..NextLA: gemm_compute_mode, gemm_compute_type, supports_grouped_gemm, supports_bfloat16_grouped_gemm
 using ..NextLA: GEMMCompute, validate_gemm_signature
+using ..NextLA: AbstractPreparedGroupedGemm, prepare_precision_gemm_grouped
+using ..NextLA: precision_gemm_grouped_prepared!, destroy_prepared_grouped_gemm!
+using ..NextLA: _with_grouped_host_pointer_mode, _with_grouped_device_pointer_mode
+using ..NextLA: PreparedGroupedGemmBundle
+using ..NextLA: AbstractReusableGroupedGemmSlot, create_reusable_grouped_gemm_slot
+using ..NextLA: refresh_reusable_grouped_gemm!, submit_reusable_grouped_gemm!
+using ..NextLA: destroy_reusable_grouped_gemm!
 using ..NextLA: create_streams, with_stream, sync_stream, sync_streams_with_default
+using ..NextLA: create_event, record_event!, wait_event!, sync_event
 using ..NextLA: SUBGROUP_SIZE, unwrap
 using ..NextLA: BatchPtrDescriptor, swap_batch_ptrs!, set_batch_ptrs!
 using ..NextLA: precision_gemm_batched_ptrs!
@@ -28,11 +36,13 @@ export compress!, alloc_workspace
 export uncompress!
 export get_factors
 export pack_compressed_ftlr
-export maxrank, ranks, residuals, dense_diag, dense_diag_corner, grid_size
+export maxrank, ranks, execution_ranks, execution_maxrank
+export residuals, dense_diag, dense_diag_corner, grid_size
 export nominal_tile_size, tail_tile_size
 export ndiag_tiles, tile_origin_coords, tile_size
 export gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes
 export DenseGemmWorkspace, InteriorFirstWorkspace
+export CompressedGemmAnalysis, analyze_compressed_gemm
 export TLRGemmWorkspace
 export tlr_gemm_minimum_workspace_bytes, tlr_gemm_maximum_workspace_bytes
 

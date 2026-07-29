@@ -14,3 +14,10 @@ function NextLA.sync_streams_with_default(::CUDA.CUDABackend,
         CUDA.wait(ev, s)
     end
 end
+
+NextLA.create_event(::CUDA.CUDABackend) = CUDA.CuEvent()
+NextLA.record_event!(::CUDA.CUDABackend, event::CUDA.CuEvent, stream::CUDA.CuStream) =
+    CUDA.record(event, stream)
+NextLA.wait_event!(::CUDA.CUDABackend, event::CUDA.CuEvent, stream::CUDA.CuStream) =
+    CUDA.wait(event, stream)
+NextLA.sync_event(::CUDA.CUDABackend, event::CUDA.CuEvent) = CUDA.wait(event)

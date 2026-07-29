@@ -93,19 +93,16 @@ function uncompress!(A::AbstractMatrix{T}, A_tlr::CompressedFTLRMatrix{<:Any,T})
     if supports_grouped_gemm(get_backend(A_tlr))
         T === Core.BFloat16 && !supports_bfloat16_grouped_gemm(get_backend(A_tlr)) &&
             throw(ArgumentError("CompressedFTLR BF16 grouped GEMMEx requires an NVIDIA SM80 or newer device"))
-        tasks = nothing
+        tasks = GroupedGemmTask[]
+        sizehint!(tasks, qm * qn)
         @inbounds for j in 1:qn, i in 1:qm
             _compressed_ftlr_rank(A_tlr, i, j) == 0 && continue
             U, V = get_factors(A_tlr, i, j)
-            task = GroupedGemmTask('N', _adjoint_blas_char(T), one(T), U, V, zero(T),
-                                   _dense_tile_view(A, A_tlr, i, j))
-            if tasks === nothing
-                tasks = typeof(task)[task]
-            else
-                push!(tasks, task)
-            end
+            push!(tasks, GroupedGemmTask(
+                'N', _adjoint_blas_char(T), one(T), U, V, zero(T),
+                _dense_tile_view(A, A_tlr, i, j)))
         end
-        tasks === nothing || precision_gemm_grouped!(tasks, mode)
+        isempty(tasks) || precision_gemm_grouped!(tasks, mode)
         return A
     end
     @inbounds for j in 1:qn, i in 1:qm

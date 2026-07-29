@@ -14,7 +14,7 @@ function _validate_compressed_ftlr_layout(A, B)
     return nothing
 end
 
-function _compressed_ftlr_gemm!(C::AbstractMatrix, A, B; workspace, alpha, beta, compute)
+function _validate_compressed_ftlr_gemm(C::AbstractMatrix, A, B, compute)
     T = eltype(A)
     (typeof(get_backend(A)) === typeof(get_backend(B)) &&
      typeof(get_backend(A)) === typeof(get_backend(C))) ||
@@ -35,6 +35,11 @@ function _compressed_ftlr_gemm!(C::AbstractMatrix, A, B; workspace, alpha, beta,
         "CompressedFTLR grouped GEMMEx currently requires output storage to match operand storage; " *
         "got $T × $T → $(eltype(C))",
     ))
+    return nothing
+end
+
+function _compressed_ftlr_gemm!(C::AbstractMatrix, A, B; workspace, alpha, beta, compute)
+    _validate_compressed_ftlr_gemm(C, A, B, compute)
     if maxrank(A) == 0 || maxrank(B) == 0
         return _scale_output!(C, beta)
     end
