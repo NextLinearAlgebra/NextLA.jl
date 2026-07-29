@@ -23,6 +23,16 @@ IDs are skipped when restarting. Environment variables prefixed
 `NEXTLA_DENSE_` can override the defaults; see
 `compressed_dense.jl`.
 
+The fixed-rank padded baseline uses tile-row-major A, tile-column-major B,
+maximum reusable numerical workspace, and no symbolic phase:
+
+```bash
+julia --project=experiments experiments/padded_dense.jl
+```
+
+It benchmarks only ranks `b/32`, `b/16`, and `b/8`, and writes to
+`experiments/results/padded_dense_v2.csv`.
+
 `grouped_gemm.jl` and `KBLAS/` are independent primitive/baseline
 microbenchmarks and are intentionally retained.
 
@@ -45,7 +55,7 @@ julia --project=experiments experiments/rows_per_run.jl
 
 Results are appended to `experiments/results/rows_per_run_v2.csv`.
 
-Run all three sequentially with:
+Run all four sequentially with:
 
 ```bash
 bash experiments/run_all.sh

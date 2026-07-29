@@ -51,9 +51,10 @@ end
 
 """
     generate_ftlr_operands(...; format=:padded, rank_distribution=:constant,
-                           min_rank, max_rank)
+                           min_rank, max_rank, padded_orders)
 
-Generate synthetic padded or compressed FTLR operands.  `:constant` uses the
+Generate synthetic padded or compressed FTLR operands. `padded_orders` selects
+the tile-storage order of A and B when `format=:padded`.  `:constant` uses the
 two ranks in `ranks`; `:uniform` samples every tile uniformly in the inclusive
 `min_rank:max_rank` interval; `:skewed` uses the same interval with a
 low-rank-heavy quadratic distribution.  The rank grid is generated on the CPU
@@ -65,6 +66,7 @@ function generate_ftlr_operands(
     seed::Integer=0, shared_rank::Integer=0, backend=CPU(),
     format::Symbol=:padded, rank_distribution::Symbol=:constant,
     min_rank=nothing, max_rank=nothing,
+    padded_orders=(TileRowMajor, TileRowMajor),
 ) where {T}
     m, k, n, b = Int.((m, k, n, tile_size))
     rA, rB = Int.(ranks)
@@ -95,7 +97,8 @@ function generate_ftlr_operands(
     shared <= min(minimum(rankA), minimum(rankB)) ||
         throw(ArgumentError("shared_rank exceeds a generated tile rank"))
 
-    A, B = _allocate_pair(backend, T, m, k, n, b, rankA, rankB, format)
+    A, B = _allocate_pair(
+        backend, T, m, k, n, b, rankA, rankB, format, padded_orders)
     if _HAS_CUDA && backend isa CUDA.CUDABackend
         _fill_factors_gpu!(A, B, seed, shared)
     else
@@ -141,10 +144,12 @@ function _rank_grid(qm, qn, constant_rank, lo, hi, distribution, rng)
     return min.(ranks, hi)
 end
 
-function _allocate_pair(backend, ::Type{T}, m, k, n, b, rankA, rankB, format) where {T}
+function _allocate_pair(
+    backend, ::Type{T}, m, k, n, b, rankA, rankB, format, padded_orders) where {T}
     if format === :padded
-        A = PaddedFTLRMatrix(backend, T, m, k, b, maximum(rankA); tile_order=TileRowMajor)
-        B = PaddedFTLRMatrix(backend, T, k, n, b, maximum(rankB); tile_order=TileRowMajor)
+        orderA, orderB = padded_orders
+        A = PaddedFTLRMatrix(backend, T, m, k, b, maximum(rankA); tile_order=orderA)
+        B = PaddedFTLRMatrix(backend, T, k, n, b, maximum(rankB); tile_order=orderB)
         A.ranks .= vec(permutedims(rankA))
         B.ranks .= vec(permutedims(rankB))
         return A, B

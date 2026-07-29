@@ -28,6 +28,19 @@ using .ExperimentMatrixGeneration
     @test norm(VB1[:, 1]' * VB2[:, 2]) < 100eps()
 end
 
+@testset "padded operand tile orders" begin
+    A, B = generate_ftlr_operands(
+        8, 8, 8, 4, (2, 2), Float32;
+        seed=14,
+        format=:padded,
+        padded_orders=(NextLA.TileRowMajor, NextLA.TileColMajor),
+    )
+    @test NextLA.TLRmodule.tile_order(A) isa NextLA.TileRowMajor
+    @test NextLA.TLRmodule.tile_order(B) isa NextLA.TileColMajor
+    @test all(Int.(A.ranks) .== 2)
+    @test all(Int.(B.ranks) .== 2)
+end
+
 @testset "variable-rank FTLR generation" begin
     for distribution in (:constant, :uniform, :skewed)
         A, B = generate_ftlr_operands(16, 16, 16, 4, (3, 3), Float32;
