@@ -218,7 +218,7 @@ and a standalone dense right operand. Intermediates retain the operand storage t
 function gemm!(C::AbstractMatrix,
     A::Union{PaddedFTLRMatrix{BackendT,T},CompressedFTLRMatrix{BackendT,T}},
     B::AbstractMatrix{T};
-    workspace, alpha=true, beta=false,
+    workspace, alpha=true, beta=false, analysis=nothing,
     transA::Char='N', transB::Char='N', compute=nothing) where {BackendT,T}
     LA = logical_operand(A, transA)
     LB = logical_dense_operand(B, transB)
@@ -229,6 +229,13 @@ function gemm!(C::AbstractMatrix,
     mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
     validate_tlr_gemm_precision(backend, T, eltype(C), mode)
     ScalarT = gemm_compute_type(mode)
+    if analysis !== nothing
+        analysis isa CompressedMixedGemmAnalysis || throw(ArgumentError(
+            "analysis must be nothing or CompressedMixedGemmAnalysis"))
+        return _execute_compressed_mixed_analysis!(
+            analysis, C, A, B, workspace, ScalarT(alpha), ScalarT(beta),
+            transA, transB, mode)
+    end
     _, arena, budget = _prepare_single_gemm_workspace(A, workspace)
     return _tlr_dense_gemm!(C, LA, LB, ScalarT(alpha), ScalarT(beta),
                             budget, mode, arena)
@@ -242,7 +249,7 @@ and a fully low-rank right operand. Intermediates retain the operand storage typ
 """
 function gemm!(C::AbstractMatrix, A::AbstractMatrix{T},
     B::Union{PaddedFTLRMatrix{BackendT,T},CompressedFTLRMatrix{BackendT,T}};
-    workspace, alpha=true, beta=false,
+    workspace, alpha=true, beta=false, analysis=nothing,
     transA::Char='N', transB::Char='N', compute=nothing) where {BackendT,T}
     LA = logical_dense_operand(A, transA)
     LB = logical_operand(B, transB)
@@ -253,6 +260,13 @@ function gemm!(C::AbstractMatrix, A::AbstractMatrix{T},
     mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
     validate_tlr_gemm_precision(backend, T, eltype(C), mode)
     ScalarT = gemm_compute_type(mode)
+    if analysis !== nothing
+        analysis isa CompressedMixedGemmAnalysis || throw(ArgumentError(
+            "analysis must be nothing or CompressedMixedGemmAnalysis"))
+        return _execute_compressed_mixed_analysis!(
+            analysis, C, A, B, workspace, ScalarT(alpha), ScalarT(beta),
+            transA, transB, mode)
+    end
     _, arena, budget = _prepare_single_gemm_workspace(B, workspace)
     return _dense_tlr_gemm!(C, LA, LB, ScalarT(alpha), ScalarT(beta),
                             budget, mode, arena)

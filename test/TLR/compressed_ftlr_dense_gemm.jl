@@ -92,6 +92,55 @@ end
     end
 end
 
+@testset "CompressedFTLR CUDA mixed grouped lowering and analysis" begin
+    rank_grid = Int[1 2 1; 2 0 1; 1 1 1]
+    H = NextLA.CompressedFTLRMatrix(
+        KernelAbstractions.CPU(), Float32, 9, 9, (4, 4), rank_grid)
+    rng = MersenneTwister(2026)
+    for j in 1:3, i in 1:3
+        U, V = NextLA.get_factors(H, i, j)
+        U .= randn(rng, Float32, size(U))
+        V .= randn(rng, Float32, size(V))
+    end
+    Hdense = zeros(Float32, 9, 9)
+    NextLA.uncompress!(Hdense, H)
+    for (name, AT, sync) in backends
+        name == "CUDA" || continue
+        G = _compressed_ftlr_to_backend(H, AT)
+        for side in (:compressed_dense, :dense_compressed),
+            trans_dense in ('N', 'T'), trans_compressed in ('N', 'T')
+            Xhost = randn(rng, Float32, 9, 9)
+            X = AT(Xhost)
+            C0 = randn(rng, Float32, 9, 9)
+            C = AT(C0)
+            workspace = NextLA.DenseGemmWorkspace(G, 4096)
+            if side === :compressed_dense
+                analysis = NextLA.analyze_compressed_gemm(
+                    C, G, X; workspace,
+                    transA=trans_compressed, transB=trans_dense)
+                _TLRM.gemm!(
+                    C, G, X; workspace, alpha=1.25f0, beta=-0.5f0,
+                    transA=trans_compressed, transB=trans_dense, analysis)
+                opG = trans_compressed == 'N' ? Hdense : transpose(Hdense)
+                opX = trans_dense == 'N' ? Xhost : transpose(Xhost)
+            else
+                analysis = NextLA.analyze_compressed_gemm(
+                    C, X, G; workspace,
+                    transA=trans_dense, transB=trans_compressed)
+                _TLRM.gemm!(
+                    C, X, G; workspace, alpha=1.25f0, beta=-0.5f0,
+                    transA=trans_dense, transB=trans_compressed, analysis)
+                opX = trans_dense == 'N' ? Xhost : transpose(Xhost)
+                opG = trans_compressed == 'N' ? Hdense : transpose(Hdense)
+            end
+            sync(C)
+            product = side === :compressed_dense ? opG * opX : opX * opG
+            @test Array(C) ≈ 1.25f0 .* product .- 0.5f0 .* C0 rtol=3f-4 atol=3f-4
+            close(analysis)
+        end
+    end
+end
+
 
 @testset "CompressedFTLR symbolic analysis and row-run pipeline" begin
     Ahost = _compressed_ftlr_fixture(Float32, Int[1 2; 3 1])

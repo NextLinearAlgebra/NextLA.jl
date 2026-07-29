@@ -101,19 +101,23 @@ const COLUMNS = (
 case_id(N, b, profile, precision) =
     "N$(N)__b$(b)__$(profile.name)__$(precision.name)__rows$(ROWS_PER_RUN)"
 
-function completed(path)
+completed(path) = completed(path, COLUMNS)
+
+function completed(path, columns)
     isfile(path) || return Set{String}()
     lines = readlines(path)
     isempty(lines) && return Set{String}()
-    first(lines) == join(COLUMNS, ',') || error("CSV schema mismatch at $path")
+    first(lines) == join(columns, ',') || error("CSV schema mismatch at $path")
     return Set(first(split(line, ',')) for line in Iterators.drop(lines, 1) if !isempty(line))
 end
 
-function ensure_output(path)
+ensure_output(path) = ensure_output(path, COLUMNS)
+
+function ensure_output(path, columns)
     mkpath(dirname(path))
     if !isfile(path) || filesize(path) == 0
         open(path, "w") do io
-            println(io, join(COLUMNS, ','))
+            println(io, join(columns, ','))
         end
     end
 end
@@ -169,7 +173,7 @@ function benchmark_case(N, b, profile, precision, dense)
     return result
 end
 
-function main()
+function run_compressed_dense()
     CUDA.functional() || error("compressed dense-output benchmark requires CUDA")
     ensure_output(OUTPUT); done = completed(OUTPUT)
     @printf("Compressed dense-output benchmark: H/W=%d/%d rows=%d output=%s\n",
@@ -193,4 +197,6 @@ function main()
     end
 end
 
-main()
+if abspath(PROGRAM_FILE) == @__FILE__
+    run_compressed_dense()
+end

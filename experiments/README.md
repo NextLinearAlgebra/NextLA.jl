@@ -25,3 +25,24 @@ IDs are skipped when restarting. Environment variables prefixed
 
 `grouped_gemm.jl` and `KBLAS/` are independent primitive/baseline
 microbenchmarks and are intentionally retained.
+
+The matching dense-left experiment uses the same sizes, tiles, rank profiles,
+and precision modes. It reports transient scheduling, symbolic analysis, and
+execution with reused two-stage grouped-GEMM descriptors:
+
+```bash
+julia --project=experiments experiments/dense_compressed.jl
+```
+
+The scheduler sweep uses `N = 2^11,…,2^15`, `b=N/8`, `r=b/8`, and rows/run
+from one through eight:
+
+```bash
+julia --project=experiments experiments/rows_per_run.jl
+```
+
+Run all three sequentially with:
+
+```bash
+bash experiments/run_all.sh
+```

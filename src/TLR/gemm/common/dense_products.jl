@@ -1,9 +1,10 @@
 # Complete TLR × dense and dense × TLR products. Each low-rank tile needs only one
 # operand-typed intermediate; the reduction over TLR tiles accumulates directly in C.
 
-function _tlr_dense_gemm!(C, A::LogicalTLROperand{<:Any,<:AbstractTLRMatrix{<:Any,T}},
-                          B::LogicalDenseOperand, alpha, beta, budget::Int,
-                          compute, arena=nothing) where {T}
+function _tlr_dense_gemm_sequential!(
+    C, A::LogicalTLROperand{<:Any,<:AbstractTLRMatrix{<:Any,T}},
+    B::LogicalDenseOperand, alpha, beta, budget::Int,
+    compute, arena=nothing) where {T}
     _scale_output!(C, beta)
     r = maxrank(A)
     (isempty(C) || r == 0) && return C
@@ -29,9 +30,10 @@ function _tlr_dense_gemm!(C, A::LogicalTLROperand{<:Any,<:AbstractTLRMatrix{<:An
     return C
 end
 
-function _dense_tlr_gemm!(C, A::LogicalDenseOperand,
-                          B::LogicalTLROperand{<:Any,<:AbstractTLRMatrix{<:Any,T}},
-                          alpha, beta, budget::Int, compute, arena=nothing) where {T}
+function _dense_tlr_gemm_sequential!(
+    C, A::LogicalDenseOperand,
+    B::LogicalTLROperand{<:Any,<:AbstractTLRMatrix{<:Any,T}},
+    alpha, beta, budget::Int, compute, arena=nothing) where {T}
     _scale_output!(C, beta)
     r = maxrank(B)
     (isempty(C) || r == 0) && return C
@@ -55,4 +57,28 @@ function _dense_tlr_gemm!(C, A::LogicalDenseOperand,
         end
     end
     return C
+end
+
+_tlr_dense_gemm!(args...) = _tlr_dense_gemm_sequential!(args...)
+_dense_tlr_gemm!(args...) = _dense_tlr_gemm_sequential!(args...)
+
+function _tlr_dense_gemm!(
+    C, A::LogicalTLROperand{<:Any,<:CompressedFTLRMatrix},
+    B::LogicalDenseOperand, alpha, beta, budget::Int, compute, arena=nothing)
+    supports_grouped_gemm(get_backend(A)) ||
+        return _tlr_dense_gemm_sequential!(
+            C, A, B, alpha, beta, budget, compute, arena)
+    return _compressed_dense_grouped!(
+        C, A, B, alpha, beta, budget, compute, arena)
+end
+
+function _dense_tlr_gemm!(
+    C, A::LogicalDenseOperand,
+    B::LogicalTLROperand{<:Any,<:CompressedFTLRMatrix},
+    alpha, beta, budget::Int, compute, arena=nothing)
+    supports_grouped_gemm(get_backend(B)) ||
+        return _dense_tlr_gemm_sequential!(
+            C, A, B, alpha, beta, budget, compute, arena)
+    return _dense_compressed_grouped!(
+        C, A, B, alpha, beta, budget, compute, arena)
 end

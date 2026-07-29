@@ -42,7 +42,7 @@ export nominal_tile_size, tail_tile_size
 export ndiag_tiles, tile_origin_coords, tile_size
 export gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes
 export DenseGemmWorkspace, InteriorFirstWorkspace
-export CompressedGemmAnalysis, analyze_compressed_gemm
+export CompressedGemmAnalysis, CompressedMixedGemmAnalysis, analyze_compressed_gemm
 export TLRGemmWorkspace
 export tlr_gemm_minimum_workspace_bytes, tlr_gemm_maximum_workspace_bytes
 

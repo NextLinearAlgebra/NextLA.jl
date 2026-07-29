@@ -161,6 +161,23 @@ older CUDA device rejects the BF16 grouped path clearly. Current cuBLAS rejects 
 mixed storage signature is explicitly rejected rather than falling back to
 ordinary or stream-batched GEMM.
 
+The mixed dense/CompressedFTLR CUDA paths use the same dual packing in a
+two-stage reduction. For dense × compressed, one grouped call forms every
+`A_k U_kj` piece for a dense-row slab directly in output-column-major rank
+stacks; a second grouped call multiplies those stacks by the zero-copy
+column-packed inner-factor panels. Compressed × dense is the mirror: its first
+grouped call forms every `V_ik' B_k` piece, and its second grouped call uses the
+zero-copy row-packed outer-factor panels. Logical transpose swaps the factor
+roles and packing orders, so both terminal panels remain contiguous for `N/T`.
+The workspace budget selects the largest dense row or column slab that fits.
+Smaller legacy budgets fall back to the sequential lowering.
+
+`analyze_compressed_gemm` also accepts either mixed operand ordering. Its
+`CompressedMixedGemmAnalysis` owns the prepared grouped descriptors for each
+slab, validates the bound dense/compressed/output/workspace objects and rank
+metadata, and permits factor values and numerical scalars to change between
+calls.
+
 ## GEMM source layout
 
 `gemm/common/` contains operand-independent precision, workspace, axis-strategy,
