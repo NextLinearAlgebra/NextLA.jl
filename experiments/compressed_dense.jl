@@ -1,9 +1,8 @@
 # Poster-oriented CompressedFTLR × CompressedFTLR → dense benchmark.
 #
-# The primary pipeline number includes every per-call schedule, group build,
-# pointer-table upload, GPU kernel, and final synchronization. Matrix/factor
-# generation and numerical/descriptor capacity allocation are setup and are
-# excluded consistently from all methods.
+# Symbolic analysis and numerical execution are timed separately. Matrix/factor
+# generation and numerical workspace allocation are setup and excluded
+# consistently from all methods.
 
 using LinearAlgebra
 using Printf
@@ -12,24 +11,25 @@ using KernelAbstractions
 using CUDA
 using NextLA
 
-include(joinpath(@__DIR__, "../../experiments/common.jl"))
+include(joinpath(@__DIR__, "compressed_dense_support.jl"))
 using .DenseGemmCommon
 const TLRM = NextLA.TLRmodule
 
 parse_ints(name, default) = parse.(Int, split(get(ENV, name, default), ','))
-const SIZES = parse_ints("NEXTLA_POSTER_SIZES", "8192,16384,32768")
-const TILES = parse_ints("NEXTLA_POSTER_TILES", "512,1024,2048")
-const WARMUP = parse(Int, get(ENV, "NEXTLA_POSTER_WARMUP", "2"))
-const REPS = parse(Int, get(ENV, "NEXTLA_POSTER_REPS", "10"))
-const ANALYSIS_REPS = parse(Int, get(ENV, "NEXTLA_POSTER_ANALYSIS_REPS", "3"))
-const ROWS_PER_RUN = parse(Int, get(ENV, "NEXTLA_POSTER_ROWS", "4"))
-const OUTPUT = get(ENV, "NEXTLA_POSTER_OUTPUT",
-    joinpath(@__DIR__, "results", "compressed_gemm_poster.csv"))
-const CASE_FILTER = Regex(get(ENV, "NEXTLA_POSTER_FILTER", ".*"))
+const SIZES = parse_ints("NEXTLA_DENSE_SIZES", "4096,8192,16384,32768")
+const TILE_DIVISORS = parse_ints("NEXTLA_DENSE_TILE_DIVISORS", "16,8,4")
+const WARMUP = parse(Int, get(ENV, "NEXTLA_DENSE_WARMUP", "1"))
+const REPS = parse(Int, get(ENV, "NEXTLA_DENSE_REPS", "3"))
+const ANALYSIS_REPS = parse(Int, get(ENV, "NEXTLA_DENSE_ANALYSIS_REPS", "3"))
+const ROWS_PER_RUN = parse(Int, get(ENV, "NEXTLA_DENSE_ROWS", "4"))
+const OUTPUT = get(ENV, "NEXTLA_DENSE_OUTPUT",
+    joinpath(@__DIR__, "results", "compressed_dense.csv"))
+const CASE_FILTER = Regex(get(ENV, "NEXTLA_DENSE_FILTER", ".*"))
 
 const PRECISIONS = (
     (name="fp16_fp32", T=Float16, compute=NextLA.GEMMCompute{Float32}()),
-    (name="tf32", T=Float32, compute=NextLA.TF32()),
+    (name="fp32_tf32", T=Float32, compute=NextLA.TF32()),
+    (name="fp32", T=Float32, compute=NextLA.GEMMCompute{Float32}()),
 )
 
 function rank_profiles(b)
@@ -91,11 +91,11 @@ const COLUMNS = (
     "case_id", "N", "tile_size", "profile", "distribution", "min_rank", "max_rank",
     "precision", "rows_per_run", "workspace_bytes", "analysis_ms",
     "analysis_min_ms", "transient_median_ms", "transient_min_ms",
-    "analyzed_median_ms", "analyzed_min_ms", "pipeline_median_ms", "pipeline_min_ms",
-    "dense_median_ms", "dense_min_ms", "analyzed_speedup", "pipeline_speedup",
-    "cold_analysis_plus_numeric_ms", "amortization_vs_pipeline_calls",
+    "analyzed_median_ms", "analyzed_min_ms",
+    "dense_median_ms", "dense_min_ms", "analyzed_speedup",
+    "cold_analysis_plus_numeric_ms", "analysis_amortization_calls",
     "exact_flops", "executed_flops", "padding_waste_pct",
-    "analyzed_executed_gflops", "pipeline_executed_gflops", "dense_gflops",
+    "analyzed_executed_gflops", "dense_gflops",
 )
 
 case_id(N, b, profile, precision) =
@@ -144,49 +144,42 @@ function benchmark_case(N, b, profile, precision, dense)
         TLRM.gemm!(C, A, B; workspace, alpha=one(T), beta=zero(T), compute, analysis)
     end
 
-    pipeline = TLRM._compressed_gemm_pipeline_workspace(
-        C, A, B; workspace, max_rows_per_run=ROWS_PER_RUN, compute)
-    pipelined = samples_ms(C, T) do
-        TLRM._gemm_compressed_pipelined!(
-            C, A, B; pipeline, workspace, alpha=one(T), beta=zero(T), compute)
-    end
-
     executed = DenseGemmCommon._tlr_tlr_executed_flops(A, B, workspace_bytes)
     exact = DenseGemmCommon._tlr_tlr_exact_flops(A, B, workspace_bytes)
     padding_waste = executed == 0 ? 0.0 : 100 * (executed - exact) / executed
     dense_flops = 2.0 * N^3
     cold = analysis_timing.median + analyzed.median
-    crossover = crossover_calls(analysis_timing.median, analyzed.median, pipelined.median)
+    crossover = crossover_calls(analysis_timing.median, analyzed.median, transient.median)
     result = (
         case_id(N, b, profile, precision), N, b, profile.name, profile.distribution,
         profile.lo, profile.hi, precision.name, ROWS_PER_RUN, workspace_bytes,
         analysis_timing.median, analysis_timing.minimum,
         transient.median, transient.minimum, analyzed.median, analyzed.minimum,
-        pipelined.median, pipelined.minimum, dense.median, dense.minimum,
-        dense.median / analyzed.median, dense.median / pipelined.median,
+        dense.median, dense.minimum, dense.median / analyzed.median,
         cold, crossover, exact, executed, padding_waste,
-        executed / (analyzed.median * 1e6), executed / (pipelined.median * 1e6),
-        dense_flops / (dense.median * 1e6),
+        executed / (analyzed.median * 1e6), dense_flops / (dense.median * 1e6),
     )
     @printf(
-        "%-55s analysis=%8.3f ms numeric=%8.3f ms pipeline=%8.3f ms dense=%8.3f ms speedup=%5.2fx/%5.2fx padding=%5.1f%%\n",
-        first(result), analysis_timing.median, analyzed.median, pipelined.median,
-        dense.median, dense.median / analyzed.median, dense.median / pipelined.median,
-        padding_waste)
-    close(analysis); close(pipeline)
+        "%-55s analysis=%8.3f ms transient=%8.3f ms numeric=%8.3f ms dense=%8.3f ms speedup=%5.2fx padding=%5.1f%%\n",
+        first(result), analysis_timing.median, transient.median, analyzed.median,
+        dense.median, dense.median / analyzed.median, padding_waste)
+    close(analysis)
     A = B = C = workspace = nothing
     GC.gc(true); CUDA.reclaim()
     return result
 end
 
 function main()
-    CUDA.functional() || error("poster benchmark requires CUDA")
+    CUDA.functional() || error("compressed dense-output benchmark requires CUDA")
     ensure_output(OUTPUT); done = completed(OUTPUT)
-    @printf("Compressed dense-output poster benchmark: H/W=%d/%d rows=%d output=%s\n",
+    @printf("Compressed dense-output benchmark: H/W=%d/%d rows=%d output=%s\n",
             WARMUP, REPS, ROWS_PER_RUN, OUTPUT)
     dense_cache = Dict{Tuple{Int,String},NamedTuple}()
-    for N in SIZES, b in TILES
-        N % b == 0 || continue
+    for N in SIZES, divisor in TILE_DIVISORS
+        divisor > 0 || throw(ArgumentError("tile divisors must be positive"))
+        N % divisor == 0 ||
+            throw(ArgumentError("matrix size $N is not divisible by tile divisor $divisor"))
+        b = N ÷ divisor
         for precision in PRECISIONS, profile in rank_profiles(b)
             id = case_id(N, b, profile, precision)
             occursin(CASE_FILTER, id) || continue

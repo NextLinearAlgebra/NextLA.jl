@@ -2,7 +2,7 @@ using LinearAlgebra
 using Test
 using NextLA
 
-include(joinpath(@__DIR__, "../../experiments/matrix_generation.jl"))
+include(joinpath(@__DIR__, "../../experiments/operand_generation.jl"))
 using .ExperimentMatrixGeneration
 
 @testset "experiment TLR matrix generation" begin

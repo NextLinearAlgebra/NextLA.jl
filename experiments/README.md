@@ -1,27 +1,27 @@
-# NextLA experiments
+# Compressed FTLR dense-output experiment
 
 From the repository root:
 
 ```bash
 julia --project=experiments -e 'using Pkg; Pkg.instantiate()'
-julia --project=experiments experiments/run_experiments.jl
+julia --project=experiments experiments/compressed_dense.jl
 ```
 
-The all-campaign runner starts fresh Julia processes for:
+This runs only `CompressedFTLRMatrix × CompressedFTLRMatrix → dense`, using a
+reusable symbolic analysis and no experimental pipeline. The default grid is:
 
-- `dense_output/run_experiments.jl`: dense output from padded and packed
-  (variable-rank compressed) FTLR operands, using FP16/FP32, BF16/FP32, and
-  FP32/TF32. Padded operands are included only in strong scaling as the
-  old-format comparison; the other sweeps use compressed operands only;
-- `padded_ftlr_output/run_experiments.jl`: padded FTLR output from padded FTLR
-  operands, using full FP32.
+- matrix sizes `4096, 8192, 16384, 32768`;
+- tile sizes `N/16, N/8, N/4`;
+- constant ranks `b/32`, `b/16`, and `b/8`;
+- uniform and low-rank-skewed distributions over `[b/32,b/8]`;
+- FP16 storage with FP32 compute, FP32 storage with TF32 compute, and full FP32;
+- one warmup and three measured repetitions.
 
-Each experiment's sweep parameters are at the top of its own file. Shared
-precision, repetition, seed, workspace, and output settings are at the top of
-the corresponding `run_experiments.jl`. Results are written below that
-campaign's `results/` directory after every completed configuration. Restarting
-a campaign preserves those files and skips configurations already recorded.
+Results are appended to
+`experiments/results/compressed_dense.csv`. Completed case
+IDs are skipped when restarting. Environment variables prefixed
+`NEXTLA_DENSE_` can override the defaults; see
+`compressed_dense.jl`.
 
-Dense-output correctness checks retain a dense reference on the GPU. Set
-`CHECK_RESULTS = false` in a campaign runner only when the largest case cannot
-fit the reference alongside the measured operands.
+`grouped_gemm.jl` and `KBLAS/` are independent primitive/baseline
+microbenchmarks and are intentionally retained.

@@ -1,8 +1,8 @@
-"""Benchmark CUDA grouped GEMM against batched and individual GEMMs.
+"""CUDA grouped-GEMM microbenchmark against batched and individual GEMMs.
 
 Run from the repository root with:
 
-    julia --project=experiments experiments/benchmark_gemm_grouped.jl
+    julia --project=experiments experiments/grouped_gemm.jl
 
 The configuration block is intentionally at the top so the benchmark cases
 can be changed without editing the measurement code.

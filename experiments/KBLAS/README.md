@@ -61,28 +61,9 @@ MAGMA available at link/runtime time.
 
 ## Run
 
-From the NextLA repository:
-
-```bash
-KBLAS_ROOT=/path/to/kblas-gpu \
-MAGMA_ROOT=/path/to/magma \
-CUDA_ROOT=/path/to/cuda \
-bash experiments/KBLAS/run_experiments.sh
-```
-
-Set `KBLAS_PRECISIONS=float,double` to choose the builds; the default runs
-both. `KBLAS_WARMUP` and `KBLAS_REPS` override the timing counts.
-
-The launcher writes one CSV per output mode and precision:
-
-```text
-experiments/KBLAS/results/strong_scaling_lld_float.csv
-experiments/KBLAS/results/strong_scaling_lll_double.csv
-```
-
-The top of `run_experiments.sh` contains the strong-scaling parameters. Both
-input ranks are passed independently; the default campaign uses `rank_A=64`,
-`rank_B=128`, `tile_size=512`, and `output_rank=128` for LLL.
+`benchmark_tlr_dense.cu` is retained as the standalone KBLAS comparison source.
+There is deliberately no repository shell launcher; compile it directly for
+the local KBLAS, MAGMA, CUDA, and BLAS installation.
 
 This benchmark covers KBLAS `Float32` and `Float64` fixed-rank TLR GEMM.
 KBLAS does not currently provide a linked variable-rank implementation for the

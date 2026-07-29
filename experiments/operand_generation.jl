@@ -1,4 +1,4 @@
-"""Synthetic TLR operand generation for the benchmark experiments."""
+"""Synthetic CompressedFTLR operand generation for experiments."""
 module ExperimentMatrixGeneration
 
 using LinearAlgebra

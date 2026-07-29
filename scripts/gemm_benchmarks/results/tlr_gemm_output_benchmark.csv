@@ -1,1 +1,0 @@
-case_id,m,k,n,bm,bk,bn,rank_A,rank_B,rank_C,precision,nreps,dense_ms,tlr_dense_compress_ms,tlr_output_ms,dense_plus_compress_speedup,tlr_output_speedup,error_dense_compress_abs,error_dense_compress_rel,error_tlr_output_abs,error_tlr_output_rel

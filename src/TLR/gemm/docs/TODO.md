@@ -354,7 +354,7 @@ orthogonalization groups while retaining one fused full-`k` contraction.
 waves, passes, padded projection columns, discarded terminal columns, and
 synchronized phase timings. The internal
 `_tlr_gemm_schedule_stats!` entry point and
-`scripts/benchmark_tlr_rolling_scheduler.jl` expose these measurements without
+An experiment driver should expose these measurements without
 adding profiling keywords to public `gemm!`.
 
 R4a measurements are: active and pending width per pass; underfilled tail
