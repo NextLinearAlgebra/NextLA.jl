@@ -4,7 +4,7 @@ include(joinpath(@__DIR__, "compressed_dense.jl"))
 
 const DENSE_COMPRESSED_OUTPUT = get(
     ENV, "NEXTLA_DENSE_COMPRESSED_OUTPUT",
-    joinpath(@__DIR__, "results", "dense_compressed.csv"))
+    joinpath(@__DIR__, "results", "dense_compressed_v2.csv"))
 
 const DENSE_COMPRESSED_COLUMNS = (
     "case_id", "N", "tile_size", "profile", "distribution", "min_rank", "max_rank",

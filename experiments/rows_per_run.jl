@@ -6,7 +6,7 @@ const ROW_SWEEP_SIZES = parse_ints(
     "NEXTLA_ROWS_SIZES", "2048,4096,8192,16384,32768")
 const ROW_SWEEP_VALUES = parse_ints("NEXTLA_ROWS_VALUES", "1,2,3,4,5,6,7,8")
 const ROW_SWEEP_OUTPUT = get(
-    ENV, "NEXTLA_ROWS_OUTPUT", joinpath(@__DIR__, "results", "rows_per_run.csv"))
+    ENV, "NEXTLA_ROWS_OUTPUT", joinpath(@__DIR__, "results", "rows_per_run_v2.csv"))
 
 const ROW_SWEEP_COLUMNS = (
     "case_id", "N", "tile_size", "rank", "precision", "rows_per_run",
@@ -48,7 +48,7 @@ function run_rows_per_run()
                 time_analysis(C, A, B, workspace, precision.compute)
             timing = samples_ms(C, T) do
                 TLRM.gemm!(
-                    C, A, B; workspace, alpha=one(T), beta=zero(T),
+                    C, A, B; workspace, alpha=one(T), beta=one(T),
                     compute=precision.compute, analysis)
             end
             executed =

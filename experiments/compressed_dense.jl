@@ -23,7 +23,7 @@ const REPS = parse(Int, get(ENV, "NEXTLA_DENSE_REPS", "3"))
 const ANALYSIS_REPS = parse(Int, get(ENV, "NEXTLA_DENSE_ANALYSIS_REPS", "3"))
 const ROWS_PER_RUN = parse(Int, get(ENV, "NEXTLA_DENSE_ROWS", "4"))
 const OUTPUT = get(ENV, "NEXTLA_DENSE_OUTPUT",
-    joinpath(@__DIR__, "results", "compressed_dense.csv"))
+    joinpath(@__DIR__, "results", "compressed_dense_v2.csv"))
 const CASE_FILTER = Regex(get(ENV, "NEXTLA_DENSE_FILTER", ".*"))
 
 const PRECISIONS = (
