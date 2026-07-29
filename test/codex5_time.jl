@@ -64,7 +64,7 @@ end
 
 function check_lu_time_hierarchical()
     # 2k to 16k captures asymptotic GPU Tensor Core scaling without excessive runtimes
-    n_values = [2048, 4096, 8192, 16384]
+    n_values = [2048, 4096, 8192, 16384, 32768, 65536]
 
     # Map your specific target scenarios to precision vectors
     mixed_scenarios = Dict(
