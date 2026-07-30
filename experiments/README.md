@@ -55,6 +55,60 @@ julia --project=experiments experiments/rows_per_run.jl
 
 Results are appended to `experiments/results/rows_per_run_v2.csv`.
 
+## Execution-rank bucketing ablation
+
+The focused bucketing experiment compares identical logical rank maps under
+`:exact`, `:q8`, `:q16`, and `:pow2` execution capacities:
+
+```bash
+julia --project=experiments experiments/rank_bucketing.jl
+```
+
+Its defaults are deliberately small enough for a local CUDA GPU:
+
+- matrix sizes `4096,8192`;
+- a `16 × 16` tile grid;
+- ranks sampled uniformly from `1:64`;
+- FP16 storage with FP32 accumulation;
+- four output rows per run;
+- one warmup and ten measured numerical executions.
+
+Summary results are written to `experiments/results/rank_bucketing.csv`.
+Per-stage grouped shapes, group sizes, and ordinary-GEMM fallback members are
+written to `experiments/results/rank_bucketing_groups.csv`. The latter is
+important for interpreting `:exact`: exact rank stacks can create unaligned
+intermediate subviews in the current lowering, so its fallback count must not
+be confused with the effect of shape count alone. Compare `:q8` with `:q16`
+and `:pow2` to isolate the aligned shape-bucketing trade-off.
+
+The configuration uses `NEXTLA_BUCKET_*` environment variables. For example:
+
+```bash
+NEXTLA_BUCKET_SIZES=4096 \
+NEXTLA_BUCKET_REPS=10 \
+NEXTLA_BUCKET_POLICIES=exact,q8,q16,pow2 \
+julia --project=experiments experiments/rank_bucketing.jl
+```
+
+## Poster plots
+
+Generate the strong-scaling figure, workspace-sensitivity figure, and combined
+poster panel from the checked-in CSV files with:
+
+```bash
+python3 -m pip install --upgrade -r experiments/requirements-plot.txt
+python3 experiments/plot_poster.py
+```
+
+The plotting script requires Matplotlib and writes PDF, SVG, and 300-DPI PNG
+versions to `experiments/figures/`. Its defaults select the `16 × 16` skewed-rank
+compressed experiment for the central plot and FP16/FP32-accumulate workspace
+results at `N = 4096, 16384, 65536` for the supporting plot. Run
+`python3 experiments/plot_poster.py --help` for selection and output options.
+Performance ratios use the best observed timings: `dense_min_ms /
+analyzed_min_ms` for strong scaling and `numeric_min_ms` for the workspace
+sweep.
+
 Run all four sequentially with:
 
 ```bash
