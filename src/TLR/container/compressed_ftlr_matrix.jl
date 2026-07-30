@@ -30,6 +30,7 @@ struct CompressedFTLRMatrix{BackendT<:Backend,T,AT<:AbstractVector{T},RankT<:Int
     inner::CompressedFTLRPackedFactors{AT,InnerT}
     ranks::Vector{RankT}
     execution_ranks::Vector{RankT}
+    execution_rank_policy::Symbol
     resid::Vector{Float64}
     maxrank::Int
     execution_maxrank::Int
@@ -76,9 +77,19 @@ end
 @inline compressed_ftlr_inner_order(A::CompressedFTLRMatrix) = A.inner.order
 @inline execution_ranks(A::CompressedFTLRMatrix) = A.execution_ranks
 @inline execution_maxrank(A::CompressedFTLRMatrix) = A.execution_maxrank
+@inline execution_rank_policy(A::CompressedFTLRMatrix) = A.execution_rank_policy
 
-@inline _compressed_ftlr_execution_rank(r::Integer) =
-    iszero(r) ? 0 : cld(Int(r), 8) * 8
+@inline function _compressed_ftlr_execution_rank(r::Integer, policy::Symbol=:q8)
+    r = Int(r)
+    r >= 0 || throw(ArgumentError("CompressedFTLR ranks must be nonnegative"))
+    iszero(r) && return 0
+    policy === :exact && return r
+    policy === :q8 && return cld(r, 8) * 8
+    policy === :q16 && return cld(r, 16) * 16
+    policy === :pow2 && return max(8, nextpow(2, r))
+    throw(ArgumentError("unknown CompressedFTLR execution-rank policy $policy; " *
+                        "expected :exact, :q8, :q16, or :pow2"))
+end
 
 @inline function _compressed_ftlr_offsets(order::TileOrderStyle, qm::Int, qn::Int,
                                 leading_dimension_at, rank_at)
@@ -104,16 +115,19 @@ end
 """
     CompressedFTLRMatrix(backend, T, m, n, tile_size, ranks;
                outer_order=TileRowMajor, inner_order=TileColMajor,
+               execution_rank_policy=:q8,
                rank_type=Int32)
 
 Allocate an exact-rank CompressedFTLR matrix. The public ranks remain exact,
-while physical factor widths are rounded up to multiples of eight and padded
-with zeros for aligned GEMM execution. A regular nominal grid may have one
-trailing row and/or column tile.
+while physical factor widths follow `execution_rank_policy` and are padded with
+zeros as necessary. `:q8` is the default aligned execution policy; `:exact`,
+`:q16`, and `:pow2` are useful for measurement. A regular nominal grid may have
+one trailing row and/or column tile.
 """
 function CompressedFTLRMatrix(backend::Backend, ::Type{T}, m::Int, n::Int,
                     tile_size::NTuple{2,Int}, ranks_in::AbstractMatrix{<:Integer};
                     outer_order=TileRowMajor, inner_order=TileColMajor,
+                    execution_rank_policy::Symbol=:q8,
                     rank_type::Type{<:Integer}=Int32) where {T}
     bm, bn = tile_size
     m > 0 && n > 0 && bm > 0 && bn > 0 ||
@@ -132,10 +146,13 @@ function CompressedFTLRMatrix(backend::Backend, ::Type{T}, m::Int, n::Int,
     outer_style = _order_instance(outer_order)
     inner_style = _order_instance(inner_order)
     rank_style = outer_style
-    execution_rank_at = (i, j) -> _compressed_ftlr_execution_rank(ranks_in[i, j])
+    # Validate even for an all-zero rank grid, then capture the selected policy.
+    _compressed_ftlr_execution_rank(0, execution_rank_policy)
+    execution_rank_at = (i, j) ->
+        _compressed_ftlr_execution_rank(ranks_in[i, j], execution_rank_policy)
     # A multiple-of-eight leading dimension plus a multiple-of-eight execution
-    # rank keeps every packed factor base 16-byte aligned for all supported
-    # storage types, including ragged boundary tiles.
+    # rank keeps every packed factor base 16-byte aligned for the default and
+    # bucketed policies, including ragged boundary tiles.
     uld = [cld(x, 8) * 8 for x in rowdims]
     vld = [cld(x, 8) * 8 for x in coldims]
     uoffsets = _compressed_ftlr_offsets(
@@ -147,14 +164,14 @@ function CompressedFTLRMatrix(backend::Backend, ::Type{T}, m::Int, n::Int,
     outer = CompressedFTLRPackedFactors(udata, uoffsets, outer_style, uld, rowdims, :row, qm, qn)
     inner = CompressedFTLRPackedFactors(vdata, voffsets, inner_style, vld, coldims, :col, qm, qn)
     rankvec = _compressed_ftlr_rank_vector(rank_style, ranks_in, rank_type)
-    execution_rank_grid = map(_compressed_ftlr_execution_rank, ranks_in)
+    execution_rank_grid = map(r -> _compressed_ftlr_execution_rank(r, execution_rank_policy), ranks_in)
     execution_rankvec = _compressed_ftlr_rank_vector(
         rank_style, execution_rank_grid, rank_type)
     resid = Base.zeros(Float64, qm * qn)
     return CompressedFTLRMatrix{typeof(backend),T,typeof(udata),rank_type,typeof(outer_style),
                       typeof(inner_style),typeof(rank_style)}(
         backend, rank_style, m, n, tile_size, (m % bm, n % bn), outer, inner,
-        rankvec, execution_rankvec, resid,
+        rankvec, execution_rankvec, execution_rank_policy, resid,
         isempty(rankvec) ? 0 : maximum(rankvec),
         isempty(execution_rankvec) ? 0 : maximum(execution_rankvec))
 end
@@ -166,14 +183,15 @@ end
 
 """Pack a padded `PaddedFTLRMatrix` into exact-rank CompressedFTLR storage."""
 function pack_compressed_ftlr(A::PaddedFTLRMatrix{<:Any,T}; outer_order=TileRowMajor,
-                   inner_order=TileColMajor, rank_type::Type{<:Integer}=Int32) where {T}
+                   inner_order=TileColMajor, execution_rank_policy::Symbol=:q8,
+                   rank_type::Type{<:Integer}=Int32) where {T}
     qm, qn = grid_size(A)
     rank_grid = Matrix{Int}(undef, qm, qn)
     @inbounds for j in 1:qn, i in 1:qm
         rank_grid[i, j] = Int(ranks(A)[_rank_index(A, i, j)])
     end
     B = CompressedFTLRMatrix(get_backend(A), T, A.m, A.n, nominal_tile_size(A), rank_grid;
-                   outer_order, inner_order, rank_type)
+                   outer_order, inner_order, execution_rank_policy, rank_type)
     @inbounds for j in 1:qn, i in 1:qm
         r = rank_grid[i, j]
         r == 0 && continue

@@ -106,7 +106,7 @@ function _build_compressed_ftlr_foldright_run(C, A, B, plan::CompressedFTLRRankP
                                _compressed_ftlr_row_w_stack(B, k, rBsum), zero(T),
                                _ragged_view(sdata, soff[ii, k, firstj], rA, rBsum))
         if s1 === nothing
-            s1 = typeof(task)[task]
+            s1 = GroupedGemmTask[task]
         else
             push!(s1, task)
         end
@@ -126,7 +126,7 @@ function _build_compressed_ftlr_foldright_run(C, A, B, plan::CompressedFTLRRankP
                                view(tstack, (rho_before_k + 1):(rho_before_k + rA),
                                     (plan.output_col_prefix[j] + 1):plan.output_col_prefix[j + 1]))
         if s2 === nothing
-            s2 = typeof(task)[task]
+            s2 = GroupedGemmTask[task]
         else
             push!(s2, task)
         end
@@ -144,7 +144,7 @@ function _build_compressed_ftlr_foldright_run(C, A, B, plan::CompressedFTLRRankP
         task = GroupedGemmTask('N', 'N', alpha, _compressed_ftlr_row_outer_stack(A, i, rho),
                                _ragged_view(tdata, tbase[ii], rho, plan.output_col_prefix[end]), beta, Crow)
         if s3 === nothing
-            s3 = typeof(task)[task]
+            s3 = GroupedGemmTask[task]
         else
             push!(s3, task)
         end
@@ -213,7 +213,7 @@ function _build_compressed_ftlr_foldleft_run(C, A, B, plan::CompressedFTLRRankPl
         task = GroupedGemmTask('T', 'N', one(T), compressed_ftlr_execution_inner(A, i, k),
                                _compressed_ftlr_row_w_stack(B, k, rBsum), zero(T),
                                _ragged_view(sdata, soff[ii, k, firstj], rA, rBsum))
-        if s1 === nothing; s1 = typeof(task)[task]; else; push!(s1, task); end
+        if s1 === nothing; s1 = GroupedGemmTask[task]; else; push!(s1, task); end
     end
 
     s2 = nothing
@@ -226,7 +226,7 @@ function _build_compressed_ftlr_foldleft_run(C, A, B, plan::CompressedFTLRRankPl
         task = GroupedGemmTask('N', 'N', one(T), compressed_ftlr_execution_outer(A, i, k),
                                _ragged_view(sdata, soff[ii, k, j], rA, rB), zero(T),
                                _ragged_view(tdata, toff, bm, rB))
-        if s2 === nothing; s2 = typeof(task)[task]; else; push!(s2, task); end
+        if s2 === nothing; s2 = GroupedGemmTask[task]; else; push!(s2, task); end
     end
 
     s3 = nothing
@@ -243,7 +243,7 @@ function _build_compressed_ftlr_foldleft_run(C, A, B, plan::CompressedFTLRRankPl
         task = GroupedGemmTask('N', 'T', alpha,
                                _ragged_view(tdata, tbase, bm, gamma),
                                _compressed_ftlr_col_z_stack(B, j, gamma), beta, Cij)
-        if s3 === nothing; s3 = typeof(task)[task]; else; push!(s3, task); end
+        if s3 === nothing; s3 = GroupedGemmTask[task]; else; push!(s3, task); end
     end
     return CompressedFTLRRunTasks(s1, s2, s3, tdata, scale_targets)
 end

@@ -36,7 +36,7 @@ export compress!, alloc_workspace
 export uncompress!
 export get_factors
 export pack_compressed_ftlr
-export maxrank, ranks, execution_ranks, execution_maxrank
+export maxrank, ranks, execution_ranks, execution_maxrank, execution_rank_policy
 export residuals, dense_diag, dense_diag_corner, grid_size
 export nominal_tile_size, tail_tile_size
 export ndiag_tiles, tile_origin_coords, tile_size

@@ -67,6 +67,7 @@ function generate_ftlr_operands(
     format::Symbol=:padded, rank_distribution::Symbol=:constant,
     min_rank=nothing, max_rank=nothing,
     padded_orders=(TileRowMajor, TileRowMajor),
+    compressed_execution_rank_policy::Symbol=:q8,
 ) where {T}
     m, k, n, b = Int.((m, k, n, tile_size))
     rA, rB = Int.(ranks)
@@ -98,7 +99,8 @@ function generate_ftlr_operands(
         throw(ArgumentError("shared_rank exceeds a generated tile rank"))
 
     A, B = _allocate_pair(
-        backend, T, m, k, n, b, rankA, rankB, format, padded_orders)
+        backend, T, m, k, n, b, rankA, rankB, format, padded_orders,
+        compressed_execution_rank_policy)
     if _HAS_CUDA && backend isa CUDA.CUDABackend
         _fill_factors_gpu!(A, B, seed, shared)
     else
@@ -145,7 +147,8 @@ function _rank_grid(qm, qn, constant_rank, lo, hi, distribution, rng)
 end
 
 function _allocate_pair(
-    backend, ::Type{T}, m, k, n, b, rankA, rankB, format, padded_orders) where {T}
+    backend, ::Type{T}, m, k, n, b, rankA, rankB, format, padded_orders,
+    compressed_execution_rank_policy) where {T}
     if format === :padded
         orderA, orderB = padded_orders
         A = PaddedFTLRMatrix(backend, T, m, k, b, maximum(rankA); tile_order=orderA)
@@ -155,9 +158,11 @@ function _allocate_pair(
         return A, B
     elseif format === :compressed
         return (CompressedFTLRMatrix(backend, T, m, k, b, rankA;
-                    outer_order=TileRowMajor, inner_order=TileColMajor),
+                    outer_order=TileRowMajor, inner_order=TileColMajor,
+                    execution_rank_policy=compressed_execution_rank_policy),
                 CompressedFTLRMatrix(backend, T, k, n, b, rankB;
-                    outer_order=TileRowMajor, inner_order=TileColMajor))
+                    outer_order=TileRowMajor, inner_order=TileColMajor,
+                    execution_rank_policy=compressed_execution_rank_policy))
     end
     throw(ArgumentError("format must be :padded or :compressed"))
 end

@@ -100,7 +100,7 @@ include("TLR/TLRmodule.jl")
 using .TLRmodule: TileColMajor, TileRowMajor
 using .TLRmodule: AbstractTLRMatrix, TLRMatrix, PaddedFTLRMatrix, CompressedFTLRMatrix
 using .TLRmodule: ndiag_tiles, tile_origin_coords, tile_size
-using .TLRmodule: maxrank, ranks, execution_ranks, execution_maxrank
+using .TLRmodule: maxrank, ranks, execution_ranks, execution_maxrank, execution_rank_policy
 using .TLRmodule: residuals, dense_diag, dense_diag_corner, grid_size, nominal_tile_size, tail_tile_size
 using .TLRmodule: compress!, uncompress!, alloc_workspace
 using .TLRmodule: get_factors
@@ -111,6 +111,7 @@ using .TLRmodule: CompressedGemmAnalysis, CompressedMixedGemmAnalysis, analyze_c
 using .TLRmodule: TLRGemmWorkspace
 using .TLRmodule: tlr_gemm_minimum_workspace_bytes, tlr_gemm_maximum_workspace_bytes
 export gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes
+export execution_rank_policy
 export DenseGemmWorkspace, InteriorFirstWorkspace
 export CompressedGemmAnalysis, CompressedMixedGemmAnalysis, analyze_compressed_gemm
 export TLRGemmWorkspace

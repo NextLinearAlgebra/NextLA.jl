@@ -58,4 +58,11 @@ end
     U2, V2 = NextLA.get_factors(B, 1, 1)
     @test size(U1, 2) == size(V1, 2) == 2
     @test size(U2, 2) == size(V2, 2) == 2
+
+    exact_A, exact_B = generate_ftlr_operands(8, 8, 8, 4, (2, 2), Float32;
+        seed=6, format=:compressed, rank_distribution=:constant,
+        min_rank=2, max_rank=2, compressed_execution_rank_policy=:exact)
+    @test NextLA.execution_rank_policy(exact_A) === :exact
+    @test NextLA.execution_rank_policy(exact_B) === :exact
+    @test all(Int.(NextLA.execution_ranks(exact_A)) .== 2)
 end

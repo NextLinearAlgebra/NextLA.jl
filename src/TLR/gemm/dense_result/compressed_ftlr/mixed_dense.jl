@@ -24,7 +24,7 @@ mutable struct CompressedMixedGemmAnalysis{CT,AT,BT,WT,ModeT}
 end
 
 @inline function _mixed_grouped_tasks_push(tasks, task)
-    tasks === nothing && return typeof(task)[task]
+    tasks === nothing && return GroupedGemmTask[task]
     push!(tasks, task)
     return tasks
 end

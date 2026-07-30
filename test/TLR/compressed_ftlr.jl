@@ -61,6 +61,23 @@ end
     @test size(execution_U) == (16, 16)
     @test all(iszero, execution_U[:, 10:16])
 
+    exact = NextLA.CompressedFTLRMatrix(
+        KernelAbstractions.CPU(), Float32, 16, 32, (16, 16),
+        Int[1 9; 3 8]; execution_rank_policy=:exact)
+    q16 = NextLA.CompressedFTLRMatrix(
+        KernelAbstractions.CPU(), Float32, 16, 32, (16, 16),
+        Int[1 9; 3 8]; execution_rank_policy=:q16)
+    pow2 = NextLA.CompressedFTLRMatrix(
+        KernelAbstractions.CPU(), Float32, 16, 32, (16, 16),
+        Int[1 9; 3 8]; execution_rank_policy=:pow2)
+    @test NextLA.execution_rank_policy(exact) === :exact
+    @test Int.(NextLA.execution_ranks(exact)) == [1, 3, 9, 8]
+    @test Int.(NextLA.execution_ranks(q16)) == [16, 16, 16, 16]
+    @test Int.(NextLA.execution_ranks(pow2)) == [8, 16, 8, 8]
+    @test_throws ArgumentError NextLA.CompressedFTLRMatrix(
+        KernelAbstractions.CPU(), Float32, 16, 16, 16, ones(Int, 1, 1);
+        execution_rank_policy=:invalid)
+
     padded = NextLA.PaddedFTLRMatrix(KernelAbstractions.CPU(), Float64, 8, 12, (4, 4), 3)
     padded.ranks .= NextLA.ranks(A)
     for j in 1:3, i in 1:2

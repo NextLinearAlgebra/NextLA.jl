@@ -90,6 +90,18 @@ NEXTLA_BUCKET_POLICIES=exact,q8,q16,pow2 \
 julia --project=experiments experiments/rank_bucketing.jl
 ```
 
+For the H100 sweep, retain the fixed `16 × 16` grid and expand the sizes; this
+keeps the rank distribution and row-run policy comparable while changing only
+the problem scale:
+
+```bash
+NEXTLA_BUCKET_SIZES=4096,8192,16384,32768 \
+NEXTLA_BUCKET_TILE_DIVISOR=16 \
+NEXTLA_BUCKET_MIN_RANK=1 NEXTLA_BUCKET_MAX_RANK=64 \
+NEXTLA_BUCKET_ROWS=4 NEXTLA_BUCKET_WARMUP=1 NEXTLA_BUCKET_REPS=10 \
+julia --project=experiments experiments/rank_bucketing.jl
+```
+
 ## Poster plots
 
 Generate the strong-scaling figure, workspace-sensitivity figure, and combined
