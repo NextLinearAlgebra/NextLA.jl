@@ -63,10 +63,6 @@ mutable struct CUDAPreparedGroupedGemm{ScalarT,AT,BT,CT} <: NextLA.AbstractPrepa
 end
 
 @inline _grouped_voidptr(A) = reinterpret(CUDA.CuPtr{Cvoid}, _grouped_cuptr(A))
-@inline _grouped_pointer_aligned(A) = iszero(UInt(_grouped_cuptr(A)) & UInt(0x0f))
-@inline NextLA._grouped_gemm_task_alignment_safe(task::NextLA.GroupedGemmTask, mode) =
-    _grouped_pointer_aligned(task.A) && _grouped_pointer_aligned(task.B) &&
-    _grouped_pointer_aligned(task.C)
 
 function _destroy_cuda_prepared_grouped_gemm!(prepared::CUDAPreparedGroupedGemm)
     prepared.closed && return prepared
@@ -215,15 +211,6 @@ function NextLA._with_grouped_host_pointer_mode(f, ::CUDA.CUDABackend)
     end
 end
 
-function NextLA._with_grouped_device_pointer_mode(f, ::CUDA.CUDABackend)
-    CUBLAS.cublasSetPointerMode_v2(CUBLAS.handle(), CUBLAS.CUBLAS_POINTER_MODE_DEVICE)
-    try
-        return f()
-    finally
-        CUBLAS.cublasSetPointerMode_v2(CUBLAS.handle(), CUBLAS.CUBLAS_POINTER_MODE_DEVICE)
-    end
-end
-
 function _cuda_grouped_gemm_ex!(tasks::AbstractVector{<:NextLA.GroupedGemmTask}, mode)
     isempty(tasks) && return tasks
     prepared = NextLA.prepare_precision_gemm_grouped(tasks, mode)
@@ -346,8 +333,6 @@ function NextLA._refresh_reusable_grouped_gemm!(
             convert(CUBLAS.cudaDataType_t, eltype(task.B)) == slot.Btype &&
             convert(CUBLAS.cudaDataType_t, eltype(task.C)) == slot.Ctype ||
             throw(ArgumentError("task storage types do not match reusable grouped slot"))
-        NextLA._grouped_gemm_task_alignment_safe(task, mode) || throw(ArgumentError(
-            "pipelined grouped GEMM encountered an unaligned task; use the transient fallback path"))
         gm, gn, gk, glda, gldb, gldc = NextLA._gemm_dims(
             task.transA, task.transB, task.A, task.B, task.C)
         key = NextLA.GroupedGemmKey{ScalarT}(

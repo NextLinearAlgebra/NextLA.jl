@@ -135,7 +135,8 @@ function stage_descriptor_rows(stage, case_id, stage_name, run_index)
         push!(shapes, shape)
         push!(rows, (case_id, stage_name, run_index, "fallback", shape..., 1))
     end
-    return ((shapes, submissions, groups, grouped_tasks, length(fallback)), rows)
+    return ((shapes=shapes, submissions=submissions, groups=groups,
+             grouped_tasks=grouped_tasks, fallback_tasks=length(fallback)), rows)
 end
 
 function descriptor_summary(analysis, case_id)

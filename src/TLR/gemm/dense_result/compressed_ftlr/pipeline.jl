@@ -172,15 +172,6 @@ function _validate_compressed_pipeline_workspace(
     return nothing
 end
 
-@inline function _compressed_pipeline_output_alignment_safe(C, LA, LB)
-    element_bytes = sizeof(eltype(C))
-    base_ok = iszero(UInt(pointer(C)) & UInt(0x0f))
-    row_step_ok = iszero((nominal_tile_size(LA, 1) * element_bytes) % 16)
-    col_step_ok = iszero(
-        (nominal_tile_size(LB, 2) * stride(C, 2) * element_bytes) % 16)
-    return base_ok && row_step_ok && col_step_ok
-end
-
 """
     _gemm_compressed_pipelined!(C, A, B; pipeline, workspace=pipeline.numerical, ...)
 
@@ -207,12 +198,6 @@ function _gemm_compressed_pipelined!(
         pipeline, C, LA, LB, workspace, transA, transB, mode)
     scalar_type = gemm_compute_type(mode)
     α = scalar_type(alpha); β = scalar_type(beta)
-    # A reusable slot cannot mix ordinary GEMM calls into an already-enqueued
-    # descriptor sequence. Unsafe boundary origins therefore take the correct
-    # transient split path; regular poster grids stay fully pipelined.
-    _compressed_pipeline_output_alignment_safe(C, LA, LB) || return
-        _compressed_ftlr_gemm!(C, LA, LB; workspace, alpha=α, beta=β, compute=mode)
-
     plan = _compressed_ftlr_rank_plan(LA, LB)
     _, arena, budget, profile =
         _prepare_compressed_ftlr_workspace(LA, workspace, plan.profile)

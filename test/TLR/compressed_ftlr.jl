@@ -61,18 +61,21 @@ end
     @test size(execution_U) == (16, 16)
     @test all(iszero, execution_U[:, 10:16])
 
+    # A 2 x 2 rank grid needs 32 x 32 with (16, 16) tiles; ranks serialise
+    # row-major, so [1 9; 3 8] becomes [1, 9, 3, 8].
     exact = NextLA.CompressedFTLRMatrix(
-        KernelAbstractions.CPU(), Float32, 16, 32, (16, 16),
+        KernelAbstractions.CPU(), Float32, 32, 32, (16, 16),
         Int[1 9; 3 8]; execution_rank_policy=:exact)
     q16 = NextLA.CompressedFTLRMatrix(
-        KernelAbstractions.CPU(), Float32, 16, 32, (16, 16),
+        KernelAbstractions.CPU(), Float32, 32, 32, (16, 16),
         Int[1 9; 3 8]; execution_rank_policy=:q16)
     pow2 = NextLA.CompressedFTLRMatrix(
-        KernelAbstractions.CPU(), Float32, 16, 32, (16, 16),
+        KernelAbstractions.CPU(), Float32, 32, 32, (16, 16),
         Int[1 9; 3 8]; execution_rank_policy=:pow2)
     @test NextLA.execution_rank_policy(exact) === :exact
-    @test Int.(NextLA.execution_ranks(exact)) == [1, 3, 9, 8]
+    @test Int.(NextLA.execution_ranks(exact)) == [1, 9, 3, 8]
     @test Int.(NextLA.execution_ranks(q16)) == [16, 16, 16, 16]
+    # max(8, nextpow(2, r)) applied to [1, 9, 3, 8]
     @test Int.(NextLA.execution_ranks(pow2)) == [8, 16, 8, 8]
     @test_throws ArgumentError NextLA.CompressedFTLRMatrix(
         KernelAbstractions.CPU(), Float32, 16, 16, 16, ones(Int, 1, 1);

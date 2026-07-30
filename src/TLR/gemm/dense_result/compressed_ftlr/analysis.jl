@@ -34,7 +34,6 @@ mutable struct CompressedGemmAnalysis{CT,AT,BT,WT,LAT,LBT,ModeT,PlanT}
     A_execution_ranks::Vector{Int}
     B_execution_ranks::Vector{Int}
     workspace_bytes::Int
-    has_fallback::Bool
     closed::Bool
 end
 
@@ -135,9 +134,6 @@ function analyze_compressed_gemm(
         Int.(ranks(A)), Int.(ranks(B)),
         Int.(execution_ranks(A)), Int.(execution_ranks(B)),
         sizeof(workspace),
-        any(run -> run.stage1 isa PreparedGroupedGemmBundle ||
-                   run.stage2 isa PreparedGroupedGemmBundle ||
-                   run.stage3 isa PreparedGroupedGemmBundle, prepared_runs),
         false)
     finalizer(analysis) do object
         try
@@ -176,26 +172,20 @@ function _validate_compressed_gemm_analysis(
     return nothing
 end
 
-@inline function _submit_analysis_stage(stage, backend, manage_pointer_mode, overrides...)
+@inline function _submit_analysis_stage(stage, overrides...)
     stage === nothing && return nothing
-    if manage_pointer_mode && !(stage isa PreparedGroupedGemmBundle)
-        return _with_grouped_host_pointer_mode(backend) do
-            precision_gemm_grouped_prepared!(stage, overrides...)
-        end
-    end
     return precision_gemm_grouped_prepared!(stage, overrides...)
 end
 
-function _execute_analysis_runs!(analysis, C, A, alpha, beta, manage_pointer_mode)
-    backend = get_backend(analysis.logical_A)
+function _execute_analysis_runs!(analysis, C, A, alpha, beta)
     for run in analysis.runs
         run.tdata === nothing || fill!(run.tdata, zero(eltype(A)))
         @inbounds for (rows, cols) in run.scale_targets
             _scale_output!(view(C, rows, cols), beta)
         end
-        _submit_analysis_stage(run.stage1, backend, manage_pointer_mode)
-        _submit_analysis_stage(run.stage2, backend, manage_pointer_mode)
-        _submit_analysis_stage(run.stage3, backend, manage_pointer_mode, alpha, beta)
+        _submit_analysis_stage(run.stage1)
+        _submit_analysis_stage(run.stage2)
+        _submit_analysis_stage(run.stage3, alpha, beta)
     end
     return C
 end
@@ -206,10 +196,7 @@ function _execute_compressed_gemm_analysis!(
     _validate_compressed_gemm_analysis(
         analysis, C, A, B, workspace, transA, transB, mode)
     backend = get_backend(analysis.logical_A)
-    if analysis.has_fallback
-        return _execute_analysis_runs!(analysis, C, A, alpha, beta, true)
-    end
     return _with_grouped_host_pointer_mode(backend) do
-        _execute_analysis_runs!(analysis, C, A, alpha, beta, false)
+        _execute_analysis_runs!(analysis, C, A, alpha, beta)
     end
 end

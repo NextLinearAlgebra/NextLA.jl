@@ -19,7 +19,6 @@ mutable struct CompressedMixedGemmAnalysis{CT,AT,BT,WT,ModeT}
     execution_ranks::Vector{Int}
     workspace_bytes::Int
     runs::Vector{PreparedCompressedMixedRun}
-    has_fallback::Bool
     closed::Bool
 end
 
@@ -40,9 +39,10 @@ end
 """
 Choose the largest row-run height that fits the workspace and keeps every
 noninitial dense row origin 16-byte aligned.  A short final run is safe because
-its origin is aligned by the preceding full runs.  If the workspace cannot hold
-one alignment quantum, preserve the low-workspace contract and let the grouped
-adapter route unsafe tasks through ordinary GEMM.
+its origin is aligned by the preceding full runs.  Row origins are
+leading-dimension independent, so the height itself must carry the alignment.
+Below one quantum the low-workspace contract wins: unaligned origins are
+correct, only slower.
 """
 @inline function _dense_compressed_row_run_height(
     budget_elements::Int, total_rank::Int, rows::Int, ::Type{T}) where {T}
@@ -50,7 +50,7 @@ adapter route unsafe tasks through ordinary GEMM.
     rows > 0 || throw(ArgumentError("row count must be positive"))
     height = clamp(fld(budget_elements, total_rank), 1, rows)
     height == rows && return height
-    alignment_rows = 16 ÷ gcd(16, sizeof(T))
+    alignment_rows = gemm_alignment_quantum(T)
     height < alignment_rows && return height
     return fld(height, alignment_rows) * alignment_rows
 end
@@ -219,10 +219,7 @@ function _new_compressed_mixed_analysis(
     analysis = CompressedMixedGemmAnalysis(
         C, A, B, workspace, transA, transB, mode, side,
         Int.(ranks(compressed)), Int.(execution_ranks(compressed)),
-        sizeof(workspace), runs,
-        any(run -> run.stage1 isa PreparedGroupedGemmBundle ||
-                   run.stage2 isa PreparedGroupedGemmBundle, runs),
-        false)
+        sizeof(workspace), runs, false)
     finalizer(analysis) do object
         try
             _destroy_compressed_mixed_analysis!(object)
@@ -278,15 +275,13 @@ function analyze_compressed_gemm(
         mode, :left, A, runs)
 end
 
-function _execute_compressed_mixed_runs!(
-    analysis::CompressedMixedGemmAnalysis, C, alpha, beta, backend, manage_pointer_mode)
+function _execute_compressed_mixed_runs!(analysis::CompressedMixedGemmAnalysis, C, alpha, beta)
     for run in analysis.runs
         @inbounds for (rows, cols) in run.scale_targets
             _scale_output!(view(C, rows, cols), beta)
         end
-        _submit_analysis_stage(run.stage1, backend, manage_pointer_mode)
-        _submit_analysis_stage(
-            run.stage2, backend, manage_pointer_mode, alpha, beta)
+        _submit_analysis_stage(run.stage1)
+        _submit_analysis_stage(run.stage2, alpha, beta)
     end
     return C
 end
@@ -309,13 +304,8 @@ function _execute_compressed_mixed_analysis!(
         Int.(execution_ranks(compressed)) == analysis.execution_ranks ||
         throw(ArgumentError("compressed operand ranks changed after analysis"))
     backend = get_backend(compressed)
-    if analysis.has_fallback
-        return _execute_compressed_mixed_runs!(
-            analysis, C, alpha, beta, backend, true)
-    end
     return _with_grouped_host_pointer_mode(backend) do
-        _execute_compressed_mixed_runs!(
-            analysis, C, alpha, beta, backend, false)
+        _execute_compressed_mixed_runs!(analysis, C, alpha, beta)
     end
 end
 

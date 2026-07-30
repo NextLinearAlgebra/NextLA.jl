@@ -39,34 +39,14 @@ function precision_gemm_grouped!(tasks::AbstractVector{<:GroupedGemmTask},
     backend = get_backend(first(tasks).C)
     supports_grouped_gemm(backend) || throw(ArgumentError(
         "heterogeneous grouped GEMM is supported only on CUDA; got $(typeof(backend))"))
-    needs_fallback = false
     for task in tasks
         get_backend(task.A) == backend && get_backend(task.B) == backend &&
             get_backend(task.C) == backend ||
             throw(ArgumentError("all grouped GEMM operands must use the same backend"))
         validate_gemm_signature(backend, eltype(task.A), eltype(task.B), eltype(task.C), mode)
-        needs_fallback |= !_grouped_gemm_task_alignment_safe(task, mode)
     end
-    needs_fallback || return _precision_gemm_grouped!(tasks, mode)
-
-    # Some cuBLAS grouped kernels fault rather than returning an error for an
-    # unaligned member. Keep aligned members grouped and route only unsafe
-    # members through ordinary GEMMEx.
-    TaskT = eltype(tasks)
-    grouped = TaskT[]; fallback = TaskT[]
-    sizehint!(grouped, length(tasks)); sizehint!(fallback, length(tasks))
-    for task in tasks
-        push!(_grouped_gemm_task_alignment_safe(task, mode) ? grouped : fallback, task)
-    end
-    isempty(grouped) || _precision_gemm_grouped!(grouped, mode)
-    for task in fallback
-        precision_gemm!(task.transA, task.transB, task.alpha, task.A, task.B,
-                        task.beta, task.C, mode)
-    end
-    return tasks
+    return _precision_gemm_grouped!(tasks, mode)
 end
-
-_grouped_gemm_task_alignment_safe(task, mode) = true
 
 function _precision_gemm_grouped!(tasks, mode)
     throw(ArgumentError("grouped GEMM is not implemented for $(typeof(get_backend(first(tasks).C)))"))
@@ -74,14 +54,6 @@ end
 
 """Opaque backend-owned descriptor for a prepared grouped-GEMM submission."""
 abstract type AbstractPreparedGroupedGemm end
-
-"""Prepared aligned groups plus ordinary-GEMM fallback members."""
-struct PreparedGroupedGemmBundle{P,V,M,B} <: AbstractPreparedGroupedGemm
-    grouped::P
-    fallback::V
-    mode::M
-    backend::B
-end
 
 """Typed, allocation-free-to-compare key used while constructing GEMM groups."""
 struct GroupedGemmKey{S}
@@ -110,25 +82,13 @@ function prepare_precision_gemm_grouped(tasks::AbstractVector{<:GroupedGemmTask}
     backend = get_backend(first(tasks).C)
     supports_grouped_gemm(backend) || throw(ArgumentError(
         "heterogeneous grouped GEMM is supported only on CUDA; got $(typeof(backend))"))
-    needs_fallback = false
     @inbounds for task in tasks
         get_backend(task.A) == backend && get_backend(task.B) == backend &&
             get_backend(task.C) == backend ||
             throw(ArgumentError("all grouped GEMM operands must use the same backend"))
         validate_gemm_signature(backend, eltype(task.A), eltype(task.B), eltype(task.C), mode)
-        needs_fallback |= !_grouped_gemm_task_alignment_safe(task, mode)
     end
-    needs_fallback || return _prepare_precision_gemm_grouped(tasks, mode)
-
-    grouped_tasks = GroupedGemmTask[]
-    fallback = GroupedGemmTask[]
-    sizehint!(grouped_tasks, length(tasks)); sizehint!(fallback, length(tasks))
-    @inbounds for task in tasks
-        push!(_grouped_gemm_task_alignment_safe(task, mode) ? grouped_tasks : fallback, task)
-    end
-    grouped = isempty(grouped_tasks) ? nothing :
-        _prepare_precision_gemm_grouped(grouped_tasks, mode)
-    return PreparedGroupedGemmBundle(grouped, fallback, mode, backend)
+    return _prepare_precision_gemm_grouped(tasks, mode)
 end
 
 function _prepare_precision_gemm_grouped(tasks, mode)
@@ -150,29 +110,6 @@ function _precision_gemm_grouped_prepared!(prepared, args...)
     throw(ArgumentError("prepared grouped GEMM is not implemented for $(typeof(prepared))"))
 end
 
-function _precision_gemm_grouped_prepared!(bundle::PreparedGroupedGemmBundle,
-                                                   overrides...)
-    if bundle.grouped !== nothing
-        _with_grouped_host_pointer_mode(bundle.backend) do
-            _precision_gemm_grouped_prepared!(bundle.grouped, overrides...)
-        end
-    end
-    _with_grouped_device_pointer_mode(bundle.backend) do
-        for task in bundle.fallback
-            alpha = isempty(overrides) ? task.alpha : overrides[1]
-            beta = isempty(overrides) ? task.beta : overrides[2]
-            precision_gemm!(task.transA, task.transB, alpha, task.A, task.B,
-                            beta, task.C, bundle.mode)
-        end
-    end
-    return bundle
-end
-
-function _destroy_prepared_grouped_gemm!(bundle::PreparedGroupedGemmBundle)
-    bundle.grouped === nothing || destroy_prepared_grouped_gemm!(bundle.grouped)
-    return bundle
-end
-
 """Release device metadata owned by a prepared descriptor."""
 function destroy_prepared_grouped_gemm!(prepared::AbstractPreparedGroupedGemm)
     return _destroy_prepared_grouped_gemm!(prepared)
@@ -181,7 +118,6 @@ _destroy_prepared_grouped_gemm!(prepared) = prepared
 
 """Run `f` while grouped-GEMM scalar arrays are interpreted as host memory."""
 _with_grouped_host_pointer_mode(f, backend) = f()
-_with_grouped_device_pointer_mode(f, backend) = f()
 
 
 """Opaque fixed-capacity grouped-GEMM metadata slot used by streaming drivers."""

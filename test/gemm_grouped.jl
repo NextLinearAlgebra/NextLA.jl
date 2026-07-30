@@ -41,8 +41,9 @@ using Test
         @test Float32.(Array(Ch)) ≈ 2f0 .* (Float32.(Float16[1 2; 3 4]) *
                                              Float32.(Float16[2 0 1; 1 3 4])) .+ 0.25f0
 
-        # Offset by one Float32 element: grouped cuBLAS kernels may fault on
-        # this pointer, so the adapter must route it through ordinary GEMMEx.
+        # Offset by one Float32 element. cuBLAS grouped GEMM accepts unaligned
+        # pointers (measured correct on SM75 and SM90), so this member stays in
+        # the group rather than being split out to an ordinary GEMMEx call.
         Astore = _to_backend(AT, Float32[0 0; 1 2; 3 4])
         Aunsafe = view(Astore, 2:3, :)
         Cunsafe = _to_backend(AT, zeros(Float32, 2, 3))
@@ -52,9 +53,14 @@ using Test
         @test Array(Cunsafe) ≈ Float32[1 2; 3 4] * Float32[2 0 1; 1 3 4]
         prepared_unsafe = NextLA.prepare_precision_gemm_grouped(
             unsafe, NextLA.GEMMCompute{Float32}())
-        @test prepared_unsafe isa NextLA.PreparedGroupedGemmBundle
+        @test prepared_unsafe isa NextLA.AbstractPreparedGroupedGemm
         fill!(Cunsafe, 0f0)
-        NextLA.precision_gemm_grouped_prepared!(prepared_unsafe)
+        # Prepared descriptors take host-resident scalar arrays, so the caller
+        # owns the pointer-mode window (the execution paths hoist it out of
+        # their run loops rather than paying it per submission).
+        NextLA._with_grouped_host_pointer_mode(NextLA.get_backend(Cunsafe)) do
+            NextLA.precision_gemm_grouped_prepared!(prepared_unsafe)
+        end
         sync(Cunsafe)
         @test Array(Cunsafe) ≈ Float32[1 2; 3 4] * Float32[2 0 1; 1 3 4]
         NextLA.destroy_prepared_grouped_gemm!(prepared_unsafe)

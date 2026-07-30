@@ -16,10 +16,10 @@ using ..NextLA: gemm_batched!, trsm_batched!, potrf_batched!
 using ..NextLA: precision_gemm!, precision_gemm_batched!, precision_gemm_grouped!, GroupedGemmTask
 using ..NextLA: gemm_compute_mode, gemm_compute_type, supports_grouped_gemm, supports_bfloat16_grouped_gemm
 using ..NextLA: GEMMCompute, validate_gemm_signature
+using ..NextLA: gemm_alignment_quantum
 using ..NextLA: AbstractPreparedGroupedGemm, prepare_precision_gemm_grouped
 using ..NextLA: precision_gemm_grouped_prepared!, destroy_prepared_grouped_gemm!
-using ..NextLA: _with_grouped_host_pointer_mode, _with_grouped_device_pointer_mode
-using ..NextLA: PreparedGroupedGemmBundle
+using ..NextLA: _with_grouped_host_pointer_mode
 using ..NextLA: AbstractReusableGroupedGemmSlot, create_reusable_grouped_gemm_slot
 using ..NextLA: refresh_reusable_grouped_gemm!, submit_reusable_grouped_gemm!
 using ..NextLA: destroy_reusable_grouped_gemm!
