@@ -98,17 +98,25 @@ function _compressed_ftlr_rank_plan(A, B)
         "CompressedFTLR needs row-packed B outer factors and either row-packed A outer factors or column-packed B inner factors"))
     row_bytes = [min(right === nothing ? typemax(Int) : right[i],
                      left === nothing ? typemax(Int) : left[i]) for i in 1:qm]
+    # The FoldRight stage-2 cost is a triple sum over (i, j, k) that factorises:
+    #     Σ_j w_j Σ_k rA_ik rB_kj  =  Σ_k rA_ik (Σ_j w_j rB_kj)  =  Σ_k rA_ik ω_k
+    # Hoisting ω_k turns an O(qm·qn·qk) comprehension into O(qk·qn + qm·qk).
+    # The FoldLeft stage-3 term Σ_j w_j γ_j is independent of i, so it is hoisted
+    # for the same reason instead of being rebuilt qm times.
+    omega = Base.zeros(Int, qk)
+    @inbounds for k in 1:qk, j in 1:qn
+        omega[k] += col_widths[j] * _compressed_ftlr_execution_rank(B, k, j)
+    end
+    weighted_col_rank = 0
+    @inbounds for j in 1:qn
+        weighted_col_rank += col_widths[j] * b_col_ranks[j]
+    end
     right_flops = right === nothing ? nothing :
-        [sum(col_widths[j] * sum(_compressed_ftlr_execution_rank(A, i, k) *
-                                  _compressed_ftlr_execution_rank(B, k, j)
-                                  for k in 1:qk)
-             for j in 1:qn) +
+        [sum((_compressed_ftlr_execution_rank(A, i, k) * omega[k] for k in 1:qk); init=0) +
          row_heights[i] * col_prefix[end] * a_k_prefix[i, end]
          for i in 1:qm]
     left_flops = left === nothing ? nothing :
-        [row_heights[i] * pair_ranks[i] +
-         sum(row_heights[i] * col_widths[j] * b_col_ranks[j] for j in 1:qn)
-         for i in 1:qm]
+        [row_heights[i] * (pair_ranks[i] + weighted_col_rank) for i in 1:qm]
     maximum_bytes = min(right === nothing ? typemax(Int) : sum(right),
                         left === nothing ? typemax(Int) : sum(left))
     profile = RaggedWorkspaceProfile(
@@ -149,31 +157,6 @@ function _compressed_ftlr_row_runs(profile::RaggedWorkspaceProfile, budget::Int)
             j += 1
         end
         # A zero-work row is allowed even for a zero byte budget.
-        j >= i || (j = i)
-        fold = _compressed_ftlr_select_fold(profile, i:j, budget)
-        fold === nothing && throw(ArgumentError("workspace cannot schedule CompressedFTLR row $i"))
-        push!(runs, RaggedRowRun(i:j, fold))
-        i = j + 1
-    end
-    return runs
-end
-
-"""Greedy scheduler with an explicit descriptor-capacity row limit."""
-function _compressed_ftlr_row_runs_limited(
-    profile::RaggedWorkspaceProfile, budget::Int, max_rows_per_run::Int)
-    max_rows_per_run > 0 || throw(ArgumentError("max_rows_per_run must be positive"))
-    budget >= profile.minimum || throw(ArgumentError(
-        "workspace has $budget bytes; at least $(profile.minimum) bytes are required"))
-    runs = RaggedRowRun[]
-    sizehint!(runs, cld(length(profile.row_bytes), max_rows_per_run))
-    i = 1
-    while i <= length(profile.row_bytes)
-        j = i - 1
-        limit = min(length(profile.row_bytes), i + max_rows_per_run - 1)
-        while j < limit &&
-              _compressed_ftlr_select_fold(profile, i:(j + 1), budget) !== nothing
-            j += 1
-        end
         j >= i || (j = i)
         fold = _compressed_ftlr_select_fold(profile, i:j, budget)
         fold === nothing && throw(ArgumentError("workspace cannot schedule CompressedFTLR row $i"))

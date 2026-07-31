@@ -164,60 +164,6 @@ end
     end
 end
 
-
-@testset "CompressedFTLR symbolic analysis and row-run pipeline" begin
-    Ahost = _compressed_ftlr_fixture(Float32, Int[1 2; 3 1])
-    Bhost = _compressed_ftlr_fixture(Float32, Int[2 1; 1 3])
-    referenceA = zeros(Float32, size(Ahost)); referenceB = zeros(Float32, size(Bhost))
-    NextLA.uncompress!(referenceA, Ahost); NextLA.uncompress!(referenceB, Bhost)
-    for (name, AT, sync) in backends
-        name == "CUDA" || continue
-        A = _compressed_ftlr_to_backend(Ahost, AT)
-        B = _compressed_ftlr_to_backend(Bhost, AT)
-        bytes = NextLA.gemm_maximum_workspace_bytes(A, B)
-        workspace = NextLA.DenseGemmWorkspace(A, B; bytes)
-        C0 = rand(Float32, size(A, 1), size(B, 2))
-        C = AT(copy(C0))
-        analysis = NextLA.analyze_compressed_gemm(C, A, B; workspace)
-        _TLRM.gemm!(C, A, B; workspace, alpha=1.25f0, beta=-0.5f0, analysis)
-        sync(C)
-        @test Array(C) ≈ 1.25f0 .* (referenceA * referenceB) .- 0.5f0 .* C0 rtol=3f-4 atol=3f-4
-
-        fill!(C, 0f0)
-        _TLRM.gemm!(C, A, B; workspace, alpha=0.75f0, beta=0f0, analysis)
-        sync(C)
-        @test Array(C) ≈ 0.75f0 .* (referenceA * referenceB) rtol=3f-4 atol=3f-4
-        hot_allocations = @allocated _TLRM.gemm!(
-            C, A, B; workspace, alpha=0.75f0, beta=0f0, analysis)
-        sync(C)
-        @test hot_allocations <= 1 << 20
-
-        Cother = AT(zeros(Float32, size(C)))
-        @test_throws ArgumentError _TLRM.gemm!(Cother, A, B; workspace, analysis)
-        saved_rank = A.ranks[1]
-        A.ranks[1] = max(zero(saved_rank), saved_rank - one(saved_rank))
-        @test_throws ArgumentError _TLRM.gemm!(C, A, B; workspace, analysis)
-        A.ranks[1] = saved_rank
-
-        pipeline = _TLRM._compressed_gemm_pipeline_workspace(
-            C, A, B; workspace, max_rows_per_run=1)
-        copyto!(C, C0)
-        _TLRM._gemm_compressed_pipelined!(
-            C, A, B; pipeline, workspace, alpha=1.25f0, beta=-0.5f0)
-        sync(C)
-        @test Array(C) ≈ 1.25f0 .* (referenceA * referenceB) .- 0.5f0 .* C0 rtol=3f-4 atol=3f-4
-        fill!(C, 0f0)
-        _TLRM._gemm_compressed_pipelined!(
-            C, A, B; pipeline, workspace, alpha=0.5f0, beta=0f0)
-        sync(C)
-        @test Array(C) ≈ 0.5f0 .* (referenceA * referenceB) rtol=3f-4 atol=3f-4
-
-        close(pipeline)
-        close(analysis)
-        @test_throws ArgumentError _TLRM.gemm!(C, A, B; workspace, analysis)
-    end
-end
-
 function _compressed_dense32(A)
     dense = zeros(Float32, size(A))
     qm, qn = NextLA.grid_size(A)
@@ -250,13 +196,12 @@ end
             _TLRM.gemm!(C, A, B; workspace, compute, analysis)
             sync(C)
             @test norm(Float32.(Array(C)) - reference) / norm(reference) < tolerance
-            pipeline = _TLRM._compressed_gemm_pipeline_workspace(
-                C, A, B; workspace, max_rows_per_run=1, compute)
+            # Same result through the transient (no-analysis) entry point.
             fill!(C, zero(T))
-            _TLRM._gemm_compressed_pipelined!(C, A, B; pipeline, workspace, compute)
+            _TLRM.gemm!(C, A, B; workspace, compute)
             sync(C)
             @test norm(Float32.(Array(C)) - reference) / norm(reference) < tolerance
-            close(pipeline); close(analysis)
+            close(analysis)
         end
     end
 end

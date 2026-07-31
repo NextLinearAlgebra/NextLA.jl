@@ -91,6 +91,37 @@ end
                         "expected :exact, :q8, :q16, or :pow2"))
 end
 
+"""
+    _validate_compressed_ftlr_tile_alignment(T, bm, bn)
+
+Reject nominal tile sizes that would place a dense-output tile boundary on a
+non-16-byte address.
+
+Stage 3 writes `view(C, (i-1)*bm+1 : ..., :)`, whose byte offset is
+`(i-1)*bm*sizeof(T)` and is therefore independent of the leading dimension. When
+cuBLAS selects a tensor-core kernel for `cublasGemmGroupedBatchedEx` it issues
+vectorized loads that require 16-byte alignment and hard-faults
+(`CUDA_ERROR_MISALIGNED_ADDRESS`) otherwise. The grouped entry point takes its
+pointer table in *device* memory, so it cannot inspect the pointers host-side and
+has no opportunity to dispatch an alignment-safe kernel the way ordinary
+`cublasGemmEx` does. Measured on H100: FP16, BF16 and TF32 all fault; FP32 under
+`CUBLAS_COMPUTE_32F` and FP64 do not, because those never reach a tensor-core
+kernel.
+
+Requiring both extents to be multiples of [`gemm_alignment_quantum`](@ref) makes
+every tile boundary aligned by construction. The trailing tile may still be
+short: nothing starts after it, so its extent cannot misalign anything.
+"""
+function _validate_compressed_ftlr_tile_alignment(::Type{T}, bm::Int, bn::Int) where {T}
+    q = gemm_alignment_quantum(T)
+    (bm % q == 0 && bn % q == 0) || throw(ArgumentError(
+        "CompressedFTLR nominal tile size ($bm, $bn) is not 16-byte aligned for $T: " *
+        "both extents must be multiples of $q. Grouped-GEMM tensor-core kernels " *
+        "fault on misaligned tile boundaries; use " *
+        "($(cld(bm, q) * q), $(cld(bn, q) * q)) instead."))
+    return nothing
+end
+
 @inline function _compressed_ftlr_offsets(order::TileOrderStyle, qm::Int, qn::Int,
                                 leading_dimension_at, rank_at)
     offsets = Vector{Int}(undef, qm * qn + 1)
@@ -124,6 +155,7 @@ zeros as necessary. `:q8` is the default aligned execution policy; `:exact`,
 `:q16`, and `:pow2` are useful for measurement. A regular nominal grid may have
 one trailing row and/or column tile.
 """
+
 function CompressedFTLRMatrix(backend::Backend, ::Type{T}, m::Int, n::Int,
                     tile_size::NTuple{2,Int}, ranks_in::AbstractMatrix{<:Integer};
                     outer_order=TileRowMajor, inner_order=TileColMajor,
@@ -132,6 +164,7 @@ function CompressedFTLRMatrix(backend::Backend, ::Type{T}, m::Int, n::Int,
     bm, bn = tile_size
     m > 0 && n > 0 && bm > 0 && bn > 0 ||
         throw(ArgumentError("m, n, and tile dimensions must be positive"))
+    _validate_compressed_ftlr_tile_alignment(T, bm, bn)
     qm, qn = cld(m, bm), cld(n, bn)
     size(ranks_in) == (qm, qn) ||
         throw(DimensionMismatch("ranks must be a $qm × $qn matrix"))

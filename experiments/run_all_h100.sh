@@ -52,7 +52,7 @@ echo ">> boundary should track tensor-core kernel selection, not element size."
 # ---------------------------------------------------------------------------
 # 2. Everything else — safe to share one process.
 # ---------------------------------------------------------------------------
-for ph in ranks descriptor fold rowsperrun plan mixedout overhead; do
+for ph in ranks descriptor fold plan mixedout overhead; do
   PROBE_PHASE="$ph" julia --project="$PROJ" experiments/h100_audit_probe.jl
 done
 

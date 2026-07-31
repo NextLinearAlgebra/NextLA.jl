@@ -3,7 +3,7 @@
 #   julia --project=experiments experiments/h100_audit_probe.jl            # all phases
 #   PROBE_PHASE=align julia --project=experiments experiments/h100_audit_probe.jl
 #
-# Phases: align ranks descriptor fold rowsperrun plan mixedout overhead
+# Phases: align ranks descriptor fold plan mixedout overhead
 # Tunables: PROBE_N=8192  PROBE_BM=256  PROBE_RMAX=128  PROBE_PHASE=all
 #
 # Every phase is wrapped in try/catch: one failure must not waste the rental.
@@ -182,7 +182,7 @@ end
 
 # ==================================================== 3. DESCRIPTOR REUSE
 # Confirmed 70x on a synthetic stage-2. Quantify on the real C x C lowering:
-# transient (rebuilds per call) vs prepared vs pipelined.
+# transient (rebuilds descriptors per call) vs prepared.
 phase("descriptor") do
     q = cld(N, BM)
     rg = rankgrid(q, RMAX)
@@ -193,16 +193,6 @@ phase("descriptor") do
     @printf("  analysis/prepared : %9.3f ms (%8.1f GFLOP/s)\n", t_an, gf/(t_an/1e3))
     @printf("  transient (rebuild): %9.3f ms (%8.1f GFLOP/s)  -> %.1fx slower\n",
             t_tr, gf/(t_tr/1e3), t_tr/t_an)
-    try
-        pl = _T._compressed_gemm_pipeline_workspace(C, A, B; workspace=ws, max_rows_per_run=4)
-        t_pl = timeit(() -> _T._gemm_compressed_pipelined!(C, A, B; pipeline=pl,
-                                                          alpha=1f0, beta=0f0), 5)
-        @printf("  pipelined (rows=4) : %9.3f ms (%8.1f GFLOP/s)  -> %.2fx vs prepared\n",
-                t_pl, gf/(t_pl/1e3), t_pl/t_an)
-        close(pl)
-    catch e
-        println("  pipelined SKIPPED: ", sprint(showerror, e)[1:min(end,80)])
-    end
     close(an)
     println("\n>> if transient >> prepared, route stages.jl/mixed_dense.jl through")
     println(">> reusable slots (machinery already exists in ext/cuda/gemm.jl).")
@@ -244,34 +234,6 @@ phase("fold") do
     end
     println("\n>> if the measured ratio disagrees with the model ratio, the MAC-count")
     println(">> heuristic in _compressed_ftlr_select_fold is choosing wrong.")
-end
-
-# ==================================================== 5. max_rows_per_run=4
-# Undocumented magic default. Controls descriptor capacity + pipeline depth.
-phase("rowsperrun") do
-    q = cld(N, BM)
-    rg = rankgrid(q, RMAX)
-    rgB = rankgrid(q, RMAX; seed=11)   # distinct grids: identical grids make
-    A = make_ftlr(Float32, N, BM, rg)  # right/left FLOP models tie exactly
-    B = make_ftlr(Float32, N, BM, rgB)
-    C = CUDA.zeros(Float32, N, N)
-    gf = gflop_cc(A, B, rg)
-    maxb = _T.gemm_maximum_workspace_bytes(A, B)
-    ws = NextLA.DenseGemmWorkspace(A, maxb)
-    for rows in (1, 2, 4, 8, 16)
-        try
-            pl = _T._compressed_gemm_pipeline_workspace(C, A, B; workspace=ws, max_rows_per_run=rows)
-            t = timeit(() -> _T._gemm_compressed_pipelined!(C, A, B; pipeline=pl,
-                                                           alpha=1f0, beta=0f0), 5)
-            @printf("  max_rows_per_run=%-3d %9.3f ms (%8.1f GFLOP/s)\n", rows, t, gf/(t/1e3))
-            close(pl); CUDA.reclaim()
-        catch e
-            @printf("  max_rows_per_run=%-3d FAILED: %s\n", rows,
-                    sprint(showerror, e)[1:min(end,70)])
-        end
-    end
-    println("\n>> flat curve => the default 4 is arbitrary but harmless; a clear optimum")
-    println(">> => it should be derived from the grid, not hardcoded.")
 end
 
 # ==================================================== 6. PLAN COST / O(q^3)

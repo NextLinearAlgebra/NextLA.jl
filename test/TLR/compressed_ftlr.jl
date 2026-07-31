@@ -3,7 +3,10 @@ using KernelAbstractions
 
 function _compressed_ftlr_fixture(::Type{T}=Float64, ranks::AbstractMatrix{<:Integer}=Int[1 2 0; 3 1 2]) where {T}
     qm, qn = size(ranks)
-    A = NextLA.CompressedFTLRMatrix(KernelAbstractions.CPU(), T, 4 * qm, 4 * qn, (4, 4), ranks;
+    # Tile extents must be multiples of the 16-byte quantum: 8 for Float16 and
+    # BFloat16, 4 for Float32, 2 for Float64. Keeps 4 for FP32/FP64 as before.
+    b = max(4, NextLA.gemm_alignment_quantum(T))
+    A = NextLA.CompressedFTLRMatrix(KernelAbstractions.CPU(), T, b * qm, b * qn, (b, b), ranks;
                           outer_order=NextLA.TileRowMajor,
                           inner_order=NextLA.TileColMajor)
     rng = MersenneTwister(123)
