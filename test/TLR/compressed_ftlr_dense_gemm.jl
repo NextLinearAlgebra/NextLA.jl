@@ -139,6 +139,7 @@ end
                 analysis = NextLA.analyze_compressed_gemm(
                     C, G, X; workspace,
                     transA=trans_compressed, transB=trans_dense)
+                @test !analysis.has_fallback
                 _TLRM.gemm!(
                     C, G, X; workspace, alpha=1.25f0, beta=-0.5f0,
                     transA=trans_compressed, transB=trans_dense, analysis)
@@ -148,6 +149,7 @@ end
                 analysis = NextLA.analyze_compressed_gemm(
                     C, X, G; workspace,
                     transA=trans_dense, transB=trans_compressed)
+                @test !analysis.has_fallback
                 _TLRM.gemm!(
                     C, X, G; workspace, alpha=1.25f0, beta=-0.5f0,
                     transA=trans_dense, transB=trans_compressed, analysis)
