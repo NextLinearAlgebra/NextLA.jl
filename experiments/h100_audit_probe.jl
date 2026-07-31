@@ -247,12 +247,17 @@ end
 # time is measured (the `fold` phase above ran on the transient path, ~98%
 # descriptor-rebuild noise, and cannot be trusted for this question).
 phase("fusion") do
-    S = Float32
+    # BUG FIXED: this used to hardcode Float32 regardless of PROBE_T, so a
+    # PROBE_T=Float16 run silently still measured Float32/COMPUTE_32F -- never
+    # touching tensor cores, exactly the confound this whole investigation
+    # started by falling into once already (the very first alignment probe).
+    S = eval(Meta.parse(get(ENV, "PROBE_T", "Float32")))
     bm = BM
     Nrow = parse(Int, get(ENV, "FUSION_N",  "2048"))
     nt   = parse(Int, get(ENV, "FUSION_NT", "8"))
     bn   = BM
-    mode = NextLA.GEMMCompute{Float32}()
+    mode = S === Float64 ? NextLA.GEMMCompute{Float64}() : NextLA.GEMMCompute{Float32}()
+    println("  dtype=$S  mode=$(typeof(mode))")
     @printf("%-6s %-6s %-5s %11s %13s %16s %8s\n",
             "rho", "Nrow", "qn", "fused(ms)", "unfused(ms)", "GFLOP/s f / u", "penalty")
     for rho in (256, 1024, 2048)

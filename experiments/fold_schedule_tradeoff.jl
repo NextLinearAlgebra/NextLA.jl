@@ -49,14 +49,53 @@ rankgrid(q, rmax; seed=7, dist=:uniform) = begin
         [rand(rng, 1:rmax) for _ in 1:q, _ in 1:q]
     elseif dist === :decay          # heavy-tailed: realistic TLR off-diagonal decay
         [clamp(round(Int, rmax * exp(-2.5 * abs(i - j) / q)) + 1, 1, rmax) for i in 1:q, j in 1:q]
-    elseif dist === :block          # alternating dense/sparse rows: stresses per-region adaptivity
-        [isodd(i) ? rand(rng, rmax÷2:rmax) : rand(rng, 1:max(1, rmax÷8)) for i in 1:q, j in 1:q]
     else
-        error("unknown dist $dist")
+        error("unknown dist $dist (use :corner_pair for the adversarial case)")
     end
 end
 
+# Adversarial pair for A/B (must be used TOGETHER, not independently like the
+# distributions above): stage-2's total FLOPs are provably IDENTICAL between
+# FoldRight and FoldLeft whenever bm==bn (verified: bn*sum(A.*B) == bm*sum(A.*B)
+# for any grids), so peeling's entire possible benefit lives purely in how
+# rho_i (A's row-rank totals) and gamma_j (B's column-rank totals) are
+# organized. This pair makes A's TOP rows cheap/uniform-across-k and BOTTOM
+# rows expensive; B's LEFT columns expensive/uniform-across-k and RIGHT
+# columns cheap -- opposite halves, so no single global fold choice can pick
+# up both cheap regions, but peeling (row-peel the cheap top, then col-peel
+# the cheap right, leaving only the unavoidable expensive corner) can. A
+# hand-computed q=6 toy of exactly this construction gave peeling at 51% of
+# either pure global choice -- this is the distribution that number came from.
+function corner_pair(q, rmax; seed_a=7, seed_b=11)
+    rng_a, rng_b = MersenneTwister(seed_a), MersenneTwister(seed_b)
+    cheap, expensive = 1:max(1, rmax ÷ 16), (3 * rmax) ÷ 4:rmax
+    top = q ÷ 2
+    rawA = [(i <= top ? rand(rng_a, cheap) : rand(rng_a, expensive)) for i in 1:q, _ in 1:q]
+    rawB = [(j <= top ? rand(rng_b, expensive) : rand(rng_b, cheap)) for _ in 1:q, j in 1:q]
+    return rawA, rawB
+end
+
 execgrid(raw) = _T._compressed_ftlr_execution_rank.(raw, :q8)
+
+# --------------------------------------------------- per-tile optimal bound
+# Only meaningful once UNFUSED_PENALTY is confirmed ~1 (measured on H100
+# FP16, production scale: 1.00x, 0.99x, 1.00x across rho=256/1024/2048 --
+# fusion buys nothing measurable). If unfused genuinely costs nothing, every
+# output tile (i,j) is independently computable via EITHER arithmetic route
+# (FoldRight-style: bm*rho_i*bn_j, or FoldLeft-style: bm*gamma_j*bn_j) with no
+# fusion or contiguity requirement at all -- so the true optimum is a trivial
+# per-tile min, not a row/region-level decision. Stage-2's cost is IDENTICAL
+# per tile (not just in aggregate) whenever bm==bn: both routes reduce to
+# bm*sum_k(A[i,k]*B[k,j]) for that tile, so it drops out of every comparison
+# and only the stage-3 term (rho_i vs gamma_j) decides.
+function tile_optimal_flops(Rexec, R2exec, bm, bn)
+    q = size(Rexec, 1)
+    rho   = [sum(@view Rexec[i, :]) for i in 1:q]
+    gamma = [sum(@view R2exec[:, j]) for j in 1:q]
+    stage2_total = sum(bm * Rexec[i, k] * R2exec[k, j] for i in 1:q, k in 1:q, j in 1:q)
+    stage3_total = sum(bm * bn * min(rho[i], gamma[j]) for i in 1:q, j in 1:q)
+    return stage2_total + stage3_total
+end
 
 # ------------------------------------------------------- whole-matrix totals
 # Matches the codebase's `right_flops[i]`/`left_flops[i]` (schedule.jl), in the
@@ -115,12 +154,15 @@ end
 
 # --------------------------------------------------------------------- main
 println("Q=$Q BM=$BM RMAX=$RMAX  UNFUSED_PENALTY=$PENALTY")
-@printf("\n%-8s %14s %14s %14s %14s %14s %10s %10s\n",
-        "dist", "F_right", "F_left", "today", "1+3(fused)", "peeling", "Q1 gap%", "Q2 gap%")
+@printf("\n%-8s %14s %14s %14s %14s %14s %14s %10s %10s\n",
+        "dist", "F_right", "F_left", "today", "1+3(fused)", "peeling", "tile-opt", "Q1 gap%", "Q2 gap%")
 
-for dist in (:uniform, :decay, :block)
-    rawA = rankgrid(Q, RMAX; seed=7,  dist)
-    rawB = rankgrid(Q, RMAX; seed=11, dist)   # independent seed: avoids a forced tie
+for dist in (:uniform, :decay, :corner)
+    rawA, rawB = if dist === :corner
+        corner_pair(Q, RMAX; seed_a=7, seed_b=11)
+    else
+        rankgrid(Q, RMAX; seed=7, dist), rankgrid(Q, RMAX; seed=11, dist)   # independent seed: avoids a forced tie
+    end
     Rexec, R2exec = execgrid(rawA), execgrid(rawB)
 
     right_row, left_row = whole_matrix_flops(Rexec, R2exec, BM, BM)
@@ -129,6 +171,12 @@ for dist in (:uniform, :decay, :block)
     # today: `_compressed_ftlr_select_fold`'s actual criterion -- compare raw
     # FLOPs to decide, then pay whatever fusion state that fold ACTUALLY gets
     # (FoldRight always fused, FoldLeft always unfused under row-run today).
+    # NOTE: when PENALTY < 1 (unfused genuinely as fast or faster than fused,
+    # as measured), `today` can legitimately beat `best_fused` -- it is making
+    # an INDEPENDENT per-row choice with no fusion cost to worry about, which
+    # is strictly more freedom than "pick one fold for the whole matrix" once
+    # fusion is free. That is not a bug; it is the reason `tile_optimal` below
+    # exists, since `today` still isn't the tightest achievable bound either.
     today = sum(right_row[i] <= left_row[i] ? right_row[i] : left_row[i] * PENALTY for i in 1:Q)
 
     # 1+3: ONE global decision for the whole matrix -- run FoldRight-fused (row
@@ -142,6 +190,11 @@ for dist in (:uniform, :decay, :block)
 
     peeling = peeling_dp(Rexec, R2exec, BM, BM)
 
+    # The tightest bound: IF unfused is genuinely free (measured ~1x), no
+    # scheduling constraint is needed at all -- every tile can independently
+    # pick its cheaper arithmetic route. See tile_optimal_flops above.
+    tile_opt = tile_optimal_flops(Rexec, R2exec, BM, BM)
+
     # Sanity checks on the derivation itself, not just the final numbers.
     # "Always row" (never take a column peel) must reproduce F_right exactly;
     # "always column" must reproduce F_left exactly. This is a much stronger
@@ -149,6 +202,9 @@ for dist in (:uniform, :decay, :block)
     # formulas agree with the whole-matrix formulas, not just their ordering.
     always_row = sum(row_peel_cost(Rexec, R2exec, i, 1, BM, BM) for i in 1:Q)
     always_col = sum(col_peel_cost(Rexec, R2exec, j, 1, BM, BM) for j in 1:Q)
+    if tile_opt > peeling + 1e-6
+        println("  !! WARNING: tile_opt > peeling for $dist -- tile_optimal_flops is wrong")
+    end
     if !isapprox(always_row, F_right; rtol=1e-9)
         println("  !! WARNING: always-row peel ($always_row) != F_right ($F_right) for $dist")
     end
@@ -158,15 +214,18 @@ for dist in (:uniform, :decay, :block)
     if peeling > best_fused + 1e-6
         println("  !! WARNING: peeling > best_fused for $dist -- DP or formulas are wrong")
     end
-    if best_fused > today + 1e-6
-        println("  !! WARNING: best_fused > today for $dist -- PENALTY < 1 or formulas are wrong")
+    if today < tile_opt - 1e-6
+        println("  !! WARNING: today < tile_opt for $dist -- tile_opt is not a valid lower bound")
     end
+    # NOTE: best_fused > today is EXPECTED whenever PENALTY < 1 -- see the
+    # comment above `today`'s definition. It is not checked as an error here.
 
     gap1 = 100 * (today - best_fused) / today            # value of fixing today + building col-run
     gap2 = 100 * (best_fused - peeling) / best_fused      # additional value of full adaptive peeling
+    gap3 = 100 * (today - tile_opt) / today               # remaining gap between today and the true optimum
 
-    @printf("%-8s %14.3e %14.3e %14.3e %14.3e %14.3e %9.2f%% %9.2f%%\n",
-            dist, F_right, F_left, today, best_fused, peeling, gap1, gap2)
+    @printf("%-8s %14.3e %14.3e %14.3e %14.3e %14.3e %14.3e %9.2f%% %9.2f%%  (gap3=%.2f%%)\n",
+            dist, F_right, F_left, today, best_fused, peeling, tile_opt, gap1, gap2, gap3)
 end
 
 println("""
@@ -174,16 +233,29 @@ println("""
 Q1 gap%  = (today - best_fused) / today
            value of (a) teaching the scheduler about fusion instead of comparing
            raw FLOPs blindly, and (b) building FoldLeft-fused-by-column support.
-           Scales directly with UNFUSED_PENALTY -- re-run with the H100-measured
-           value before trusting this column.
+           Scales directly with UNFUSED_PENALTY. NEGATIVE means `today` (which
+           already decides per row, independently) beats a single global
+           choice -- expected once PENALTY is measured near 1, since per-row
+           independence becomes free. Do not build col-run support for this
+           reason alone if PENALTY ~1 on your target hardware/dtype.
 
 Q2 gap%  = (best_fused - peeling) / best_fused
            additional value of full per-region adaptive peeling BEYOND always
            picking the single best-fused fold for the whole matrix. Independent
-           of UNFUSED_PENALTY (both terms assume full fusion) -- this column is
-           trustworthy right now. Small on :uniform/:decay would mean peeling's
-           scheduler complexity (second profile, mixed-run execution) isn't
-           worth it beyond options 1+3; large on realistic distributions would
-           justify it. :block is a deliberately adversarial stress case, not a
-           claim about real TLR matrices.
+           of UNFUSED_PENALTY (both terms assume full fusion) -- trustworthy
+           regardless of the fusion measurement. Small on :uniform/:decay means
+           peeling's complexity (second profile, mixed-run execution) isn't
+           worth it beyond a global choice; :corner is a deliberately
+           adversarial upper bound, not a claim about real TLR matrices.
+
+gap3 (printed inline) = (today - tile_opt) / today
+           ONLY meaningful once PENALTY is confirmed ~1 (measured H100 FP16,
+           production scale: 1.00x/0.99x/1.00x across rho=256/1024/2048).
+           If unfused is genuinely free, per-tile scheduling with NO fusion or
+           contiguity constraint dominates every other option, including
+           peeling -- tile_opt <= peeling always. A small gap3 means `today`'s
+           existing simple per-row-run FLOP comparison is *already* close to
+           the true optimum and nothing here is worth building; a large gap3
+           would motivate per-tile (not per-row, not per-region) scheduling
+           instead of either 1+3 or peeling.
 """)

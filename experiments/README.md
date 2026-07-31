@@ -126,3 +126,25 @@ Run all four sequentially with:
 ```bash
 bash experiments/run_all.sh
 ```
+
+## Stage-2 fusion/layout model
+
+Before implementing a different intermediate layout, run the CPU-only
+roofline filter:
+
+```bash
+julia --project=experiments experiments/stage2_layout_tradeoff.jl
+```
+
+It compares today's FoldRight pipeline with (1) changing Stage 2 alone, which
+requires permutations of both `S` and `T`, and (2) a coupled redesign that
+also fuses Stage 1 across scheduled output rows and therefore emits `S` in the
+layout consumed by the new Stage 2.  The coupled version pays only the `T`
+permutation needed to retain today's one-wide-GEMM-per-row Stage 3.  The model
+also prints the correctly mirrored FoldLeft opportunity: fuse Stage 2 across
+`j` for fixed `(i,k)` to reuse `U`, then permute `T` for its current Stage 3.
+
+Set `LAYOUT_Q`, `LAYOUT_BM`, `LAYOUT_BN`, `LAYOUT_RMAX`, `LAYOUT_ROWS`,
+`LAYOUT_ELEMENT_BYTES`, `LAYOUT_PEAK_TFLOPS`, and `LAYOUT_BW_TBPS` to match a
+target.  This is a metadata/roofline screen; a predicted win still requires a
+GPU prototype and measurement.
