@@ -193,7 +193,23 @@ function gemm!(C::AbstractMatrix, A::CompressedFTLRMatrix{BackendT,T}, B::Compre
     α = ScalarT(alpha)
     β = ScalarT(beta)
     if analysis === nothing
-        return _compressed_ftlr_gemm!(C, LA, LB; workspace, alpha=α, beta=β, compute=mode)
+        # One-shot path: build the symbolic analysis, execute once, discard it.
+        # This shares the prepared-descriptor lowering instead of maintaining a
+        # second implementation that rebuilt every cuBLAS descriptor per row run
+        # (measured ~38x slower on H100 for repeated calls, and identical cost
+        # for a single call since analysis does the same work once).
+        _validate_compressed_ftlr_gemm(C, LA, LB, mode)
+        (maxrank(A) == 0 || maxrank(B) == 0) && return _scale_output!(C, β)
+        ws = workspace isa DenseGemmWorkspace ? workspace :
+             DenseGemmWorkspace(A, Int(workspace))
+        one_shot = analyze_compressed_gemm(
+            C, A, B; workspace=ws, transA, transB, compute=mode)
+        try
+            return _execute_compressed_gemm_analysis!(
+                one_shot, C, A, B, ws, α, β, transA, transB, mode)
+        finally
+            close(one_shot)
+        end
     elseif analysis isa CompressedGemmAnalysis
         return _execute_compressed_gemm_analysis!(
             analysis, C, A, B, workspace, α, β, transA, transB, mode)

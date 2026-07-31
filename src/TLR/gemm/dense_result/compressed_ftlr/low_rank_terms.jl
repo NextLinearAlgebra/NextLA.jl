@@ -38,19 +38,6 @@ function _validate_compressed_ftlr_gemm(C::AbstractMatrix, A, B, compute)
     return nothing
 end
 
-function _compressed_ftlr_gemm!(C::AbstractMatrix, A, B; workspace, alpha, beta, compute)
-    _validate_compressed_ftlr_gemm(C, A, B, compute)
-    if maxrank(A) == 0 || maxrank(B) == 0
-        return _scale_output!(C, beta)
-    end
-    plan = _compressed_ftlr_rank_plan(A, B)
-    _, arena, budget, profile = _prepare_compressed_ftlr_workspace(A, workspace, plan.profile)
-    for run in _compressed_ftlr_row_runs(profile, budget)
-        if run.fold === :right
-            _execute_compressed_ftlr_foldright_run!(C, A, B, plan, run.rows, alpha, beta, compute, arena)
-        else
-            _execute_compressed_ftlr_foldleft_run!(C, A, B, plan, run.rows, alpha, beta, compute, arena)
-        end
-    end
-    return C
-end
+# The transient per-run lowering that used to live here was removed: it rebuilt
+# every cuBLAS grouped descriptor on each call. `gemm!` with `analysis=nothing`
+# now builds a one-shot CompressedGemmAnalysis instead (see dense_result/driver.jl).
