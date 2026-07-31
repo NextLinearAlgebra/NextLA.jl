@@ -3,7 +3,7 @@
 #   julia --project=experiments experiments/h100_audit_probe.jl            # all phases
 #   PROBE_PHASE=align julia --project=experiments experiments/h100_audit_probe.jl
 #
-# Phases: align ranks descriptor fold plan mixedout overhead
+# Phases: align ranks descriptor fold fusion plan mixedout overhead
 # Tunables: PROBE_N=8192  PROBE_BM=256  PROBE_RMAX=128  PROBE_PHASE=all
 #
 # Every phase is wrapped in try/catch: one failure must not waste the rental.
@@ -234,6 +234,78 @@ phase("fold") do
     end
     println("\n>> if the measured ratio disagrees with the model ratio, the MAC-count")
     println(">> heuristic in _compressed_ftlr_select_fold is choosing wrong.")
+end
+
+# ==================================================== 5. FUSION EFFICIENCY
+# Fusing stage 3 does NOT change the FLOP count: a fused (bm x rho)*(rho x N)
+# GEMM and qn separate (bm x rho)*(rho x bn) GEMMs are the SAME arithmetic in
+# a different task grain. A pure-FLOP cost model is therefore structurally
+# blind to fusion -- it can only ever see the FoldRight-vs-FoldLeft asymmetry,
+# never whether fusing pays off. This phase measures the only number that can
+# make fusion enter a scheduling decision at all: achieved GFLOP/s, fused vs
+# unfused, for IDENTICAL total work. Uses prepared descriptors so only kernel
+# time is measured (the `fold` phase above ran on the transient path, ~98%
+# descriptor-rebuild noise, and cannot be trusted for this question).
+phase("fusion") do
+    S = Float32
+    bm = BM
+    Nrow = parse(Int, get(ENV, "FUSION_N",  "2048"))
+    nt   = parse(Int, get(ENV, "FUSION_NT", "8"))
+    bn   = BM
+    mode = NextLA.GEMMCompute{Float32}()
+    @printf("%-6s %-6s %-5s %11s %13s %16s %8s\n",
+            "rho", "Nrow", "qn", "fused(ms)", "unfused(ms)", "GFLOP/s f / u", "penalty")
+    for rho in (256, 1024, 2048)
+        try
+            qn = max(1, cld(Nrow, bn))
+            gf = 2 * nt * bm * rho * Nrow / 1e9
+
+            # FUSED: one (bm x rho)*(rho x Nrow) task per "row".
+            keepF, tasksF = Any[], NextLA.GroupedGemmTask[]
+            for _ in 1:nt
+                U  = CUDA.zeros(S, bm, rho);  fill!(U,  S(0.01))
+                Tm = CUDA.zeros(S, rho, Nrow); fill!(Tm, S(0.01))
+                Cm = CUDA.zeros(S, bm, Nrow)
+                push!(keepF, (U, Tm, Cm))
+                push!(tasksF, NextLA.GroupedGemmTask('N','N', one(S), U, Tm, zero(S), Cm))
+            end
+            pf = NextLA.prepare_precision_gemm_grouped(tasksF, mode)
+            bk = NextLA.get_backend(tasksF[1].C)
+            t_f = timeit(() -> NextLA._with_grouped_host_pointer_mode(bk) do
+                NextLA.precision_gemm_grouped_prepared!(pf) end)
+            NextLA.destroy_prepared_grouped_gemm!(pf)
+            keepF = tasksF = nothing; CUDA.reclaim()
+
+            # UNFUSED: qn separate (bm x rho)*(rho x bn) tasks per "row" --
+            # identical total FLOPs; the per-row U is reused across its qn
+            # column splits, exactly as FoldLeft's stage 3 does today.
+            keepU, tasksU = Any[], NextLA.GroupedGemmTask[]
+            for _ in 1:nt
+                U = CUDA.zeros(S, bm, rho); fill!(U, S(0.01))
+                for _ in 1:qn
+                    Tb = CUDA.zeros(S, rho, bn); fill!(Tb, S(0.01))
+                    Cb = CUDA.zeros(S, bm, bn)
+                    push!(keepU, (U, Tb, Cb))
+                    push!(tasksU, NextLA.GroupedGemmTask('N','N', one(S), U, Tb, zero(S), Cb))
+                end
+            end
+            pu = NextLA.prepare_precision_gemm_grouped(tasksU, mode)
+            t_u = timeit(() -> NextLA._with_grouped_host_pointer_mode(bk) do
+                NextLA.precision_gemm_grouped_prepared!(pu) end)
+            NextLA.destroy_prepared_grouped_gemm!(pu)
+
+            @printf("%-6d %-6d %-5d %9.3f  %11.3f  %7.0f / %-7.0f %6.2fx\n",
+                    rho, Nrow, qn, t_f, t_u, gf/(t_f/1e3), gf/(t_u/1e3), t_u/t_f)
+            keepU = tasksU = nothing; CUDA.reclaim()
+        catch e
+            @printf("rho=%-6d FAILED: %s\n", rho, sprint(showerror, e)[1:min(end,80)])
+        end
+    end
+    println("\n>> `penalty` = unfused_time / fused_time for IDENTICAL FLOPs. Feed this")
+    println(">> number to experiments/fold_schedule_tradeoff.jl as UNFUSED_PENALTY --")
+    println(">> that script needs it to convert the FLOP-only fold comparison into a")
+    println(">> real time comparison; without it that comparison is blind to fusion.")
+    println(">> Scale FUSION_N/FUSION_NT up to better match production qm/N on H100.")
 end
 
 # ==================================================== 6. PLAN COST / O(q^3)
