@@ -19,6 +19,7 @@ struct CompressedFTLRRankPlan
     b_row_ranks::Vector{Int}     # σ_k = Σ_j rB_kj
     b_col_ranks::Vector{Int}     # γ_j = Σ_k rB_kj
     b_col_k_prefix::Matrix{Int}  # (logical j, prefix through logical k)
+    b_row_k_prefix::Matrix{Int} # (logical k, prefix through logical j): Σ_{j'<j} rB_kj'
     b_col_prefix::Vector{Int}    # prefix of γ_j across logical j
     b_first_active_col::Vector{Int}
     pair_ranks::Vector{Int}      # p_i = Σ_k rA_ik σ_k
@@ -66,6 +67,7 @@ function _compressed_ftlr_rank_plan(A, B)
     b_row_ranks = Base.zeros(Int, qk)
     b_col_ranks = Base.zeros(Int, qn)
     b_col_k_prefix = Base.zeros(Int, qn, qk + 1)
+    b_row_k_prefix = Base.zeros(Int, qk, qn + 1)
     b_first_active_col = Base.zeros(Int, qk)
     @inbounds for k in 1:qk, j in 1:qn
         r = _compressed_ftlr_execution_rank(B, k, j)
@@ -75,6 +77,9 @@ function _compressed_ftlr_rank_plan(A, B)
     end
     @inbounds for j in 1:qn, k in 1:qk
         b_col_k_prefix[j, k + 1] = b_col_k_prefix[j, k] + _compressed_ftlr_execution_rank(B, k, j)
+    end
+    @inbounds for k in 1:qk, j in 1:qn
+        b_row_k_prefix[k, j + 1] = b_row_k_prefix[k, j] + _compressed_ftlr_execution_rank(B, k, j)
     end
     pair_ranks = Base.zeros(Int, qm)
     @inbounds for i in 1:qm, k in 1:qk
@@ -128,7 +133,7 @@ function _compressed_ftlr_rank_plan(A, B)
         isempty(row_bytes) ? 0 : maximum(row_bytes), maximum_bytes,
     )
     return CompressedFTLRRankPlan(a_k_prefix, b_row_ranks, b_col_ranks, b_col_k_prefix,
-                        b_col_prefix, b_first_active_col, pair_ranks, b_total_rank,
+                        b_row_k_prefix, b_col_prefix, b_first_active_col, pair_ranks, b_total_rank,
                         row_heights, col_widths, col_prefix,
                         profile)
 end

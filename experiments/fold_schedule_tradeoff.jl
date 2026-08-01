@@ -27,7 +27,7 @@
 # Simplification: uniform tile size (bm=bn=BM, N=q*BM exactly) -- this script
 # is a scheduling-policy comparison, not a tail-tile correctness test.
 
-using NextLA, Printf, Random
+using NextLA, KernelAbstractions, Printf, Random
 
 const _T    = NextLA.TLRmodule
 const Q     = parse(Int, get(ENV, "TRADEOFF_Q",    "32"))
@@ -152,6 +152,36 @@ function peeling_dp(Rexec, R2exec, bm, bn)
     return cost[1, 1]
 end
 
+# ----------------------------------------------- REAL scheduler (not a model)
+# The `today` baseline above assumes independent PER-ROW fold decisions. The
+# actual scheduler (`_compressed_ftlr_row_runs`, schedule.jl) greedily EXTENDS
+# a run across as many rows as the workspace budget allows, then picks ONE
+# fold for the whole accumulated range -- coarser than per-row, and coarser
+# still with the generous workspace typically used (gemm_maximum_workspace_bytes).
+# This builds REAL CompressedFTLRMatrix objects and drives the production
+# `_compressed_ftlr_rank_plan` + `_compressed_ftlr_row_runs` directly, so the
+# reported cost is what the shipped scheduler actually does -- not a model of it.
+function real_scheduler_flops(rawA, rawB, bm; policy=:q8, budget_kind=:maximum)
+    cpu = KernelAbstractions.CPU()
+    q = size(rawA, 1)
+    A = NextLA.CompressedFTLRMatrix(cpu, Float32, q * bm, q * bm, (bm, bm), rawA;
+                                    execution_rank_policy=policy)
+    B = NextLA.CompressedFTLRMatrix(cpu, Float32, q * bm, q * bm, (bm, bm), rawB;
+                                    execution_rank_policy=policy)
+    LA, LB = _T.logical_operand(A, 'N'), _T.logical_operand(B, 'N')
+    plan = _T._compressed_ftlr_rank_plan(LA, LB)
+    p = plan.profile
+    budget = budget_kind === :maximum ? p.maximum : p.minimum
+    runs = _T._compressed_ftlr_row_runs(p, budget)
+    total = sum(runs) do run
+        rows = run.rows
+        run.fold === :right ? sum(@view p.right_flops[rows]) : sum(@view p.left_flops[rows])
+    end
+    sizes = [length(run.rows) for run in runs]
+    folds = [run.fold for run in runs]
+    return total, length(runs), sizes, folds
+end
+
 # --------------------------------------------------------------------- main
 println("Q=$Q BM=$BM RMAX=$RMAX  UNFUSED_PENALTY=$PENALTY")
 @printf("\n%-8s %14s %14s %14s %14s %14s %14s %10s %10s\n",
@@ -195,6 +225,16 @@ for dist in (:uniform, :decay, :corner)
     # pick its cheaper arithmetic route. See tile_optimal_flops above.
     tile_opt = tile_optimal_flops(Rexec, R2exec, BM, BM)
 
+    # REAL scheduler cost, driving the actual shipped code (not a per-row model).
+    real_max, nruns_max, sizes_max, _ = real_scheduler_flops(rawA, rawB, BM; budget_kind=:maximum)
+    real_min, nruns_min, sizes_min, _ = real_scheduler_flops(rawA, rawB, BM; budget_kind=:minimum)
+    gap_real_max = 100 * (real_max - tile_opt) / real_max
+    gap_real_min = 100 * (real_min - tile_opt) / real_min
+    @printf("  [real scheduler] generous budget: %d run(s), sizes %s, cost=%.3e, gap-to-tile-opt=%.2f%%\n",
+            nruns_max, string(extrema(sizes_max)), real_max, gap_real_max)
+    @printf("  [real scheduler] tight budget:    %d run(s), sizes %s, cost=%.3e, gap-to-tile-opt=%.2f%%\n",
+            nruns_min, string(extrema(sizes_min)), real_min, gap_real_min)
+
     # Sanity checks on the derivation itself, not just the final numbers.
     # "Always row" (never take a column peel) must reproduce F_right exactly;
     # "always column" must reproduce F_left exactly. This is a much stronger
@@ -216,6 +256,12 @@ for dist in (:uniform, :decay, :corner)
     end
     if today < tile_opt - 1e-6
         println("  !! WARNING: today < tile_opt for $dist -- tile_opt is not a valid lower bound")
+    end
+    if real_max < tile_opt - 1e-6 || real_min < tile_opt - 1e-6
+        println("  !! WARNING: real scheduler beat tile_opt for $dist -- tile_opt is not a valid lower bound")
+    end
+    if real_min > real_max + 1e-6
+        println("  !! WARNING: tighter budget ($real_min) beat generous budget ($real_max) for $dist -- unexpected, check greedy run construction")
     end
     # NOTE: best_fused > today is EXPECTED whenever PENALTY < 1 -- see the
     # comment above `today`'s definition. It is not checked as an error here.
