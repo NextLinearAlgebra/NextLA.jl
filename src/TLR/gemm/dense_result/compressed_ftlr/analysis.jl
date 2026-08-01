@@ -43,6 +43,18 @@ end
     return prepare_precision_gemm_grouped(tasks, mode)
 end
 
+"""Destroy whichever of a run's three prepared stages were actually built —
+the one destruction pattern shared by a partially-failed `_prepare_compressed_run`,
+a fully closed `CompressedGemmAnalysis`, and a partially-failed `analyze_compressed_gemm`."""
+@inline function _destroy_compressed_stages!(stage1, stage2, stage3)
+    stage1 === nothing || destroy_prepared_grouped_gemm!(stage1)
+    stage2 === nothing || destroy_prepared_grouped_gemm!(stage2)
+    stage3 === nothing || destroy_prepared_grouped_gemm!(stage3)
+    return nothing
+end
+@inline _destroy_compressed_stages!(run::PreparedCompressedFTLRRun) =
+    _destroy_compressed_stages!(run.stage1, run.stage2, run.stage3)
+
 function _prepare_compressed_run(tasks::CompressedFTLRRunTasks, rows, fold, mode)
     stage1 = stage2 = stage3 = nothing
     try
@@ -50,9 +62,7 @@ function _prepare_compressed_run(tasks::CompressedFTLRRunTasks, rows, fold, mode
         stage2 = _prepare_compressed_stage(tasks.stage2, mode)
         stage3 = _prepare_compressed_stage(tasks.stage3, mode)
     catch
-        stage1 === nothing || destroy_prepared_grouped_gemm!(stage1)
-        stage2 === nothing || destroy_prepared_grouped_gemm!(stage2)
-        stage3 === nothing || destroy_prepared_grouped_gemm!(stage3)
+        _destroy_compressed_stages!(stage1, stage2, stage3)
         rethrow()
     end
     return PreparedCompressedFTLRRun(
@@ -63,9 +73,7 @@ function _destroy_compressed_gemm_analysis!(analysis::CompressedGemmAnalysis)
     analysis.closed && return analysis
     analysis.closed = true
     for run in analysis.runs
-        run.stage1 === nothing || destroy_prepared_grouped_gemm!(run.stage1)
-        run.stage2 === nothing || destroy_prepared_grouped_gemm!(run.stage2)
-        run.stage3 === nothing || destroy_prepared_grouped_gemm!(run.stage3)
+        _destroy_compressed_stages!(run)
     end
     return analysis
 end

@@ -4,10 +4,12 @@
 # by TLRmodule.jl (operands.jl needs its GridKind before this hub runs).
 include("common/precision.jl")
 include("common/workspace.jl")
+include("dense_result/compressed_ftlr/rank_metadata.jl")
+include("dense_result/compressed_ftlr/fold_cost.jl")
 include("dense_result/compressed_ftlr/schedule.jl")
 include("dense_result/fixed_rank/run_schedule.jl")
 include("dense_result/fixed_rank/stages.jl")
-include("dense_result/compressed_ftlr/stages.jl")
+include("dense_result/compressed_ftlr/execute.jl")
 include("dense_result/compressed_ftlr/mixed_dense.jl")
 include("dense_result/fixed_rank/low_rank_terms.jl")
 include("dense_result/compressed_ftlr/low_rank_terms.jl")

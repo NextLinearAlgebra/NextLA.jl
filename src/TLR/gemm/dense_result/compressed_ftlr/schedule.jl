@@ -1,19 +1,6 @@
-"""Exact numerical workspace requirements for a CompressedFTLR FoldRight row run."""
-struct RaggedWorkspaceProfile
-    row_bytes::Vector{Int}
-    right_row_bytes::Union{Nothing,Vector{Int}}
-    left_row_bytes::Union{Nothing,Vector{Int}}
-    right_flops::Union{Nothing,Vector{Int}}
-    left_flops::Union{Nothing,Vector{Int}}
-    right_byte_prefix::Union{Nothing,Vector{Int}}
-    left_byte_prefix::Union{Nothing,Vector{Int}}
-    right_flop_prefix::Union{Nothing,Vector{Int}}
-    left_flop_prefix::Union{Nothing,Vector{Int}}
-    minimum::Int
-    maximum::Int
-end
-
-"""Host-only rank reductions and O(1) range-query metadata for one CompressedFTLR GEMM."""
+"""Host-only rank metadata plus the fold-cost profile derived from it, for one
+CompressedFTLR GEMM. See `rank_metadata.jl` for the pure rank facts and
+`fold_cost.jl` for how they turn into FoldRight/FoldLeft costs."""
 struct CompressedFTLRRankPlan
     a_k_prefix::Matrix{Int}      # (logical i, prefix through logical k)
     b_row_ranks::Vector{Int}     # σ_k = Σ_j rB_kj
@@ -34,104 +21,13 @@ struct RaggedRowRun
     fold::Symbol
 end
 
-@inline _compressed_ftlr_axis_range(A::LogicalTLROperand, tile::Int, axis::Int) =
-    _tile_axis_range(A, tile, axis)
-@inline function _compressed_ftlr_axis_range(A::CompressedFTLRMatrix, tile::Int, axis::Int)
-    width = axis == 1 ? tile_size(A, tile, 1)[1] : tile_size(A, 1, tile)[2]
-    first = (tile - 1) * nominal_tile_size(A, axis) + 1
-    return first:(first + width - 1)
-end
-
-@inline _compressed_ftlr_right_valid(A, B) =
-    compressed_ftlr_outer_order(A) isa TileRowMajor && compressed_ftlr_outer_order(B) isa TileRowMajor
-@inline _compressed_ftlr_left_valid(A, B) =
-    compressed_ftlr_outer_order(B) isa TileRowMajor && compressed_ftlr_inner_order(B) isa TileColMajor
-
-@inline function _compressed_ftlr_prefix(values::Vector{Int})
-    prefix = Base.zeros(Int, length(values) + 1)
-    @inbounds for i in eachindex(values)
-        prefix[i + 1] = prefix[i] + values[i]
-    end
-    return prefix
-end
-
-@inline _compressed_ftlr_range_total(prefix::Vector{Int}, rows::UnitRange{Int}) =
-    prefix[last(rows) + 1] - prefix[first(rows)]
-
 function _compressed_ftlr_rank_plan(A, B)
-    qm, qk = grid_size(A)
-    qkB, qn = grid_size(B)
-    qk == qkB || throw(DimensionMismatch("CompressedFTLR contraction grids do not match"))
-    a_k_prefix = Base.zeros(Int, qm, qk + 1)
-    b_row_ranks = Base.zeros(Int, qk)
-    b_col_ranks = Base.zeros(Int, qn)
-    b_col_k_prefix = Base.zeros(Int, qn, qk + 1)
-    b_row_k_prefix = Base.zeros(Int, qk, qn + 1)
-    @inbounds for k in 1:qk, j in 1:qn
-        r = _compressed_ftlr_execution_rank(B, k, j)
-        b_row_ranks[k] += r
-        b_col_ranks[j] += r
-    end
-    @inbounds for j in 1:qn, k in 1:qk
-        b_col_k_prefix[j, k + 1] = b_col_k_prefix[j, k] + _compressed_ftlr_execution_rank(B, k, j)
-    end
-    @inbounds for k in 1:qk, j in 1:qn
-        b_row_k_prefix[k, j + 1] = b_row_k_prefix[k, j] + _compressed_ftlr_execution_rank(B, k, j)
-    end
-    pair_ranks = Base.zeros(Int, qm)
-    @inbounds for i in 1:qm, k in 1:qk
-        r = _compressed_ftlr_execution_rank(A, i, k)
-        a_k_prefix[i, k + 1] = a_k_prefix[i, k] + r
-        pair_ranks[i] += r * b_row_ranks[k]
-    end
-    b_total_rank = sum(b_row_ranks)
-    b_col_prefix = _compressed_ftlr_prefix(b_col_ranks)
-    row_heights = [length(_compressed_ftlr_axis_range(A, i, 1)) for i in 1:qm]
-    col_widths = [length(_compressed_ftlr_axis_range(B, j, 2)) for j in 1:qn]
-    col_prefix = _compressed_ftlr_prefix(col_widths)
-    Tbytes = sizeof(eltype(A))
-    right = _compressed_ftlr_right_valid(A, B) ?
-        [pair_ranks[i] == 0 ? 0 :
-         (pair_ranks[i] + col_prefix[end] * a_k_prefix[i, end]) * Tbytes for i in 1:qm] : nothing
-    left = _compressed_ftlr_left_valid(A, B) ?
-        [pair_ranks[i] == 0 ? 0 :
-         (pair_ranks[i] + row_heights[i] * b_total_rank) * Tbytes for i in 1:qm] : nothing
-    (right === nothing && left === nothing) && throw(ArgumentError(
-        "CompressedFTLR needs row-packed B outer factors and either row-packed A outer factors or column-packed B inner factors"))
-    row_bytes = [min(right === nothing ? typemax(Int) : right[i],
-                     left === nothing ? typemax(Int) : left[i]) for i in 1:qm]
-    # The FoldRight stage-2 cost is a triple sum over (i, j, k) that factorises:
-    #     Σ_j w_j Σ_k rA_ik rB_kj  =  Σ_k rA_ik (Σ_j w_j rB_kj)  =  Σ_k rA_ik ω_k
-    # Hoisting ω_k turns an O(qm·qn·qk) comprehension into O(qk·qn + qm·qk).
-    # The FoldLeft stage-3 term Σ_j w_j γ_j is independent of i, so it is hoisted
-    # for the same reason instead of being rebuilt qm times.
-    omega = Base.zeros(Int, qk)
-    @inbounds for k in 1:qk, j in 1:qn
-        omega[k] += col_widths[j] * _compressed_ftlr_execution_rank(B, k, j)
-    end
-    weighted_col_rank = 0
-    @inbounds for j in 1:qn
-        weighted_col_rank += col_widths[j] * b_col_ranks[j]
-    end
-    right_flops = right === nothing ? nothing :
-        [sum((_compressed_ftlr_execution_rank(A, i, k) * omega[k] for k in 1:qk); init=0) +
-         row_heights[i] * col_prefix[end] * a_k_prefix[i, end]
-         for i in 1:qm]
-    left_flops = left === nothing ? nothing :
-        [row_heights[i] * (pair_ranks[i] + weighted_col_rank) for i in 1:qm]
-    maximum_bytes = min(right === nothing ? typemax(Int) : sum(right),
-                        left === nothing ? typemax(Int) : sum(left))
-    profile = RaggedWorkspaceProfile(
-        row_bytes, right, left, right_flops, left_flops,
-        right === nothing ? nothing : _compressed_ftlr_prefix(right),
-        left === nothing ? nothing : _compressed_ftlr_prefix(left),
-        right_flops === nothing ? nothing : _compressed_ftlr_prefix(right_flops),
-        left_flops === nothing ? nothing : _compressed_ftlr_prefix(left_flops),
-        isempty(row_bytes) ? 0 : maximum(row_bytes), maximum_bytes,
-    )
-    return CompressedFTLRRankPlan(a_k_prefix, b_row_ranks, b_col_ranks, b_col_k_prefix,
-                        b_row_k_prefix, b_col_prefix, pair_ranks, b_total_rank,
-                        row_heights, col_widths, col_prefix,
+    meta = _compressed_ftlr_rank_metadata(A, B)
+    profile = _compressed_ftlr_fold_cost(meta, A, B)
+    return CompressedFTLRRankPlan(meta.a_k_prefix, meta.b_row_ranks, meta.b_col_ranks,
+                        meta.b_col_k_prefix, meta.b_row_k_prefix, meta.b_col_prefix,
+                        meta.pair_ranks, meta.b_total_rank,
+                        meta.output_row_heights, meta.output_col_widths, meta.output_col_prefix,
                         profile)
 end
 
