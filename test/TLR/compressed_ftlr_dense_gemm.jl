@@ -35,6 +35,25 @@ end
     end
 end
 
+@testset "CompressedFTLR FoldLeft fuses Stage 3 across a row run" begin
+    rank_grid = Int[1 2; 2 1]
+    A = NextLA.CompressedFTLRMatrix(
+        KernelAbstractions.CPU(), Float32, 8, 8, 4, rank_grid;
+        outer_order=NextLA.TileColMajor, inner_order=NextLA.TileColMajor)
+    B = NextLA.CompressedFTLRMatrix(
+        KernelAbstractions.CPU(), Float32, 8, 8, 4, reverse(rank_grid; dims=1))
+    plan = _TLRM._compressed_ftlr_rank_plan(A, B)
+    @test plan.profile.right_row_bytes === nothing
+    workspace = NextLA.DenseGemmWorkspace(A, plan.profile.maximum)
+    arena = _TLRM.DenseGemmArena(view(workspace.storage, :), 1)
+    C = zeros(Float32, 8, 8)
+    tasks = _TLRM._build_compressed_ftlr_foldleft_run(
+        C, A, B, plan, 1:2, 1f0, 0f0, arena)
+
+    @test length(tasks.stage3) == NextLA.grid_size(B)[2]
+    @test all(size(task.C, 1) == size(C, 1) for task in tasks.stage3)
+end
+
 @testset "CompressedFTLR CUDA dense GEMM with tails" begin
     ranksA = Int[2 1 1; 1 2 1; 1 1 1]
     ranksB = Int[1 2 1; 2 1 1; 1 1 1]
