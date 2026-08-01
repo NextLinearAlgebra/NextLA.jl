@@ -21,9 +21,6 @@ using ..NextLA: AbstractPreparedGroupedGemm, prepare_precision_gemm_grouped
 using ..NextLA: precision_gemm_grouped_prepared!, destroy_prepared_grouped_gemm!
 using ..NextLA: _with_grouped_host_pointer_mode, _with_grouped_device_pointer_mode
 using ..NextLA: PreparedGroupedGemmBundle
-using ..NextLA: AbstractReusableGroupedGemmSlot, create_reusable_grouped_gemm_slot
-using ..NextLA: refresh_reusable_grouped_gemm!, submit_reusable_grouped_gemm!
-using ..NextLA: destroy_reusable_grouped_gemm!
 using ..NextLA: create_streams, with_stream, sync_stream, sync_streams_with_default
 using ..NextLA: create_event, record_event!, wait_event!, sync_event
 using ..NextLA: SUBGROUP_SIZE, unwrap

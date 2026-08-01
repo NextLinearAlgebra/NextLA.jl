@@ -21,7 +21,6 @@ struct CompressedFTLRRankPlan
     b_col_k_prefix::Matrix{Int}  # (logical j, prefix through logical k)
     b_row_k_prefix::Matrix{Int} # (logical k, prefix through logical j): Σ_{j'<j} rB_kj'
     b_col_prefix::Vector{Int}    # prefix of γ_j across logical j
-    b_first_active_col::Vector{Int}
     pair_ranks::Vector{Int}      # p_i = Σ_k rA_ik σ_k
     b_total_rank::Int
     output_row_heights::Vector{Int}
@@ -68,12 +67,10 @@ function _compressed_ftlr_rank_plan(A, B)
     b_col_ranks = Base.zeros(Int, qn)
     b_col_k_prefix = Base.zeros(Int, qn, qk + 1)
     b_row_k_prefix = Base.zeros(Int, qk, qn + 1)
-    b_first_active_col = Base.zeros(Int, qk)
     @inbounds for k in 1:qk, j in 1:qn
         r = _compressed_ftlr_execution_rank(B, k, j)
         b_row_ranks[k] += r
         b_col_ranks[j] += r
-        r > 0 && b_first_active_col[k] == 0 && (b_first_active_col[k] = j)
     end
     @inbounds for j in 1:qn, k in 1:qk
         b_col_k_prefix[j, k + 1] = b_col_k_prefix[j, k] + _compressed_ftlr_execution_rank(B, k, j)
@@ -133,12 +130,10 @@ function _compressed_ftlr_rank_plan(A, B)
         isempty(row_bytes) ? 0 : maximum(row_bytes), maximum_bytes,
     )
     return CompressedFTLRRankPlan(a_k_prefix, b_row_ranks, b_col_ranks, b_col_k_prefix,
-                        b_row_k_prefix, b_col_prefix, b_first_active_col, pair_ranks, b_total_rank,
+                        b_row_k_prefix, b_col_prefix, pair_ranks, b_total_rank,
                         row_heights, col_widths, col_prefix,
                         profile)
 end
-
-_compressed_ftlr_workspace_profile(A, B) = _compressed_ftlr_rank_plan(A, B).profile
 
 function gemm_minimum_workspace_bytes(A::CompressedFTLRMatrix, B::CompressedFTLRMatrix;
                                       transA::Char='N', transB::Char='N')

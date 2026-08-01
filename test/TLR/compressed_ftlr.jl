@@ -121,7 +121,7 @@ end
 @testset "CompressedFTLR ragged workspace profile" begin
     A = _compressed_ftlr_fixture()
     B = _compressed_ftlr_fixture(Float64, Int[1 0; 2 1; 3 1])
-    profile = _TLRM._compressed_ftlr_workspace_profile(A, B)
+    profile = _TLRM._compressed_ftlr_rank_plan(A, B).profile
     @test profile.minimum == maximum(profile.row_bytes)
     @test profile.maximum == min(sum(profile.right_row_bytes), sum(profile.left_row_bytes))
     @test NextLA.gemm_minimum_workspace_bytes(A, B) == profile.minimum
@@ -134,7 +134,7 @@ end
                                Int[1 2 0; 3 1 2];
                                outer_order=NextLA.TileColMajor,
                                inner_order=NextLA.TileColMajor)
-    left_profile = _TLRM._compressed_ftlr_workspace_profile(Aleft, B)
+    left_profile = _TLRM._compressed_ftlr_rank_plan(Aleft, B).profile
     @test left_profile.right_row_bytes === nothing
     @test all(run.fold === :left for run in _TLRM._compressed_ftlr_row_runs(left_profile, left_profile.maximum))
 end

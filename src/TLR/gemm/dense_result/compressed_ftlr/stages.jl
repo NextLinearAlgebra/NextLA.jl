@@ -305,26 +305,3 @@ function _build_compressed_ftlr_foldleft_run(C, A, B, plan::CompressedFTLRRankPl
     end
     return CompressedFTLRRunTasks(s1, s2, s3, tdata, scale_targets)
 end
-
-function _execute_compressed_ftlr_run_tasks!(C, A, tasks::CompressedFTLRRunTasks, beta, mode)
-    tasks.tdata === nothing || fill!(tasks.tdata, zero(eltype(A)))
-    @inbounds for (rows, cols) in tasks.scale_targets
-        _scale_output!(view(C, rows, cols), beta)
-    end
-    tasks.stage1 === nothing || precision_gemm_grouped!(tasks.stage1, mode)
-    tasks.stage2 === nothing || precision_gemm_grouped!(tasks.stage2, mode)
-    tasks.stage3 === nothing || precision_gemm_grouped!(tasks.stage3, mode)
-    return C
-end
-
-function _execute_compressed_ftlr_foldright_run!(C, A, B, plan::CompressedFTLRRankPlan, irange,
-                                                  alpha, beta, mode, arena)
-    tasks = _build_compressed_ftlr_foldright_run(C, A, B, plan, irange, alpha, beta, arena)
-    return _execute_compressed_ftlr_run_tasks!(C, A, tasks, beta, mode)
-end
-
-function _execute_compressed_ftlr_foldleft_run!(C, A, B, plan::CompressedFTLRRankPlan, irange,
-                                                 alpha, beta, mode, arena)
-    tasks = _build_compressed_ftlr_foldleft_run(C, A, B, plan, irange, alpha, beta, arena)
-    return _execute_compressed_ftlr_run_tasks!(C, A, tasks, beta, mode)
-end

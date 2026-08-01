@@ -3,7 +3,7 @@
 #   julia --project=experiments experiments/h100_audit_probe.jl            # all phases
 #   PROBE_PHASE=align julia --project=experiments experiments/h100_audit_probe.jl
 #
-# Phases: align ranks descriptor fold fusion plan mixedout overhead
+# Phases: align ranks descriptor fusion plan mixedout overhead
 # Tunables: PROBE_N=8192  PROBE_BM=256  PROBE_RMAX=128  PROBE_PHASE=all
 #
 # Every phase is wrapped in try/catch: one failure must not waste the rental.
@@ -194,49 +194,10 @@ phase("descriptor") do
     @printf("  transient (rebuild): %9.3f ms (%8.1f GFLOP/s)  -> %.1fx slower\n",
             t_tr, gf/(t_tr/1e3), t_tr/t_an)
     close(an)
-    println("\n>> if transient >> prepared, route stages.jl/mixed_dense.jl through")
-    println(">> reusable slots (machinery already exists in ext/cuda/gemm.jl).")
+    println("\n>> prepare one symbolic analysis and reuse it across timed numerical calls.")
 end
 
-# ==================================================== 4. FOLD-SELECTION MODEL
-# _compressed_ftlr_select_fold picks by MAC count and assumes both folds achieve
-# the same FLOP/s. Never validated. Force each fold and compare.
-phase("fold") do
-    q = cld(N, BM)
-    rg = rankgrid(q, RMAX)
-    rgB = rankgrid(q, RMAX; seed=11)   # distinct grids: identical grids make
-    A = make_ftlr(Float32, N, BM, rg)  # right/left FLOP models tie exactly
-    B = make_ftlr(Float32, N, BM, rgB)
-    C = CUDA.zeros(Float32, N, N)
-    LA = NextLA.TLRmodule.logical_operand(A, 'N'); LB = NextLA.TLRmodule.logical_operand(B, 'N')
-    plan = _T._compressed_ftlr_rank_plan(LA, LB)
-    p = plan.profile
-    rf = p.right_flops === nothing ? nothing : sum(p.right_flops)
-    lf = p.left_flops  === nothing ? nothing : sum(p.left_flops)
-    @printf("  model MACs: right=%.3e left=%.3e  -> model picks :%s (%.2fx)\n",
-            something(rf, NaN), something(lf, NaN),
-            (rf === nothing || lf === nothing) ? "n/a" : (rf <= lf ? "right" : "left"),
-            (rf === nothing || lf === nothing) ? NaN : max(rf,lf)/min(rf,lf))
-    maxb = _T.gemm_maximum_workspace_bytes(A, B)
-    ws = NextLA.DenseGemmWorkspace(A, maxb)
-    arena = NextLA.TLRmodule.DenseGemmArena(view(ws.storage, :), 1)
-    mode = NextLA.GEMMCompute{Float32}()
-    for (name, builder) in (("right", _T._execute_compressed_ftlr_foldright_run!),
-                            ("left",  _T._execute_compressed_ftlr_foldleft_run!))
-        try
-            t = timeit(() -> for i in 1:size(rg,1)
-                builder(C, LA, LB, plan, i:i, 1f0, 0f0, mode, arena)
-            end, 3)
-            @printf("  measured fold=:%-6s %9.3f ms\n", name, t)
-        catch e
-            @printf("  fold=:%-6s FAILED: %s\n", name, sprint(showerror, e)[1:min(end,70)])
-        end
-    end
-    println("\n>> if the measured ratio disagrees with the model ratio, the MAC-count")
-    println(">> heuristic in _compressed_ftlr_select_fold is choosing wrong.")
-end
-
-# ==================================================== 5. FUSION EFFICIENCY
+# ==================================================== 4. FUSION EFFICIENCY
 # Fusing stage 3 does NOT change the FLOP count: a fused (bm x rho)*(rho x N)
 # GEMM and qn separate (bm x rho)*(rho x bn) GEMMs are the SAME arithmetic in
 # a different task grain. A pure-FLOP cost model is therefore structurally
@@ -244,8 +205,7 @@ end
 # never whether fusing pays off. This phase measures the only number that can
 # make fusion enter a scheduling decision at all: achieved GFLOP/s, fused vs
 # unfused, for IDENTICAL total work. Uses prepared descriptors so only kernel
-# time is measured (the `fold` phase above ran on the transient path, ~98%
-# descriptor-rebuild noise, and cannot be trusted for this question).
+# time is measured.
 phase("fusion") do
     # BUG FIXED: this used to hardcode Float32 regardless of PROBE_T, so a
     # PROBE_T=Float16 run silently still measured Float32/COMPUTE_32F -- never
@@ -313,7 +273,7 @@ phase("fusion") do
     println(">> Scale FUSION_N/FUSION_NT up to better match production qm/N on H100.")
 end
 
-# ==================================================== 6. PLAN COST / O(q^3)
+# ==================================================== 5. PLAN COST / O(q^3)
 # _compressed_ftlr_rank_plan builds right_flops with a triple-nested
 # comprehension -> O(qm*qn*qk). Claimed reducible to O(qk*qn + qm*qk).
 phase("plan") do
@@ -341,7 +301,7 @@ phase("plan") do
     println(">> Fix: w_k = sum_j col_widths[j]*rB_kj once, then right_flops[i] = sum_k rA_ik*w_k.")
 end
 
-# ==================================================== 7. MIXED-PRECISION OUT
+# ==================================================== 6. MIXED-PRECISION OUT
 # low_rank_terms.jl:34 asserts grouped GEMMEx rejects FP16 operands -> FP32 C.
 # Same class of unverified claim as the alignment one. Test it directly.
 phase("mixedout") do
@@ -366,7 +326,7 @@ phase("mixedout") do
     println(">> lifted — which matters for FP16 accuracy (FP32 accumulation into C).")
 end
 
-# ==================================================== 8. PER-CALL OVERHEAD
+# ==================================================== 7. PER-CALL OVERHEAD
 # (a) fill!(tdata, 0) every call; (b) Int.(ranks(A)) == ... allocates and
 # compares the whole rank grid on every numerical call.
 phase("overhead") do
