@@ -13,14 +13,14 @@ const LAYOUTS = parse_symbol_list(
     "NEXTLA_MEMORY_LAYOUTS",
     "compressed_dense,dense_compressed,compressed_compressed")
 const RANK_BANDS = parse_string_list(
-    "NEXTLA_MEMORY_RANK_BANDS", "64:32,32:16,16:8,8:4")
+    "NEXTLA_MEMORY_RANK_BANDS", "16:8")
+const WORKSPACE_LEVELS = parse_int_list(
+    "NEXTLA_MEMORY_WORKSPACE_LEVELS", "1,2,4,8,16")
 const PRECISIONS = selected_precisions(
     "NEXTLA_MEMORY_PRECISION", "fp16")
 const WARMUP = parse(Int, get(ENV, "NEXTLA_MEMORY_WARMUP", "1"))
 const REPS = parse(Int, get(ENV, "NEXTLA_MEMORY_REPS", "5"))
 const ANALYSIS_REPS = parse(Int, get(ENV, "NEXTLA_MEMORY_ANALYSIS_REPS", "3"))
-const ROWS_PER_RUN = parse(Int, get(ENV, "NEXTLA_MEMORY_ROWS", "4"))
-const MIXED_STRIPES = parse(Int, get(ENV, "NEXTLA_MEMORY_MIXED_STRIPES", "1"))
 const SEED = parse(Int, get(ENV, "NEXTLA_MEMORY_SEED", "20260802"))
 const FILL_MODE = Symbol(get(ENV, "NEXTLA_MEMORY_FILL", "random"))
 const EXECUTION_POLICY = Symbol(get(
@@ -39,8 +39,8 @@ function validate_configuration()
         throw(ArgumentError("execution policy must be exact, q8, q16, or pow2"))
     FILL_MODE in (:random, :constant, :zeros) ||
         throw(ArgumentError("fill mode must be random, constant, or zeros"))
-    ROWS_PER_RUN > 0 || throw(ArgumentError("rows per run must be positive"))
-    MIXED_STRIPES > 0 || throw(ArgumentError("mixed stripes must be positive"))
+    all(>(0), WORKSPACE_LEVELS) ||
+        throw(ArgumentError("workspace levels must be positive"))
     for divisor in TILE_DIVISORS
         divisor > 0 && N % divisor == 0 || throw(ArgumentError(
             "N=$N is not divisible by tile divisor $divisor"))
@@ -51,6 +51,9 @@ function validate_configuration()
     return nothing
 end
 
+workspace_levels(divisor) =
+    sort!(unique(min(level, divisor) for level in WORKSPACE_LEVELS))
+
 function list_cases()
     precision = only(PRECISIONS)
     count = 1
@@ -59,12 +62,11 @@ function list_cases()
         b = N ÷ divisor
         for spec in RANK_BANDS
             band = rank_band(spec, b)
-            for distribution in DISTRIBUTIONS, layout in LAYOUTS
+            for distribution in DISTRIBUTIONS, layout in LAYOUTS,
+                workspace_level in workspace_levels(divisor)
                 id = compressed_case_id(
                     N, divisor, distribution, band.lo, band.hi, precision,
-                    layout, EXECUTION_POLICY,
-                    layout === :compressed_compressed ?
-                        min(ROWS_PER_RUN, divisor) : MIXED_STRIPES)
+                    layout, EXECUTION_POLICY, workspace_level)
                 occursin(CASE_FILTER, id) || continue
                 println(id)
                 count += 1
@@ -98,26 +100,31 @@ function run_memory_sweep()
             for spec in RANK_BANDS
                 band = rank_band(spec, b)
                 for distribution in DISTRIBUTIONS, layout in LAYOUTS
-                    id = compressed_case_id(
-                        N, divisor, distribution, band.lo, band.hi, precision,
-                        layout, EXECUTION_POLICY,
-                        layout === :compressed_compressed ?
-                            min(ROWS_PER_RUN, divisor) : MIXED_STRIPES)
-                    occursin(CASE_FILTER, id) || continue
-                    measured = benchmark_compressed_case(
-                        N, b, distribution, band.lo, band.hi, precision, layout;
-                        warmup=WARMUP, repetitions=REPS,
-                        analysis_repetitions=ANALYSIS_REPS, seed=SEED,
-                        fill_mode=FILL_MODE,
-                        execution_rank_policy=EXECUTION_POLICY,
-                        rows_per_run=ROWS_PER_RUN, mixed_stripes=MIXED_STRIPES)
-                    row = compressed_row(
-                        run, N, divisor, b, distribution, band.name,
-                        band.lo, band.hi, precision, layout, EXECUTION_POLICY,
-                        SEED, FILL_MODE, WARMUP, REPS, ANALYSIS_REPS,
-                        measured, dense)
-                    write_csv_row(run, row)
-                    print_case(row)
+                    previous_ratio = -Inf
+                    for workspace_level in workspace_levels(divisor)
+                        id = compressed_case_id(
+                            N, divisor, distribution, band.lo, band.hi,
+                            precision, layout, EXECUTION_POLICY, workspace_level)
+                        occursin(CASE_FILTER, id) || continue
+                        measured = benchmark_compressed_case(
+                            N, b, distribution, band.lo, band.hi, precision,
+                            layout; warmup=WARMUP, repetitions=REPS,
+                            analysis_repetitions=ANALYSIS_REPS, seed=SEED,
+                            fill_mode=FILL_MODE,
+                            execution_rank_policy=EXECUTION_POLICY,
+                            rows_per_run=workspace_level,
+                            mixed_stripes=workspace_level)
+                        measured.memory_ratio >= previous_ratio || error(
+                            "workspace sweep is not monotone for $id")
+                        previous_ratio = measured.memory_ratio
+                        row = compressed_row(
+                            run, N, divisor, b, distribution, band.name,
+                            band.lo, band.hi, precision, layout,
+                            EXECUTION_POLICY, SEED, FILL_MODE, WARMUP, REPS,
+                            ANALYSIS_REPS, measured, dense)
+                        write_csv_row(run, row)
+                        print_case(row)
+                    end
                 end
             end
         end

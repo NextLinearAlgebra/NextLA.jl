@@ -73,8 +73,9 @@ Defaults:
 - fixed `N = 16384` and FP16 storage with FP32 accumulation;
 - tile sizes `N/16` and `N/8`;
 - uniform and skewed ranks;
-- rank bands `[b/64,b/32]`, `[b/32,b/16]`, `[b/16,b/8]`, and
-  `[b/8,b/4]`;
+- one fixed rank band `[b/16,b/8]`;
+- progressively larger workspaces covering 1, 2, 4, 8, and 16 output tile
+  rows/stripes, capped at the tile-grid dimension;
 - all three operand layouts, one warmup, and five measured executions.
 
 Change the fixed point or rank bands with, for example:
@@ -82,7 +83,8 @@ Change the fixed point or rank bands with, for example:
 ```bash
 NEXTLA_MEMORY_N=32768 \
 NEXTLA_MEMORY_PRECISION=tf32 \
-NEXTLA_MEMORY_RANK_BANDS=32:16,16:8,8:4 \
+NEXTLA_MEMORY_RANK_BANDS=16:8 \
+NEXTLA_MEMORY_WORKSPACE_LEVELS=1,2,4,8,16 \
 julia --project=experiments experiments/gemm/memory_sweep.jl
 ```
 
@@ -104,8 +106,8 @@ in the CSV so the definition can be audited or recomputed.
 
 The remaining controls use the `NEXTLA_MEMORY_` prefix and parallel those of
 the precision sweep: `TILE_DIVISORS`, `DISTRIBUTIONS`, `LAYOUTS`, `WARMUP`,
-`REPS`, `ANALYSIS_REPS`, `ROWS`, `MIXED_STRIPES`, `EXECUTION_POLICY`, `FILL`,
-`SEED`, and `FILTER`.
+`REPS`, `ANALYSIS_REPS`, `RANK_BANDS`, `WORKSPACE_LEVELS`,
+`EXECUTION_POLICY`, `FILL`, `SEED`, and `FILTER`.
 
 ## 3. Recommended bar-plot ablation
 
