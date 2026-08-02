@@ -158,6 +158,30 @@ joins and recomputed memory ratios/speedups with:
 python3 experiments/gemm/check_results.py experiments/results/gemm/*.csv
 ```
 
+Generate the exploratory plot set for every result CSV with:
+
+```bash
+source ../.plenv/bin/activate
+python3 experiments/gemm/plot_results.py
+```
+
+Each run gets its own directory under `experiments/figures/gemm/`, so results
+with different ranks or sweep settings are never mixed. To plot selected files
+or emit publication formats:
+
+```bash
+python3 experiments/gemm/plot_results.py \
+    experiments/results/gemm/precision_sweep__*.csv \
+    experiments/results/gemm/memory_sweep__*.csv \
+    --formats png,pdf,svg
+```
+
+The plotting pass creates speedup, numerical-time, and achieved-ceiling views.
+Every speedup figure overlays a dashed `dense_flops/executed_flops` curve. The
+executed FLOPs include actual execution-rank padding and workspace-dependent
+fold selection; the dashed curve is therefore specific to each rank map, tile
+size, precision case, and workspace schedule.
+
 Run the first two sweeps sequentially (and optionally the ablation) with:
 
 ```bash
