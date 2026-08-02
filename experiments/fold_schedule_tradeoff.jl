@@ -28,6 +28,7 @@
 # is a scheduling-policy comparison, not a tail-tile correctness test.
 
 using NextLA, KernelAbstractions, Printf, Random
+using Random: randperm
 
 const _T    = NextLA.TLRmodule
 const Q     = parse(Int, get(ENV, "TRADEOFF_Q",    "32"))
@@ -76,6 +77,28 @@ function corner_pair(q, rmax; seed_a=7, seed_b=11)
 end
 
 execgrid(raw) = _T._compressed_ftlr_execution_rank.(raw, :q8)
+
+# ------------------------------------------------- spatial-arrangement control
+# Every generator above emits ranks whose SPATIAL order coincides with their
+# MAGNITUDE order (`corner` is a clean block split, `decay` a monotone tent).
+# That silently conflates two independent properties, and it is the best case
+# for any scheduler restricted to contiguous ranges: the optimal partition
+# happens to BE contiguous. Real TLR rank maps need not be sorted this way.
+#
+# Permuting A's ROWS permutes rho_i, and B's COLUMNS permutes gamma_j -- so the
+# multisets of both marginals, and Sigma_ij Q[i,j] (hence the whole stage-2
+# total), are preserved EXACTLY. Only the arrangement changes, which isolates
+# "does this scheduler depend on the ranks being conveniently ordered?".
+#
+# TRADEOFF_SHUFFLE=1 turns it on.
+const SHUFFLE = get(ENV, "TRADEOFF_SHUFFLE", "0") == "1"
+
+function shuffle_layout(rawA, rawB; seed=2024)
+    rng = MersenneTwister(seed)
+    rowperm = randperm(rng, size(rawA, 1))
+    colperm = randperm(rng, size(rawB, 2))
+    return rawA[rowperm, :], rawB[:, colperm]
+end
 
 # --------------------------------------------------- per-tile optimal bound
 # Only meaningful once UNFUSED_PENALTY is confirmed ~1 (measured on H100
@@ -409,6 +432,7 @@ for dist in (:uniform, :decay, :corner)
     else
         rankgrid(Q, RMAX; seed=7, dist), rankgrid(Q, RMAX; seed=11, dist)   # independent seed: avoids a forced tie
     end
+    SHUFFLE && ((rawA, rawB) = shuffle_layout(rawA, rawB))
     Rexec, R2exec = execgrid(rawA), execgrid(rawB)
 
     right_row, left_row = whole_matrix_flops(Rexec, R2exec, BM, BM)
