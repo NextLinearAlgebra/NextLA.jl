@@ -116,7 +116,10 @@ function analyze_compressed_gemm(
     placeholder_alpha = one(scalar_type)
     placeholder_beta = zero(scalar_type)
     prepared_runs = PreparedCompressedFTLRRun[]
-    runs = _compressed_ftlr_row_runs(profile, budget)
+    # TEMPORARY indirection: selects greedy (default) or the DP scheduler --
+    # see compressed_ftlr/schedule_dp.jl. Revert to `_compressed_ftlr_row_runs`
+    # when the benchmark picks a winner.
+    runs = _compressed_ftlr_schedule(profile, budget)
     sizehint!(prepared_runs, length(runs))
     try
         for run in runs

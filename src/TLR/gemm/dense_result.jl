@@ -7,6 +7,7 @@ include("common/workspace.jl")
 include("dense_result/compressed_ftlr/rank_metadata.jl")
 include("dense_result/compressed_ftlr/fold_cost.jl")
 include("dense_result/compressed_ftlr/schedule.jl")
+include("dense_result/compressed_ftlr/schedule_dp.jl")   # TEMPORARY: benchmark-only, see file header
 include("dense_result/fixed_rank/run_schedule.jl")
 include("dense_result/fixed_rank/stages.jl")
 include("dense_result/compressed_ftlr/execute.jl")

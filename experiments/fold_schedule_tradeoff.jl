@@ -182,8 +182,224 @@ function real_scheduler_flops(rawA, rawB, bm; policy=:q8, budget_kind=:maximum)
     return total, length(runs), sizes, folds
 end
 
+# ------------------------------------- budget-constrained optimal schedulers
+# Q3: given a workspace budget, how much does the SHIPPED greedy partition
+#     leave on the table, and does 2-D peeling beat an optimal 1-D row-run
+#     partition by enough to justify a rectangle-parameterised executor?
+#
+# Both schedulers below are scored against the SAME production cost model the
+# shipped greedy uses (`_compressed_ftlr_rank_plan`'s profile), so all three
+# numbers are directly comparable with no second model to drift out of sync.
+# Unlike `peeling_dp` above -- which is unconstrained and peels ONE row/column
+# at a time, making it a bound rather than a schedule -- these are budget-
+# feasible and peel RANGES, so they are answering the schedulable question.
+#
+# CALL_COST is a per-region FLOP-equivalent penalty for one extra grouped-GEMM
+# submission. At the default 0 the DPs minimise pure arithmetic and will split
+# freely, so their region counts are an UPPER bound on how much splitting is
+# actually worth doing; set it from a measured per-call overhead to see the
+# realistic partition.
+const CALL_COST = parse(Float64, get(ENV, "TRADEOFF_CALL_COST", "0.0"))
+
+"""Build the production plan/profile once so every scheduler is scored identically."""
+function production_profile(rawA, rawB, bm; policy=:q8)
+    cpu = KernelAbstractions.CPU()
+    q = size(rawA, 1)
+    A = NextLA.CompressedFTLRMatrix(cpu, Float32, q * bm, q * bm, (bm, bm), rawA;
+                                    execution_rank_policy=policy)
+    B = NextLA.CompressedFTLRMatrix(cpu, Float32, q * bm, q * bm, (bm, bm), rawB;
+                                    execution_rank_policy=policy)
+    LA, LB = _T.logical_operand(A, 'N'), _T.logical_operand(B, 'N')
+    return _T._compressed_ftlr_rank_plan(LA, LB).profile
+end
+
+"""Cheapest feasible fold for a contiguous row range spanning ALL columns --
+`_compressed_ftlr_select_fold`'s exact criterion, evaluated for an arbitrary
+candidate range instead of only the one greedy happens to reach."""
+function row_range_cost(p, rows::UnitRange{Int}, budget::Int)
+    rb = p.right_byte_prefix === nothing ? typemax(Int) :
+         _T._compressed_ftlr_range_total(p.right_byte_prefix, rows)
+    lb = p.left_byte_prefix === nothing ? typemax(Int) :
+         _T._compressed_ftlr_range_total(p.left_byte_prefix, rows)
+    fr = (rb <= budget && p.right_flop_prefix !== nothing) ?
+         Float64(_T._compressed_ftlr_range_total(p.right_flop_prefix, rows)) : Inf
+    fl = (lb <= budget && p.left_flop_prefix !== nothing) ?
+         Float64(_T._compressed_ftlr_range_total(p.left_flop_prefix, rows)) : Inf
+    return fr <= fl ? (fr, :right) : (fl, :left)
+end
+
+"""
+Optimal partition of rows 1..q into contiguous runs under `budget`.
+
+The shipped greedy maximises run LENGTH subject to feasibility, never
+reconsidering a boundary once committed. That is provably optimal for
+minimising run COUNT, but not for minimising COST: merging rows whose fold
+preferences differ forces one global choice across all of them. This evaluates
+every boundary placement, so it is optimal over exactly the schedule class the
+current executor can run (contiguous row ranges, one fold each).
+"""
+function rowrun_dp(p, budget::Int; call_cost::Float64=CALL_COST)
+    q = length(p.row_bytes)
+    dp = fill(Inf, q + 1)                  # dp[j+1] = optimal cost of rows 1..j
+    back = zeros(Int, q + 1)
+    dp[1] = 0.0
+    @inbounds for j in 1:q, i in 1:j
+        isinf(dp[i]) && continue
+        c, _ = row_range_cost(p, i:j, budget)
+        isinf(c) && continue
+        v = dp[i] + c + call_cost
+        if v < dp[j + 1]
+            dp[j + 1] = v
+            back[j + 1] = i
+        end
+    end
+    runs = Tuple{UnitRange{Int},Symbol}[]
+    isinf(dp[q + 1]) && return (Inf, runs)
+    j = q
+    while j >= 1
+        i = back[j + 1]
+        _, fold = row_range_cost(p, i:j, budget)
+        pushfirst!(runs, (i:j, fold))
+        j = i - 1
+    end
+    return dp[q + 1], runs
+end
+
+"""
+O(1) rectangle cost/storage queries for the range-peeling DP.
+
+`Q[i,j] = Σ_k rA_ik·rB_kj` is the one genuinely 3-way-coupled quantity here,
+and it CANNOT be hoisted the way the row-run profile hoists `ω_k`: that hoist
+is only valid while the column range is pinned to "all columns". Once both
+extents can vary independently, materialising Q is unavoidable -- O(q³) once
+(a plain matrix product on the rank grids), after which a 2-D prefix sum makes
+every rectangle query O(1). This is the concrete extra cost peeling pays over
+row-runs at SCHEDULING time, separate from its executor cost.
+"""
+struct RectCost
+    QP::Matrix{Float64}      # 2-D prefix of Q
+    rhoP::Vector{Float64}    # prefix of rho_i  = Σ_k rA_ik
+    gammaP::Vector{Float64}  # prefix of gamma_j = Σ_k rB_kj
+    bm::Int
+    bn::Int
+    Tbytes::Int
+end
+
+function RectCost(Rexec, R2exec, bm, bn; Tbytes=sizeof(Float32))
+    q = size(Rexec, 1)
+    Qm = Float64.(Rexec) * Float64.(R2exec)
+    QP = zeros(Float64, q + 1, q + 1)
+    @inbounds for i in 1:q, j in 1:q
+        QP[i + 1, j + 1] = Qm[i, j] + QP[i, j + 1] + QP[i + 1, j] - QP[i, j]
+    end
+    rhoP   = zeros(Float64, q + 1)
+    gammaP = zeros(Float64, q + 1)
+    @inbounds for i in 1:q
+        rhoP[i + 1]   = rhoP[i]   + sum(@view Rexec[i, :])
+        gammaP[i + 1] = gammaP[i] + sum(@view R2exec[:, i])
+    end
+    return RectCost(QP, rhoP, gammaP, bm, bn, Tbytes)
+end
+
+@inline _qsum(rc, a, b, c, d) =
+    rc.QP[b + 1, d + 1] - rc.QP[a, d + 1] - rc.QP[b + 1, c] + rc.QP[a, c]
+@inline _rhosum(rc, a, b)   = rc.rhoP[b + 1]   - rc.rhoP[a]
+@inline _gammasum(rc, c, d) = rc.gammaP[d + 1] - rc.gammaP[c]
+
+"""Cheapest feasible fold for the rectangle rows a..b × cols c..d.
+
+Stage 2 is identical for both folds when bm==bn (it reduces to bm·Σ_{i,j}Q[i,j]
+either way), so only the stage-3 term decides -- the same factorisation the
+per-tile bound relies on. Storage mirrors `fold_cost.jl`'s formulas restricted
+to the rectangle: FoldRight needs S + (Σ_i rho_i)·width, FoldLeft needs
+S + height·(Σ_j gamma_j)."""
+function rect_cost(rc::RectCost, a::Int, b::Int, c::Int, d::Int, budget::Int)
+    S  = _qsum(rc, a, b, c, d)
+    W  = (d - c + 1) * rc.bn
+    H  = (b - a + 1) * rc.bm
+    stage2 = rc.bm * S
+    rsum, gsum = _rhosum(rc, a, b), _gammasum(rc, c, d)
+    bytes_r = (S + rsum * W) * rc.Tbytes
+    bytes_l = (S + H * gsum) * rc.Tbytes
+    fr = bytes_r <= budget ? stage2 + rc.bm * rsum * W  : Inf
+    fl = bytes_l <= budget ? stage2 + H * gsum * rc.bn  : Inf
+    return fr <= fl ? (fr, :right) : (fl, :left)
+end
+
+"""
+Budget-feasible RANGE peeling: from remaining region (i0..q, j0..q), peel
+either a row-range i0..b spanning the remaining columns, or a column-range
+j0..d spanning the remaining rows. The remaining region stays a rectangle,
+which is what keeps the state space O(q²).
+
+`allow_col=false` restricts it to row peels only, which must reproduce
+`rowrun_dp` exactly -- a much stronger check than an inequality, since it
+verifies the rectangle cost formulas agree with the production profile's
+per-row arrays rather than merely ordering consistently.
+"""
+function peeling_range_dp(rc::RectCost, budget::Int;
+                          call_cost::Float64=CALL_COST, allow_col::Bool=true)
+    q = length(rc.rhoP) - 1
+    cost = fill(Inf, q + 1, q + 1)
+    choice = fill((:none, 0), q + 1, q + 1)
+    cost[q + 1, :] .= 0.0
+    cost[:, q + 1] .= 0.0
+    @inbounds for i0 in q:-1:1, j0 in q:-1:1
+        best, bestchoice = Inf, (:none, 0)
+        for b in i0:q
+            c, _ = rect_cost(rc, i0, b, j0, q, budget)
+            isinf(c) && break            # storage grows monotonically with b
+            isinf(cost[b + 1, j0]) && continue
+            v = c + call_cost + cost[b + 1, j0]
+            v < best && ((best, bestchoice) = (v, (:row, b)))
+        end
+        if allow_col
+            for d in j0:q
+                c, _ = rect_cost(rc, i0, q, j0, d, budget)
+                isinf(c) && break
+                isinf(cost[i0, d + 1]) && continue
+                v = c + call_cost + cost[i0, d + 1]
+                v < best && ((best, bestchoice) = (v, (:col, d)))
+            end
+        end
+        cost[i0, j0] = best
+        choice[i0, j0] = bestchoice
+    end
+    regions = Tuple{UnitRange{Int},UnitRange{Int},Symbol}[]
+    isinf(cost[1, 1]) && return (Inf, regions)
+    i0, j0 = 1, 1
+    while i0 <= q && j0 <= q
+        kind, e = choice[i0, j0]
+        kind === :none && break
+        if kind === :row
+            _, fold = rect_cost(rc, i0, e, j0, q, budget)
+            push!(regions, (i0:e, j0:q, fold)); i0 = e + 1
+        else
+            _, fold = rect_cost(rc, i0, q, j0, e, budget)
+            push!(regions, (i0:q, j0:e, fold)); j0 = e + 1
+        end
+    end
+    return cost[1, 1], regions
+end
+
+"""Minimum wall-clock over `reps` runs, after one warmup (compile) call."""
+function timed(f; reps::Int=3)
+    f()
+    best = Inf
+    for _ in 1:reps
+        best = min(best, @elapsed f())
+    end
+    return best
+end
+
 # --------------------------------------------------------------------- main
-println("Q=$Q BM=$BM RMAX=$RMAX  UNFUSED_PENALTY=$PENALTY")
+# TRADEOFF_LIB=1 suppresses the report so this file can be `include`d as a
+# library (plot_schedule_svg.jl reuses the schedulers to draw the real partition).
+if get(ENV, "TRADEOFF_LIB", "0") == "1"
+    println("(fold_schedule_tradeoff.jl loaded as library; report suppressed)")
+else
+
+println("Q=$Q BM=$BM RMAX=$RMAX  UNFUSED_PENALTY=$PENALTY  CALL_COST=$CALL_COST")
 @printf("\n%-8s %14s %14s %14s %14s %14s %14s %10s %10s\n",
         "dist", "F_right", "F_left", "today", "1+3(fused)", "peeling", "tile-opt", "Q1 gap%", "Q2 gap%")
 
@@ -234,6 +450,48 @@ for dist in (:uniform, :decay, :corner)
             nruns_max, string(extrema(sizes_max)), real_max, gap_real_max)
     @printf("  [real scheduler] tight budget:    %d run(s), sizes %s, cost=%.3e, gap-to-tile-opt=%.2f%%\n",
             nruns_min, string(extrema(sizes_min)), real_min, gap_real_min)
+
+    # ---- Q3: shipped greedy vs optimal row-run DP vs range-peeling DP ----
+    # All three under the SAME budget and the SAME production cost model.
+    prof = production_profile(rawA, rawB, BM)
+    rc   = RectCost(Rexec, R2exec, BM, BM)
+    for (blabel, budget) in (("generous", prof.maximum), ("tight", prof.minimum))
+        gruns = _T._compressed_ftlr_row_runs(prof, budget)
+        gcost = sum(r -> r.fold === :right ? sum(@view prof.right_flops[r.rows]) :
+                                             sum(@view prof.left_flops[r.rows]), gruns) +
+                length(gruns) * CALL_COST
+        t_g = timed(() -> _T._compressed_ftlr_row_runs(prof, budget))
+        dcost, druns = rowrun_dp(prof, budget)
+        t_d = timed(() -> rowrun_dp(prof, budget))
+        pcost, pregs = peeling_range_dp(rc, budget)
+        t_p = timed(() -> peeling_range_dp(rc, budget))
+        ncol = count(r -> length(r[2]) < Q, pregs)   # regions that are column peels
+        @printf("  [Q3 %-8s budget=%11d B]\n", blabel, budget)
+        @printf("      greedy  %.4e  %3d runs  %8.1f us\n", gcost, length(gruns), t_g * 1e6)
+        @printf("      row-DP  %.4e  %3d runs  %8.1f us  %+7.2f%% vs greedy\n",
+                dcost, length(druns), t_d * 1e6, 100 * (dcost - gcost) / gcost)
+        @printf("      peel-DP %.4e  %3d regs (%d col)  %8.1f us  %+7.2f%% vs greedy  %+7.2f%% vs row-DP\n",
+                pcost, length(pregs), ncol, t_p * 1e6,
+                100 * (pcost - gcost) / gcost, 100 * (pcost - dcost) / dcost)
+        # A DP that considers greedy's own partition cannot be worse than it.
+        if dcost > gcost + 1e-6
+            println("  !! WARNING: row-run DP ($dcost) > greedy ($gcost) -- DP is wrong")
+        end
+        # Row-only peeling explores a strict superset of nothing extra: it is
+        # exactly the row-run DP, so any mismatch means rect_cost and the
+        # production profile disagree.
+        rowonly, _ = peeling_range_dp(rc, budget; allow_col=false)
+        if !isapprox(rowonly, dcost; rtol=1e-9)
+            println("  !! WARNING: row-only peeling ($rowonly) != row-run DP ($dcost) -- rect_cost disagrees with the production profile")
+        end
+        # Peeling's option set contains every row-run schedule.
+        if pcost > dcost + 1e-6
+            println("  !! WARNING: peeling ($pcost) > row-run DP ($dcost) -- peeling DP is wrong")
+        end
+        if pcost < tile_optimal_flops(Rexec, R2exec, BM, BM) - 1e-6
+            println("  !! WARNING: peeling beat tile_opt -- tile_opt is not a valid lower bound")
+        end
+    end
 
     # Sanity checks on the derivation itself, not just the final numbers.
     # "Always row" (never take a column peel) must reproduce F_right exactly;
@@ -305,3 +563,5 @@ gap3 (printed inline) = (today - tile_opt) / today
            would motivate per-tile (not per-row, not per-region) scheduling
            instead of either 1+3 or peeling.
 """)
+
+end  # TRADEOFF_LIB guard
