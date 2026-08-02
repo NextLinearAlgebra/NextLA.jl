@@ -1,4 +1,20 @@
-# Compressed FTLR dense-output experiment
+# Dense-output GEMM experiments
+
+The cleaned size/precision sweep, fixed-size speedup-versus-memory sweep, and
+rank-bucketing ablation now live in [`gemm/`](gemm/README.md). They cover all
+three compressed operand layouts, BF16/FP16/FP32/TF32, `N=4096…65536`, physical
+storage accounting, dense baselines, and non-overwriting timestamped CSV output.
+
+Run the two primary experiments with:
+
+```bash
+bash experiments/gemm/run_sweeps.sh
+```
+
+The scripts and checked-in CSVs described below are retained as legacy/poster
+experiments and are not modified by the new runners.
+
+## Legacy compressed FTLR dense-output experiment
 
 From the repository root:
 
