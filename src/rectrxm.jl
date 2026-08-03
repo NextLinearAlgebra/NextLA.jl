@@ -256,7 +256,7 @@ function unified_rec(func::Char, side::Char, uplo::Char, diag::Char,
         unified_rec(func, side, uplo, diag, A22, B2, threshold; A_scale = A_scale)
 
         if side == 'L'
-            func == 'S' ? GEMM_SUB!(B1, A12, B2, A_scale) : GEMM_ADD!(B1, A21, B2, A_scale)
+            func == 'S' ? GEMM_SUB!(B1, A12, B2, A_scale) : GEMM_ADD!(A21, B1, B2, A_scale)
         else 
             func == 'S' ? GEMM_SUB!(B1, B2, A21, A_scale) : GEMM_ADD!(B1, A12, B2, A_scale)
         end
