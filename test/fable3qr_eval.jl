@@ -46,7 +46,8 @@ function get_accuracy_pure_qr(A_fp64::CuMatrix, T_prec::DataType, block_size::In
     
     # Hit your flat recursive driver
     # Note: adjust to `geqrf_recursive!` if you are using the alternative naming from your file
-    T_factor = qr_recursive!(A_to_factor, block_size)
+    # T_factor = qr_recursive!(A_to_factor, block_size)
+    T_factor = geqrf_recursive!(A_to_factor, block_size)
     
     # Unpack stored Y and R to host
     A_cpu = Matrix(A_to_factor)
@@ -77,7 +78,8 @@ function get_accuracy_mixed_qr(A_fp64::CuMatrix, precisions::Vector, block_size:
 
     # Factorize using your overloaded mixed-precision routine
     # Note: adjust to `geqrf_recursive!` if you are using the alternative naming from your file
-    T_factor = qr_recursive_mixed!(A_mixed_input, block_size)
+    # T_factor = qr_recursive_mixed!(A_mixed_input, block_size)
+    T_factor = geqrf_recursive!(A_mixed_input, block_size)
 
     # Reconstruct dense GPU matrix using your implementation's built-in helper
     # This unpacks Y and R and applies any dequantization scaling

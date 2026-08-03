@@ -24,6 +24,156 @@ include("wrappers.jl")
 # (triangular TRMM pieces on the unit-lower V triangles and the upper T factors).
 #
 
+
+"""
+    PanelMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
+
+A hierarchical, recursive mixed-precision data structure that maps to tall (or square)
+dense matrices, partitioned **column-wise** for panel-based recursive factorizations
+(Elmroth-Gustavson QR). Unlike `FullMixedPrec`, which uses a 2x2 grid split, this
+structure recursively partitions the matrix into a left panel (`Left`, recursive) and
+a right panel (`Right`, stored flat), enabling varying precision levels to be stored
+dynamically at different depths of the column recursion while keeping every panel
+addressable over its full row range — a requirement for the trailing-row updates and
+row-subview factorizations of block QR.
+"""
+struct PanelMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
+    Left::Union{PanelMixedPrec{T_Base}, Nothing}
+    Right::Union{AbstractMatrix, Nothing}
+    right_scale::Union{Float32, Nothing}
+    base_scale::Union{Float32, Nothing}
+    BaseCase::Union{AbstractMatrix{T_Base}, Nothing}
+    sz::Tuple{Int, Int}
+end
+
+"""
+    PanelMixedPrec(A::AbstractMatrix; precisions::Vector{DataType})
+
+Constructs a `PanelMixedPrec` representation of the dense `m x n` matrix `A` (`m >= n`).
+
+The columns are partitioned using a base-2 recursive splitting scheme. If the column
+dimension `n` is a power of 2, it splits evenly; otherwise, it splits at the largest
+power of 2 less than `n`. At each level the right panel is stored flat at `precisions[1]`
+and the left panel recurses with the remaining precisions, so that the leading panel —
+which drives the accuracy of the factorization — is held at the highest precision. The
+recursion continues until only one precision remains, at which point it forms a base case.
+For panels assigned `Float16`, dynamic per-panel quantization is applied to prevent
+numerical overflow: values exceeding `65504.0f0` are scaled, clamped, and stored
+alongside a `Float32` scaling factor.
+"""
+function PanelMixedPrec(
+    A::AbstractMatrix;
+    precisions::Vector{DataType}
+)
+    FP16_MAX_VAL = 65504.0f0
+    m = size(A, 1)
+    n = size(A, 2)
+
+    @assert m >= n "A must be square or tall (m >= n) for the panel QR structure"
+
+    if length(precisions) == 1 || n <= 1
+        T_Base = precisions[1]
+        local base_matrix
+        local base_scale
+
+        if T_Base == Float16
+            alpha = maximum(abs, A)
+            if alpha > FP16_MAX_VAL
+                base_scale = Float32(alpha / FP16_MAX_VAL)
+                base_matrix = similar(A, Float16, size(A))
+                @. base_matrix = Float16(round(clamp(A / base_scale, -FP16_MAX_VAL, FP16_MAX_VAL)))
+            else
+                base_scale = nothing
+                base_matrix = similar(A, Float16, size(A))
+                base_matrix .= A
+            end
+        else
+            base_matrix = similar(A, T_Base, size(A))
+            base_matrix .= A
+            base_scale = nothing
+        end
+
+        return PanelMixedPrec{T_Base}(nothing, nothing, nothing, base_scale, base_matrix, (m, n))
+    end
+
+    mid = isinteger(log2(n)) ? div(n, 2) : 2^floor(Int, log2(n))
+
+    T_Right = precisions[1]
+    remaining_precisions = precisions[2:end]
+
+    Left = PanelMixedPrec(view(A, :, 1:mid); precisions=remaining_precisions)
+
+    view_Right = view(A, :, mid+1:n)
+
+    local right_matrix
+    local right_scale = nothing
+
+    if T_Right == Float16
+        alpha_right = maximum(abs, view_Right)
+        if alpha_right > FP16_MAX_VAL
+            right_scale = Float32(alpha_right / FP16_MAX_VAL)
+            right_matrix = similar(view_Right, Float16, size(view_Right))
+            @. right_matrix = Float16(round(clamp(view_Right / right_scale, -FP16_MAX_VAL, FP16_MAX_VAL)))
+        else
+            right_matrix = similar(view_Right, Float16, size(view_Right))
+            right_matrix .= view_Right
+        end
+    else
+        right_matrix = similar(A, T_Right, size(view_Right))
+        right_matrix .= view_Right
+    end
+
+    T_Final_Base = precisions[end]
+    return PanelMixedPrec{T_Final_Base}(Left, right_matrix, right_scale, nothing, nothing, (m, n))
+end
+
+function Base.size(A::PanelMixedPrec)
+    return A.sz
+end
+
+function Base.getindex(A::PanelMixedPrec{T_Base}, i::Int, j::Int) where {T_Base}
+    if A.BaseCase !== nothing
+        return A.BaseCase[i, j]
+    end
+
+    mid = size(A.Left, 2)
+
+    if j <= mid
+        return A.Left[i, j]
+    else
+        return A.Right[i, j - mid]
+    end
+end
+
+"""
+    reconstruct_matrix(A::PanelMixedPrec{T_Base})
+
+Copies the hierarchical mixed-precision panel matrix back into a flat, full-precision
+standard Matrix. Note that, consistent with the other mixed-precision structures, stored
+values are copied verbatim: for `Float16` panels that carry a quantization scale, the
+Householder vectors of a factored panel are scale-invariant and reconstruct exactly,
+while the corresponding `R` entries remain divided by their panel scale factor.
+"""
+function reconstruct_matrix(A::PanelMixedPrec{T_Base}) where {T_Base}
+    if A.BaseCase !== nothing
+        return copy(A.BaseCase)
+    end
+
+    C_left = reconstruct_matrix(A.Left)
+    C_right = A.Right
+
+    m, n1 = size(C_left)
+    n2 = size(C_right, 2)
+    n = n1 + n2
+
+    C_full = similar(C_right, T_Base, m, n)
+
+    C_full[:, 1:n1] .= C_left
+    C_full[:, n1+1:n] .= C_right
+
+    return C_full
+end
+
 """
     _transpose_copy(X::AbstractMatrix)
 
@@ -264,152 +414,3 @@ function qr_recursive_mixed!(A::PanelMixedPrec{T_Base}, block_size::Int=2048) wh
 end
 
 export PanelMixedPrec, reconstruct_matrix
-
-"""
-    PanelMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
-
-A hierarchical, recursive mixed-precision data structure that maps to tall (or square)
-dense matrices, partitioned **column-wise** for panel-based recursive factorizations
-(Elmroth-Gustavson QR). Unlike `FullMixedPrec`, which uses a 2x2 grid split, this
-structure recursively partitions the matrix into a left panel (`Left`, recursive) and
-a right panel (`Right`, stored flat), enabling varying precision levels to be stored
-dynamically at different depths of the column recursion while keeping every panel
-addressable over its full row range — a requirement for the trailing-row updates and
-row-subview factorizations of block QR.
-"""
-struct PanelMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
-    Left::Union{PanelMixedPrec{T_Base}, Nothing}
-    Right::Union{AbstractMatrix, Nothing}
-    right_scale::Union{Float32, Nothing}
-    base_scale::Union{Float32, Nothing}
-    BaseCase::Union{AbstractMatrix{T_Base}, Nothing}
-    sz::Tuple{Int, Int}
-end
-
-"""
-    PanelMixedPrec(A::AbstractMatrix; precisions::Vector{DataType})
-
-Constructs a `PanelMixedPrec` representation of the dense `m x n` matrix `A` (`m >= n`).
-
-The columns are partitioned using a base-2 recursive splitting scheme. If the column
-dimension `n` is a power of 2, it splits evenly; otherwise, it splits at the largest
-power of 2 less than `n`. At each level the right panel is stored flat at `precisions[1]`
-and the left panel recurses with the remaining precisions, so that the leading panel —
-which drives the accuracy of the factorization — is held at the highest precision. The
-recursion continues until only one precision remains, at which point it forms a base case.
-For panels assigned `Float16`, dynamic per-panel quantization is applied to prevent
-numerical overflow: values exceeding `65504.0f0` are scaled, clamped, and stored
-alongside a `Float32` scaling factor.
-"""
-function PanelMixedPrec(
-    A::AbstractMatrix;
-    precisions::Vector{DataType}
-)
-    FP16_MAX_VAL = 65504.0f0
-    m = size(A, 1)
-    n = size(A, 2)
-
-    @assert m >= n "A must be square or tall (m >= n) for the panel QR structure"
-
-    if length(precisions) == 1 || n <= 1
-        T_Base = precisions[1]
-        local base_matrix
-        local base_scale
-
-        if T_Base == Float16
-            alpha = maximum(abs, A)
-            if alpha > FP16_MAX_VAL
-                base_scale = Float32(alpha / FP16_MAX_VAL)
-                base_matrix = similar(A, Float16, size(A))
-                @. base_matrix = Float16(round(clamp(A / base_scale, -FP16_MAX_VAL, FP16_MAX_VAL)))
-            else
-                base_scale = nothing
-                base_matrix = similar(A, Float16, size(A))
-                base_matrix .= A
-            end
-        else
-            base_matrix = similar(A, T_Base, size(A))
-            base_matrix .= A
-            base_scale = nothing
-        end
-
-        return PanelMixedPrec{T_Base}(nothing, nothing, nothing, base_scale, base_matrix, (m, n))
-    end
-
-    mid = isinteger(log2(n)) ? div(n, 2) : 2^floor(Int, log2(n))
-
-    T_Right = precisions[1]
-    remaining_precisions = precisions[2:end]
-
-    Left = PanelMixedPrec(view(A, :, 1:mid); precisions=remaining_precisions)
-
-    view_Right = view(A, :, mid+1:n)
-
-    local right_matrix
-    local right_scale = nothing
-
-    if T_Right == Float16
-        alpha_right = maximum(abs, view_Right)
-        if alpha_right > FP16_MAX_VAL
-            right_scale = Float32(alpha_right / FP16_MAX_VAL)
-            right_matrix = similar(view_Right, Float16, size(view_Right))
-            @. right_matrix = Float16(round(clamp(view_Right / right_scale, -FP16_MAX_VAL, FP16_MAX_VAL)))
-        else
-            right_matrix = similar(view_Right, Float16, size(view_Right))
-            right_matrix .= view_Right
-        end
-    else
-        right_matrix = similar(A, T_Right, size(view_Right))
-        right_matrix .= view_Right
-    end
-
-    T_Final_Base = precisions[end]
-    return PanelMixedPrec{T_Final_Base}(Left, right_matrix, right_scale, nothing, nothing, (m, n))
-end
-
-function Base.size(A::PanelMixedPrec)
-    return A.sz
-end
-
-function Base.getindex(A::PanelMixedPrec{T_Base}, i::Int, j::Int) where {T_Base}
-    if A.BaseCase !== nothing
-        return A.BaseCase[i, j]
-    end
-
-    mid = size(A.Left, 2)
-
-    if j <= mid
-        return A.Left[i, j]
-    else
-        return A.Right[i, j - mid]
-    end
-end
-
-"""
-    reconstruct_matrix(A::PanelMixedPrec{T_Base})
-
-Copies the hierarchical mixed-precision panel matrix back into a flat, full-precision
-standard Matrix. Note that, consistent with the other mixed-precision structures, stored
-values are copied verbatim: for `Float16` panels that carry a quantization scale, the
-Householder vectors of a factored panel are scale-invariant and reconstruct exactly,
-while the corresponding `R` entries remain divided by their panel scale factor.
-"""
-function reconstruct_matrix(A::PanelMixedPrec{T_Base}) where {T_Base}
-    if A.BaseCase !== nothing
-        return copy(A.BaseCase)
-    end
-
-    C_left = reconstruct_matrix(A.Left)
-    C_right = A.Right
-
-    m, n1 = size(C_left)
-    n2 = size(C_right, 2)
-    n = n1 + n2
-
-    C_full = similar(C_right, T_Base, m, n)
-
-    C_full[:, 1:n1] .= C_left
-    C_full[:, n1+1:n] .= C_right
-
-    return C_full
-end
