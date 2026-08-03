@@ -6,6 +6,7 @@ struct PreparedCompressedFTLRRun
     stage2::Union{Nothing,AbstractPreparedGroupedGemm}
     stage3::Union{Nothing,AbstractPreparedGroupedGemm}
     tdata::Any
+    needs_tdata_zero::Bool
     scale_targets::Vector{Tuple{UnitRange{Int},UnitRange{Int}}}
 end
 
@@ -17,7 +18,7 @@ The object owns device pointer tables and is bound to the output, operands,
 workspace, logical operations, compute policy, and rank metadata used to create it.
 Factor values and numerical scalars may be changed between numerical calls.
 """
-mutable struct CompressedGemmAnalysis{CT,AT,BT,WT,LAT,LBT,ModeT,PlanT}
+mutable struct CompressedGemmAnalysis{CT,AT,BT,WT,LAT,LBT,ModeT,PlanT,RAT,RBT}
     C::CT
     A::AT
     B::BT
@@ -29,10 +30,14 @@ mutable struct CompressedGemmAnalysis{CT,AT,BT,WT,LAT,LBT,ModeT,PlanT}
     compute::ModeT
     plan::PlanT
     runs::Vector{PreparedCompressedFTLRRun}
-    A_ranks::Vector{Int}
-    B_ranks::Vector{Int}
-    A_execution_ranks::Vector{Int}
-    B_execution_ranks::Vector{Int}
+    # Snapshots in the operands' own rank type: the guard runs on every
+    # numerical call, and converting to `Int` there would allocate four
+    # vectors per call purely to compare them. These must be COPIES -- holding
+    # the operands' live vectors would make the comparison vacuous.
+    A_ranks::RAT
+    B_ranks::RBT
+    A_execution_ranks::RAT
+    B_execution_ranks::RBT
     workspace_bytes::Int
     has_fallback::Bool
     closed::Bool
@@ -66,7 +71,8 @@ function _prepare_compressed_run(tasks::CompressedFTLRRunTasks, rows, fold, mode
         rethrow()
     end
     return PreparedCompressedFTLRRun(
-        rows, fold, stage1, stage2, stage3, tasks.tdata, tasks.scale_targets)
+        rows, fold, stage1, stage2, stage3, tasks.tdata,
+        tasks.needs_tdata_zero, tasks.scale_targets)
 end
 
 function _destroy_compressed_gemm_analysis!(analysis::CompressedGemmAnalysis)
@@ -143,8 +149,8 @@ function analyze_compressed_gemm(
 
     analysis = CompressedGemmAnalysis(
         C, A, B, workspace, LA, LB, opA, opB, mode, plan, prepared_runs,
-        Int.(ranks(A)), Int.(ranks(B)),
-        Int.(execution_ranks(A)), Int.(execution_ranks(B)),
+        copy(ranks(A)), copy(ranks(B)),
+        copy(execution_ranks(A)), copy(execution_ranks(B)),
         sizeof(workspace),
         any(run -> run.stage1 isa PreparedGroupedGemmBundle ||
                    run.stage2 isa PreparedGroupedGemmBundle ||
@@ -176,13 +182,14 @@ function _validate_compressed_gemm_analysis(
         throw(ArgumentError("analysis transB does not match the numerical call"))
     typeof(mode) === typeof(analysis.compute) ||
         throw(ArgumentError("analysis compute policy does not match the numerical call"))
-    Int.(ranks(A)) == analysis.A_ranks ||
+    # Same-eltype `==` compares element-wise without materialising a temporary.
+    ranks(A) == analysis.A_ranks ||
         throw(ArgumentError("left operand exact ranks changed after symbolic analysis"))
-    Int.(ranks(B)) == analysis.B_ranks ||
+    ranks(B) == analysis.B_ranks ||
         throw(ArgumentError("right operand exact ranks changed after symbolic analysis"))
-    Int.(execution_ranks(A)) == analysis.A_execution_ranks ||
+    execution_ranks(A) == analysis.A_execution_ranks ||
         throw(ArgumentError("left operand execution ranks changed after symbolic analysis"))
-    Int.(execution_ranks(B)) == analysis.B_execution_ranks ||
+    execution_ranks(B) == analysis.B_execution_ranks ||
         throw(ArgumentError("right operand execution ranks changed after symbolic analysis"))
     return nothing
 end
@@ -200,7 +207,7 @@ end
 function _execute_analysis_runs!(analysis, C, A, alpha, beta, manage_pointer_mode)
     backend = get_backend(analysis.logical_A)
     for run in analysis.runs
-        run.tdata === nothing || fill!(run.tdata, zero(eltype(A)))
+        run.needs_tdata_zero && fill!(run.tdata, zero(eltype(A)))
         @inbounds for (rows, cols) in run.scale_targets
             _scale_output!(view(C, rows, cols), beta)
         end

@@ -35,6 +35,54 @@ end
     end
 end
 
+@testset "CompressedFTLR clears T only for uncovered rank holes" begin
+    function make_operand(ranks)
+        return NextLA.CompressedFTLRMatrix(
+            KernelAbstractions.CPU(), Float32, 8, 8, 4, ranks;
+            execution_rank_policy=:exact)
+    end
+
+    positive = make_operand(ones(Int, 2, 2))
+    positive_plan = _TLRM._compressed_ftlr_rank_plan(positive, positive)
+    positive_workspace = NextLA.DenseGemmWorkspace(
+        positive, positive_plan.profile.maximum)
+    positive_arena = _TLRM.DenseGemmArena(
+        view(positive_workspace.storage, :), 1)
+    C = zeros(Float32, 8, 8)
+
+    right = _TLRM._build_compressed_ftlr_foldright_run(
+        C, positive, positive, positive_plan, 1:2, 1f0, 0f0,
+        positive_arena)
+    @test !right.needs_tdata_zero
+
+    left = _TLRM._build_compressed_ftlr_foldleft_run(
+        C, positive, positive, positive_plan, 1:2, 1f0, 0f0,
+        positive_arena)
+    @test !left.needs_tdata_zero
+
+    # FoldRight gives every active A rank rows across every output column.
+    # A zero B tile therefore leaves a consumed T block unwritten.
+    right_B = make_operand(Int[0 1; 1 1])
+    right_plan = _TLRM._compressed_ftlr_rank_plan(positive, right_B)
+    right_workspace = NextLA.DenseGemmWorkspace(
+        positive, sum(right_plan.profile.right_row_bytes))
+    right_arena = _TLRM.DenseGemmArena(view(right_workspace.storage, :), 1)
+    right_hole = _TLRM._build_compressed_ftlr_foldright_run(
+        C, positive, right_B, right_plan, 1:2, 1f0, 0f0, right_arena)
+    @test right_hole.needs_tdata_zero
+
+    # FoldLeft gives every physical output row columns for every active B
+    # rank. A zero A tile leaves the corresponding rows unwritten.
+    left_A = make_operand(Int[0 1; 1 1])
+    left_plan = _TLRM._compressed_ftlr_rank_plan(left_A, positive)
+    left_workspace = NextLA.DenseGemmWorkspace(
+        left_A, sum(left_plan.profile.left_row_bytes))
+    left_arena = _TLRM.DenseGemmArena(view(left_workspace.storage, :), 1)
+    left_hole = _TLRM._build_compressed_ftlr_foldleft_run(
+        C, left_A, positive, left_plan, 1:2, 1f0, 0f0, left_arena)
+    @test left_hole.needs_tdata_zero
+end
+
 @testset "CompressedFTLR FoldLeft fuses Stage 3 across a row run" begin
     rank_grid = Int[1 2; 2 1]
     A = NextLA.CompressedFTLRMatrix(

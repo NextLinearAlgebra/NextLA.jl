@@ -200,7 +200,7 @@ that needs a range query and a rebase:
 |---|---|
 | `_compressed_ftlr_stage1_layout` | `koff` uses `plan.b_row_ranks[k]` (σ_k over all j) → jrange-restricted σ_k |
 | `_compressed_ftlr_stage1_tasks` | restricted σ_k; `_compressed_ftlr_row_w_stack` stacks W over all j → needs a jrange variant |
-| `_compressed_ftlr_sview` | `b_row_ranks[k]` (block width) and `b_row_k_prefix[k,j]` (column offset) both rebased |
+| `_compressed_ftlr_sblock` | `b_row_ranks[k]` (block width) rebased; callers' `b_row_k_prefix[k,j]` column offsets likewise |
 | FoldRight | `output_col_prefix[end]` → restricted width; `output_col_prefix[j]` → rebased; `for j in 1:qn` → jrange; `view(C, rows, :)` → `view(C, rows, cols)` |
 | FoldLeft | `b_total_rank` → restricted; `tbase_cols` and `b_col_prefix` → rebased; `for j in 1:qn` → jrange |
 | both | `scale_targets` entries restricted to the rectangle |

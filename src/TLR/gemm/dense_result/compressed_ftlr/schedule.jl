@@ -8,6 +8,7 @@ struct CompressedFTLRRankPlan
     b_col_k_prefix::Matrix{Int}  # (logical j, prefix through logical k)
     b_row_k_prefix::Matrix{Int} # (logical k, prefix through logical j): Σ_{j'<j} rB_kj'
     b_col_prefix::Vector{Int}    # prefix of γ_j across logical j
+    b_row_has_zero::Vector{Bool} # contraction rows where B has a rank-zero tile
     pair_ranks::Vector{Int}      # p_i = Σ_k rA_ik σ_k
     b_total_rank::Int
     output_row_heights::Vector{Int}
@@ -26,7 +27,7 @@ function _compressed_ftlr_rank_plan(A, B)
     profile = _compressed_ftlr_fold_cost(meta, A, B)
     return CompressedFTLRRankPlan(meta.a_k_prefix, meta.b_row_ranks, meta.b_col_ranks,
                         meta.b_col_k_prefix, meta.b_row_k_prefix, meta.b_col_prefix,
-                        meta.pair_ranks, meta.b_total_rank,
+                        meta.b_row_has_zero, meta.pair_ranks, meta.b_total_rank,
                         meta.output_row_heights, meta.output_col_widths, meta.output_col_prefix,
                         profile)
 end

@@ -48,10 +48,15 @@ function _compressed_ftlr_rank_metadata(A, B)
     b_col_ranks = Base.zeros(Int, qn)
     b_col_k_prefix = Base.zeros(Int, qn, qk + 1)
     b_row_k_prefix = Base.zeros(Int, qk, qn + 1)
+    # `b_row_has_zero[k]` marks contraction rows where B has at least one
+    # rank-zero tile. Stage 2 skips those `(k,j)` GEMMs, so FoldRight's arena
+    # keeps reserved-but-unwritten space there; see `execute.jl`'s T-clear.
+    b_row_has_zero = Base.fill(false, qk)
     @inbounds for k in 1:qk, j in 1:qn
         r = _compressed_ftlr_execution_rank(B, k, j)
         b_row_ranks[k] += r
         b_col_ranks[j] += r
+        r == 0 && (b_row_has_zero[k] = true)
     end
     @inbounds for j in 1:qn, k in 1:qk
         b_col_k_prefix[j, k + 1] = b_col_k_prefix[j, k] + _compressed_ftlr_execution_rank(B, k, j)
@@ -71,6 +76,6 @@ function _compressed_ftlr_rank_metadata(A, B)
     output_col_widths = [length(_compressed_ftlr_axis_range(B, j, 2)) for j in 1:qn]
     output_col_prefix = _compressed_ftlr_prefix(output_col_widths)
     return (; a_k_prefix, b_row_ranks, b_col_ranks, b_col_k_prefix, b_row_k_prefix,
-              b_col_prefix, pair_ranks, b_total_rank,
+              b_col_prefix, b_row_has_zero, pair_ranks, b_total_rank,
               output_row_heights, output_col_widths, output_col_prefix)
 end

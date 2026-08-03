@@ -6,7 +6,7 @@ struct PreparedCompressedMixedRun
     scale_targets::Vector{Tuple{UnitRange{Int},UnitRange{Int}}}
 end
 
-mutable struct CompressedMixedGemmAnalysis{CT,AT,BT,WT,ModeT}
+mutable struct CompressedMixedGemmAnalysis{CT,AT,BT,WT,ModeT,RT}
     C::CT
     A::AT
     B::BT
@@ -15,8 +15,9 @@ mutable struct CompressedMixedGemmAnalysis{CT,AT,BT,WT,ModeT}
     transB::Char
     compute::ModeT
     side::Symbol
-    ranks::Vector{Int}
-    execution_ranks::Vector{Int}
+    # Copies in the operand's own rank type; see CompressedGemmAnalysis.
+    ranks::RT
+    execution_ranks::RT
     workspace_bytes::Int
     runs::Vector{PreparedCompressedMixedRun}
     has_fallback::Bool
@@ -218,7 +219,7 @@ function _new_compressed_mixed_analysis(
     C, A, B, workspace, transA, transB, mode, side, compressed, runs)
     analysis = CompressedMixedGemmAnalysis(
         C, A, B, workspace, transA, transB, mode, side,
-        Int.(ranks(compressed)), Int.(execution_ranks(compressed)),
+        copy(ranks(compressed)), copy(execution_ranks(compressed)),
         sizeof(workspace), runs,
         any(run -> run.stage1 isa PreparedGroupedGemmBundle ||
                    run.stage2 isa PreparedGroupedGemmBundle, runs),
@@ -305,8 +306,8 @@ function _execute_compressed_mixed_analysis!(
     typeof(mode) === typeof(analysis.compute) ||
         throw(ArgumentError("mixed analysis compute policy does not match"))
     compressed = analysis.side === :left ? A : B
-    Int.(ranks(compressed)) == analysis.ranks &&
-        Int.(execution_ranks(compressed)) == analysis.execution_ranks ||
+    ranks(compressed) == analysis.ranks &&
+        execution_ranks(compressed) == analysis.execution_ranks ||
         throw(ArgumentError("compressed operand ranks changed after analysis"))
     backend = get_backend(compressed)
     if analysis.has_fallback
