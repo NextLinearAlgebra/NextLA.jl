@@ -56,11 +56,18 @@ vectors (below the diagonal) and the R factor (on/above the diagonal) of a
 QR factorization live inside the leaf panels, exactly like the flat in-place
 LAPACK layout.
 """
+# struct PanelMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
+#     A1::Union{PanelMixedPrec{T_Base}, Nothing}   # leading column panel (m x n1)
+#     A2::Union{PanelMixedPrec{T_Base}, Nothing}   # trailing column panel (m x n2)
+#     BaseCase::Union{AbstractMatrix, Nothing}     # dense leaf panel (m x w)
+#     base_scale::Union{Float32, Nothing}          # Float16 dynamic quantization scale
+#     sz::Tuple{Int, Int}
+# end
 struct PanelMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
-    A1::Union{PanelMixedPrec{T_Base}, Nothing}   # leading column panel (m x n1)
-    A2::Union{PanelMixedPrec{T_Base}, Nothing}   # trailing column panel (m x n2)
-    BaseCase::Union{AbstractMatrix, Nothing}     # dense leaf panel (m x w)
-    base_scale::Union{Float32, Nothing}          # Float16 dynamic quantization scale
+    A1::Union{PanelMixedPrec, Nothing}           # Removed {T_Base}
+    A2::Union{PanelMixedPrec, Nothing}           # Removed {T_Base}
+    BaseCase::Union{AbstractMatrix{T_Base}, Nothing}
+    base_scale::Union{Float32, Nothing}
     sz::Tuple{Int, Int}
 end
 
@@ -210,9 +217,8 @@ end
 function _gemm_tn_add!(C::AbstractMatrix, A::AbstractMatrix, B::AbstractMatrix, s::Float32)
     TA, TB, TC = eltype(A), eltype(B), eltype(C)
     if TA == Float16
-        # Project convention (cf. unified_rec_mixed): drop the operand to the
-        # Float16 compute precision and accumulate in >= Float32.
-        B16 = (TB == Float16) ? B : Float16.(B)
+        # Clamp before downcasting to prevent Inf16 overflow
+        B16 = (TB == Float16) ? B : Float16.(clamp.(B, -65504.0f0, 65504.0f0))
         if TC == Float64
             C32 = Float32.(C)
             GEMM_ADD!(transpose(A), B16, C32, s)
@@ -227,11 +233,10 @@ function _gemm_tn_add!(C::AbstractMatrix, A::AbstractMatrix, B::AbstractMatrix, 
     end
 end
 
-# C -= s * A * B  -- Float16 goes through GEMM_SUB! (scaled gemmEx!), every
-# other combination goes through recgemm!, which owns the type dispatch.
 function _gemm_nn_sub!(C::AbstractMatrix, A::AbstractMatrix, B::AbstractMatrix, s::Float32)
     if eltype(A) == Float16
-        B16 = (eltype(B) == Float16) ? B : Float16.(B)
+        # Clamp before downcasting to prevent Inf16 overflow
+        B16 = (eltype(B) == Float16) ? B : Float16.(clamp.(B, -65504.0f0, 65504.0f0))
         if eltype(C) == Float64
             C32 = Float32.(C)
             GEMM_SUB!(C32, A, B16, s)
