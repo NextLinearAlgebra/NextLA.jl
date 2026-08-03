@@ -23,7 +23,7 @@ const WARMUP = parse(Int, get(ENV, "NEXTLA_PRECISION_WARMUP", "1"))
 const REPS = parse(Int, get(ENV, "NEXTLA_PRECISION_REPS", "3"))
 const ANALYSIS_REPS = parse(Int, get(
     ENV, "NEXTLA_PRECISION_ANALYSIS_REPS", "3"))
-const ROWS_PER_RUN = parse(Int, get(ENV, "NEXTLA_PRECISION_ROWS", "4"))
+const RUNS = parse(Int, get(ENV, "NEXTLA_PRECISION_RUNS", "1"))
 const MIXED_STRIPES = parse(Int, get(
     ENV, "NEXTLA_PRECISION_MIXED_STRIPES", "1"))
 const SEED = parse(Int, get(ENV, "NEXTLA_PRECISION_SEED", "20260802"))
@@ -43,7 +43,7 @@ function validate_configuration()
         throw(ArgumentError("execution policy must be exact, q8, q16, or pow2"))
     FILL_MODE in (:random, :constant, :zeros) ||
         throw(ArgumentError("fill mode must be random, constant, or zeros"))
-    ROWS_PER_RUN > 0 || throw(ArgumentError("rows per run must be positive"))
+    RUNS > 0 || throw(ArgumentError("run count must be positive"))
     MIXED_STRIPES > 0 || throw(ArgumentError("mixed stripes must be positive"))
     for N in SIZES, divisor in TILE_DIVISORS
         N % divisor == 0 || throw(ArgumentError(
@@ -66,7 +66,7 @@ function cases()
                     N, divisor, distribution, lo, hi, precision, layout,
                     EXECUTION_POLICY,
                     layout === :compressed_compressed ?
-                        min(ROWS_PER_RUN, divisor) : MIXED_STRIPES)
+                        RUNS : MIXED_STRIPES)
                 occursin(CASE_FILTER, id) || continue
                 push!(result, (kind=:compressed, id, N, precision, divisor, b,
                                distribution, layout, lo, hi))
@@ -113,7 +113,7 @@ function run_precision_sweep()
                         N, divisor, distribution, lo, hi, precision, layout,
                         EXECUTION_POLICY,
                         layout === :compressed_compressed ?
-                            min(ROWS_PER_RUN, divisor) : MIXED_STRIPES)
+                            RUNS : MIXED_STRIPES)
                     occursin(CASE_FILTER, id) || continue
                     measured = benchmark_compressed_case(
                         N, b, distribution, lo, hi, precision, layout;
@@ -121,7 +121,7 @@ function run_precision_sweep()
                         analysis_repetitions=ANALYSIS_REPS, seed=SEED,
                         fill_mode=FILL_MODE,
                         execution_rank_policy=EXECUTION_POLICY,
-                        rows_per_run=ROWS_PER_RUN, mixed_stripes=MIXED_STRIPES)
+                        runs=RUNS, mixed_stripes=MIXED_STRIPES)
                     row = compressed_row(
                         run, N, divisor, b, distribution, band_name, lo, hi,
                         precision, layout, EXECUTION_POLICY, SEED, FILL_MODE,

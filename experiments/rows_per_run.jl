@@ -36,13 +36,11 @@ function run_rows_per_run()
         C = CUDA.zeros(T, N, N)
 
         for rows in ROW_SWEEP_VALUES
-            1 <= rows <= 8 ||
-                throw(ArgumentError("rows-per-run values must lie in 1:8"))
+            rows >= 1 || throw(ArgumentError("run counts must be positive"))
             id = row_sweep_case_id(N, b, rank, precision, rows)
             occursin(CASE_FILTER, id) || continue
             id in done && (@printf("skip %s\n", id); continue)
-            workspace_bytes =
-                DenseGemmCommon._row_run_workspace_bytes(A, B, rows)
+            workspace_bytes = NextLA.gemm_workspace_bytes(A, B; runs=rows)
             workspace = NextLA.DenseGemmWorkspace(A, B; bytes=workspace_bytes)
             analysis, analysis_timing =
                 time_analysis(C, A, B, workspace, precision.compute)

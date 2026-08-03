@@ -16,7 +16,7 @@ const PRECISIONS = selected_precisions("NEXTLA_ABLATION_PRECISION", "fp16")
 const WARMUP = parse(Int, get(ENV, "NEXTLA_ABLATION_WARMUP", "1"))
 const REPS = parse(Int, get(ENV, "NEXTLA_ABLATION_REPS", "10"))
 const ANALYSIS_REPS = parse(Int, get(ENV, "NEXTLA_ABLATION_ANALYSIS_REPS", "3"))
-const ROWS_PER_RUN = parse(Int, get(ENV, "NEXTLA_ABLATION_ROWS", "4"))
+const RUNS = parse(Int, get(ENV, "NEXTLA_ABLATION_RUNS", "1"))
 const SEED = parse(Int, get(ENV, "NEXTLA_ABLATION_SEED", "20260802"))
 const FILL_MODE = Symbol(get(ENV, "NEXTLA_ABLATION_FILL", "random"))
 
@@ -31,7 +31,7 @@ function validate_configuration()
         throw(ArgumentError("policies must be exact, q8, q16, or pow2"))
     FILL_MODE in (:random, :constant, :zeros) ||
         throw(ArgumentError("fill mode must be random, constant, or zeros"))
-    ROWS_PER_RUN > 0 || throw(ArgumentError("rows per run must be positive"))
+    RUNS > 0 || throw(ArgumentError("run count must be positive"))
     rank_band(BAND_SPEC, N ÷ TILE_DIVISOR)
     return nothing
 end
@@ -44,7 +44,7 @@ function list_cases()
     for distribution in DISTRIBUTIONS, policy in POLICIES
         println(compressed_case_id(
             N, TILE_DIVISOR, distribution, band.lo, band.hi, precision,
-            :compressed_compressed, policy, min(ROWS_PER_RUN, TILE_DIVISOR)))
+            :compressed_compressed, policy, RUNS))
     end
     println("$(1 + length(DISTRIBUTIONS) * length(POLICIES)) CSV rows " *
             "(including one dense baseline)")
@@ -77,7 +77,7 @@ function run_ablation()
                 :compressed_compressed; warmup=WARMUP, repetitions=REPS,
                 analysis_repetitions=ANALYSIS_REPS, seed=SEED,
                 fill_mode=FILL_MODE, execution_rank_policy=policy,
-                rows_per_run=ROWS_PER_RUN, mixed_stripes=1)
+                runs=RUNS, mixed_stripes=1)
             row = compressed_row(
                 run, N, TILE_DIVISOR, b, distribution, band.name,
                 band.lo, band.hi, precision, :compressed_compressed, policy,

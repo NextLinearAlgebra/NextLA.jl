@@ -171,7 +171,7 @@ function benchmark_case(N, b, policy, precision)
         rank_distribution=:uniform, min_rank=MIN_RANK, max_rank=MAX_RANK,
         compressed_execution_rank_policy=policy)
     C = CUDA.zeros(T, N, N)
-    workspace_bytes = DenseGemmCommon._row_run_workspace_bytes(A, B, ROWS_PER_RUN)
+    workspace_bytes = NextLA.gemm_workspace_bytes(A, B; runs=ROWS_PER_RUN)
     workspace = NextLA.DenseGemmWorkspace(A, B; bytes=workspace_bytes)
     id = case_id(N, b, policy, precision)
 

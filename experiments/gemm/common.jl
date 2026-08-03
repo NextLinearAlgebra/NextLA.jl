@@ -18,7 +18,8 @@ export RESULT_COLUMNS, PRECISION_TABLE,
        selected_precisions, rank_interval, rank_grid, rank_band,
        fresh_csv, write_csv_row, close_csv,
        baseline_case_id, compressed_case_id,
-       benchmark_dense, benchmark_compressed_case, baseline_row, compressed_row,
+       benchmark_dense, benchmark_compressed_case,
+       benchmark_compressed_workspace_sweep, baseline_row, compressed_row,
        print_case, gpu_name, validate_cuda_precisions
 
 const PRECISION_TABLE = Dict(
@@ -97,8 +98,13 @@ end
 function rank_grid(qm::Int, qn::Int, lo::Int, hi::Int,
                    distribution::Symbol, seed::Int)
     1 <= lo <= hi || throw(ArgumentError("rank interval must be positive and ordered"))
-    distribution in (:uniform, :skewed) || throw(ArgumentError(
-        "rank distribution must be uniform or skewed"))
+    distribution in (:uniform, :skewed, :constant) || throw(ArgumentError(
+        "rank distribution must be uniform, skewed, or constant"))
+    if distribution === :constant
+        lo == hi || throw(ArgumentError(
+            "constant rank distribution requires equal minimum and maximum ranks"))
+        return fill(lo, qm, qn)
+    end
     rng = MersenneTwister(seed)
     samples = rand(rng, qm, qn)
     mapped = distribution === :uniform ? samples : samples .^ 2
@@ -288,13 +294,18 @@ function _mixed_flops(A, N::Int; execution::Bool)
     return total
 end
 
-function _workspace(A, B, layout::Symbol, tile_size::Int, rows_per_run::Int,
+function _workspace(A, B, layout::Symbol, tile_size::Int, runs::Int,
                     mixed_stripes::Int)
     if layout === :compressed_compressed
-        rows = min(rows_per_run, first(TLRM.grid_size(A)))
-        bytes = DenseGemmCommon._row_run_workspace_bytes(A, B, rows)
+        # NOTE: the sweep parameter is RUN COUNT, not rows per run, and the two
+        # run in opposite directions -- `runs=1` is the LARGEST workspace (one
+        # fused unit) whereas the old `runs=1` was the smallest. Run
+        # count is the meaningful knob: it sets the number of grouped-GEMM
+        # submissions, and work units stop being whole output rows once the
+        # budget falls below a full-width row.
+        bytes = NextLA.gemm_workspace_bytes(A, B; runs)
         workspace = NextLA.DenseGemmWorkspace(A, B; bytes)
-        return workspace, sizeof(workspace), "tlr_tlr_rows", rows
+        return workspace, sizeof(workspace), "tlr_tlr_runs", runs
     end
     compressed = layout === :compressed_dense ? A : B
     stripe_extent = min(size(compressed, 1), mixed_stripes * tile_size)
@@ -334,33 +345,15 @@ function benchmark_dense(N::Int, precision; warmup::Int, repetitions::Int,
     return timing
 end
 
-"""Benchmark one of compressed×dense, dense×compressed, or compressed×compressed."""
-function benchmark_compressed_case(
-    N::Int, b::Int, distribution::Symbol, lo::Int, hi::Int, precision,
-    layout::Symbol; warmup::Int, repetitions::Int, analysis_repetitions::Int,
-    seed::Int, fill_mode::Symbol, execution_rank_policy::Symbol,
-    rows_per_run::Int, mixed_stripes::Int,
-)
-    layout in (:compressed_dense, :dense_compressed, :compressed_compressed) ||
-        throw(ArgumentError("unsupported operand layout $layout"))
+function _benchmark_prepared_compressed_case(C, A, B, N::Int, b::Int,
+                                             precision, layout::Symbol;
+                                             warmup::Int, repetitions::Int,
+                                             analysis_repetitions::Int,
+                                             runs::Int,
+                                             mixed_stripes::Int)
     T, compute = precision.T, precision.compute
-    q = N ÷ b
-    ranksA = rank_grid(q, q, lo, hi, distribution, seed)
-    # Use the same logical rank map for the two one-compressed-operand cases,
-    # making their left/right comparison controlled. The two-compressed case
-    # keeps independent A and B maps.
-    ranksB = layout === :dense_compressed ? ranksA :
-        rank_grid(q, q, lo, hi, distribution, seed + 1)
-
-    A = layout === :dense_compressed ?
-        _dense_operand(N, T, seed + 2, fill_mode) :
-        _compressed_operand(N, b, ranksA, T, execution_rank_policy, seed + 2, fill_mode)
-    B = layout === :compressed_dense ?
-        _dense_operand(N, T, seed + 3, fill_mode) :
-        _compressed_operand(N, b, ranksB, T, execution_rank_policy, seed + 3, fill_mode)
-    C = CUDA.zeros(T, N, N)
     workspace, workspace_bytes, workspace_policy, workspace_parameter =
-        _workspace(A, B, layout, b, rows_per_run, mixed_stripes)
+        _workspace(A, B, layout, b, runs, mixed_stripes)
 
     analysis = nothing
     try
@@ -396,9 +389,98 @@ function benchmark_compressed_case(
         return result
     finally
         analysis === nothing || close(analysis)
-        A = B = C = workspace = nothing
+        workspace = nothing
+    end
+end
+
+function _compressed_operands(N::Int, b::Int, distribution::Symbol,
+                              lo::Int, hi::Int, precision, layout::Symbol,
+                              seed::Int, fill_mode::Symbol,
+                              execution_rank_policy::Symbol)
+    layout in (:compressed_dense, :dense_compressed, :compressed_compressed) ||
+        throw(ArgumentError("unsupported operand layout $layout"))
+    T = precision.T
+    q = N ÷ b
+    ranksA = rank_grid(q, q, lo, hi, distribution, seed)
+    # Use the same logical rank map for the two one-compressed-operand cases,
+    # making their left/right comparison controlled. The two-compressed case
+    # keeps independent A and B maps.
+    ranksB = layout === :dense_compressed ? ranksA :
+        rank_grid(q, q, lo, hi, distribution, seed + 1)
+    A = layout === :dense_compressed ?
+        _dense_operand(N, T, seed + 2, fill_mode) :
+        _compressed_operand(N, b, ranksA, T, execution_rank_policy,
+                            seed + 2, fill_mode)
+    B = layout === :compressed_dense ?
+        _dense_operand(N, T, seed + 3, fill_mode) :
+        _compressed_operand(N, b, ranksB, T, execution_rank_policy,
+                            seed + 3, fill_mode)
+    C = CUDA.zeros(T, N, N)
+    return C, A, B
+end
+
+"""Benchmark one of compressed×dense, dense×compressed, or compressed×compressed."""
+function benchmark_compressed_case(N::Int, b::Int, distribution::Symbol,
+                                   lo::Int, hi::Int, precision, layout::Symbol;
+                                   warmup::Int, repetitions::Int,
+                                   analysis_repetitions::Int, seed::Int,
+                                   fill_mode::Symbol,
+                                   execution_rank_policy::Symbol,
+                                   runs::Int, mixed_stripes::Int)
+    C, A, B = _compressed_operands(N, b, distribution, lo, hi, precision,
+                                   layout, seed, fill_mode,
+                                   execution_rank_policy)
+    try
+        return _benchmark_prepared_compressed_case(C, A, B, N, b, precision,
+                                                   layout; warmup, repetitions,
+                                                   analysis_repetitions,
+                                                   runs,
+                                                   mixed_stripes)
+    finally
+        A = B = C = nothing
         _cleanup_gpu!()
     end
+end
+
+"""
+Benchmark several workspace parameters against the same operand allocations.
+This keeps workspace tuning controlled and avoids regenerating multi-gigabyte
+operands for every candidate. Results are returned in the order of `levels`.
+"""
+function benchmark_compressed_workspace_sweep(N::Int, b::Int,
+                                              distribution::Symbol, lo::Int,
+                                              hi::Int, precision,
+                                              layout::Symbol, levels;
+                                              warmup::Int, repetitions::Int,
+                                              analysis_repetitions::Int,
+                                              seed::Int, fill_mode::Symbol,
+                                              execution_rank_policy::Symbol)
+    candidates = unique(Int.(collect(levels)))
+    isempty(candidates) && throw(ArgumentError("workspace sweep is empty"))
+    all(>(0), candidates) || throw(ArgumentError(
+        "workspace parameters must be positive"))
+    C, A, B = _compressed_operands(N, b, distribution, lo, hi, precision,
+                                   layout, seed, fill_mode,
+                                   execution_rank_policy)
+    results = NamedTuple[]
+    try
+        for level in candidates
+            measured = _benchmark_prepared_compressed_case(C, A, B, N, b,
+                                                           precision, layout;
+                                                           warmup, repetitions,
+                                                           analysis_repetitions,
+                                                           runs=level,
+                                                           mixed_stripes=level)
+            push!(results, measured)
+            # Analyses and workspaces can be very large. Reclaim only dead
+            # allocations between candidates; A, B, and C remain live.
+            _cleanup_gpu!()
+        end
+    finally
+        A = B = C = nothing
+        _cleanup_gpu!()
+    end
+    return results
 end
 
 _sample_string(values) = join((@sprintf("%.9g", value) for value in values), ';')

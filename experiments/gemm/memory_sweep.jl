@@ -15,7 +15,7 @@ const LAYOUTS = parse_symbol_list(
 const RANK_BANDS = parse_string_list(
     "NEXTLA_MEMORY_RANK_BANDS", "16:8")
 const WORKSPACE_LEVELS = parse_int_list(
-    "NEXTLA_MEMORY_WORKSPACE_LEVELS", "1,2,4,8,16")
+    "NEXTLA_MEMORY_WORKSPACE_LEVELS", "1,2,4,8,16,32,64")
 const PRECISIONS = selected_precisions(
     "NEXTLA_MEMORY_PRECISION", "fp16")
 const WARMUP = parse(Int, get(ENV, "NEXTLA_MEMORY_WARMUP", "1"))
@@ -51,7 +51,8 @@ function validate_configuration()
     return nothing
 end
 
-workspace_levels(divisor) =
+workspace_levels(divisor, layout) = layout === :compressed_compressed ?
+    sort!(unique(WORKSPACE_LEVELS)) :
     sort!(unique(min(level, divisor) for level in WORKSPACE_LEVELS))
 
 function list_cases()
@@ -63,7 +64,7 @@ function list_cases()
         for spec in RANK_BANDS
             band = rank_band(spec, b)
             for distribution in DISTRIBUTIONS, layout in LAYOUTS,
-                workspace_level in workspace_levels(divisor)
+                workspace_level in workspace_levels(divisor, layout)
                 id = compressed_case_id(
                     N, divisor, distribution, band.lo, band.hi, precision,
                     layout, EXECUTION_POLICY, workspace_level)
@@ -100,8 +101,8 @@ function run_memory_sweep()
             for spec in RANK_BANDS
                 band = rank_band(spec, b)
                 for distribution in DISTRIBUTIONS, layout in LAYOUTS
-                    previous_ratio = -Inf
-                    for workspace_level in workspace_levels(divisor)
+                    previous_ratio = layout === :compressed_compressed ? Inf : -Inf
+                    for workspace_level in workspace_levels(divisor, layout)
                         id = compressed_case_id(
                             N, divisor, distribution, band.lo, band.hi,
                             precision, layout, EXECUTION_POLICY, workspace_level)
@@ -112,9 +113,12 @@ function run_memory_sweep()
                             analysis_repetitions=ANALYSIS_REPS, seed=SEED,
                             fill_mode=FILL_MODE,
                             execution_rank_policy=EXECUTION_POLICY,
-                            rows_per_run=workspace_level,
+                            runs=workspace_level,
                             mixed_stripes=workspace_level)
-                        measured.memory_ratio >= previous_ratio || error(
+                        monotone = layout === :compressed_compressed ?
+                            measured.memory_ratio <= previous_ratio :
+                            measured.memory_ratio >= previous_ratio
+                        monotone || error(
                             "workspace sweep is not monotone for $id")
                         previous_ratio = measured.memory_ratio
                         row = compressed_row(

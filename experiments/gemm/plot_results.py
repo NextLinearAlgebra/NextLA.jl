@@ -378,6 +378,7 @@ def memory_dashboard(rows, outdir, formats, dpi, *, metric, label, stem, speedup
                         )
                 ax.set_title(f"{distribution.capitalize()}, $b=N/{divisor}$")
                 ax.set_xlabel("(operand storage + workspace) / dense A+B")
+                ax.set_xscale("log")
                 ax.set_ylabel(label)
                 finish_axis(ax, speedup=speedup)
                 if stem == "ceiling_fraction":
@@ -469,7 +470,11 @@ def plot_file(path: Path, output_root: Path, formats: Sequence[str], dpi: int) -
     experiment = experiments.pop()
     outdir = output_root / path.stem
     paths: list[Path] = []
-    if experiment == "precision_sweep":
+    if experiment in {
+        "precision_sweep",
+        "workspace_winners",
+        "workspace_confirmation",
+    }:
         paths += precision_speedup_dashboard(rows, outdir, formats, dpi)
         paths += precision_metric_dashboard(
             rows,
@@ -490,6 +495,16 @@ def plot_file(path: Path, output_root: Path, formats: Sequence[str], dpi: int) -
             label="Achieved arithmetic ceiling [%]",
             stem="ceiling_fraction",
         )
+        if experiment in {"workspace_winners", "workspace_confirmation"}:
+            paths += precision_metric_dashboard(
+                rows,
+                outdir,
+                formats,
+                dpi,
+                metric=lambda r: number(r, "memory_ratio"),
+                label="Selected memory ratio",
+                stem="selected_memory_ratio",
+            )
     elif experiment == "memory_sweep":
         paths += memory_dashboard(
             rows,

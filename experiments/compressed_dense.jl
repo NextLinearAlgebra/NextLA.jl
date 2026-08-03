@@ -21,7 +21,7 @@ const TILE_DIVISORS = parse_ints("NEXTLA_DENSE_TILE_DIVISORS", "16,8,4")
 const WARMUP = parse(Int, get(ENV, "NEXTLA_DENSE_WARMUP", "1"))
 const REPS = parse(Int, get(ENV, "NEXTLA_DENSE_REPS", "3"))
 const ANALYSIS_REPS = parse(Int, get(ENV, "NEXTLA_DENSE_ANALYSIS_REPS", "3"))
-const ROWS_PER_RUN = parse(Int, get(ENV, "NEXTLA_DENSE_ROWS", "4"))
+const RUNS = parse(Int, get(ENV, "NEXTLA_DENSE_RUNS", "1"))
 const OUTPUT = get(ENV, "NEXTLA_DENSE_OUTPUT",
     joinpath(@__DIR__, "results", "compressed_dense_v2.csv"))
 const CASE_FILTER = Regex(get(ENV, "NEXTLA_DENSE_FILTER", ".*"))
@@ -89,7 +89,7 @@ end
 
 const COLUMNS = (
     "case_id", "N", "tile_size", "profile", "distribution", "min_rank", "max_rank",
-    "precision", "rows_per_run", "workspace_bytes", "analysis_ms",
+    "precision", "runs", "workspace_bytes", "analysis_ms",
     "analysis_min_ms", "transient_median_ms", "transient_min_ms",
     "analyzed_median_ms", "analyzed_min_ms",
     "dense_median_ms", "dense_min_ms", "analyzed_speedup",
@@ -99,7 +99,7 @@ const COLUMNS = (
 )
 
 case_id(N, b, profile, precision) =
-    "N$(N)__b$(b)__$(profile.name)__$(precision.name)__rows$(ROWS_PER_RUN)"
+    "N$(N)__b$(b)__$(profile.name)__$(precision.name)__runs$(RUNS)"
 
 completed(path) = completed(path, COLUMNS)
 
@@ -136,7 +136,7 @@ function benchmark_case(N, b, profile, precision, dense)
         rank_distribution=profile.distribution,
         min_rank=profile.lo, max_rank=profile.hi)
     C = CUDA.zeros(T, N, N)
-    workspace_bytes = DenseGemmCommon._row_run_workspace_bytes(A, B, ROWS_PER_RUN)
+    workspace_bytes = NextLA.gemm_workspace_bytes(A, B; runs=RUNS)
     workspace = NextLA.DenseGemmWorkspace(A, B; bytes=workspace_bytes)
 
     transient = samples_ms(C, T) do
@@ -156,7 +156,7 @@ function benchmark_case(N, b, profile, precision, dense)
     crossover = crossover_calls(analysis_timing.median, analyzed.median, transient.median)
     result = (
         case_id(N, b, profile, precision), N, b, profile.name, profile.distribution,
-        profile.lo, profile.hi, precision.name, ROWS_PER_RUN, workspace_bytes,
+        profile.lo, profile.hi, precision.name, RUNS, workspace_bytes,
         analysis_timing.median, analysis_timing.minimum,
         transient.median, transient.minimum, analyzed.median, analyzed.minimum,
         dense.median, dense.minimum, dense.median / analyzed.median,
@@ -176,8 +176,8 @@ end
 function run_compressed_dense()
     CUDA.functional() || error("compressed dense-output benchmark requires CUDA")
     ensure_output(OUTPUT); done = completed(OUTPUT)
-    @printf("Compressed dense-output benchmark: H/W=%d/%d rows=%d output=%s\n",
-            WARMUP, REPS, ROWS_PER_RUN, OUTPUT)
+    @printf("Compressed dense-output benchmark: H/W=%d/%d runs=%d output=%s\n",
+            WARMUP, REPS, RUNS, OUTPUT)
     dense_cache = Dict{Tuple{Int,String},NamedTuple}()
     for N in SIZES, divisor in TILE_DIVISORS
         divisor > 0 || throw(ArgumentError("tile divisors must be positive"))

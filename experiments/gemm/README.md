@@ -19,6 +19,7 @@ From the repository root:
 julia --project=experiments -e 'using Pkg; Pkg.instantiate()'
 julia --project=experiments experiments/gemm/precision_sweep.jl --list
 julia --project=experiments experiments/gemm/memory_sweep.jl --list
+julia --project=experiments experiments/gemm/workspace_tuning_sweep.jl --list
 julia --project=experiments experiments/gemm/rank_bucketing_ablation.jl --list
 ```
 
@@ -39,8 +40,8 @@ Defaults:
 - uniform and low-rank-skewed exact ranks over `[b/16,b/8]`;
 - all three operand layouts plus one dense baseline per `(N, precision)`;
 - q8 physical execution-rank padding;
-- four tile rows per compressed×compressed workspace run and one tile-wide
-  stripe for either mixed layout;
+- one compressed×compressed work unit (maximum useful workspace) and one
+  tile-wide stripe for either mixed layout;
 - one warmup and three measured executions.
 
 The default matrix has 260 CSV rows: 20 dense baselines and 240 compressed
@@ -57,7 +58,7 @@ Set `NEXTLA_PRECISION_MIN_RANK_DIVISOR=8` and
 `NEXTLA_PRECISION_MAX_RANK_DIVISOR=4` to run the higher `[b/8,b/4]` interval.
 Other controls are `NEXTLA_PRECISION_TILE_DIVISORS`,
 `NEXTLA_PRECISION_DISTRIBUTIONS`, `NEXTLA_PRECISION_LAYOUTS`,
-`NEXTLA_PRECISION_ANALYSIS_REPS`, `NEXTLA_PRECISION_ROWS`,
+`NEXTLA_PRECISION_ANALYSIS_REPS`, `NEXTLA_PRECISION_RUNS`,
 `NEXTLA_PRECISION_MIXED_STRIPES`, `NEXTLA_PRECISION_EXECUTION_POLICY`,
 `NEXTLA_PRECISION_FILL`, `NEXTLA_PRECISION_SEED`, and
 `NEXTLA_PRECISION_FILTER`.
@@ -74,8 +75,11 @@ Defaults:
 - tile sizes `N/16` and `N/8`;
 - uniform and skewed ranks;
 - one fixed rank band `[b/16,b/8]`;
-- progressively larger workspaces covering 1, 2, 4, 8, and 16 output tile
-  rows/stripes, capped at the tile-grid dimension;
+- run targets `1,2,4,8,16,32,64` for compressed×compressed: `runs=1` is
+  maximum workspace and increasing runs progressively lowers the budget,
+  including column-blocked schedules above the tile-grid dimension;
+- the same generic levels are interpreted as stripe counts for mixed layouts
+  and capped at their full-width tile-grid dimension;
 - all three operand layouts, one warmup, and five measured executions.
 
 Change the fixed point or rank bands with, for example:
@@ -84,7 +88,7 @@ Change the fixed point or rank bands with, for example:
 NEXTLA_MEMORY_N=32768 \
 NEXTLA_MEMORY_PRECISION=tf32 \
 NEXTLA_MEMORY_RANK_BANDS=16:8 \
-NEXTLA_MEMORY_WORKSPACE_LEVELS=1,2,4,8,16 \
+NEXTLA_MEMORY_WORKSPACE_LEVELS=1,2,4,8,16,32,64 \
 julia --project=experiments experiments/gemm/memory_sweep.jl
 ```
 
@@ -109,6 +113,99 @@ the precision sweep: `TILE_DIVISORS`, `DISTRIBUTIONS`, `LAYOUTS`, `WARMUP`,
 `REPS`, `ANALYSIS_REPS`, `RANK_BANDS`, `WORKSPACE_LEVELS`,
 `EXECUTION_POLICY`, `FILL`, `SEED`, and `FILTER`.
 
+## Workspace-tuned scaling and KBLAS comparison
+
+Workspace is an implementation tuning parameter. The publication workflow has
+three deliberately separate passes:
+
+1. `workspace_tuning_sweep.jl` records every candidate while reusing the same
+   A, B, and C allocations for all workspace levels of one logical case;
+2. `select_workspace_winners.py` selects the lowest numerical median for every
+   complete `(N, precision, layout, q, rank, distribution, policy)` key;
+3. `workspace_confirmation_sweep.jl` reconstructs and independently remeasures
+   only the selected configurations.
+
+The raw tuning measurements are never overwritten or discarded. The selector
+also accepts `--max-memory-ratio RATIO` to tune under an explicit storage cap.
+By default, compressed×compressed tests run targets
+`NEXTLA_TUNING_WORKSPACE_LEVELS=1,2,4,8,16,32,64`; these move from maximum
+workspace toward the column-blocked floor. Mixed layouts use
+`NEXTLA_TUNING_MIXED_STRIPES=all`, meaning every stripe count from 1 through
+`q`. An explicit list or range such as `1:64` is accepted for either setting.
+Winner selection checks these default grids, catching interrupted files. When
+using custom grids, give the selector matching `--expected-runs` and/or
+`--expected-mixed-stripes` values; use `--allow-incomplete` only for an
+intentional subset.
+
+Run the proportional-rank scaling tuner with:
+
+```bash
+NEXTLA_TUNING_SIZES=4096,8192,16384,32768,65536 \
+NEXTLA_TUNING_PRECISIONS=bf16,fp16,fp32,tf32 \
+NEXTLA_TUNING_TILE_DIVISORS=16,8 \
+NEXTLA_TUNING_RANK_BANDS=32:16 \
+NEXTLA_TUNING_DISTRIBUTIONS=uniform,skewed \
+NEXTLA_TUNING_LAYOUTS=compressed_dense,dense_compressed,compressed_compressed \
+NEXTLA_TUNING_WORKSPACE_LEVELS=1,2,4,8,16,32,64 \
+NEXTLA_TUNING_MIXED_STRIPES=all \
+NEXTLA_TUNING_WARMUP=1 \
+NEXTLA_TUNING_REPS=5 \
+NEXTLA_TUNING_ANALYSIS_REPS=1 \
+julia --project=experiments experiments/gemm/workspace_tuning_sweep.jl
+```
+
+This full grid contains 2,500 rows and is intentionally a substantial tuning
+run. Use `NEXTLA_TUNING_FILTER` or smaller size/precision lists for staged runs.
+Select and independently confirm its winners with:
+
+```bash
+python3 experiments/gemm/select_workspace_winners.py RAW_TUNING.csv
+
+NEXTLA_CONFIRM_WARMUP=3 \
+NEXTLA_CONFIRM_REPS=10 \
+NEXTLA_CONFIRM_ANALYSIS_REPS=3 \
+julia --project=experiments \
+    experiments/gemm/workspace_confirmation_sweep.jl WINNERS.csv
+```
+
+Generate scaling time, speedup, and achieved-ceiling figures from the confirmed
+CSV using `plot_results.py` exactly as for a precision sweep. Each speedup plot
+retains the case-specific dashed FLOP-ratio ceiling.
+
+The checked-in KBLAS results use FP32 compressed×compressed multiplication at
+constant ratios `r/b = 1/16` and `1/8`. Produce exactly the corresponding
+NextLA tuning grid with:
+
+```bash
+NEXTLA_TUNING_SIZES=4096,8192,16384,32768,65536 \
+NEXTLA_TUNING_PRECISIONS=fp32 \
+NEXTLA_TUNING_TILE_DIVISORS=16,8 \
+NEXTLA_TUNING_RANK_BANDS=16:16,8:8 \
+NEXTLA_TUNING_DISTRIBUTIONS=uniform \
+NEXTLA_TUNING_LAYOUTS=compressed_compressed \
+NEXTLA_TUNING_WORKSPACE_LEVELS=1,2,4,8,16,32,64 \
+NEXTLA_TUNING_WARMUP=1 \
+NEXTLA_TUNING_REPS=5 \
+NEXTLA_TUNING_ANALYSIS_REPS=1 \
+julia --project=experiments experiments/gemm/workspace_tuning_sweep.jl
+```
+
+After selection and confirmation, join and plot the matched cases:
+
+```bash
+python3 experiments/gemm/compare_kblas.py \
+    CONFIRMED.csv \
+    experiments/results/gemm/kblas_tlr_tlr_fp32_fixed_rank_b16_b8.csv
+
+source ../.plenv/bin/activate
+python3 experiments/gemm/plot_kblas_comparison.py JOINED.csv \
+    --formats png,pdf,svg
+```
+
+For absolute constant ranks instead of ranks proportional to `b`, set
+`NEXTLA_TUNING_RANK_BANDS=` and, for example,
+`NEXTLA_TUNING_FIXED_RANKS=32,48,64`.
+
 ## 3. Recommended bar-plot ablation
 
 ```bash
@@ -124,10 +221,10 @@ rank should not be presented as a pure no-padding baseline without the fallback
 annotation, because arbitrary exact ranks can trigger ordinary-GEMM alignment
 fallbacks in the current lowering.
 
-The defaults use `N=16384`, `b=N/16`, ranks `[b/32,b/8]`, FP16, four rows per
+The defaults use `N=16384`, `b=N/16`, ranks `[b/32,b/8]`, FP16, one target
 run, and ten repetitions. Controls use the `NEXTLA_ABLATION_` prefix:
 `N`, `TILE_DIVISOR`, `DISTRIBUTIONS`, `POLICIES`, `RANK_BAND`, `PRECISION`,
-`WARMUP`, `REPS`, `ANALYSIS_REPS`, `ROWS`, `FILL`, and `SEED`.
+`WARMUP`, `REPS`, `ANALYSIS_REPS`, `RUNS`, `FILL`, and `SEED`.
 
 ## Output safety and CSV conventions
 
