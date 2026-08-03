@@ -51,12 +51,12 @@ end
     C = zeros(Float32, 8, 8)
 
     right = _TLRM._build_compressed_ftlr_foldright_run(
-        C, positive, positive, positive_plan, 1:2, 1f0, 0f0,
+        C, positive, positive, positive_plan, 1:2, 1:2, 1f0, 0f0,
         positive_arena)
     @test !right.needs_tdata_zero
 
     left = _TLRM._build_compressed_ftlr_foldleft_run(
-        C, positive, positive, positive_plan, 1:2, 1f0, 0f0,
+        C, positive, positive, positive_plan, 1:2, 1:2, 1f0, 0f0,
         positive_arena)
     @test !left.needs_tdata_zero
 
@@ -68,7 +68,7 @@ end
         positive, sum(right_plan.profile.right_row_bytes))
     right_arena = _TLRM.DenseGemmArena(view(right_workspace.storage, :), 1)
     right_hole = _TLRM._build_compressed_ftlr_foldright_run(
-        C, positive, right_B, right_plan, 1:2, 1f0, 0f0, right_arena)
+        C, positive, right_B, right_plan, 1:2, 1:2, 1f0, 0f0, right_arena)
     @test right_hole.needs_tdata_zero
 
     # FoldLeft gives every physical output row columns for every active B
@@ -79,7 +79,7 @@ end
         left_A, sum(left_plan.profile.left_row_bytes))
     left_arena = _TLRM.DenseGemmArena(view(left_workspace.storage, :), 1)
     left_hole = _TLRM._build_compressed_ftlr_foldleft_run(
-        C, left_A, positive, left_plan, 1:2, 1f0, 0f0, left_arena)
+        C, left_A, positive, left_plan, 1:2, 1:2, 1f0, 0f0, left_arena)
     @test left_hole.needs_tdata_zero
 end
 
@@ -96,7 +96,7 @@ end
     arena = _TLRM.DenseGemmArena(view(workspace.storage, :), 1)
     C = zeros(Float32, 8, 8)
     tasks = _TLRM._build_compressed_ftlr_foldleft_run(
-        C, A, B, plan, 1:2, 1f0, 0f0, arena)
+        C, A, B, plan, 1:2, 1:2, 1f0, 0f0, arena)
 
     @test length(tasks.stage3) == NextLA.grid_size(B)[2]
     @test all(size(task.C, 1) == size(C, 1) for task in tasks.stage3)

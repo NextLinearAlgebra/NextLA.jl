@@ -84,7 +84,8 @@ function _compressed_ftlr_row_runs_dp(profile::RaggedWorkspaceProfile, budget::I
     j = q
     while j >= 1
         i = back[j + 1]
-        pushfirst!(runs, RaggedRowRun(i:j, _compressed_ftlr_select_fold(profile, i:j, budget)))
+        pushfirst!(runs, RaggedRowRun(i:j, profile.columns,
+                                      _compressed_ftlr_select_fold(profile, i:j, budget)))
         j = i - 1
     end
     return runs

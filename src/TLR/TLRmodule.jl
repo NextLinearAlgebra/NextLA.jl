@@ -38,7 +38,7 @@ export maxrank, ranks, execution_ranks, execution_maxrank, execution_rank_policy
 export residuals, dense_diag, dense_diag_corner, grid_size
 export nominal_tile_size, tail_tile_size
 export ndiag_tiles, tile_origin_coords, tile_size
-export gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes
+export gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes, gemm_workspace_bytes
 export DenseGemmWorkspace, InteriorFirstWorkspace
 export CompressedGemmAnalysis, CompressedMixedGemmAnalysis, analyze_compressed_gemm
 export TLRGemmWorkspace

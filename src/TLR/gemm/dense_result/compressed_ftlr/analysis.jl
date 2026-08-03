@@ -1,6 +1,7 @@
 """One row-run whose grouped cuBLAS descriptors have already been uploaded."""
 struct PreparedCompressedFTLRRun
     rows::UnitRange{Int}
+    cols::UnitRange{Int}
     fold::Symbol
     stage1::Union{Nothing,AbstractPreparedGroupedGemm}
     stage2::Union{Nothing,AbstractPreparedGroupedGemm}
@@ -60,7 +61,7 @@ end
 @inline _destroy_compressed_stages!(run::PreparedCompressedFTLRRun) =
     _destroy_compressed_stages!(run.stage1, run.stage2, run.stage3)
 
-function _prepare_compressed_run(tasks::CompressedFTLRRunTasks, rows, fold, mode)
+function _prepare_compressed_run(tasks::CompressedFTLRRunTasks, rows, cols, fold, mode)
     stage1 = stage2 = stage3 = nothing
     try
         stage1 = _prepare_compressed_stage(tasks.stage1, mode)
@@ -71,7 +72,7 @@ function _prepare_compressed_run(tasks::CompressedFTLRRunTasks, rows, fold, mode
         rethrow()
     end
     return PreparedCompressedFTLRRun(
-        rows, fold, stage1, stage2, stage3, tasks.tdata,
+        rows, cols, fold, stage1, stage2, stage3, tasks.tdata,
         tasks.needs_tdata_zero, tasks.scale_targets)
 end
 
@@ -116,33 +117,29 @@ function analyze_compressed_gemm(
 
     plan = _compressed_ftlr_rank_plan(LA, LB)
     ws, arena, budget, profile =
-        _prepare_compressed_ftlr_workspace(LA, workspace, plan.profile)
+        _prepare_compressed_ftlr_workspace(LA, LB, plan, workspace)
     ws === workspace || error("internal error: symbolic analysis replaced its workspace")
     scalar_type = gemm_compute_type(mode)
     placeholder_alpha = one(scalar_type)
     placeholder_beta = zero(scalar_type)
     prepared_runs = PreparedCompressedFTLRRun[]
-    # TEMPORARY indirection: selects greedy (default) or the DP scheduler --
-    # see compressed_ftlr/schedule_dp.jl. Revert to `_compressed_ftlr_row_runs`
-    # when the benchmark picks a winner.
-    runs = _compressed_ftlr_schedule(profile, budget)
+    # Subdivides into column blocks only when a full-width schedule does not fit;
+    # otherwise this is exactly the whole-width row-run schedule. The row-run
+    # policy inside each block is still the TEMPORARY greedy/DP switch from
+    # compressed_ftlr/schedule_dp.jl.
+    runs = _compressed_ftlr_column_schedule(plan, LA, LB, profile, budget)
     sizehint!(prepared_runs, length(runs))
     try
         for run in runs
-            tasks = if run.fold === :right
-                _build_compressed_ftlr_foldright_run(
-                    C, LA, LB, plan, run.rows, placeholder_alpha, placeholder_beta, arena)
-            else
-                _build_compressed_ftlr_foldleft_run(
-                    C, LA, LB, plan, run.rows, placeholder_alpha, placeholder_beta, arena)
-            end
-            push!(prepared_runs, _prepare_compressed_run(tasks, run.rows, run.fold, mode))
+            tasks = _build_compressed_ftlr_run(
+                C, LA, LB, plan, run.rows, run.cols, run.fold,
+                placeholder_alpha, placeholder_beta, arena)
+            push!(prepared_runs,
+                  _prepare_compressed_run(tasks, run.rows, run.cols, run.fold, mode))
         end
     catch
         for run in prepared_runs
-            run.stage1 === nothing || destroy_prepared_grouped_gemm!(run.stage1)
-            run.stage2 === nothing || destroy_prepared_grouped_gemm!(run.stage2)
-            run.stage3 === nothing || destroy_prepared_grouped_gemm!(run.stage3)
+            _destroy_compressed_stages!(run)
         end
         rethrow()
     end

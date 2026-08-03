@@ -124,11 +124,31 @@ end
     profile = _TLRM._compressed_ftlr_rank_plan(A, B).profile
     @test profile.minimum == maximum(profile.row_bytes)
     @test profile.maximum == min(sum(profile.right_row_bytes), sum(profile.left_row_bytes))
-    @test NextLA.gemm_minimum_workspace_bytes(A, B) == profile.minimum
     @test NextLA.gemm_maximum_workspace_bytes(A, B) == profile.maximum
     @test length(_TLRM._compressed_ftlr_row_runs(profile, profile.minimum)) >= 1
     @test length(_TLRM._compressed_ftlr_row_runs(profile, profile.maximum)) == 1
     @test_throws ArgumentError _TLRM._compressed_ftlr_row_runs(profile, profile.minimum - 1)
+
+    # `profile.minimum` is the full-width per-row floor; the public minimum is
+    # the single-column-block floor, which column subdivision makes strictly
+    # smaller whenever there is more than one output tile column.
+    plan = _TLRM._compressed_ftlr_rank_plan(A, B)
+    column_floor = _TLRM._compressed_ftlr_column_floor(plan, A, B)
+    @test NextLA.gemm_minimum_workspace_bytes(A, B) == column_floor
+    @test column_floor <= profile.minimum
+    @test NextLA.grid_size(B)[2] == 1 || column_floor < profile.minimum
+    # Every block the scheduler forms must itself fit the budget it was built for.
+    for budget in (column_floor, profile.minimum, profile.maximum)
+        runs = _TLRM._compressed_ftlr_column_schedule(plan, A, B, profile, budget)
+        @test !isempty(runs)
+        # runs tile the output grid exactly: each column block covers all rows
+        for block in unique(r.cols for r in runs)
+            rows = sort([r.rows for r in runs if r.cols == block]; by=first)
+            @test first(first(rows)) == 1
+            @test last(last(rows)) == NextLA.grid_size(A)[1]
+        end
+        @test sum(length(r.cols) for r in unique(r -> r.cols, runs)) == NextLA.grid_size(B)[2]
+    end
 
     Aleft = NextLA.CompressedFTLRMatrix(KernelAbstractions.CPU(), Float64, 8, 12, 4,
                                Int[1 2 0; 3 1 2];
