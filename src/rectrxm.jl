@@ -214,10 +214,12 @@ function unified_rec(func::Char, side::Char, uplo::Char, diag::Char,
     n = size(A, 1)
 
     if n <= threshold
+        orig_uplo = (uplo == 'L') ? 'U' : 'L'
+
         if func == 'S'
-            dispatch_trsm!(side, uplo, 'T', diag, 1.0f0, A_orig, B)
+            dispatch_trsm!(side, orig_uplo, 'T', diag, 1.0f0, A_orig, B)
         else 
-            dispatch_trmm!(side, uplo, 'T', diag, 1.0f0, A_orig, B)
+            dispatch_trmm!(side, orig_uplo, 'T', diag, 1.0f0, A_orig, B)
         end
         return B
     end
