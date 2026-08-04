@@ -115,7 +115,8 @@ function check_qr_time_hierarchical()
         println("    $(rpad("CUSOLVER F32", 36)) | Runtime: $(round(runtime_ms, sigdigits=4)) ms")
 
         # 2. Benchmark Pure Float32 Baseline (block_size = 4096 matches BaseCase threshold)
-        runtime_ms = run_time_pure_qr(A_fp32, 4096)
+        # runtime_ms = run_time_pure_qr(A_fp32, 4096)
+        runtime_ms = run_time_pure_qr(A_fp32, 256)
         push!(all_results["Pure F32 (block=4096)"], runtime_ms)
         println("    $(rpad("Pure F32 (block=4096)", 36)) | Runtime: $(round(runtime_ms, sigdigits=4)) ms")
 
