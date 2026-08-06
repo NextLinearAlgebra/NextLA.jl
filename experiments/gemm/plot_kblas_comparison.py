@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot a joined confirmed-NextLA versus KBLAS comparison CSV."""
+"""Plot a joined NextLA versus KBLAS comparison CSV."""
 
 from __future__ import annotations
 
@@ -132,7 +132,43 @@ def main() -> None:
     for extension in formats:
         fig.savefig(output / f"nextla_vs_kblas_relative.{extension}", dpi=args.dpi)
     plt.close(fig)
-    print(f"Generated {2 * len(formats)} files under {output}")
+
+    fig, axes = plt.subplots(1, len(qs), figsize=(5.0 * len(qs), 3.6), squeeze=False)
+    for column, q in enumerate(qs):
+        ax = axes[0][column]
+        for ratio in ratios:
+            series = [
+                row for row in rows
+                if int(row["q"]) == q
+                and abs(float(row["rank_over_b"]) - ratio) < 1e-12
+            ]
+            series.sort(key=lambda row: int(row["N"]))
+            if not series:
+                continue
+            sizes = [int(row["N"]) for row in series]
+            label = f"r/b={ratio:g}"
+            ax.plot(
+                sizes,
+                [float(row["nextla_memory_ratio"]) for row in series],
+                color=colors[ratio], marker="o", label=f"NextLA, {label}",
+            )
+            ax.plot(
+                sizes,
+                [float(row["kblas_memory_ratio"]) for row in series],
+                color=colors[ratio], marker="s", linestyle="--",
+                label=f"KBLAS, {label}",
+            )
+        ax.set_xscale("log", base=2)
+        ax.set_yscale("log")
+        ax.set_title(f"q={q}, b=N/{q}")
+        ax.set_xlabel("Matrix size N")
+        ax.set_ylabel("Memory / dense A+B storage")
+        ax.legend(fontsize=8)
+    fig.tight_layout()
+    for extension in formats:
+        fig.savefig(output / f"nextla_vs_kblas_memory.{extension}", dpi=args.dpi)
+    plt.close(fig)
+    print(f"Generated {3 * len(formats)} files under {output}")
 
 
 if __name__ == "__main__":

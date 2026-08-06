@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Join confirmed NextLA fixed-rank cases with matching KBLAS measurements."""
+"""Join NextLA fixed-rank cases with matching KBLAS measurements."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 OUTPUT_COLUMNS = (
+    "nextla_measurement_stage",
     "N",
     "q",
     "b",
@@ -70,7 +71,10 @@ def kblas_key(row: dict[str, str]) -> tuple[int, int, int, int]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("nextla", type=Path, help="workspace_confirmation CSV")
+    parser.add_argument(
+        "nextla", type=Path,
+        help="workspace winners/confirmation CSV, or tuning CSV with --match-kblas-memory",
+    )
     parser.add_argument("kblas", type=Path, help="KBLAS result CSV")
     parser.add_argument("--output", type=Path)
     parser.add_argument(
@@ -78,7 +82,29 @@ def main() -> None:
         action="store_true",
         help="write the intersection instead of requiring every KBLAS row",
     )
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument(
+        "--allow-unconfirmed",
+        action="store_true",
+        help="allow workspace_winners input",
+    )
+    selection.add_argument(
+        "--match-kblas-memory",
+        action="store_true",
+        help=(
+            "select the fastest workspace_tuning row whose memory ratio is no "
+            "greater than the matching KBLAS row"
+        ),
+    )
     args = parser.parse_args()
+
+    kblas_rows = read_csv(args.kblas.resolve())
+    kblas_by_key: dict[tuple[int, int, int, int], dict[str, str]] = {}
+    for row in kblas_rows:
+        key = kblas_key(row)
+        if key in kblas_by_key:
+            raise ValueError(f"duplicate KBLAS comparison key {key}")
+        kblas_by_key[key] = row
 
     nextla_rows = [
         row
@@ -89,31 +115,59 @@ def main() -> None:
         and row["min_rank"] == row["max_rank"]
     ]
     if not nextla_rows:
-        raise ValueError("NextLA input has no confirmed FP32 constant-rank TLR×TLR rows")
+        raise ValueError("NextLA input has no FP32 constant-rank TLR×TLR rows")
     experiments = {row["experiment"] for row in nextla_rows}
-    if experiments != {"workspace_confirmation"}:
+    allowed_experiments = (
+        {"workspace_tuning"}
+        if args.match_kblas_memory
+        else {"workspace_confirmation"}
+    )
+    if args.allow_unconfirmed:
+        allowed_experiments.add("workspace_winners")
+    if len(experiments) != 1 or not experiments.issubset(allowed_experiments):
         raise ValueError(
-            f"expected workspace_confirmation input, got {sorted(experiments)}"
+            f"expected {sorted(allowed_experiments)} input, "
+            f"got {sorted(experiments)}"
         )
+    input_stage = experiments.pop()
+    measurement_stage = (
+        "workspace_tuning_memory_matched"
+        if args.match_kblas_memory
+        else input_stage
+    )
     nextla_by_key: dict[tuple[int, int, int, int], dict[str, str]] = {}
-    for row in nextla_rows:
-        key = nextla_key(row)
-        if key in nextla_by_key:
-            raise ValueError(f"duplicate NextLA comparison key {key}")
-        nextla_by_key[key] = row
-
-    kblas_rows = read_csv(args.kblas.resolve())
-    kblas_by_key: dict[tuple[int, int, int, int], dict[str, str]] = {}
-    for row in kblas_rows:
-        key = kblas_key(row)
-        if key in kblas_by_key:
-            raise ValueError(f"duplicate KBLAS comparison key {key}")
-        kblas_by_key[key] = row
+    if args.match_kblas_memory:
+        candidates_by_key: dict[
+            tuple[int, int, int, int], list[dict[str, str]]
+        ] = {}
+        for row in nextla_rows:
+            candidates_by_key.setdefault(nextla_key(row), []).append(row)
+        for key, kblas in kblas_by_key.items():
+            memory_cap = float(kblas["memory_ratio"])
+            candidates = [
+                row for row in candidates_by_key.get(key, [])
+                if float(row["memory_ratio"]) <= memory_cap * (1.0 + 1e-9)
+            ]
+            if candidates:
+                nextla_by_key[key] = min(
+                    candidates,
+                    key=lambda row: (
+                        float(row["numeric_median_ms"]),
+                        int(row["workspace_bytes"]),
+                        int(row["workspace_parameter"]),
+                    ),
+                )
+    else:
+        for row in nextla_rows:
+            key = nextla_key(row)
+            if key in nextla_by_key:
+                raise ValueError(f"duplicate NextLA comparison key {key}")
+            nextla_by_key[key] = row
 
     missing = sorted(set(kblas_by_key).difference(nextla_by_key))
     if missing and not args.allow_partial:
         raise ValueError(
-            f"NextLA confirmation is missing {len(missing)} KBLAS cases; "
+            f"NextLA selection is missing {len(missing)} KBLAS cases; "
             f"first missing keys: {missing[:5]}"
         )
     keys = sorted(set(nextla_by_key).intersection(kblas_by_key))
@@ -129,6 +183,7 @@ def main() -> None:
         executed_flops = float(nextla["executed_flops"])
         output_rows.append(
             {
+                "nextla_measurement_stage": measurement_stage,
                 "N": n,
                 "q": q,
                 "b": b,
