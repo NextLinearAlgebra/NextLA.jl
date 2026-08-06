@@ -8,7 +8,7 @@ using Statistics
 using CUDA
 using NextLA
 
-include(joinpath(@__DIR__, "..", "compressed_dense_support.jl"))
+include(joinpath(@__DIR__, "compressed_dense_support.jl"))
 using .DenseGemmCommon
 
 const TLRM = NextLA.TLRmodule
