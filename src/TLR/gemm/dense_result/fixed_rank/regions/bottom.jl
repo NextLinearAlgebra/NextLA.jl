@@ -66,38 +66,3 @@ function tlr_gemm_corner_by_bpanel(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:A
                                        qnB, mt, 1;
                                        alpha, beta, budget, compute, arena)
 end
-
-# ── Fully low-rank variants (PaddedFTLRMatrix) ──────────────────────────────────────
-#
-# `v_Aᵀ B_int` reduces over ALL contraction tiles `k` (no dense diagonal), and
-# `γ_A v_Bᵀ` uses a low-rank corner `γ_A`.
-
-# v_Aᵀ B_int is the mirror direct boundary path. The bottom panel supplies a complete
-# contiguous left k-stack and the local row maps to A's physical tail tile-row.
-function tlr_gemm_bpanel_by_int(C, A::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix}, alpha;
-    beta=one(alpha), budget::Int, compute=default_gemm_compute_mode(T), arena=nothing) where {T}
-    qk = region_tile_count(A, _BOTTOM)
-    qk == 0 && return C
-    _, qn = regular_grid_size(B)
-    mt, _ = grid_size(A)
-    mt > regular_grid_size(A)[1] || return C
-    return execute_lowrank_term!(C, A, B, _bottom_pair(A), _interior_pair(B),
-                                 1, qk, qn, mt, 1;
-                                 alpha, beta, budget, compute, arena)
-end
-
-# γ_A v_Bᵀ:  C_bottom[j] += γ_A B_{bnd,j},  j = 1:qn^B.
-#
-# The mirror of `rpanel_by_corner`: the `(bnd, bnd, 1:qn)` corner, so A's low-rank corner
-# is broadcast and the budget blocks the free *column* axis `j`. Each `j` writes a distinct
-# output tile, so β folds in Stage 3 for every block.
-function tlr_gemm_corner_by_bpanel(C, A::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix}, alpha;
-    beta=one(alpha), budget::Int, compute=default_gemm_compute_mode(T), arena=nothing) where {T}
-    qn = region_tile_count(B, _BOTTOM)
-    qn == 0 && return C
-    mt, _ = grid_size(A)
-    mt > regular_grid_size(A)[1] || return C
-    return execute_lowrank_term!(C, A, B, _corner_pair(A), _bottom_pair(B),
-                                 1, 1, qn, mt, 1;
-                                 alpha, beta, budget, compute, arena)
-end

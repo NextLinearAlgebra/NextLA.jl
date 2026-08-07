@@ -75,39 +75,3 @@ function tlr_gemm_rpanel_by_corner(C, A::LogicalTLROperand{<:Any,<:TLRMatrix{<:A
                                        qmA, 1, nt;
                                        alpha, beta, budget, compute, arena)
 end
-
-# ── Fully low-rank variants (PaddedFTLRMatrix) ──────────────────────────────────────
-#
-# Every tile is low-rank, so there is no dense diagonal to split out: `A_int u_B`
-# reduces over ALL contraction tiles `k`, and `u_A γ_B` uses a low-rank corner `γ_B`.
-
-# A_int u_B uses the regular low-rank core with a right-panel factor accessor and maps
-# its single local output column directly to B's physical tail tile-column.
-function tlr_gemm_int_by_rpanel(C, A::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix}, alpha;
-    beta=one(alpha), budget::Int, compute=default_gemm_compute_mode(T), arena=nothing) where {T}
-    qm, qk = regular_grid_size(A)
-    qk == region_tile_count(B, _RIGHT) || return C
-    _, nt = grid_size(B)
-    nt > regular_grid_size(B)[2] || return C
-    return execute_lowrank_term!(C, A, B, _interior_pair(A), _right_pair(B),
-                                 qm, qk, 1, 1, nt;
-                                 alpha, beta, budget, compute, arena)
-end
-
-# u_A γ_B:  C_right[i] += A_{i,bnd} γ_B,  i = 1:qm^A.
-#
-# The `(1:qm, bnd, bnd)` corner: A's right panel against B's low-rank corner. The
-# reduction axis is a single tile, so there is nothing to reduce — the whole term is
-# Stage 1/2/3 batched over the free row axis, with the corner's factors broadcast. Budget
-# blocks `i`; each `i` writes a distinct output tile, so β folds in Stage 3 for every block
-# rather than only the first.
-function tlr_gemm_rpanel_by_corner(C, A::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix{<:Any,T}}, B::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix}, alpha;
-    beta=one(alpha), budget::Int, compute=default_gemm_compute_mode(T), arena=nothing) where {T}
-    qm = region_tile_count(A, _RIGHT)
-    qm == 0 && return C
-    _, nt = grid_size(B)
-    nt > regular_grid_size(B)[2] || return C
-    return execute_lowrank_term!(C, A, B, _right_pair(A), _corner_pair(B),
-                                 qm, 1, 1, 1, nt;
-                                 alpha, beta, budget, compute, arena)
-end

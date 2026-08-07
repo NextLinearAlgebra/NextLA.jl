@@ -32,19 +32,6 @@ end
 const _BUDGET_TINY = 1
 const _BUDGET_HUGE = 128 * 1024 * 1024
 
-# A boundary-tiled full-LR operand pair: every axis has a tail, so the interior, both
-# panels and the corner are all non-empty.
-function fulllr_operand_pair(::Type{T}, b::Int, r::Int, nt::Int; order=NextLA.TileRowMajor()) where {T}
-    mA, kk, nB = b * nt + 3, b * nt + 5, b * nt + 2
-    A = NextLA.PaddedFTLRMatrix(zeros(T, mA, kk), b, r; tile_order=order)
-    B = NextLA.PaddedFTLRMatrix(zeros(T, kk, nB), b, r; tile_order=order)
-    fill_random_tlr!(A, Array; seed=101)
-    fill_random_tlr!(B, Array; seed=202)
-    return (NextLA.TLRmodule.logical_operand(A, 'N'),
-            NextLA.TLRmodule.logical_operand(B, 'N'),
-            zeros(T, mA, nB))
-end
-
 function densediag_operand_pair(::Type{T}, b::Int, r::Int, nt::Int; order=NextLA.TileRowMajor()) where {T}
     n = b * nt + 3
     A = NextLA.TLRMatrix(zeros(T, n, n), b, r; tile_order=order)
@@ -58,53 +45,6 @@ end
 
 @testset "GEMM workspace budget compliance" begin
     @testset "budget-accepting terms respond to their scheduler budget" begin
-        @testset "PaddedFTLRMatrix (full low-rank)" begin
-            LA, LB, C = fulllr_operand_pair(Float64, 8, 4, 10)
-
-            @testset "_offdiag_offdiag_gemm!" begin
-                f = bud -> _TLRM._offdiag_offdiag_gemm!(C, LA, LB; alpha=1.0, beta=1.0, budget=bud)
-                @test term_bytes(f, _BUDGET_TINY) < term_bytes(f, _BUDGET_HUGE)
-            end
-
-            @testset "tlr_gemm_rpanel_by_bpanel" begin
-                f = bud -> _TLRM.tlr_gemm_rpanel_by_bpanel(C, LA, LB, 1.0; beta=1.0, budget=bud)
-                @test term_bytes(f, _BUDGET_TINY) < term_bytes(f, _BUDGET_HUGE)
-            end
-
-            # These two used to accept `budget::Int` and never read it, sizing S/T from the
-            # full grid unconditionally — byte-identical at every budget, while their
-            # dense-diagonal counterparts below honoured it. Both now use the direct
-            # budgeted regular core.
-            @testset "tlr_gemm_int_by_rpanel" begin
-                f = bud -> _TLRM.tlr_gemm_int_by_rpanel(C, LA, LB, 1.0; beta=1.0, budget=bud)
-                @test term_bytes(f, _BUDGET_TINY) < term_bytes(f, _BUDGET_HUGE)
-            end
-
-            @testset "tlr_gemm_bpanel_by_int" begin
-                f = bud -> _TLRM.tlr_gemm_bpanel_by_int(C, LA, LB, 1.0; beta=1.0, budget=bud)
-                @test term_bytes(f, _BUDGET_TINY) < term_bytes(f, _BUDGET_HUGE)
-            end
-
-            # Gained a budget in milestone 3, step 4: the reduction over the shared panel
-            # index is now blocked (it was O(q_c) scratch with no knob at all).
-            @testset "tlr_gemm_bpanel_by_rpanel" begin
-                f = bud -> _TLRM.tlr_gemm_bpanel_by_rpanel(C, LA, LB, 1.0; beta=1.0, budget=bud)
-                @test term_bytes(f, _BUDGET_TINY) < term_bytes(f, _BUDGET_HUGE)
-            end
-
-            # Also gained a budget in step 4: single-tile reductions batched over one free
-            # axis, previously O(q_m) / O(q_n) scratch with no knob.
-            @testset "tlr_gemm_rpanel_by_corner" begin
-                f = bud -> _TLRM.tlr_gemm_rpanel_by_corner(C, LA, LB, 1.0; beta=1.0, budget=bud)
-                @test term_bytes(f, _BUDGET_TINY) < term_bytes(f, _BUDGET_HUGE)
-            end
-
-            @testset "tlr_gemm_corner_by_bpanel" begin
-                f = bud -> _TLRM.tlr_gemm_corner_by_bpanel(C, LA, LB, 1.0; beta=1.0, budget=bud)
-                @test term_bytes(f, _BUDGET_TINY) < term_bytes(f, _BUDGET_HUGE)
-            end
-        end
-
         @testset "TLRMatrix" begin
             LA, LB, C = densediag_operand_pair(Float64, 8, 4, 10)
 
@@ -141,8 +81,8 @@ end
     # a single tile in every geometry, so its scratch is already grid-independent. Every
     # other term is budgeted as of step 4.
     @testset "corner_by_corner needs no budget" begin
-        LA_s, LB_s, C_s = fulllr_operand_pair(Float64, 8, 4, 6)
-        LA_l, LB_l, C_l = fulllr_operand_pair(Float64, 8, 4, 18)
+        LA_s, LB_s, C_s = densediag_operand_pair(Float64, 8, 4, 6)
+        LA_l, LB_l, C_l = densediag_operand_pair(Float64, 8, 4, 18)
 
         @testset "tlr_gemm_corner_by_corner" begin
             _TLRM.tlr_gemm_corner_by_corner(C_s, LA_s, LB_s, 1.0; beta=1.0)

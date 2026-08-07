@@ -194,22 +194,6 @@ function assert_tlr_gemm_matches_dense(ArrayType::Type, T::Type, n::Int, b::Int,
                               budget, alpha, beta, atol, rtol)
 end
 
-# Fully low-rank TLR × TLR → dense. `A` is `mA×k` with tiles `tsA=(bm,bk)`, `B` is
-# `k×nB` with tiles `tsB=(bk,bn)` — the contraction tiling `bk` aligns while the
-# output tile is `bm × bn`; pass square tile sizes for the uniform case.
-function assert_fulllr_gemm_matches_dense(ArrayType::Type, T::Type, mA::Int, k::Int, nB::Int,
-                                          tsA::Tuple, tsB::Tuple, r::Int, orderA, orderB,
-                                          synchronize; budget::Int,
-                                          alpha=T(1.3), beta=T(-0.4), atol=1e-10, rtol=1e-10)
-    tsA[2] == tsB[1] || throw(ArgumentError("contraction tile sizes must agree"))
-    A_tlr = NextLA.PaddedFTLRMatrix(ArrayType(zeros(T, mA, k)), tsA, r; tile_order=orderA)
-    B_tlr = NextLA.PaddedFTLRMatrix(ArrayType(zeros(T, k, nB)), tsB, r; tile_order=orderB)
-    fill_random_tlr!(A_tlr, ArrayType; seed=101)
-    fill_random_tlr!(B_tlr, ArrayType; seed=202)
-    assert_gemm_matches_dense(ArrayType, A_tlr, B_tlr, synchronize;
-                              budget, alpha, beta, atol, rtol)
-end
-
 function assert_dense_fulllr_gemm(ArrayType::Type, ::Type{T}, side::Symbol,
                                   m, k, n, tiles, order, transA, transB, synchronize;
                                   budget, atol=1e-9, rtol=1e-9) where {T}
@@ -241,35 +225,6 @@ function assert_dense_fulllr_gemm(ArrayType::Type, ::Type{T}, side::Symbol,
     end
     synchronize(C)
     @test isapprox(Array(C), ref; atol, rtol)
-end
-
-# Transpose flags on full-LR operands: `tsA`/`tsB` are the *op* tile sizes; the
-# stored matrix and tiles flip on transpose.
-function assert_transpose_matches_dense(m, k, n, tsA, tsB, oA, oB, transA, transB;
-                                        alpha=1.3, beta=-0.4, budget=128 * 1024 * 1024,
-                                        ArrayType=Array, synchronize=_ -> nothing,
-                                        atol=1e-9, rtol=1e-9)
-    bm, bk = tsA
-    bk2, bn = tsB
-    @assert bk == bk2
-    storedA, tileA = transA == 'T' ? ((k, m), (bk, bm)) : ((m, k), (bm, bk))
-    storedB, tileB = transB == 'T' ? ((n, k), (bn, bk)) : ((k, n), (bk, bn))
-    A = NextLA.PaddedFTLRMatrix(ArrayType(zeros(Float64, storedA...)), tileA, 3; tile_order=oA)
-    B = NextLA.PaddedFTLRMatrix(ArrayType(zeros(Float64, storedB...)), tileB, 3; tile_order=oB)
-    fill_random_tlr!(A, ArrayType; seed=1)
-    fill_random_tlr!(B, ArrayType; seed=2)
-    C0 = randn(MersenneTwister(7), Float64, m, n)
-    C = ArrayType(C0)
-    workspace = max(
-        budget,
-        NextLA.gemm_minimum_workspace_bytes(A, B; transA, transB),
-    )
-    NextLA.TLRmodule.gemm!(C, A, B; alpha=alpha, beta=beta, transA=transA,
-                           transB=transB, workspace)
-    synchronize(C)
-    opd(D, t) = t == 'T' ? permutedims(D) : D
-    ref = alpha .* (opd(reconstruct_tlr(A), transA) * opd(reconstruct_tlr(B), transB)) .+ beta .* C0
-    @test isapprox(Array(C), ref; atol=atol, rtol=rtol)
 end
 
 function assert_dense_diag_transpose_matches(n, b, r, oA, oB, transA, transB;

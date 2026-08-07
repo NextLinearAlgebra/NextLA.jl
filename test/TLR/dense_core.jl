@@ -1,35 +1,6 @@
 # Behaviour gates for the direct TLR GEMM core. End-to-end layout, transpose, boundary,
 # precision, and budget sweeps live in `gemm.jl` and `gemm_budget.jl`.
 
-@testset "direct GEMM factor operands" begin
-    T = Float64
-    b, r = 8, 3
-    A = NextLA.PaddedFTLRMatrix(zeros(T, b * 4 + 3, b * 5 + 2), b, r;
-                         tile_order=NextLA.TileRowMajor())
-    fill_random_tlr!(A, Array; seed=17)
-
-    @testset "zero-copy boundary and transpose mapping" begin
-        LA = _TLRM.logical_operand(A, 'N')
-        Aright = _TLRM._right_pair(LA)
-        Abottom = _TLRM._bottom_pair(LA)
-        Acorner = _TLRM._corner_pair(LA)
-        @test parent(_TLRM.tilefactor(Aright[1], 2, 1)) === A.right_U
-        @test parent(_TLRM.tilefactor(Abottom[2], 1, 2)) === A.bottom_V
-        @test parent(_TLRM.tilefactor(Acorner[1], 1, 1)) === A.corner_U
-
-        LT = _TLRM.logical_operand(A, 'T')
-        Tright = _TLRM._right_pair(LT)
-        Tbottom = _TLRM._bottom_pair(LT)
-        Tcorner = _TLRM._corner_pair(LT)
-        @test Tright[1].data === A.bottom_V
-        @test Tright[2].data === A.bottom_U
-        @test Tbottom[1].data === A.right_V
-        @test Tbottom[2].data === A.right_U
-        @test Tcorner[1].data === A.corner_V
-        @test Tcorner[2].data === A.corner_U
-    end
-end
-
 @testset "direct regular execution" begin
     T = Float64
     b, r, nt = 8, 3, 5
@@ -142,16 +113,15 @@ end
 @testset "dense-output GEMM minimum and maximum workspace" begin
     T = Float64
     b, r = 8, 3
-    qm, qk, qn = 32, 4, 2
-    A = NextLA.PaddedFTLRMatrix(zeros(T, b * qm, b * qk), b, r)
-    B = NextLA.PaddedFTLRMatrix(zeros(T, b * qk, b * qn), b, r)
+    q = 6
+    A = NextLA.TLRMatrix(zeros(T, b * q, b * q), b, r)
+    B = NextLA.TLRMatrix(zeros(T, b * q, b * q), b, r)
     fill_random_tlr!(A, Array; seed=71)
     fill_random_tlr!(B, Array; seed=72)
 
     wmin = NextLA.gemm_minimum_workspace_bytes(A, B)
     wmax = NextLA.gemm_maximum_workspace_bytes(A, B)
     @test 0 < wmin <= wmax
-    @test wmax == qm * qn * wmin
 
     reference = reconstruct_tlr(A) * reconstruct_tlr(B)
     for workspace in (wmin, wmax)
@@ -160,20 +130,16 @@ end
         @test C ≈ reference
     end
 
-    for MatrixType in (NextLA.PaddedFTLRMatrix, NextLA.TLRMatrix)
-        X = MatrixType(zeros(T, 35, 35), b, r)
-        Y = MatrixType(zeros(T, 35, 35), b, r)
-        for (transA, transB) in (('N', 'N'), ('N', 'T'), ('T', 'N'), ('T', 'T'))
-            lo = NextLA.gemm_minimum_workspace_bytes(
-                X, Y; transA, transB)
-            hi = NextLA.gemm_maximum_workspace_bytes(
-                X, Y; transA, transB)
-            @test 0 < lo <= hi
-        end
+    X = NextLA.TLRMatrix(zeros(T, 35, 35), b, r)
+    Y = NextLA.TLRMatrix(zeros(T, 35, 35), b, r)
+    for (transA, transB) in (('N', 'N'), ('N', 'T'), ('T', 'N'), ('T', 'T'))
+        lo = NextLA.gemm_minimum_workspace_bytes(
+            X, Y; transA, transB)
+        hi = NextLA.gemm_maximum_workspace_bytes(
+            X, Y; transA, transB)
+        @test 0 < lo <= hi
     end
 
-    X = NextLA.PaddedFTLRMatrix(zeros(T, 35, 35), b, r)
-    Y = NextLA.PaddedFTLRMatrix(zeros(T, 35, 35), b, r)
     fill_random_tlr!(X, Array; seed=73)
     fill_random_tlr!(Y, Array; seed=74)
     lo_regions = _TLRM._gemm_workspace_regions(X, Y, :minimum)

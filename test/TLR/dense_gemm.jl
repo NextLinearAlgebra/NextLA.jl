@@ -27,31 +27,6 @@
     end
 end
 
-@testset "full-LR TLR gemm! to dense on CPU" begin
-    RM = NextLA.TileRowMajor(); CM = NextLA.TileColMajor()
-    huge = 128 * 1024 * 1024
-    nosync = _ -> nothing
-
-    # (mA, k, nB, tsA, tsB, r, orderA, orderB, budget, tol) — square/rect grids,
-    # independent boundary tails, rectangular tiles, single contraction tile,
-    # zero rank; orders and budgets distributed pairwise across rows.
-    cases = (
-        (12, 12, 12, (4, 4), (4, 4), 2, RM, CM, 1,    1e-10),  # square aligned grid
-        (10,  7, 12, (4, 4), (4, 4), 3, CM, RM, huge, 1e-10),  # rectangular grid
-        (14, 14, 14, (4, 4), (4, 4), 3, CM, CM, 1,    1e-9),   # boundary square
-        (10, 11, 13, (4, 4), (4, 4), 3, RM, CM, huge, 1e-9),   # independent m/k/n tails
-        (10,  8,  9, (4, 3), (3, 5), 3, RM, RM, 1,    1e-9),   # rect tiles + tails
-        (10,  6,  6, (5, 6), (6, 2), 2, RM, CM, huge, 1e-9),   # tall output tile, q_c=1
-        (10, 10, 10, (4, 4), (4, 4), 0, CM, RM, 1,    1e-10),  # zero rank + boundary
-    )
-    for (mA, k, nB, tsA, tsB, r, oA, oB, budget, tol) in cases
-        @testset "$(mA)×$(k)×$(nB) tiles=$(tsA)/$(tsB) r=$r $(oA)*$(oB) budget=$budget" begin
-            assert_fulllr_gemm_matches_dense(Array, Float64, mA, k, nB, tsA, tsB, r,
-                                             oA, oB, nosync; budget, atol=tol, rtol=tol)
-        end
-    end
-end
-
 # The interior off-diagonal product `O_A O_B` picks its Stage-2/3 association (fold)
 # from storage layout so the reduction is a write-once fused Stage 3 without any
 # transpose: FoldLeft (stack B's Z) iff B is TileColMajor on a FullGrid, else FoldRight.
@@ -127,59 +102,6 @@ end
     @test NextLA.TLRmodule._dense_op(dref) == 'T'
 end
 
-@testset "transpose flags on complete FullGrid operands" begin
-    RM = NextLA.TileRowMajor(); CM = NextLA.TileColMajor()
-    huge = 128 * 1024 * 1024
-
-    # All four op-combinations, each on a distinct layout pair; square and
-    # rectangular op tile sizes split between them.
-    @testset "op(A)·op(B), pairwise combos × layouts" begin
-        rows = (
-            ('N', 'N', RM, CM, (12, 8, 16), (4, 4), (4, 4)),
-            ('N', 'T', CM, RM, (12, 8, 16), (4, 4), (4, 4)),
-            ('T', 'N', CM, CM, (12, 9, 10), (4, 3), (3, 5)),
-            ('T', 'T', RM, RM, (12, 9, 10), (4, 3), (3, 5)),
-        )
-        for (tA, tB, oA, oB, (m, k, n), tsA, tsB) in rows
-            assert_transpose_matches_dense(m, k, n, tsA, tsB, oA, oB, tA, tB)
-        end
-    end
-
-    @testset "independent boundary tails × budgets" begin
-        # Effective A is 14×11 with tiles 4×3; effective B is 11×13 with
-        # tiles 3×5. All three dimensions have independent boundary tails.
-        assert_transpose_matches_dense(14, 11, 13, (4, 3), (3, 5), RM, CM, 'T', 'N'; budget=1)
-        assert_transpose_matches_dense(14, 11, 13, (4, 3), (3, 5), CM, RM, 'N', 'T'; budget=huge)
-    end
-
-    @testset "flag and effective-geometry validation" begin
-        A = NextLA.PaddedFTLRMatrix(zeros(Float64, 8, 8), 4, 2)
-        B = NextLA.PaddedFTLRMatrix(zeros(Float64, 8, 8), 4, 2)
-        @test_throws ArgumentError NextLA.TLRmodule.gemm!(
-            zeros(8, 8), A, B; transA='X', workspace=1)
-        Cn = zeros(8, 8); Ct = zeros(8, 8)
-        workspace = NextLA.gemm_minimum_workspace_bytes(A, B)
-        NextLA.TLRmodule.gemm!(Cn, A, B; transA='n', transB='n', workspace)
-        NextLA.TLRmodule.gemm!(Ct, A, B; transA='N', transB='N', workspace)
-        @test Cn == Ct
-        @test_throws DimensionMismatch NextLA.TLRmodule.gemm!(
-            zeros(7, 8), A, B; workspace=1)
-
-        Bt = NextLA.PaddedFTLRMatrix(zeros(Float64, 8, 8), (2, 4), 2)
-        @test_throws DimensionMismatch NextLA.TLRmodule.gemm!(
-            zeros(8, 8), A, Bt; workspace=1)
-
-        Af = NextLA.PaddedFTLRMatrix(zeros(Float32, 8, 8), 4, 2)
-        Bf = NextLA.PaddedFTLRMatrix(zeros(Float32, 8, 8), 4, 2)
-        @test_throws ArgumentError NextLA.TLRmodule.gemm!(
-            zeros(Float64, 8, 8), Af, Bf; workspace=1)
-        @test_throws ArgumentError NextLA.TLRmodule.gemm!(
-            zeros(Float32, 8, 8), Af, Bf; compute=Float64, workspace=1)
-        @test_throws ArgumentError NextLA.TLRmodule.gemm!(
-            zeros(Float32, 8, 8), Af, Bf; compute=NextLA.TF32(), workspace=1)
-    end
-end
-
 @testset "dense-diagonal boundary transpose" begin
     RM = NextLA.TileRowMajor(); CM = NextLA.TileColMajor()
     huge = 128 * 1024 * 1024
@@ -238,33 +160,6 @@ end
             assert_tlr_gemm_matches_dense(ArrayType, Float32, 12, 4, 2, orders..., synchronize;
                                           budget=1, alpha=Float32(1.2), beta=Float32(0.25),
                                           atol=5f-3, rtol=5f-3)
-            # Representative complete-operand transpose check.  CPU covers the
-            # remaining layout/transpose combinations exhaustively.
-            assert_transpose_matches_dense(14, 11, 13, (4, 3), (3, 5), orders..., 'T', 'N';
-                                             budget=1, ArrayType, synchronize,
-                                             atol=1e-8, rtol=1e-8)
-
-            @testset "reusable global arena" begin
-                Aarena = NextLA.PaddedFTLRMatrix(
-                    ArrayType(zeros(Float32, 10, 10)), 4, 2;
-                    tile_order=orders[1])
-                Barena = NextLA.PaddedFTLRMatrix(
-                    ArrayType(zeros(Float32, 10, 10)), 4, 2;
-                    tile_order=orders[2])
-                fill_random_tlr!(Aarena, ArrayType; seed=491)
-                fill_random_tlr!(Barena, ArrayType; seed=492)
-                bytes = NextLA.gemm_minimum_workspace_bytes(Aarena, Barena)
-                workspace = NextLA.DenseGemmWorkspace(Aarena, Barena; bytes)
-                storage = workspace.storage
-                reference = reconstruct_tlr(Aarena) * reconstruct_tlr(Barena)
-                for _ in 1:2
-                    C = ArrayType(zeros(Float32, 10, 10))
-                    NextLA.TLRmodule.gemm!(C, Aarena, Barena; workspace)
-                    synchronize(C)
-                    @test Array(C) ≈ reference rtol=3f-4 atol=3f-4
-                    @test workspace.storage === storage
-                end
-            end
 
             @testset "precision policy" begin
                 A16 = NextLA.PaddedFTLRMatrix(ArrayType(zeros(Float16, 10, 10)), 4, 2;
@@ -273,26 +168,6 @@ end
                                        tile_order=orders[2])
                 fill_random_tlr!(A16, ArrayType; seed=501)
                 fill_random_tlr!(B16, ArrayType; seed=502)
-                ref16 = Float32.(reconstruct_tlr(A16)) * Float32.(reconstruct_tlr(B16))
-                workspace16 = NextLA.gemm_minimum_workspace_bytes(A16, B16)
-
-                C16 = ArrayType(zeros(Float16, 10, 10))
-                NextLA.TLRmodule.gemm!(
-                    C16, A16, B16; compute=Float32, workspace=workspace16)
-                synchronize(C16)
-                @test isapprox(Float32.(Array(C16)), ref16; atol=0.2f0, rtol=0.03f0)
-
-                C16native = ArrayType(zeros(Float16, 10, 10))
-                NextLA.TLRmodule.gemm!(
-                    C16native, A16, B16; compute=Float16, workspace=workspace16)
-                synchronize(C16native)
-                @test isapprox(Float32.(Array(C16native)), ref16; atol=0.5f0, rtol=0.06f0)
-
-                C32 = ArrayType(zeros(Float32, 10, 10))
-                NextLA.TLRmodule.gemm!(
-                    C32, A16, B16; compute=Float32, workspace=workspace16)
-                synchronize(C32)
-                @test isapprox(Array(C32), ref16; atol=0.2f0, rtol=0.03f0)
 
                 Dright = ArrayType(randn(Float16, 10, 7))
                 Cright = ArrayType(zeros(Float32, 10, 7))
@@ -310,40 +185,9 @@ end
                 @test isapprox(Array(Cleft), Float32.(Array(Dleft)) *
                                              Float32.(reconstruct_tlr(B16)); atol=0.2f0, rtol=0.03f0)
 
-                # GEMM scalars follow compute precision, not FP16 factor storage.
-                # The factors make A*B exactly 100I even through FP16 S/T storage,
-                # so rounding alpha to FP16 would produce 100 instead of 100.01.
-                Aexact = NextLA.PaddedFTLRMatrix(ArrayType(zeros(Float16, 4, 4)), 4, 4)
-                Bexact = NextLA.PaddedFTLRMatrix(ArrayType(zeros(Float16, 4, 4)), 4, 4)
-                I16 = Matrix{Float16}(I, 4, 4)
-                Aexact.int_U .= ArrayType(reshape(10 .* I16, 4, 4, 1))
-                Aexact.int_V .= ArrayType(reshape(I16, 4, 4, 1))
-                Bexact.int_U .= ArrayType(reshape(10 .* I16, 4, 4, 1))
-                Bexact.int_V .= ArrayType(reshape(I16, 4, 4, 1))
-                Aexact.ranks .= 4
-                Bexact.ranks .= 4
-                alpha32 = Float32(1.0001)
-                beta32 = Float32(0.1234)
-                Cscalar = ArrayType(fill(Float32(10), 4, 4))
-                NextLA.TLRmodule.gemm!(Cscalar, Aexact, Bexact;
-                                       alpha=alpha32, beta=beta32,
-                                       workspace=NextLA.gemm_minimum_workspace_bytes(Aexact, Bexact))
-                synchronize(Cscalar)
-                scalar_ref = alpha32 .* (Float32(100) .* Matrix{Float32}(I, 4, 4)) .+
-                             beta32 .* fill(Float32(10), 4, 4)
-                @test isapprox(Array(Cscalar), scalar_ref; atol=2f-5, rtol=2f-6)
-
                 A32 = NextLA.PaddedFTLRMatrix(ArrayType(zeros(Float32, 8, 8)), 4, 2)
-                B32 = NextLA.PaddedFTLRMatrix(ArrayType(zeros(Float32, 8, 8)), 4, 2)
                 fill_random_tlr!(A32, ArrayType; seed=503)
-                fill_random_tlr!(B32, ArrayType; seed=504)
                 Ctf32 = ArrayType(zeros(Float32, 8, 8))
-                NextLA.TLRmodule.gemm!(
-                    Ctf32, A32, B32; compute=NextLA.TF32(),
-                    workspace=NextLA.gemm_minimum_workspace_bytes(A32, B32))
-                synchronize(Ctf32)
-                ref32 = reconstruct_tlr(A32) * reconstruct_tlr(B32)
-                @test isapprox(Array(Ctf32), ref32; atol=0.1f0, rtol=0.03f0)
 
                 Dtf32 = ArrayType(randn(Float32, 8, 6))
                 NextLA.TLRmodule.gemm!(view(Ctf32, :, 1:6), A32, Dtf32;
@@ -359,8 +203,8 @@ end
 @testset "TF32 backend capability" begin
     for (backend_name, ArrayType, _) in available_backends()
         backend_name == "AMDGPU" || continue
-        A = NextLA.PaddedFTLRMatrix(ArrayType(zeros(Float32, 8, 8)), 4, 2)
-        B = NextLA.PaddedFTLRMatrix(ArrayType(zeros(Float32, 8, 8)), 4, 2)
+        A = NextLA.TLRMatrix(ArrayType(zeros(Float32, 8, 8)), 4, 2)
+        B = NextLA.TLRMatrix(ArrayType(zeros(Float32, 8, 8)), 4, 2)
         C = ArrayType(zeros(Float32, 8, 8))
         @test_throws ArgumentError NextLA.TLRmodule.gemm!(
             C, A, B; compute=NextLA.TF32(), workspace=1)
