@@ -7,10 +7,6 @@ const MtlMatrixBatchView{T} = SubArray{T, 3, <:Metal.MtlArray{T, 3}, <:Any, fals
     return (Tin, Tout) in MPS.MPS_VALID_MATMUL_TYPES
 end
 
-@inline function _supports_mps_matmul(::Type{Tin}, ::Type{Tin}, ::Type{Tout}) where {Tin, Tout}
-    return (Tin, Tout) in MPS.MPS_VALID_MATMUL_TYPES
-end
-
 @inline function _materialize_batch_view(A::MtlMatrixBatchView)
     dense = similar(parent(A), size(A))
     copyto!(dense, A)

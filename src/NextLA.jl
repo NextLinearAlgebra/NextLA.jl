@@ -9,7 +9,6 @@ import LinearAlgebra: BLAS, LAPACK
 import LinearAlgebra.BLAS: @blasfunc
 using Random: Random
 using KernelAbstractions
-using KernelAbstractions.Extras: @unroll
 
 @inline SUBGROUP_SIZE(::Type{<:KernelAbstractions.CPU}) = Val(1)
 @inline unwrap(::Val{x}) where {x} = x
@@ -71,12 +70,8 @@ include("gemm_batched.jl")
 include("gemm_precision.jl")
 include("gemm_grouped.jl")
 include("streams.jl")
-include("syrk.jl")
-include("syrk_batched.jl")
 include("lauu2.jl")
 include("lauum.jl")
-include("potf2.jl")
-include("potrf.jl")
 include("potrf_batched.jl")
 
 include("geqrt.jl")

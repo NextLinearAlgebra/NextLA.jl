@@ -1,410 +1,205 @@
-export LeftLowerTRSM!, LeftUpperTRSM!, RightLowerTRSM!, RightUpperTRSM!, trsm_batched!
 
-@inline _trsm_default_nb(::Type) = Val(32)
-@inline _trsm_batch_size(A::AbstractMatrix) = 1
-@inline _trsm_batch_size(A::AbstractArray{<:Any,3}) = size(A, 3)
-@inline _trsm_batch_view(A::AbstractMatrix, b::Int) = A
-@inline _trsm_batch_view(A::AbstractArray{<:Any,3}, b::Int) = view(A, :, :, b)
+export LeftLowerTRSM!, LeftUpperTRSM!, RightLowerTRSM!, RightUpperTRSM!
 
-@inline _trsm_diag_block(A::AbstractMatrix, cols) = view(A, :, cols)
-@inline _trsm_diag_block(A::AbstractArray{<:Any,3}, cols) = view(A, :, cols, :)
+# Kernel function for solving lower triangular system Ax = b
+@kernel function lower_left_kernel(A, B, n)
+    col = @index(Group)
+    row = @index(Local)
 
-@inline _trsm_A_block(A::AbstractMatrix, rows, cols) = view(A, rows, cols)
-@inline _trsm_A_block(A::AbstractArray{<:Any,3}, rows, cols) = view(A, rows, cols, :)
+    # Allocate shared memory for diagonal, B column, and A column
+    diag = @localmem eltype(A) 1024
+    B_c = @localmem eltype(B) 1024
+    A_col = @localmem eltype(A) 1024
 
-@inline _trsm_row_block(B::AbstractMatrix, rows) = view(B, rows, :)
-@inline _trsm_row_block(B::AbstractArray{<:Any,3}, rows) = view(B, rows, :, :)
-
-@inline _trsm_col_block(B::AbstractMatrix, cols) = view(B, :, cols)
-@inline _trsm_col_block(B::AbstractArray{<:Any,3}, cols) = view(B, :, cols, :)
-
-@inline _trsm_getindex(A::AbstractMatrix, i::Int, j::Int, b::Int) = @inbounds A[i, j]
-@inline _trsm_getindex(A::AbstractArray{<:Any,3}, i::Int, j::Int, b::Int) = @inbounds A[i, j, b]
-
-@inline _trsm_setindex!(A::AbstractMatrix, value, i::Int, j::Int, b::Int) = (@inbounds A[i, j] = value; nothing)
-@inline _trsm_setindex!(A::AbstractArray{<:Any,3}, value, i::Int, j::Int, b::Int) = (@inbounds A[i, j, b] = value; nothing)
-
-@inline function _trsm_matmul!(C::AbstractMatrix, A, B, alpha, beta)
-    LinearAlgebra.mul!(C, A, B, alpha, beta) # dispatch to vendor `gemm`
-    return C
-end
-
-@inline function _trsm_matmul!(C::AbstractMatrix, A::AbstractArray{<:Any,3}, B, alpha, beta)
-    size(A, 3) == 1 || throw(DimensionMismatch("trsm: expected a singleton batch"))
-    LinearAlgebra.mul!(C, view(A, :, :, 1), B, alpha, beta)
-    return C
-end
-
-@inline function _trsm_matmul!(C::AbstractMatrix, A, B::AbstractArray{<:Any,3}, alpha, beta)
-    size(B, 3) == 1 || throw(DimensionMismatch("trsm: expected a singleton batch"))
-    LinearAlgebra.mul!(C, A, view(B, :, :, 1), alpha, beta)
-    return C
-end
-
-@inline function _trsm_matmul!(C::AbstractMatrix, A::AbstractArray{<:Any,3}, B::AbstractArray{<:Any,3}, alpha, beta)
-    size(A, 3) == 1 || throw(DimensionMismatch("trsm: expected a singleton left batch"))
-    size(B, 3) == 1 || throw(DimensionMismatch("trsm: expected a singleton right batch"))
-    LinearAlgebra.mul!(C, view(A, :, :, 1), view(B, :, :, 1), alpha, beta)
-    return C
-end
-
-@inline function _trsm_matmul!(C::AbstractArray{<:Any,3}, A, B, alpha, beta)
-    gemm_batched!('N', 'N', alpha, A, B, beta, C)
-    return C
-end
-
-function _trsm_validate(side::Val{SIDE}, A, B) where {SIDE}
-    n = size(A, 1)
-    size(A, 2) == n || throw(DimensionMismatch("trsm: A must be square"))
-    _trsm_batch_size(A) == _trsm_batch_size(B) || throw(DimensionMismatch("trsm: batch sizes must match"))
-    size(B, SIDE === :left ? 1 : 2) == n || throw(DimensionMismatch("trsm: incompatible A and B"))
-    return n, _trsm_batch_size(B)
-end
-
-@inline function _trsm_update!(A,
-    B,
-    side::Val{SIDE},
-    uplo::Val{UPLO},
-    k0::Int,
-    k1::Int,
-    n::Int) where {SIDE,UPLO}
-    alpha = -one(eltype(B))
-    beta = one(eltype(B))
-    if SIDE === :left && UPLO === :lower
-        k1 == n && return B
-        _trsm_matmul!(_trsm_row_block(B, k1+1:n),
-            _trsm_A_block(A, k1+1:n, k0:k1),
-            _trsm_row_block(B, k0:k1),
-            alpha, beta)
-    elseif SIDE === :left
-        k0 == 1 && return B
-        _trsm_matmul!(_trsm_row_block(B, 1:k0-1),
-            _trsm_A_block(A, 1:k0-1, k0:k1),
-            _trsm_row_block(B, k0:k1),
-            alpha, beta)
-    elseif UPLO === :lower
-        k0 == 1 && return B
-        _trsm_matmul!(_trsm_col_block(B, 1:k0-1),
-            _trsm_col_block(B, k0:k1),
-            _trsm_A_block(A, k0:k1, 1:k0-1),
-            alpha, beta)
-    else
-        k1 == n && return B
-        _trsm_matmul!(_trsm_col_block(B, k1+1:n),
-            _trsm_col_block(B, k0:k1),
-            _trsm_A_block(A, k0:k1, k1+1:n),
-            alpha, beta)
+    # Initialize diagonal and B column
+    if row <= n
+        @inbounds diag[row] = A[row, row]
+        @inbounds B_c[row] = B[row, col] / diag[row]
     end
-    return B
-end
 
-@inline _trsm_side_char(::Val{:left}) = 'L'
-@inline _trsm_side_char(::Val{:right}) = 'R'
-@inline _trsm_uplo_char(::Val{:lower}) = 'L'
-@inline _trsm_uplo_char(::Val{:upper}) = 'U'
-@inline _trsm_last_block_start(n::Int, nb::Int) = ((n - 1) ÷ nb) * nb + 1
-
-function _trsm_cpu_fallback!(A, B, side, uplo)
-    # blas fallback on host batches.
-    for b in 1:_trsm_batch_size(A)
-        A_blas = _trsm_batch_view(A, b)
-        A_blas = A_blas isa Union{Transpose,Adjoint} ? copy(A_blas) : A_blas
-        BLAS.trsm!(_trsm_side_char(side), _trsm_uplo_char(uplo), 'N', 'N',
-            one(eltype(A)), A_blas, _trsm_batch_view(B, b))
-    end
-    return B
-end
-
-@kernel unsafe_indices = true function _trsm_invert_kernel_2d!(A::AbstractMatrix,
-    Ainv::AbstractMatrix,
-    k0::Int,
-    block_n::Int,
-    ::Val{UPLO},
-    ::Val{NB}) where {UPLO,NB}
-    row = @index(Local, Linear)
-    tile = @localmem eltype(Ainv) (NB + 1, NB)
-
-    # stage one diagonal block with tail padding.
-    @unroll for col in 1:NB
-        if row <= block_n && col <= block_n
-            value = UPLO === :lower ? (col <= row ? A[k0 + row - 1, k0 + col - 1] : zero(eltype(A))) :
-                    (row <= col ? A[k0 + row - 1, k0 + col - 1] : zero(eltype(A)))
-            @inbounds tile[row, col] = value
-        else
-            @inbounds tile[row, col] = row == col ? one(eltype(A)) : zero(eltype(A))
-        end
-    end
-    @synchronize
-
-    # shared-memory triangular inversion.
-    @unroll for k in 1:NB
-        if row == k
-            @inbounds inv_pivot = inv(tile[k, k])
-            @unroll for col in 1:NB
-                @inbounds tile[k, col] = (col == k ? one(eltype(A)) : tile[k, col]) * inv_pivot
-            end
-        end
+    # Forward substitution
+    for i in 1:n
         @synchronize
-
-        if row != k
-            @inbounds aik = tile[row, k]
-            @unroll for col in 1:NB
-                if col == k
-                    @inbounds tile[row, col] = -aik * tile[k, col]
-                else
-                    @inbounds tile[row, col] -= aik * tile[k, col]
-                end
-            end
+        if row > i
+            @inbounds A_col[i] = A[i, row] / diag[row]
+            @inbounds B_c[row] -= A_col[i] * B_c[i]
         end
+    end
+
+    # Write result back to global memory
+    if row <= n
+        @inbounds B[row, col] = B_c[row]
+    end
+end
+
+# Kernel function for solving upper triangular system Ax = b
+@kernel function upper_left_kernel(A, B, n)
+    col = @index(Group)
+    row = @index(Local)
+
+    # Allocate shared memory for diagonal, B column, and A column
+    diag = @localmem eltype(A) 1024
+    B_c = @localmem eltype(B) 1024
+    A_col = @localmem eltype(A) 1024
+
+    # Initialize diagonal and B column
+    if row <= n
+        @inbounds diag[row] = A[row, row]
+        @inbounds B_c[row] = B[row, col] / diag[row]
+    end
+
+    # Backward substitution
+    for i in n:-1:1
         @synchronize
+        if row < i
+            @inbounds A_col[i] = A[row, i] / diag[row]
+            @inbounds B_c[row] -= A_col[i] * B_c[i]
+        end
     end
 
-    @unroll for col in 1:NB
-        @inbounds Ainv[row, col] = tile[row, col]
+    # Write result back to global memory
+    if row <= n
+        @inbounds B[row, col] = B_c[row]
     end
 end
 
-@kernel unsafe_indices = true function _trsm_invert_kernel_3d!(A::AbstractArray{<:Any,3},
-    Ainv::AbstractArray{<:Any,3},
-    k0::Int,
-    block_n::Int,
-    ::Val{UPLO},
-    ::Val{NB}) where {UPLO,NB}
-    row = @index(Local, Linear)
-    group = @index(Group, NTuple)
-    batch = group[end]
-    tile = @localmem eltype(Ainv) (NB + 1, NB)
+# Kernel function for solving lower triangular system xA = b
+@kernel function right_lower_kernel(A, B, n)
+    row = @index(Group)
+    col = @index(Local)
 
-    # stage one diagonal block per batch entry.
-    @unroll for col in 1:NB
-        if row <= block_n && col <= block_n
-            value = UPLO === :lower ? (col <= row ? A[k0 + row - 1, k0 + col - 1, batch] : zero(eltype(A))) :
-                    (row <= col ? A[k0 + row - 1, k0 + col - 1, batch] : zero(eltype(A)))
-            @inbounds tile[row, col] = value
-        else
-            @inbounds tile[row, col] = row == col ? one(eltype(A)) : zero(eltype(A))
-        end
+    # Allocate shared memory for diagonal, B row, and A row
+    diag = @localmem eltype(A) 1024
+    B_r = @localmem eltype(B) 1024
+    A_row = @localmem eltype(A) 1024
+
+    # Initialize diagonal and B row
+    if col <= n
+        @inbounds diag[col] = A[col, col]
+        @inbounds B_r[col] = B[row, col] / diag[col]
     end
-    @synchronize
 
-    # shared-memory triangular inversion.
-    @unroll for k in 1:NB
-        if row == k
-            @inbounds inv_pivot = inv(tile[k, k])
-            @unroll for col in 1:NB
-                @inbounds tile[k, col] = (col == k ? one(eltype(A)) : tile[k, col]) * inv_pivot
-            end
-        end
+    # Backward substitution
+    for i in n:-1:1
         @synchronize
-
-        if row != k
-            @inbounds aik = tile[row, k]
-            @unroll for col in 1:NB
-                if col == k
-                    @inbounds tile[row, col] = -aik * tile[k, col]
-                else
-                    @inbounds tile[row, col] -= aik * tile[k, col]
-                end
-            end
+        if col < i
+            @inbounds A_row[i] = A[i, col] / diag[col]
+            @inbounds B_r[col] -= B_r[i] * A_row[i] 
         end
+    end
+
+    # Write result back to global memory
+    if col <= n
+        @inbounds B[row, col] = B_r[col]
+    end
+end
+
+# Kernel function for solving upper triangular system xA = b
+@kernel function right_upper_kernel(A, B, n)
+    row = @index(Group)
+    col = @index(Local)
+
+    # Allocate shared memory for diagonal, B row, and A row
+    diag = @localmem eltype(A) 1024
+    B_r = @localmem eltype(B) 1024
+    A_row = @localmem eltype(A) 1024
+
+    # Initialize diagonal and B row
+    if col <= n
+        @inbounds diag[col] = A[col, col]
+        @inbounds B_r[col] = B[row, col] / diag[col]
+    end
+    
+    # Forward substitution
+    for i in 1:n
         @synchronize
+        if col > i
+            @inbounds A_row[i] = A[col, i] / diag[col]
+            @inbounds B_r[col] -= B_r[i] * A_row[i]
+        end
     end
 
-    @unroll for col in 1:NB
-        @inbounds Ainv[row, col, batch] = tile[row, col]
+    # Write result back to global memory
+    if col <= n
+        @inbounds B[row, col] = B_r[col]
     end
 end
 
-function _trsm_device_inverse_block!(Ainv::AbstractMatrix, A::AbstractMatrix, uplo,
-    k0::Int,
-    block_n::Int,
-    ::Val{NB},
-    batch::Int) where {NB}
-    NB in (32, 64) || throw(ArgumentError("device TRSM inversion supports only NB=32 or NB=64, got NB=$NB"))
-    _trsm_invert_kernel_2d!(get_backend(A), (NB, 1, 1))(A, Ainv, k0, block_n, uplo, Val(NB); ndrange=(NB, 1, 1))
-    return Ainv
+function LeftLowerTRSM!(A, B)
+    n, m = size(B)
+    backend = get_backend(A)
+    lower_left_kernel(backend, (n,))(Transpose(A), B, n, ndrange=(n, m))
 end
 
-function _trsm_device_inverse_block!(Ainv::AbstractArray{<:Any,3}, A::AbstractArray{<:Any,3}, uplo,
-    k0::Int,
-    block_n::Int,
-    ::Val{NB},
-    batch::Int) where {NB}
-    NB in (32, 64) || throw(ArgumentError("device TRSM inversion supports only NB=32 or NB=64, got NB=$NB"))
-    _trsm_invert_kernel_3d!(get_backend(A), (NB, 1, 1))(A, Ainv, k0, block_n, uplo, Val(NB); ndrange=(NB, 1, batch))
-    return Ainv
+function LeftUpperTRSM!(A, B)
+    n, m = size(B)
+    backend = get_backend(A)
+    upper_left_kernel(backend, (n,))(A, B, n, ndrange=(n, m))
 end
 
-function _trsm_apply_inverse_block!(Ainv,
-    Btmp,
-    B,
-    side::Val{SIDE},
-    k0::Int,
-    block_n::Int) where {SIDE}
-    cols = 1:block_n
-    block = k0:k0+block_n-1
-    # apply the inverted diagonal block.
-    if SIDE === :left
-        _trsm_matmul!(Btmp,
-            _trsm_diag_block(Ainv, cols),
-            _trsm_row_block(B, block),
-            one(eltype(Btmp)),
-            zero(eltype(Btmp)))
-        copyto!(_trsm_row_block(B, block), _trsm_row_block(Btmp, cols))
-    else
-        _trsm_matmul!(Btmp,
-            _trsm_col_block(B, block),
-            _trsm_A_block(Ainv, cols, :),
-            one(eltype(Btmp)),
-            zero(eltype(Btmp)))
-        copyto!(_trsm_col_block(B, block), _trsm_col_block(Btmp, cols))
+function RightLowerTRSM!(A, B)
+    n, m = size(B)
+    backend = get_backend(A)
+    right_lower_kernel(backend, (m,))(A, B, m, ndrange=(m, n))
+end
+
+function RightUpperTRSM!(A, B)
+    n, m = size(B)
+    backend = get_backend(A)
+    right_upper_kernel(backend, (m,))(Transpose(A), B, m, ndrange=(m, n))
+end
+
+"""
+    trsm(side, uplo, transa, diag, A, B, alpha=1.0) -> B
+
+Solves triangular matrix systems with automatic parameter detection.
+This is a simplified interface for triangular system solving.
+
+# Arguments
+- 'side': 
+    - 'L': solve op(A)*X = alpha*B
+    - 'R': solve X*op(A) = alpha*B
+- 'uplo':
+    - 'U': A is upper triangular
+    - 'L': A is lower triangular  
+- 'transa': operation on A
+    - 'N': op(A) = A
+    - 'T': op(A) = A^T
+    - 'C': op(A) = A^H
+- 'diag': diagonal type
+    - 'N': non-unit diagonal
+    - 'U': unit diagonal
+- 'A': triangular matrix
+- 'B': right-hand side matrix (will be overwritten with solution)
+- 'alpha': scalar multiplier (default: 1.0)
+
+# Returns
+- Updated matrix B containing the solution
+
+# Example
+```julia
+A = complex.(triu(randn(4, 4)), triu(randn(4, 4)))
+B = complex.(randn(4, 3), randn(4, 3))
+X = trsm('L', 'U', 'N', 'N', A, copy(B))
+```
+"""
+function trsm(side, uplo, transa, diag, A, B, alpha=one(eltype(A)))
+    # Scale B if alpha != 1
+    if alpha != one(eltype(A))
+        B .*= alpha
     end
-    return B
-end
-
-function _trsm_blocked!(A, B, side::Val{SIDE}, uplo::Val{UPLO},
-    nb::Val{NB}) where {SIDE,UPLO,NB}
-    n, batch = _trsm_validate(side, A, B)
-    n == 0 && return B
-
-    is_batched = ndims(A) == 3
-    Ainv = is_batched ? similar(A, NB, NB, batch) : similar(A, NB, NB)
-    Btmp = is_batched ?
-           (SIDE === :left ? similar(B, NB, size(B, 2), batch) : similar(B, size(B, 1), NB, batch)) :
-           (SIDE === :left ? similar(B, NB, size(B, 2)) : similar(B, size(B, 1), NB))
-    iter = if (SIDE === :left && UPLO === :lower) || (SIDE === :right && UPLO === :upper)
-        1:NB:n
-    else
-        _trsm_last_block_start(n, NB):-NB:1
-    end
-
-    # blocked diagonal solve and trailing update.
-    for k0 in iter
-        block_n = min(NB, n - k0 + 1)
-        _trsm_device_inverse_block!(Ainv, A, uplo, k0, block_n, nb, batch)
-        _trsm_apply_inverse_block!(Ainv, Btmp, B, side, k0, block_n)
-        _trsm_update!(A, B, side, uplo, k0, k0 + block_n - 1, n)
-    end
-    return B
-end
-
-function _trsm!(A, B, side::Val{SIDE}, uplo::Val{UPLO}) where {SIDE,UPLO}
-    if get_backend(A) isa KernelAbstractions.CPU
-        _trsm_validate(side, A, B)
-        return _trsm_cpu_fallback!(A, B, side, uplo)
-    end
-    return _trsm_blocked!(A, B, side, uplo, _trsm_default_nb(eltype(B)))
-end
-
-"""
-    LeftLowerTRSM!(A, B)
-
-Solve a left-sided lower-triangular system in place.
-
-This function overwrites `B` with the solution `X` of
-
-`A * X = B`
-
-where `A` is interpreted as lower triangular. `A` must be square. For matrix
-inputs, `B` must have the same number of rows as `A`. For three-dimensional
-inputs, slices `A[:, :, b]` and `B[:, :, b]` are solved independently.
-
-On CPU backends this dispatches to BLAS `trsm!`. On GPU backends NextLA uses a
-blocked algorithm: invert each diagonal block in shared memory, apply that
-inverse with GEMM, and update the remaining block rows with GEMM or batched
-GEMM.
-"""
-LeftLowerTRSM!(A, B) = _trsm!(A, B, Val(:left), Val(:lower))
-
-"""
-    LeftUpperTRSM!(A, B)
-
-Solve a left-sided upper-triangular system in place.
-
-This function overwrites `B` with the solution `X` of
-
-`A * X = B`
-
-where `A` is interpreted as upper triangular. Dimension and batch semantics are
-the same as for [`LeftLowerTRSM!`](@ref).
-"""
-LeftUpperTRSM!(A, B) = _trsm!(A, B, Val(:left), Val(:upper))
-
-"""
-    RightLowerTRSM!(A, B)
-
-Solve a right-sided lower-triangular system in place.
-
-This function overwrites `B` with the solution `X` of
-
-`X * A = B`
-
-where `A` is interpreted as lower triangular. `A` must be square. For matrix
-inputs, `B` must have the same number of columns as `A`. For three-dimensional
-inputs, corresponding batch slices are solved independently.
-"""
-RightLowerTRSM!(A, B) = _trsm!(A, B, Val(:right), Val(:lower))
-
-"""
-    RightUpperTRSM!(A, B)
-
-Solve a right-sided upper-triangular system in place.
-
-This function overwrites `B` with the solution `X` of
-
-`X * A = B`
-
-where `A` is interpreted as upper triangular. Dimension and batch semantics are
-the same as for [`RightLowerTRSM!`](@ref).
-"""
-RightUpperTRSM!(A, B) = _trsm!(A, B, Val(:right), Val(:upper))
-
-@inline _trsm_opA(A, transa::Char) = transa == 'N' ? A : transa == 'T' ? Transpose(A) : Adjoint(A)
-@inline _trsm_opA(A::AbstractArray{<:Any,3}, transa::Char) =
-    transa == 'N' ? A :
-    transa == 'T' ? permutedims(A, (2, 1, 3)) :
-    permutedims(conj.(A), (2, 1, 3))
-@inline _trsm_effective_uplo(uplo::Char, transa::Char) = transa == 'N' ? uplo : (uplo == 'L' ? 'U' : 'L')
-@inline _trsm_dense_opA(opA, backend) = backend isa KernelAbstractions.CPU ? opA : copy(opA)
-
-"""
-    trsm!(side, uplo, transa, diag, A, B, alpha=one(eltype(A)))
-
-Solve a triangular matrix equation in place and return `B`.
-
-`side` is `'L'` for `op(A) * X = alpha * B` and `'R'` for
-`X * op(A) = alpha * B`. `uplo` selects the stored triangle and `transa`
-selects no transpose (`'N'`), transpose (`'T'`), or conjugate transpose (`'C'`).
-Only non-unit diagonal matrices (`diag = 'N'`) are currently supported.
-
-`A` must be square in its leading two dimensions. If `side == 'L'`, `size(B, 1)`
-must match `size(A, 1)`. If `side == 'R'`, `size(B, 2)` must match `size(A, 1)`.
-
-If `alpha != one(eltype(A))`, `B` is scaled before the solve. The input `A` is
-not modified.
-
-For three-dimensional arrays, corresponding slices of `A` and `B` are solved
-with the native NextLA implementation over the batch dimension. This is distinct
-from [`trsm_batched!`](@ref), which is reserved for backend batched-library
-dispatch such as cuBLAS, rocBLAS, oneMKL, or the CPU BLAS loop fallback.
-"""
-function trsm!(side, uplo, transa, diag, A, B, alpha=one(eltype(A)))
-    transa in ('N', 'T', 'C') || throw(ArgumentError("trsm: transa must be 'N', 'T', or 'C'"))
-    diag == 'N' || throw(ArgumentError("trsm: only diag='N' is supported"))
-    alpha != one(eltype(A)) && (B .*= alpha)
-
-    backend = KernelAbstractions.get_backend(B)
-    opA = transa == 'N' ? A : _trsm_dense_opA(_trsm_opA(A, transa), backend)
-    effective_uplo = _trsm_effective_uplo(uplo, transa)
-    if side == 'L' && effective_uplo == 'L'
-        LeftLowerTRSM!(opA, B)
-    elseif side == 'L' && effective_uplo == 'U'
-        LeftUpperTRSM!(opA, B)
-    elseif side == 'R' && effective_uplo == 'L'
-        RightLowerTRSM!(opA, B)
-    elseif side == 'R' && effective_uplo == 'U'
-        RightUpperTRSM!(opA, B)
+    
+    # Apply the appropriate kernel based on parameters
+    if side == 'L' && uplo == 'L'
+        LeftLowerTRSM!(A, B)
+    elseif side == 'L' && uplo == 'U' 
+        LeftUpperTRSM!(A, B)
+    elseif side == 'R' && uplo == 'L'
+        RightLowerTRSM!(A, B)
+    elseif side == 'R' && uplo == 'U'
+        RightUpperTRSM!(A, B)
     else
         error("Unsupported combination of side='$side', uplo='$uplo'")
     end
+    
 end

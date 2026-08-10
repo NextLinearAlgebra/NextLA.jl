@@ -1,3 +1,5 @@
+export trsm_batched!
+
 """
     trsm_batched!(side, uplo, transa, diag, A, B, alpha=one(eltype(A)))
 

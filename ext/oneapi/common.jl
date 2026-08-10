@@ -3,10 +3,6 @@ const support = oneAPI.Support
 
 @inline NextLA.SUBGROUP_SIZE(::Type{<:oneAPI.oneAPIBackend}) = Val(32)
 
-@inline _onemkl_syrk_fname(::Type{Float32}) = support.onemklSsyrk_batch_strided
-@inline _onemkl_syrk_fname(::Type{Float64}) = support.onemklDsyrk_batch_strided
-@inline _onemkl_syrk_fname(::Type{ComplexF32}) = support.onemklCsyrk_batch_strided
-@inline _onemkl_syrk_fname(::Type{ComplexF64}) = support.onemklZsyrk_batch_strided
 @inline _onemkl_trsm_fname(::Type{Float32}, ::Val{:pointer}) = support.onemklStrsm_batch
 @inline _onemkl_trsm_fname(::Type{Float64}, ::Val{:pointer}) = support.onemklDtrsm_batch
 @inline _onemkl_trsm_fname(::Type{ComplexF32}, ::Val{:pointer}) = support.onemklCtrsm_batch

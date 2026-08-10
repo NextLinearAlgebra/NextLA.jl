@@ -19,8 +19,9 @@ throws.
 function potrf_batched!(uplo::Char, A::AbstractArray{T,3}) where {T}
     backend = KernelAbstractions.get_backend(A)
     backend isa KernelAbstractions.CPU || throw(ArgumentError("NextLA.potrf_batched! has no generic non-CPU implementation; use a backend wrapper"))
-    status = similar(A, Int32, _potrf_batch_size(A))
-    _potrf_validate!(A, status)
+    size(A, 1) == size(A, 2) ||
+        throw(DimensionMismatch("potrf_batched!: A must be square in its first two dimensions"))
+    status = similar(A, Int32, size(A, 3))
     @inbounds for b in axes(A, 3)
         _, info = LAPACK.potrf!(uplo, view(A, :, :, b))
         status[b] = Int32(info)

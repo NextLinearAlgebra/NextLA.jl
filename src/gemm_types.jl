@@ -15,8 +15,7 @@ other fast-math settings.
 
 1. Ordinary dense GEMM is intentionally left to the backend itself, e.g.
    `C = A * B` for dense matrices.
-2. `gemm_batched!` and `syrk!` form the main public surface for GEMM-like BLAS
-   wrappers.
+2. `gemm_batched!` provides the batched GEMM surface used by TLR algorithms.
 3. `NextLA.gemmEx!` and `NextLA.gemmEx_batched!` are advanced APIs for
    mixed-type GEMM where the result storage may differ from the operand
    storage.
@@ -34,7 +33,6 @@ Standard GEMM behavior:
 | `gemmEx!` with default `compute_type` | unsupported | cuBLAS GEMMEx | rocBLAS GEMMEx | unsupported | unsupported |
 | `gemm_batched!` | loop of standard GEMMs | pointer or strided batched GEMM | pointer or strided batched GEMM | pointer or strided batched GEMM | strided MPS matmul |
 | `gemmEx_batched!` with default `compute_type` | same-type fallback only | cuBLAS batched GEMMEx | rocBLAS batched GEMMEx | same-type fallback only | same-type fallback only |
-| `syrk!` | `BLAS.syrk!` | `CUBLAS.syrk!` | native rocBLAS SYRK | `oneMKL.syrk!` | MPS GEMM fallback |
 
 Representative supported `compute_type` combinations:
 
