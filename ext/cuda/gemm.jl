@@ -1,5 +1,10 @@
 @inline NextLA.supports_grouped_gemm(::Type{<:CUDA.CUDABackend}) = true
 
+@inline function NextLA.TLRmodule._validate_compressed_ftlr_tile_alignment(
+    ::CUDA.CUDABackend, ::Type{T}, bm::Int, bn::Int) where {T}
+    return NextLA.TLRmodule._validate_compressed_ftlr_tile_alignment_cuda(T, bm, bn)
+end
+
 @inline _grouped_cuptr(A::CUDA.StridedCuArray{T}) where {T} = pointer(A)
 @inline _grouped_cuptr(A::Base.ReshapedArray) = _grouped_cuptr(parent(A))
 @inline _grouped_cuptr(A::SubArray{T}) where {T} = Base.unsafe_convert(CUDA.CuPtr{T}, A)
@@ -64,7 +69,8 @@ end
 
 @inline _grouped_voidptr(A) = reinterpret(CUDA.CuPtr{Cvoid}, _grouped_cuptr(A))
 @inline _grouped_pointer_aligned(A) = iszero(UInt(_grouped_cuptr(A)) & UInt(0x0f))
-@inline NextLA._grouped_gemm_task_alignment_safe(task::NextLA.GroupedGemmTask, mode) =
+@inline NextLA._grouped_gemm_task_alignment_safe(
+    ::CUDA.CUDABackend, task::NextLA.GroupedGemmTask, mode) =
     _grouped_pointer_aligned(task.A) && _grouped_pointer_aligned(task.B) &&
     _grouped_pointer_aligned(task.C)
 
@@ -172,14 +178,14 @@ function _prepare_cuda_grouped_gemm_ex!(tasks::AbstractVector{<:NextLA.GroupedGe
 end
 
 function NextLA._prepare_precision_gemm_grouped(
-    tasks::AbstractVector{<:NextLA.GroupedGemmTask},
+    ::CUDA.CUDABackend, tasks::AbstractVector{<:NextLA.GroupedGemmTask},
     ::NextLA.GEMMCompute{ComputeT}) where {ComputeT}
     return _prepare_cuda_grouped_gemm_ex!(
         tasks, _cublas_scalar_type(ComputeT), _cublas_compute_type(ComputeT))
 end
 
 function NextLA._prepare_precision_gemm_grouped(
-    tasks::AbstractVector{<:NextLA.GroupedGemmTask}, ::NextLA.TF32)
+    ::CUDA.CUDABackend, tasks::AbstractVector{<:NextLA.GroupedGemmTask}, ::NextLA.TF32)
     return _prepare_cuda_grouped_gemm_ex!(
         tasks, Float32, CUBLAS.CUBLAS_COMPUTE_32F_FAST_TF32)
 end
@@ -237,7 +243,8 @@ function _cuda_grouped_gemm_ex!(tasks::AbstractVector{<:NextLA.GroupedGemmTask},
     return tasks
 end
 
-function NextLA._precision_gemm_grouped!(tasks::AbstractVector{<:NextLA.GroupedGemmTask},
+function NextLA._precision_gemm_grouped!(::CUDA.CUDABackend,
+                                         tasks::AbstractVector{<:NextLA.GroupedGemmTask},
                                          mode::Union{NextLA.GEMMCompute,NextLA.TF32})
     return _cuda_grouped_gemm_ex!(tasks, mode)
 end

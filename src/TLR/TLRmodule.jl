@@ -30,6 +30,7 @@ using ..NextLA: supports_pointer_batched
 
 export TileColMajor, TileRowMajor
 export AbstractTLRMatrix, TLRMatrix, PaddedFTLRMatrix, CompressedFTLRMatrix
+export offdiagonal
 export compress!, alloc_workspace
 export uncompress!
 export get_factors
@@ -39,16 +40,16 @@ export residuals, dense_diag, dense_diag_corner, grid_size
 export nominal_tile_size, tail_tile_size
 export ndiag_tiles, tile_origin_coords, tile_size
 export gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes, gemm_workspace_bytes
-export DenseGemmWorkspace, InteriorFirstWorkspace
+export DenseGemmWorkspace
 export CompressedGemmAnalysis, CompressedMixedGemmAnalysis, analyze_compressed_gemm
 export TLRGemmWorkspace
 export tlr_gemm_minimum_workspace_bytes, tlr_gemm_maximum_workspace_bytes
 
 include("container/order.jl")
 include("container/abstract.jl")
-include("container/tlr_matrix.jl")
 include("container/padded_ftlr_matrix.jl")
 include("container/compressed_ftlr_matrix.jl")
+include("container/tlr_matrix.jl")
 
 include("numerics/precision.jl")
 include("numerics/norms.jl")

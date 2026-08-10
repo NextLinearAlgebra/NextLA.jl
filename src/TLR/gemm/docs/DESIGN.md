@@ -1,19 +1,20 @@
 # TLR GEMM design
 
-The GEMM implementation is organized as direct execution paths, not as a contraction
-compiler. The public call graph is intentionally short:
+The dense-output implementation has two direct paths:
 
 ```text
-gemm! API
-  -> dense-output driver
-  -> row/column traversal
-  -> precision-aware batched kernels
+TLRMatrix × TLRMatrix
+  -> CompressedFTLR off-diagonal product
+  -> O_A D_B, D_A O_B, and D_A D_B grouped updates
+
+CompressedFTLRMatrix × CompressedFTLRMatrix
+  -> exact-rank symbolic schedule
+  -> three grouped-GEMM stages per run
 ```
 
-Canonical factor accessors and regular Stage 1 are shared by the dense-output
-paths and the ARA factor-list implementation under development. Boundary and
-dense-diagonal work is expressed by direct helpers for the actual operand
-combination.
+`PaddedFTLRMatrix × PaddedFTLRMatrix → PaddedFTLRMatrix` remains a separate ARA
+path. It shares logical operand and factor-access machinery, but it does not
+participate in the dense-output schedule above.
 
 ## Canonical operands
 
@@ -25,9 +26,12 @@ before execution:
 - low-rank outer/inner factors swap, so every logical tile remains `outer * inner'`;
 - dense diagonal/corner tiles retain physical storage plus their BLAS operation flag.
 
-`InteriorOperand`, `PanelOperand`, and `CornerOperand` are storage-addressing helpers.
-They return factor views through `tilefactor` and describe contiguity through the small
-layout traits used by traversal selection. They do not describe algebra or own storage.
+For `TLRMatrix`, the logical view also provides dense diagonal tile references
+with the BLAS operation needed after transposition. Off-diagonal factors are
+obtained from its full-grid compressed child, whose diagonal ranks are zero.
+
+`InteriorOperand`, `PanelOperand`, and `CornerOperand` remain storage-addressing
+helpers for the padded-output ARA implementation. They do not own storage.
 
 ## Regular low-rank core
 
@@ -42,82 +46,36 @@ Stage 3: C_ij  += U_ik T_ikj
 `FoldLeft` instead forms `U_ik S_ikj` and stacks `Z_kj` in Stage 3. Fold selection is
 available only where the required reduction stack is complete and contiguous.
 
-Stage 1 is deliberately output-independent and independently callable. A future TLR
-merge algorithm may consume its `S` factors without going through dense Stage 3.
-
-`RegularGeometry{T}` contains only the concrete dimensions needed to size runs and
-workspace. `T` is a type parameter so scratch allocation and reusable batch-vector
-element types remain inferable. There is no operation descriptor or semantic IR.
-
-## Traversals
-
-Two traversal families cover the four effective layout combinations:
-
-- `KAsGemmK`: row/write-once traversal. A run covers a rectangular block of output
-  tiles. The complete reduction is fused into the terminal GEMM, so `beta` is applied
-  by that single write.
-- `KAsSerialLoop`: column/streaming traversal. Runs block contraction tiles and right
-  panel positions. The destination region is scaled by `beta` once, then every terminal
-  write accumulates with `beta = 1`.
-
-Within each family Stage 1 either batches tilewise or fuses the right operand's
-contiguous `j` panel into GEMM N. Run dimensions come from the regional slice
-assigned by the global workspace policy.
-All batch vectors are allocated once with concrete view element types and refilled with
-`empty!`/`push!`.
+The exact-rank planner chooses FoldRight or FoldLeft for each rectangular output
+run according to packing validity, workspace, and active-rank cost. Runs may be
+split below a full tile row into contiguous column blocks, so the minimum
+workspace is the true one-block floor. CPU executes each grouped submission as
+an ordinary GEMM loop; CUDA submits it through cuBLAS grouped GEMMEx.
 
 ## Dense-output paths
 
-`execute_lowrank_gemm!` is the shared direct driver. Its arguments are the destination,
-canonical operand geometries, four factor accessors, `RegularGeometry`, output tile
-origin, scalars, compute mode, and workspace budget. It selects or accepts a fold and
-traversal, allocates one typed workspace, and executes the runs.
-
-The full-TLR driver calls it for the regular interior and each live low-rank boundary
-term. `TLRMatrix` retains its tuned diagonal/off-diagonal interior kernels and
-uses direct helpers for boundary combinations:
-
-- low-rank × low-rank: the shared budgeted core;
-- low-rank × dense: a budgeted two-stage row batch;
-- dense × low-rank: a budgeted two-stage column batch;
-- dense × dense: one direct batched GEMM.
-
-The top-level dense driver keeps four disjoint output regions (interior, right,
-bottom, corner). GPU backends use two streams: one for the interior and one
-which executes right, bottom, and corner serially. CPU executes the same two
-groups in order.
+`TLRMatrix` is represented as `O + D`, where `O` is one full-grid
+`CompressedFTLRMatrix` and `D` is separate dense diagonal storage. The driver
+first computes `O_A O_B` with the compressed path, applying the caller's
+`beta` exactly once. It then accumulates `O_A D_B`, `D_A O_B`, and `D_A D_B`.
+The two cross terms use budgeted two-stage grouped GEMMs; the diagonal product
+is one heterogeneous grouped submission. Ragged boundary tile dimensions come
+from the same full-grid geometry and need no boundary categories or scheduler.
 
 ## Workspace contract
 
-Dense-output GEMM exposes two exact global bounds:
+Dense-output GEMM exposes exact reusable-arena bounds. For `TLRMatrix`, the
+minimum is the maximum of the compressed-product minimum and the largest
+single dense-diagonal cross-term intermediate. The maximum is the maximum of
+the compressed-product maximum and enough aligned storage to batch every
+intermediate in either cross pass. Each phase resets and reuses the same arena;
+the requirements are not added together.
 
-- `gemm_minimum_workspace_bytes(A, B; transA, transB)` is the interior
-  minimum plus the largest minimum of the serialized boundary regions.
-- `gemm_maximum_workspace_bytes(A, B; transA, transB)` is the interior
-  full-width requirement plus the largest full-width boundary requirement.
-  Increasing the workspace beyond this value cannot enlarge a run.
-
-Every query includes transpose-aware tails and specialized dense-boundary
-kernels. Any budget between the two bounds is correct, making policies such as
-a multiple of the minimum or a fraction of the maximum explicit without
-claiming an unmeasured performance optimum.
-
-`gemm!` requires `workspace`, either an integer global byte count or a reusable
-`DenseGemmWorkspace`. Both modes use one typed numerical arena. The
-`InteriorFirstWorkspace` policy reserves the auxiliary minimum, gives remaining
-capacity to the interior up to its maximum, and assigns the rest to the
-auxiliary stream:
-
-```text
-Waux,min = max(Wright,min, Wbottom,min, Wcorner,min)
-Winterior = min(Winterior,max, Wglobal - Waux,min)
-Waux = Wglobal - Winterior
-```
-
-Right, bottom, and corner reset and reuse the same auxiliary slice. An integer
-constructs a temporary arena; passing a `DenseGemmWorkspace` reuses its device
-allocation and streams across calls. Budgets below the global minimum are
-rejected and capacity beyond the global maximum is unused.
+`gemm!` requires `workspace`, either an integer byte count or a reusable
+`DenseGemmWorkspace`. A minimum-sized workspace greedily chunks cross terms;
+larger workspaces reduce grouped submissions. There are no interior and
+boundary arena partitions or execution streams; `gemm!` no longer takes a
+workspace-policy argument.
 
 The bound covers numerical scratch allocated by the TLR GEMM implementation.
 Output storage, persistent TLR factors, host batch descriptors, and
@@ -127,10 +85,10 @@ an event boundary.
 
 ## Precision
 
-Operand factor/intermediate storage follows the TLR operand element type. Output storage
-follows `C`. GEMM scalars use the selected compute precision. `precision_gemm_batched!`
-is the sole backend dispatch point for ordinary GEMM, CUDA GEMMEx/TF32, and capability
-validation.
+Operand factor/intermediate storage follows the TLR operand element type. Output
+storage follows `C`. GEMM scalars use the selected compute precision. Dense
+output relies on the grouped interface: a CPU loop or CUDA grouped GEMMEx.
+Backends without that interface are rejected before scheduling.
 
 ## Exact-rank CompressedFTLR dense output
 
@@ -139,9 +97,9 @@ inner factors are independently packed one-dimensional allocations with host
 prefix offsets in their own tile orders. A factor span is therefore a compact
 matrix view of its active rank, not a `maxrank` prefix with a zero tail.
 
-The CUDA path is CompressedFTLR × CompressedFTLR → dense with any logical
-`N/T` combination. It forms a ragged run plan and invokes
-`cublasGemmGroupedBatchedEx` for all stages. A row-packed A
+The CPU/CUDA path is CompressedFTLR × CompressedFTLR → dense with any logical
+`N/T` combination. It forms a ragged run plan and invokes the common grouped
+interface for all stages (a CPU GEMM loop or `cublasGemmGroupedBatchedEx`). A row-packed A
 outer factor enables FoldRight's U stack; row-packed B outer factors retain
 the Stage-1 `j → N` W-panel fusion. A column-packed B inner factor additionally
 enables FoldLeft. The planner chooses one valid fold for every contiguous row
@@ -161,7 +119,7 @@ older CUDA device rejects the BF16 grouped path clearly. Current cuBLAS rejects 
 mixed storage signature is explicitly rejected rather than falling back to
 ordinary or stream-batched GEMM.
 
-The mixed dense/CompressedFTLR CUDA paths use the same dual packing in a
+The mixed dense/CompressedFTLR CPU/CUDA paths use the same dual packing in a
 two-stage reduction. For dense × compressed, one grouped call forms every
 `A_k U_kj` piece for a dense-row slab directly in output-column-major rank
 stacks; a second grouped call multiplies those stacks by the zero-copy
@@ -181,10 +139,11 @@ calls.
 ## GEMM source layout
 
 `gemm/common/` contains operand-independent precision, workspace, axis-strategy,
-and dense-product helpers. `gemm/dense_result/fixed_rank/` contains the existing
-fixed-`maxrank` lowering shared by dense-diagonal `TLRMatrix` and
-`PaddedFTLRMatrix`, including their boundary-region methods. The exact-rank grouped
-path is isolated in `gemm/dense_result/compressed_ftlr/`. Finally,
+and dense-product helpers. `TLRMatrix` is a full-grid `CompressedFTLRMatrix`
+whose diagonal ranks are zero, plus separate dense diagonal storage. Its
+off-diagonal product uses `gemm/dense_result/compressed_ftlr/`; three grouped
+second-pass terms add `O_A D_B`, `D_A O_B`, and `D_A D_B`. There is no
+skip-diagonal or boundary-region dense-output scheduler. Finally,
 `gemm/padded_result/` owns the ARA-style algorithm whose destination is a
 `PaddedFTLRMatrix`; its name deliberately describes the result representation,
 not the historical generic term “TLR result.”

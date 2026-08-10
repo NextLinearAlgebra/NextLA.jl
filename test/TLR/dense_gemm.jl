@@ -27,46 +27,41 @@
     end
 end
 
-# The interior off-diagonal product `O_A O_B` picks its Stage-2/3 association (fold)
-# from storage layout so the reduction is a write-once fused Stage 3 without any
-# transpose: FoldLeft (stack B's Z) iff B is TileColMajor on a FullGrid, else FoldRight.
-@testset "FoldLeft layout-driven fold selection" begin
-    RM = NextLA.TileRowMajor(); CM = NextLA.TileColMajor()
-    FL = NextLA.TLRmodule.FoldLeft; FR = NextLA.TLRmodule.FoldRight
-
-    @testset "choose_fold truth table (FullGrid)" begin
-        for (oa, ob, expect) in ((RM, CM, FL), (CM, CM, FL), (CM, RM, FR), (RM, RM, FR))
-            A = NextLA.PaddedFTLRMatrix(zeros(Float64, 12, 9), (4, 3), 3; tile_order=oa)
-            B = NextLA.PaddedFTLRMatrix(zeros(Float64, 9, 10), (3, 5), 3; tile_order=ob)
-            ops = NextLA.TLRmodule.logical_operands(A, B)
-            @test NextLA.TLRmodule.choose_fold(ops) isa expect
-        end
-        # dense-diagonal (SkipDiag) always FoldRight, even with a TileColMajor B
-        Ad = NextLA.TLRMatrix(zeros(Float64, 16, 16), 4, 3; tile_order=CM)
-        Bd = NextLA.TLRMatrix(zeros(Float64, 16, 16), 4, 3; tile_order=CM)
-        ops = NextLA.TLRmodule.logical_operands(Ad, Bd)
-        @test NextLA.TLRmodule.choose_fold(ops) isa FR
+@testset "TLR compressed workspace bounds" begin
+    A = NextLA.TLRMatrix(zeros(Float64, 35, 35), 8, 3)
+    B = NextLA.TLRMatrix(zeros(Float64, 35, 35), 8, 3)
+    fill_random_tlr!(A, Array; seed=71)
+    fill_random_tlr!(B, Array; seed=72)
+    reference = reconstruct_tlr(A) * reconstruct_tlr(B)
+    for (transA, transB) in (('N', 'N'), ('N', 'T'), ('T', 'N'), ('T', 'T'))
+        lo = NextLA.gemm_minimum_workspace_bytes(A, B; transA, transB)
+        hi = NextLA.gemm_maximum_workspace_bytes(A, B; transA, transB)
+        @test 0 < lo <= hi
     end
-
-    # Forced fold reproduces the dense interior product `O_A O_B` (= full A·B on an
-    # aligned FullGrid). FoldLeft is valid only for B TileColMajor; FoldRight always.
-    function assert_fold_matches(oa, ob, mA, k, nB, tsA, tsB, r, fold, budget)
-        A = NextLA.PaddedFTLRMatrix(zeros(Float64, mA, k), tsA, r; tile_order=oa)
-        B = NextLA.PaddedFTLRMatrix(zeros(Float64, k, nB), tsB, r; tile_order=ob)
-        fill_random_tlr!(A, Array; seed=1)
-        fill_random_tlr!(B, Array; seed=2)
-        C = zeros(Float64, mA, nB)
-        NextLA.TLRmodule._offdiag_offdiag_gemm!(C, A, B; alpha=1.0, beta=0.0, budget=budget, fold=fold)
-        ref = reconstruct_tlr(A) * reconstruct_tlr(B)
-        @test isapprox(C, ref; atol=1e-9, rtol=1e-9)
+    lo = NextLA.gemm_minimum_workspace_bytes(A, B)
+    for bytes in unique((lo, NextLA.gemm_maximum_workspace_bytes(A, B)))
+        workspace = NextLA.DenseGemmWorkspace(A, B; bytes)
+        C = zeros(Float64, size(A, 1), size(B, 2))
+        NextLA.TLRmodule.gemm!(C, A, B; workspace)
+        @test C ≈ reference
     end
+    @test_throws ArgumentError NextLA.TLRmodule.gemm!(
+        zeros(Float64, size(A, 1), size(B, 2)), A, B; workspace=lo - 1)
+end
 
-    @testset "forced fold matches dense" begin
-        # Tiny and unrestricted workspace are exercised by the end-to-end sweep;
-        # here one representative call pins each association independently.
-        assert_fold_matches(RM, CM, 12, 9, 10, (4, 3), (3, 5), 3, FL(), 1)
-        assert_fold_matches(CM, CM, 12, 9, 10, (4, 3), (3, 5), 2, FR(), 128 * 1024 * 1024)
-    end
+@testset "reserved-capacity TLR remains in-place populatable" begin
+    A = NextLA.TLRMatrix(zeros(Float64, 8, 8), 4, 2)
+    B = NextLA.TLRMatrix(zeros(Float64, 8, 8), 4, 2)
+    NextLA.ranks(A)[NextLA.TLRmodule._rank_index(A, 1, 2)] = 1
+    NextLA.ranks(B)[NextLA.TLRmodule._rank_index(B, 2, 1)] = 1
+    UA, VA = NextLA.get_factors(A, 1, 2)
+    UB, VB = NextLA.get_factors(B, 2, 1)
+    UA .= 1; VA .= 2; UB .= 3; VB .= 4
+
+    C = zeros(Float64, 8, 8)
+    workspace = NextLA.gemm_minimum_workspace_bytes(A, B)
+    NextLA.TLRmodule.gemm!(C, A, B; workspace)
+    @test C ≈ reconstruct_tlr(A) * reconstruct_tlr(B)
 end
 
 # Whole-matrix transpose is a relabeling of stored factors (`logical_operands`) plus
@@ -93,10 +88,8 @@ end
     @test NextLA.TLRmodule.outer_factors(At, corner) === A.corner_V
     @test NextLA.TLRmodule.inner_factors(At, corner) === A.corner_U
 
-    D = NextLA.TLRMatrix(zeros(Float64, 14, 14), 4, 2; tile_order=CM)
+    D = NextLA.TLRMatrix(zeros(Float64, 14, 14), 4, 2)
     Dt = NextLA.TLRmodule.logical_operand(D, 't')
-    @test NextLA.TLRmodule.outer_factors(Dt, right) === D.bottom_V
-    @test NextLA.TLRmodule.outer_factors(Dt, bottom) === D.right_V
     dref = NextLA.TLRmodule._diag_tile_ref(Dt, 1)
     @test parent(NextLA.TLRmodule._dense_data(dref)) === D.D
     @test NextLA.TLRmodule._dense_op(dref) == 'T'
@@ -118,10 +111,6 @@ end
     # Dense diagonal remains meaningful when every low-rank tile has rank zero.
     assert_dense_diag_transpose_matches(14, 4, 0, RM, CM, 'T', 'T'; budget=1)
 
-    Arect = NextLA.TLRMatrix(zeros(Float64, 8, 12), 4, 2)
-    Brect = NextLA.TLRMatrix(zeros(Float64, 8, 8), 4, 2)
-    @test_throws ArgumentError NextLA.TLRmodule.gemm!(
-        zeros(12, 8), Arect, Brect; transA='T', workspace=1)
 end
 
 @testset "full-LR with one dense operand on CPU" begin

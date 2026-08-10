@@ -3,10 +3,9 @@
 # canonical `gemm!(C::PaddedFTLRMatrix, A::PaddedFTLRMatrix, B::PaddedFTLRMatrix; ...)` hot sampler
 # must not rebuild a `Vector`-of-views/device-pointer-array per ARA pass.
 #
-# CUDA-only: `dense_budget.jl`'s `@allocated`-based `term_bytes` helper counts
-# Julia heap bytes and is explicitly CPU-only for exactly this reason (a GPU
-# backend's device allocations don't show up there) -- this file is new
-# coverage for the device-side cost `term_bytes` cannot see. AMDGPU is
+# CUDA-only: Julia's `@allocated` counts host heap bytes but cannot see a GPU
+# backend's device allocations. This file therefore adds explicit coverage for
+# that device-side cost. AMDGPU is
 # skipped, matching the rest of the TLR suite (its NextLA extension does not
 # currently precompile on this project's machines).
 #
@@ -39,6 +38,7 @@ end
 
 if isdefined(@__MODULE__, :CUDA)
     const _TLR_ALLOC_BUDGET = 500_000  # bytes; see rationale above
+    _cuda_allocated(f) = Core.eval(@__MODULE__, :(CUDA.@allocated $f()))
 
     function _tlr_alloc_bytes(ArrayType, synchronize;
                              transA, transB, rA=3, rB=4, seed=1200)
@@ -50,7 +50,7 @@ if isdefined(@__MODULE__, :CUDA)
         )
         f()  # warm up: first call pays JIT/dispatch-resolution cost
         synchronize(C.int_U)
-        bytes = CUDA.@allocated f()
+        bytes = _cuda_allocated(f)
         synchronize(C.int_U)
         return bytes
     end
@@ -93,7 +93,7 @@ if isdefined(@__MODULE__, :CUDA)
             eps_rel=1e-7, r_required=3, block=4, workspace)
         f()
         synchronize(C.int_U)
-        allocated = CUDA.@allocated f()
+        allocated = _cuda_allocated(f)
         synchronize(C.int_U)
         return allocated
     end
@@ -146,7 +146,7 @@ if isdefined(@__MODULE__, :CUDA)
         )
         f()
         synchronize(C.int_U)
-        bytes = CUDA.@allocated f()
+        bytes = _cuda_allocated(f)
         synchronize(C.int_U)
         return bytes
     end

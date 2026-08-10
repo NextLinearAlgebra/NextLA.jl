@@ -20,7 +20,8 @@ function _validate_compressed_ftlr_gemm(C::AbstractMatrix, A, B, compute)
      typeof(get_backend(A)) === typeof(get_backend(C))) ||
         throw(ArgumentError("CompressedFTLR operands and output must use the same backend"))
     supports_grouped_gemm(get_backend(A)) || throw(ArgumentError(
-        "CompressedFTLR dense GEMM currently requires CUDA grouped GEMM"))
+        "CompressedFTLR dense GEMM requires a grouped-GEMM backend; " *
+        "currently CPU and CUDA are supported"))
     T === Core.BFloat16 && !supports_bfloat16_grouped_gemm(get_backend(A)) &&
         throw(ArgumentError("CompressedFTLR BF16 grouped GEMMEx requires an NVIDIA SM80 or newer device"))
     size(C) == (size(A, 1), size(B, 2)) ||

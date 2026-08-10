@@ -1,73 +1,43 @@
 """
-    TLRMatrix{BackendT, T, Arr3T, RankT, OrderT}
+    TLRMatrix
 
-Dense-diagonal TLR matrix. Diagonal tiles are dense; off-diagonal tiles are split
-into regular interior, right boundary, and bottom boundary low-rank factors.
+Dense-diagonal tile-low-rank matrix. `offdiag` is a full-grid
+[`CompressedFTLRMatrix`](@ref): diagonal slots are present in its rank grid but
+have logical and execution rank zero. Dense diagonal tiles are stored
+separately in `D`, with an optional ragged final tile in `D_corner`.
 
-Storage is category-contiguous:
-
-| field      | shape                         | category |
-|------------|-------------------------------|----------|
-| `int_U`    | `[bm,      maxrank, n_int]`   | regular non-diagonal tiles |
-| `int_V`    | `[bn,      maxrank, n_int]`   | regular non-diagonal tiles |
-| `right_U`  | `[bm,      maxrank, q_m]`     | right boundary |
-| `right_V`  | `[tail_n,  maxrank, q_m]`     | right boundary |
-| `bottom_U` | `[tail_m,  maxrank, q_n]`     | bottom boundary |
-| `bottom_V` | `[bn,      maxrank, q_n]`     | bottom boundary |
-| `D`        | `[bm, bn, n_full_diag]`       | full diagonal tiles |
-| `D_corner` | `[tail_m, tail_n, 1 or 0]`    | final diagonal tail tile |
-
-Ranks and residuals are tile-grid aligned, including dense diagonal tiles.
-Dense diagonal entries report `min(tile_m, tile_n)` rank and zero residual:
-these are diagnostics for the represented dense tile, not low-rank storage
-metadata.
+The full compressed grid deliberately removes the old skip-diagonal and
+interior/right/bottom storage arithmetic. Boundary dimensions and exact ranks
+are represented by the packed-factor offsets in `offdiag`.
 """
-struct TLRMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},RankT<:Integer,OrderT<:TileOrderStyle} <: AbstractTLRMatrix{BackendT,T,OrderT}
+mutable struct TLRMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},
+                         RankT<:Integer,OrderT<:TileOrderStyle,OffdiagT} <:
+                         AbstractTLRMatrix{BackendT,T,OrderT}
     backend::BackendT
     order::OrderT
     m::Int
     n::Int
-    nominal_tile_size::NTuple{2,Int} # (bm, bn)
-    tail_tile_size::NTuple{2,Int}    # (tail_m, tail_n), 0 when no tail
-
-    # Off-diagonal low-rank factors (one 3-D array per panel category):
-    int_U::Arr3T        # [bm,      maxrank, n_int]
-    int_V::Arr3T        # [bn,      maxrank, n_int]
-    right_U::Arr3T      # [bm,      maxrank, n_right]  — zero depth when n%bn==0
-    right_V::Arr3T      # [tail_n,  maxrank, n_right]
-    bottom_U::Arr3T     # [tail_m,  maxrank, n_bottom] — zero depth when m%bm==0
-    bottom_V::Arr3T     # [bn,      maxrank, n_bottom]
-
-    D::Arr3T        # [bm, bn, n_full_diag] dense full diagonal tiles
-    D_corner::Arr3T # [tm, tn, 1 or 0]     corner diagonal tile, if needed
-
-    # Per-tile diagnostics — always CPU, contents written by compress!
-    ranks::Vector{RankT}
-    resid::Vector{Float64}  # estimated Frobenius error per off-diagonal tile
+    nominal_tile_size::NTuple{2,Int}
+    tail_tile_size::NTuple{2,Int}
+    offdiag::OffdiagT
+    D::Arr3T
+    D_corner::Arr3T
+    # Compression capacity. The packed representation itself may use less.
     maxrank::Int
-
 end
 
-@inline outer_factors(A::TLRMatrix, ::InteriorRegion) = A.int_U
-@inline inner_factors(A::TLRMatrix, ::InteriorRegion) = A.int_V
-@inline outer_factors(A::TLRMatrix, ::RightRegion) = A.right_U
-@inline inner_factors(A::TLRMatrix, ::RightRegion) = A.right_V
-@inline outer_factors(A::TLRMatrix, ::BottomRegion) = A.bottom_U
-@inline inner_factors(A::TLRMatrix, ::BottomRegion) = A.bottom_V
-@inline lowrank_regions(::TLRMatrix) = (_INTERIOR, _RIGHT, _BOTTOM)
+@inline offdiagonal(A::TLRMatrix) = A.offdiag
+@inline ranks(A::TLRMatrix) = ranks(A.offdiag)
+@inline residuals(A::TLRMatrix) = residuals(A.offdiag)
+@inline execution_ranks(A::TLRMatrix) = execution_ranks(A.offdiag)
+@inline execution_maxrank(A::TLRMatrix) = execution_maxrank(A.offdiag)
+@inline execution_rank_policy(A::TLRMatrix) = execution_rank_policy(A.offdiag)
 
 @inline ndiag_tiles(A::TLRMatrix) = min(grid_size(A)...)
 @inline dense_diag(A::TLRMatrix) = A.D
 @inline dense_diag_corner(A::TLRMatrix) = A.D_corner
 @inline _nfull_diag_tiles(A::TLRMatrix) = size(A.D, 3)
 
-"""
-    _diag_tile_view(A, tile_k)
-
-Return the dense diagonal tile view for diagonal tile `tile_k`. Full-size
-diagonal tiles live in `A.D`; a smaller final diagonal tile lives in
-`A.D_corner`.
-"""
 @inline function _diag_tile_view(A::TLRMatrix, tile_k::Int)
     1 <= tile_k <= ndiag_tiles(A) || throw(BoundsError(1:ndiag_tiles(A), tile_k))
     if tile_k <= _nfull_diag_tiles(A)
@@ -77,208 +47,149 @@ diagonal tiles live in `A.D`; a smaller final diagonal tile lives in
     return view(A.D_corner, :, :, 1)
 end
 
-"""
-    get_factors(A::TLRMatrix, i, j) -> (U, V)
-
-Return the low-rank factors for off-diagonal tile `(i, j)`, trimmed to the
-tile's effective rank. Diagonal tiles are stored densely, so `i == j` throws.
-The returned views alias the underlying storage.
-"""
-@inline function get_factors(A::TLRMatrix, i::Int, j::Int)
-    i == j && throw(ArgumentError("tile ($i, $j) is diagonal and stored densely"))
-    region, k = region_slot(A, i, j)
-    r = Int(A.ranks[_rank_index(A, region, k)])
-    U = outer_factors(A, region)
-    V = inner_factors(A, region)
-    return view(U, :, 1:r, k), view(V, :, 1:r, k)
-end
-
-"""
-    region_slot(A, i, j) -> (region, local_slot)
-
-Map global tile coordinates to dense-diagonal storage. Right boundary slots are
-indexed by row `i`, bottom boundary slots by column `j`, and regular interior
-slots use the requested tile order on the full-size interior grid.
-"""
-@inline function region_slot(A::TLRMatrix, i::Int, j::Int)
-    mt, nt = grid_size(A)
-    checkbounds_tile(mt, nt, i, j)
-    i == j && throw(ArgumentError("tile ($i, $j) is diagonal and stored densely"))
-    if tail_tile_size(A, 2) != 0 && j == nt
-        return _RIGHT, i
-    elseif tail_tile_size(A, 1) != 0 && i == mt
-        return _BOTTOM, j
-    else
-        q_m, q_n = regular_grid_size(A)
-        return _INTERIOR, _offdiag_index(A.order, q_m, q_n, i, j)
-    end
-end
-
-"""
-    region_tile_coords(A, region, k) -> (tile_i, tile_j)
-
-Inverse of the dense-diagonal region mapping for region-local slot `k`.
-"""
-@inline function region_tile_coords(A::TLRMatrix, ::InteriorRegion, k::Int)
-    q_m, q_n = regular_grid_size(A)
-    return _offdiag_coords(A.order, q_m, q_n, k)
-end
-
-"""
-    _set_dense_diagonal_diagnostics!(A) -> A
-
-Initialize or refresh the diagnostic entries for dense diagonal tiles. The
-rank is recorded as the tile's full possible rank (`min(tile_m, tile_n)`) and
-the residual is zero because the dense tile is copied exactly.
-"""
 function _set_dense_diagonal_diagnostics!(A::TLRMatrix)
     @inbounds for k in 1:ndiag_tiles(A)
         idx = _rank_index(A, k, k)
-        A.ranks[idx] = min(tile_size(A, k, k)...)
-        A.resid[idx] = 0.0
+        ranks(A)[idx] = 0
+        residuals(A)[idx] = 0.0
     end
     return A
 end
 
-"""
-    _offdiag_index(order, mt, nt, tile_i, tile_j) -> Int
+"""Return an exact-rank factor pair for an off-diagonal tile."""
+@inline function get_factors(A::TLRMatrix, i::Int, j::Int)
+    i == j && throw(ArgumentError("tile ($i, $j) is diagonal and stored densely"))
+    return get_factors(A.offdiag, i, j)
+end
 
-Return the position of off-diagonal tile `(tile_i, tile_j)` in the off-diagonal
-enumeration of an explicit `mt×nt` tile grid, following `order`.
-"""
-@inline function _offdiag_index(order, mt::Integer, nt::Integer, tile_i::Int, tile_j::Int)
-    mt_int = Int(mt)
-    nt_int = Int(nt)
-    checkbounds_tile(mt_int, nt_int, tile_i, tile_j)
-    tile_i == tile_j && throw(ArgumentError("_offdiag_index is undefined for diagonal tiles"))
-    linear = tile_linear_index(order, mt_int, nt_int, tile_i, tile_j)
-    ndiag = min(mt_int, nt_int)
-    diag_prefix = if _order_instance(order) isa TileColMajor
-        min(ndiag, (linear + mt_int) ÷ (mt_int + 1))
-    else
-        min(ndiag, (linear + nt_int) ÷ (nt_int + 1))
+function _validate_zero_compressed_diagonal(offdiag::CompressedFTLRMatrix)
+    compressed_ftlr_outer_order(offdiag) isa TileRowMajor || throw(ArgumentError(
+        "TLRMatrix requires row-major outer-factor packing"))
+    compressed_ftlr_inner_order(offdiag) isa TileColMajor || throw(ArgumentError(
+        "TLRMatrix requires column-major inner-factor packing"))
+    @inbounds for k in 1:min(grid_size(offdiag)...)
+        _compressed_ftlr_rank(offdiag, k, k) == 0 || throw(ArgumentError(
+            "TLRMatrix off-diagonal storage requires logical rank zero at ($k, $k)"))
+        _compressed_ftlr_execution_rank(offdiag, k, k) == 0 || throw(ArgumentError(
+            "TLRMatrix off-diagonal storage requires execution rank zero at ($k, $k)"))
     end
-    return linear - diag_prefix
+    return offdiag
 end
 
-"""
-    _offdiag_coords(order, mt, nt, ob) -> (tile_i, tile_j)
-
-Inverse of `_offdiag_index` on an explicit `mt×nt` tile grid.
-"""
-@inline function _offdiag_coords(order, mt::Integer, nt::Integer, ob::Int)
-    mt_int = Int(mt)
-    nt_int = Int(nt)
-    noff = mt_int * nt_int - min(mt_int, nt_int)
-    1 <= ob <= noff || throw(BoundsError(1:noff, ob))
-    return _offdiag_coords(_order_instance(order), mt_int, nt_int, ob)
-end
-
-@inline function _offdiag_coords(::TileColMajor, mt::Int, nt::Int, ob::Int)
-    ndiag = min(mt, nt)
-    first_cols = ndiag * (mt - 1)
-    if mt > 1 && ob <= first_cols
-        j0, pos0 = divrem(ob - 1, mt - 1)
-        j, pos = j0 + 1, pos0 + 1
-        i = pos < j ? pos : pos + 1
-        return i, j
-    else
-        j0, i0 = divrem(ob - first_cols - 1, mt)
-        i, j = i0 + 1, ndiag + j0 + 1
-        return i, j
-    end
-end
-
-@inline function _offdiag_coords(::TileRowMajor, mt::Int, nt::Int, ob::Int)
-    ndiag = min(mt, nt)
-    first_rows = ndiag * (nt - 1)
-    if nt > 1 && ob <= first_rows
-        i0, pos0 = divrem(ob - 1, nt - 1)
-        i, pos = i0 + 1, pos0 + 1
-        j = pos < i ? pos : pos + 1
-        return i, j
-    else
-        i0, j0 = divrem(ob - first_rows - 1, nt)
-        i, j = ndiag + i0 + 1, j0 + 1
-        return i, j
-    end
-end
-
-"""
-    TLRMatrix(backend, T, m, n, tile_size, maxrank; rank_type=Int32, tile_order=TileColMajor)
-
-Allocate an empty dense-diagonal TLR container for an `m×n` matrix with nominal
-tile size `tile_size == (bm, bn)` and maximum per-tile rank `maxrank`.
-"""
-function TLRMatrix(
-    backend::Backend, ::Type{T},
-    m::Int, n::Int, tile_size::NTuple{2,Int}, maxrank::Int;
-    rank_type::Type{<:Integer}=Int32,
-    tile_order=TileColMajor,
-) where {T}
+function _allocate_tlr_diagonal(backend, ::Type{T}, m::Int, n::Int,
+                                tile_size::NTuple{2,Int}) where {T}
     bm, bn = tile_size
-    m > 0 && n > 0 && bm > 0 && bn > 0 && maxrank >= 0 ||
-        throw(ArgumentError("m, n, and tile dimensions must be positive; maxrank must be non-negative"))
-
-    order = _order_instance(tile_order)
     mt, nt = cld(m, bm), cld(n, bn)
-
-    tail_m = m % bm
-    tail_n = n % bn
-    tail_size = (tail_m, tail_n)
-
-    q_m, q_n = fld(m, bm), fld(n, bn)
-    n_int = q_m * q_n - min(q_m, q_n)
-    n_right = tail_n == 0 ? 0 : q_m
-    n_bottom = tail_m == 0 ? 0 : q_n
     n_diag = min(mt, nt)
-
-    # Use max(tail,1) so the leading dimension is never zero when depth is 0.
-    tm_s = max(tail_m, 1)
-    tn_s = max(tail_n, 1)
-
-    int_U = zeros(backend, T, bm, maxrank, n_int)
-    int_V = zeros(backend, T, bn, maxrank, n_int)
-    right_U = zeros(backend, T, bm, maxrank, n_right)
-    right_V = zeros(backend, T, tn_s, maxrank, n_right)
-    bottom_U = zeros(backend, T, tm_s, maxrank, n_bottom)
-    bottom_V = zeros(backend, T, bn, maxrank, n_bottom)
     corner_tm = n_diag == mt ? _last_dim(m, bm) : bm
     corner_tn = n_diag == nt ? _last_dim(n, bn) : bn
-    has_diag_corner = n_diag > 0 && (corner_tm != bm || corner_tn != bn)
-    n_full_diag = n_diag - Int(has_diag_corner)
+    has_corner = n_diag > 0 && (corner_tm != bm || corner_tn != bn)
+    D = zeros(backend, T, bm, bn, n_diag - Int(has_corner))
+    D_corner = zeros(
+        backend, T, max(corner_tm, 1), max(corner_tn, 1), has_corner ? 1 : 0)
+    return D, D_corner
+end
 
-    D = zeros(backend, T, bm, bn, n_full_diag)
-    D_corner = zeros(backend, T, max(corner_tm, 1), max(corner_tn, 1), has_diag_corner ? 1 : 0)
+"""
+    TLRMatrix(offdiag::CompressedFTLRMatrix; maxrank=maxrank(offdiag))
 
-    ranks = Base.zeros(rank_type, mt * nt)
-    resid = Base.zeros(Float64, mt * nt)
+Wrap full-grid compressed off-diagonal storage and allocate a separate dense
+diagonal. Both logical and execution diagonal ranks must be zero.
+"""
+function TLRMatrix(offdiag::CompressedFTLRMatrix{BackendT,T};
+                   maxrank::Int=maxrank(offdiag)) where {BackendT,T}
+    maxrank >= getfield(offdiag, :maxrank) || throw(ArgumentError(
+        "TLRMatrix maxrank capacity cannot be smaller than an existing logical rank"))
+    _validate_zero_compressed_diagonal(offdiag)
+    D, D_corner = _allocate_tlr_diagonal(
+        get_backend(offdiag), T, size(offdiag)..., nominal_tile_size(offdiag))
+    RankT = eltype(ranks(offdiag))
+    return TLRMatrix{BackendT,T,typeof(D),RankT,typeof(tile_order(offdiag)),typeof(offdiag)}(
+        get_backend(offdiag), tile_order(offdiag), size(offdiag)...,
+        nominal_tile_size(offdiag), tail_tile_size(offdiag), offdiag,
+        D, D_corner, maxrank)
+end
 
-    A_tlr = TLRMatrix{typeof(backend),T,typeof(int_U),rank_type,typeof(order)}(
-        backend, order, m, n, tile_size, tail_size,
-        int_U, int_V, right_U, right_V, bottom_U, bottom_V,
-        D, D_corner, ranks, resid, maxrank,
-    )
-    return _set_dense_diagonal_diagnostics!(A_tlr)
+"""
+    TLRMatrix(backend, T, m, n, tile_size, ranks; kwargs...)
+
+Allocate a dense-diagonal TLR matrix with exact off-diagonal logical ranks.
+The supplied full-grid rank matrix must contain zeros on its diagonal.
+"""
+function TLRMatrix(
+    backend::Backend, ::Type{T}, m::Int, n::Int,
+    tile_size::NTuple{2,Int}, ranks_in::AbstractMatrix{<:Integer};
+    outer_order=TileRowMajor, inner_order=TileColMajor,
+    execution_rank_policy::Symbol=:exact,
+    rank_type::Type{<:Integer}=Int32,
+) where {T}
+    _order_instance(outer_order) isa TileRowMajor || throw(ArgumentError(
+        "TLRMatrix requires outer_order=TileRowMajor"))
+    _order_instance(inner_order) isa TileColMajor || throw(ArgumentError(
+        "TLRMatrix requires inner_order=TileColMajor"))
+    offdiag = CompressedFTLRMatrix(
+        backend, T, m, n, tile_size, ranks_in;
+        outer_order, inner_order, execution_rank_policy, rank_type)
+    return TLRMatrix(offdiag)
 end
 
 function TLRMatrix(
-    backend::Backend, ::Type{T},
-    m::Int, n::Int, b::Int, maxrank::Int;
+    backend::Backend, ::Type{T}, m::Int, n::Int, b::Int,
+    ranks_in::AbstractMatrix{<:Integer}; kwargs...,
+) where {T}
+    return TLRMatrix(backend, T, m, n, (b, b), ranks_in; kwargs...)
+end
+
+"""
+    TLRMatrix(backend, T, m, n, tile_size, maxrank; kwargs...)
+
+Allocate an empty TLR matrix with zero logical off-diagonal ranks and reserved
+`maxrank` execution capacity. This preserves the existing in-place compression
+API. After `compress!`, the capacity storage is replaced by exact-rank packed
+storage.
+"""
+function TLRMatrix(
+    backend::Backend, ::Type{T}, m::Int, n::Int,
+    tile_size::NTuple{2,Int}, maxrank::Int;
+    rank_type::Type{<:Integer}=Int32,
+    tile_order=TileRowMajor,
+    outer_order=tile_order,
+    inner_order=TileColMajor,
+) where {T}
+    bm, bn = tile_size
+    m > 0 && n > 0 && bm > 0 && bn > 0 && maxrank >= 0 || throw(ArgumentError(
+        "m, n, and tile dimensions must be positive; maxrank must be non-negative"))
+    mt, nt = cld(m, bm), cld(n, bn)
+    _order_instance(outer_order) isa TileRowMajor || throw(ArgumentError(
+        "TLRMatrix uses complementary packing and requires tile_order/outer_order=TileRowMajor"))
+    _order_instance(inner_order) isa TileColMajor || throw(ArgumentError(
+        "TLRMatrix uses complementary packing and requires inner_order=TileColMajor"))
+    logical = Base.zeros(Int, mt, nt)
+    capacity = fill(maxrank, mt, nt)
+    @inbounds for k in 1:min(mt, nt)
+        capacity[k, k] = 0
+    end
+    offdiag = CompressedFTLRMatrix(
+        backend, T, m, n, tile_size, logical;
+        outer_order, inner_order, execution_ranks=capacity, rank_type)
+    return TLRMatrix(offdiag; maxrank)
+end
+
+function TLRMatrix(
+    backend::Backend, ::Type{T}, m::Int, n::Int, b::Int, maxrank::Int;
     kwargs...,
 ) where {T}
     return TLRMatrix(backend, T, m, n, (b, b), maxrank; kwargs...)
 end
 
-"""
-    TLRMatrix(A, b, maxrank; kwargs...)
-
-Allocate a dense-diagonal TLR container on the same backend as dense matrix `A`.
-"""
-function TLRMatrix(A::AbstractMatrix{T}, b::Int, maxrank::Int; kwargs...) where {T}
-    return TLRMatrix(get_backend(A), T, size(A, 1), size(A, 2), b, maxrank; kwargs...)
+function TLRMatrix(A::AbstractMatrix{T}, b::Int, ranks_or_maxrank; kwargs...) where {T}
+    return TLRMatrix(
+        get_backend(A), T, size(A, 1), size(A, 2), b, ranks_or_maxrank; kwargs...)
 end
 
-function TLRMatrix(A::AbstractMatrix{T}, tile_size::NTuple{2,Int}, maxrank::Int; kwargs...) where {T}
-    return TLRMatrix(get_backend(A), T, size(A, 1), size(A, 2), tile_size, maxrank; kwargs...)
+function TLRMatrix(A::AbstractMatrix{T}, tile_size::NTuple{2,Int}, ranks_or_maxrank;
+                   kwargs...) where {T}
+    return TLRMatrix(
+        get_backend(A), T, size(A, 1), size(A, 2), tile_size,
+        ranks_or_maxrank; kwargs...)
 end

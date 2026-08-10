@@ -1,21 +1,11 @@
 """
-    InteriorFirstWorkspace
-
-Static two-stream workspace policy. Reserve the auxiliary stream's minimum
-workspace, then give all remaining capacity to the interior until its runs are
-full width. Any remaining capacity enlarges the serialized boundary runs.
-"""
-struct InteriorFirstWorkspace end
-
-"""
     DenseGemmWorkspace
 
-Reusable numerical arena and execution streams for dense-output TLR GEMM.
-Backend-library internal storage is outside this workspace.
+Reusable numerical arena for dense-output TLR GEMM. Backend-library internal
+storage is outside this workspace.
 """
-struct DenseGemmWorkspace{T,A<:AbstractVector{T},S}
+struct DenseGemmWorkspace{T,A<:AbstractVector{T}}
     storage::A
-    streams::S
 end
 
 Base.eltype(::DenseGemmWorkspace{T}) where {T} = T
@@ -26,7 +16,7 @@ function DenseGemmWorkspace(A::AbstractTLRMatrix{<:Any,T}, bytes::Integer) where
     bytes >= 0 || throw(ArgumentError("workspace bytes must be nonnegative"))
     backend = get_backend(A)
     storage = allocate(backend, T, fld(Int(bytes), sizeof(T)))
-    return DenseGemmWorkspace(storage, create_streams(backend, 2))
+    return DenseGemmWorkspace(storage)
 end
 
 function DenseGemmWorkspace(A::AbstractTLRMatrix{<:Any,T},
@@ -66,47 +56,6 @@ end
     allocate(backend, T, dims...)
 @inline _workspace_array!(arena::DenseGemmArena, _, ::Type{T}, dims::Int...) where {T} =
     _arena_array!(arena, T, dims...)
-
-@inline function _split_workspace(ws::DenseGemmWorkspace,
-                                  interior_bytes::Int, auxiliary_bytes::Int)
-    T = eltype(ws)
-    ni = cld(interior_bytes, sizeof(T))
-    na = cld(auxiliary_bytes, sizeof(T))
-    ni + na <= length(ws) || throw(ArgumentError(
-        "workspace has $(sizeof(ws)) bytes but the selected split requires " *
-        "$((ni + na) * sizeof(T)) bytes"))
-    interior = DenseGemmArena(view(ws.storage, 1:ni), 1)
-    auxiliary = DenseGemmArena(view(ws.storage, (ni + 1):(ni + na)), 1)
-    return interior, auxiliary
-end
-
-function _prepare_dense_gemm_workspace(A::AbstractTLRMatrix{<:Any,T},
-                                       B::AbstractTLRMatrix{<:Any,T},
-                                       workspace,
-                                       policy::InteriorFirstWorkspace;
-                                       transA::Char='N',
-                                       transB::Char='N') where {T}
-    ws, requested = if workspace isa Integer
-        bytes = Int(workspace)
-        bytes >= 0 || throw(ArgumentError("workspace bytes must be nonnegative"))
-        temporary = DenseGemmWorkspace(A, bytes)
-        (temporary, sizeof(temporary))
-    elseif workspace isa DenseGemmWorkspace
-        eltype(workspace) === T || throw(ArgumentError(
-            "workspace element type $(eltype(workspace)) does not match operand type $T"))
-        typeof(get_backend(workspace.storage)) === typeof(get_backend(A)) ||
-            throw(ArgumentError("workspace and operands must use the same backend"))
-        (workspace, sizeof(workspace))
-    else
-        throw(ArgumentError(
-            "workspace must be an integer byte count or DenseGemmWorkspace"))
-    end
-    split = _gemm_workspace_split(
-        A, B, requested, policy; transA, transB)
-    interior, auxiliary = _split_workspace(
-        ws, split.interior, split.auxiliary)
-    return ws, interior, auxiliary, split
-end
 
 function _prepare_single_gemm_workspace(A::AbstractTLRMatrix{<:Any,T},
                                         workspace) where {T}

@@ -22,3 +22,14 @@ function validate_tlr_gemm_precision(backend, ::Type{Tin}, ::Type{Tout}, mode) w
     validate_gemm_signature(backend, Tin, Tin, Tout, mode)  # Stage 3 destination
     return nothing
 end
+
+"""Scale a dense destination once before product terms are accumulated."""
+@inline function _scale_output!(C, beta)
+    T = eltype(C)
+    if iszero(beta)
+        fill!(C, zero(T))
+    elseif !isone(beta)
+        C .*= T(beta)
+    end
+    return C
+end

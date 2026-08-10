@@ -1,11 +1,23 @@
 using Test
 
 @testset "grouped GEMM" begin
-    @test !NextLA.supports_grouped_gemm(KernelAbstractions.CPU())
-    cpu_task = NextLA.GroupedGemmTask('N', 'N', 1.0f0, ones(Float32, 2, 1),
-                                       ones(Float32, 1, 3), 0.0f0, zeros(Float32, 2, 3))
-    @test_throws ArgumentError NextLA.precision_gemm_grouped!(
+    @test NextLA.supports_grouped_gemm(KernelAbstractions.CPU())
+    A_cpu = Float32[1 2; 3 4]
+    B_cpu = Float32[2 0 1; 1 3 4]
+    C_cpu = fill(0.5f0, 2, 3)
+    cpu_task = NextLA.GroupedGemmTask(
+        'N', 'N', 2.0f0, A_cpu, B_cpu, 0.5f0, C_cpu)
+    cpu_expected = 2f0 .* (A_cpu * B_cpu) .+ 0.5f0 .* fill(0.5f0, 2, 3)
+    NextLA.precision_gemm_grouped!([cpu_task], NextLA.GEMMCompute{Float32}())
+    @test C_cpu ≈ cpu_expected
+
+    prepared_cpu = NextLA.prepare_precision_gemm_grouped(
         [cpu_task], NextLA.GEMMCompute{Float32}())
+    @test prepared_cpu isa NextLA.CPUPreparedGroupedGemm
+    fill!(C_cpu, 1f0)
+    NextLA.precision_gemm_grouped_prepared!(prepared_cpu, 3f0, -0.25f0)
+    @test C_cpu ≈ 3f0 .* (A_cpu * B_cpu) .- 0.25f0
+    NextLA.destroy_prepared_grouped_gemm!(prepared_cpu)
 
     for (name, AT, sync) in backends
         name == "CUDA" || continue

@@ -92,10 +92,22 @@ end
 end
 
 """
-    _validate_compressed_ftlr_tile_alignment(T, bm, bn)
+    _validate_compressed_ftlr_tile_alignment(backend, T, bm, bn)
 
 Reject nominal tile sizes that would place a dense-output tile boundary on a
-non-16-byte address.
+misaligned address for `backend`'s grouped-GEMM primitive, if it has such a
+requirement. Dispatches on `backend`; the fallback here is a no-op. A backend
+whose grouped-GEMM kernels share cuBLAS's tensor-core alignment fault (see
+[`_validate_compressed_ftlr_tile_alignment_cuda`](@ref) for why CUDA needs
+this) must add its own `_validate_compressed_ftlr_tile_alignment(::TheBackend,
+::Type, bm, bn)` method — there is no capability query that forces one
+automatically, so a new grouped-GEMM backend silently gets the permissive
+default until someone opts it in.
+"""
+@inline _validate_compressed_ftlr_tile_alignment(backend, ::Type, bm::Int, bn::Int) = nothing
+
+"""
+    _validate_compressed_ftlr_tile_alignment_cuda(T, bm, bn)
 
 Stage 3 writes `view(C, (i-1)*bm+1 : ..., :)`, whose byte offset is
 `(i-1)*bm*sizeof(T)` and is therefore independent of the leading dimension. When
@@ -112,7 +124,7 @@ Requiring both extents to be multiples of [`gemm_alignment_quantum`](@ref) makes
 every tile boundary aligned by construction. The trailing tile may still be
 short: nothing starts after it, so its extent cannot misalign anything.
 """
-function _validate_compressed_ftlr_tile_alignment(::Type{T}, bm::Int, bn::Int) where {T}
+function _validate_compressed_ftlr_tile_alignment_cuda(::Type{T}, bm::Int, bn::Int) where {T}
     q = gemm_alignment_quantum(T)
     (bm % q == 0 && bn % q == 0) || throw(ArgumentError(
         "CompressedFTLR nominal tile size ($bm, $bn) is not 16-byte aligned for $T: " *
@@ -147,24 +159,28 @@ end
     CompressedFTLRMatrix(backend, T, m, n, tile_size, ranks;
                outer_order=TileRowMajor, inner_order=TileColMajor,
                execution_rank_policy=:q8,
+               execution_ranks=nothing,
                rank_type=Int32)
 
 Allocate an exact-rank CompressedFTLR matrix. The public ranks remain exact,
 while physical factor widths follow `execution_rank_policy` and are padded with
 zeros as necessary. `:q8` is the default aligned execution policy; `:exact`,
 `:q16`, and `:pow2` are useful for measurement. A regular nominal grid may have
-one trailing row and/or column tile.
+one trailing row and/or column tile. Passing an explicit `execution_ranks`
+matrix bypasses the policy calculation. This is intended for containers that
+need reserved factor capacity while their logical ranks are still zero.
 """
 
 function CompressedFTLRMatrix(backend::Backend, ::Type{T}, m::Int, n::Int,
                     tile_size::NTuple{2,Int}, ranks_in::AbstractMatrix{<:Integer};
                     outer_order=TileRowMajor, inner_order=TileColMajor,
                     execution_rank_policy::Symbol=:q8,
+                    execution_ranks=nothing,
                     rank_type::Type{<:Integer}=Int32) where {T}
     bm, bn = tile_size
     m > 0 && n > 0 && bm > 0 && bn > 0 ||
         throw(ArgumentError("m, n, and tile dimensions must be positive"))
-    _validate_compressed_ftlr_tile_alignment(T, bm, bn)
+    _validate_compressed_ftlr_tile_alignment(backend, T, bm, bn)
     qm, qn = cld(m, bm), cld(n, bn)
     size(ranks_in) == (qm, qn) ||
         throw(DimensionMismatch("ranks must be a $qm × $qn matrix"))
@@ -179,10 +195,23 @@ function CompressedFTLRMatrix(backend::Backend, ::Type{T}, m::Int, n::Int,
     outer_style = _order_instance(outer_order)
     inner_style = _order_instance(inner_order)
     rank_style = outer_style
-    # Validate even for an all-zero rank grid, then capture the selected policy.
-    _compressed_ftlr_execution_rank(0, execution_rank_policy)
-    execution_rank_at = (i, j) ->
-        _compressed_ftlr_execution_rank(ranks_in[i, j], execution_rank_policy)
+    execution_rank_grid, stored_policy = if execution_ranks === nothing
+        # Validate even for an all-zero rank grid, then capture the selected policy.
+        _compressed_ftlr_execution_rank(0, execution_rank_policy)
+        (map(r -> _compressed_ftlr_execution_rank(r, execution_rank_policy), ranks_in),
+         execution_rank_policy)
+    else
+        size(execution_ranks) == (qm, qn) ||
+            throw(DimensionMismatch("execution_ranks must be a $qm × $qn matrix"))
+        all(>=(0), execution_ranks) ||
+            throw(ArgumentError("CompressedFTLR execution ranks must be nonnegative"))
+        @inbounds for j in 1:qn, i in 1:qm
+            execution_ranks[i, j] >= ranks_in[i, j] || throw(ArgumentError(
+                "CompressedFTLR execution rank at ($i, $j) is smaller than its logical rank"))
+        end
+        (Matrix{Int}(execution_ranks), :explicit)
+    end
+    execution_rank_at = (i, j) -> execution_rank_grid[i, j]
     # A multiple-of-eight leading dimension plus a multiple-of-eight execution
     # rank keeps every packed factor base 16-byte aligned for the default and
     # bucketed policies, including ragged boundary tiles.
@@ -197,14 +226,13 @@ function CompressedFTLRMatrix(backend::Backend, ::Type{T}, m::Int, n::Int,
     outer = CompressedFTLRPackedFactors(udata, uoffsets, outer_style, uld, rowdims, :row, qm, qn)
     inner = CompressedFTLRPackedFactors(vdata, voffsets, inner_style, vld, coldims, :col, qm, qn)
     rankvec = _compressed_ftlr_rank_vector(rank_style, ranks_in, rank_type)
-    execution_rank_grid = map(r -> _compressed_ftlr_execution_rank(r, execution_rank_policy), ranks_in)
     execution_rankvec = _compressed_ftlr_rank_vector(
         rank_style, execution_rank_grid, rank_type)
     resid = Base.zeros(Float64, qm * qn)
     return CompressedFTLRMatrix{typeof(backend),T,typeof(udata),rank_type,typeof(outer_style),
                       typeof(inner_style),typeof(rank_style)}(
         backend, rank_style, m, n, tile_size, (m % bm, n % bn), outer, inner,
-        rankvec, execution_rankvec, execution_rank_policy, resid,
+        rankvec, execution_rankvec, stored_policy, resid,
         isempty(rankvec) ? 0 : maximum(rankvec),
         isempty(execution_rankvec) ? 0 : maximum(execution_rankvec))
 end

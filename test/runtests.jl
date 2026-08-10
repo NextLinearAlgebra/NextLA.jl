@@ -64,8 +64,6 @@ include("TLR/dense_gemm.jl")
 include("TLR/compressed_ftlr_dense_gemm.jl")
 include("TLR/tlr_gemm.jl")
 include("TLR/tlr_alloc.jl")
-include("TLR/dense_budget.jl")
-include("TLR/dense_core.jl")
 include("experiments/operand_generation.jl")
 
 include("lu.jl")

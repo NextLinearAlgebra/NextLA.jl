@@ -171,7 +171,7 @@ const _ARA_CONSECUTIVE = 10
 # Compress one off-diagonal tile category from the dense matrix `A`: wrap its tiles
 # as a `DenseTiles` source and run the input-agnostic core.
 function _compress_category!(
-    A_tlr::AbstractTLRMatrix,
+    A_tlr::PaddedFTLRMatrix,
     A::AbstractMatrix,
     cat::CompressCategoryWorkspace,
     eps_sq::Float64,
@@ -189,7 +189,7 @@ end
 
 # Scatter one category's local ranks / squared errors back into the global
 # A_tlr.ranks / A_tlr.resid (converting squared error to a Frobenius residual).
-function _store_category_results!(A_tlr::AbstractTLRMatrix, cat::CompressCategoryWorkspace)
+function _store_category_results!(A_tlr::PaddedFTLRMatrix, cat::CompressCategoryWorkspace)
     n = size(cat.U, 3)
     n == 0 && return
     rk_host = cat.ranks_local isa Vector ? cat.ranks_local : Array(cat.ranks_local)
@@ -206,7 +206,7 @@ end
 # each category runs on its own stream (overlap) and is synced before storing; on
 # CPU they run sequentially.
 function _compress_all_categories!(
-    A_tlr::AbstractTLRMatrix{<:Any,T},
+    A_tlr::PaddedFTLRMatrix{<:Any,T},
     A::AbstractMatrix{T},
     ws::CompressWorkspace,
     eps_sq::Float64,
@@ -248,13 +248,21 @@ full rank and reports a residual above `tol` instead of silently claiming
 convergence — check `residuals` to route such tiles to dense storage or a
 higher-rank second pass.
 
-Factor arrays are updated in-place; call `alloc_workspace` once to amortise
-device allocations across repeated calls:
+Call `alloc_workspace` once to amortise the ARA sampling scratch's device
+allocations across repeated calls:
 
     ws = alloc_workspace(A_tlr)
     for A in matrices
         compress!(A_tlr, A, ws; tol=1f-3)
     end
+
+For `PaddedFTLRMatrix`, `A_tlr`'s fixed-`maxrank` factor arrays are also
+updated in-place — no allocation beyond `ws`. For `TLRMatrix`, `A_tlr.offdiag`
+cannot be: exact-rank packed storage's offsets depend on the ranks discovered
+by *this* compression, so each call replaces `A_tlr.offdiag` with a freshly
+sized `CompressedFTLRMatrix`. Reusing `ws` still avoids reallocating the
+padded sampling scratch that discovers those ranks; only the final tight-packed
+factor storage is unavoidably new per call.
 
 ## Keywords
 
@@ -274,7 +282,7 @@ compress!(A_tlr::AbstractTLRMatrix{<:Any,T}, A::AbstractMatrix{T}; kwargs...) wh
     compress!(A_tlr, A, alloc_workspace(A_tlr); kwargs...)
 
 function compress!(A_tlr::TLRMatrix{<:Any,T}, A::AbstractMatrix{T},
-    ws::CompressWorkspace;
+    ws::TLRCompressWorkspace;
     tol::Real=0.0, rel::Bool=false) where {T}
 
     size(A) == (A_tlr.m, A_tlr.n) ||
@@ -285,8 +293,34 @@ function compress!(A_tlr::TLRMatrix{<:Any,T}, A::AbstractMatrix{T},
 
     _copy_diagonal_from_dense!(A_tlr, A)
 
-    eps_sq = Float64(tol)^2
-    _compress_all_categories!(A_tlr, A, ws, eps_sq, rel)
+    # Rank discovery still uses the established homogeneous ARA batches. The
+    # padded object is workspace-only: after sampling, only off-diagonal tiles
+    # are packed into the public exact-rank representation.
+    compress!(ws.scratch, A, ws.workspace; tol, rel)
+    qm, qn = grid_size(A_tlr)
+    rank_grid = Matrix{Int}(undef, qm, qn)
+    @inbounds for j in 1:qn, i in 1:qm
+        rank_grid[i, j] = i == j ? 0 :
+            Int(ranks(ws.scratch)[_rank_index(ws.scratch, i, j)])
+    end
+    packed = CompressedFTLRMatrix(
+        get_backend(A_tlr), T, size(A_tlr)..., nominal_tile_size(A_tlr), rank_grid;
+        outer_order=compressed_ftlr_outer_order(offdiagonal(A_tlr)),
+        inner_order=compressed_ftlr_inner_order(offdiagonal(A_tlr)),
+        execution_rank_policy=:exact,
+        rank_type=eltype(ranks(A_tlr)))
+    @inbounds for j in 1:qn, i in 1:qm
+        i == j && continue
+        rank_grid[i, j] == 0 && continue
+        U, V = get_factors(ws.scratch, i, j)
+        copyto!(compressed_ftlr_outer(packed, i, j), U)
+        copyto!(compressed_ftlr_inner(packed, i, j), V)
+    end
+    @inbounds for j in 1:qn, i in 1:qm
+        idx = _rank_index(packed, i, j)
+        packed.resid[idx] = i == j ? 0.0 : residuals(ws.scratch)[idx]
+    end
+    A_tlr.offdiag = packed
 
     A_tlr
 end

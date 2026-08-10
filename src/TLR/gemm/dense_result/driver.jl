@@ -1,6 +1,5 @@
 # gemm! entry points for the dense-output TLR GEMM: materializes a dense
-# C from TLR/dense-diagonal operands via the budgeted, region-scheduled
-# low-rank terms in low_rank_terms.jl, regions/, and dense_products.jl.
+# C from compressed full-grid factors and optional dense diagonal storage.
 
 @inline function _validate_logical_gemm(C, LA::LogicalTLROperand, LB::LogicalTLROperand)
     size(LA, 2) == size(LB, 1) ||
@@ -17,95 +16,50 @@ end
           alpha=true, beta=false,
           transA='N', transB='N', compute=nothing) -> C
 
-Compute `C := alpha·(op(A)·op(B)) + beta·C` for dense-diagonal TLR matrices `A`,
-`B` into the dense column-major matrix `C`. `transA` and `transB` accept
-case-insensitive `N/T`. Transposed operands currently require square matrices with
-equal square tiling.
-
-`workspace` is either a global byte count or a reusable `DenseGemmWorkspace`.
-It is split between the concurrent interior and serialized-boundary streams
-using `InteriorFirstWorkspace`.
+Compute `C := alpha·(op(A)·op(B)) + beta·C` for dense-diagonal TLR matrices.
+The compressed off-diagonal product uses the common three-stage grouped
+lowering; off-diagonal/diagonal cross terms and the diagonal product are added
+as grouped second-pass updates.
 `compute` selects the accumulation mode; when omitted it defaults to `Float32` for
 `Float16` operands and otherwise to the operand type. `alpha` and `beta` are
 converted to that compute type.
 """
 function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T};
     workspace, alpha=true, beta=false,
-    transA::Char=('N'), transB::Char=('N'), compute=nothing,
-    workspace_policy=InteriorFirstWorkspace()) where {BackendT,T}
+    transA::Char=('N'), transB::Char=('N'), compute=nothing) where {BackendT,T}
     LA = logical_operand(A, transA)
     LB = logical_operand(B, transB)
     _validate_logical_gemm(C, LA, LB)
     mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
     backend = get_backend(A)
     validate_tlr_gemm_precision(backend, T, eltype(C), mode)
-    if _istrans(LA) || _istrans(LB)
-        dense_diag_square = size(A, 1) == size(A, 2) && size(B, 1) == size(B, 2)
-        square_tiles = nominal_tile_size(A, 1) == nominal_tile_size(A, 2) &&
-                       nominal_tile_size(B, 1) == nominal_tile_size(B, 2)
-        (dense_diag_square && square_tiles && nominal_tile_size(A) == nominal_tile_size(B)) ||
-            throw(ArgumentError("transposed dense-diagonal TLR GEMM currently requires square operands with equal square tiling"))
-    else
-        nominal_tile_size(A) == nominal_tile_size(B) ||
-            throw(DimensionMismatch("A and B must share the same nominal tile size"))
-    end
+    nominal_tile_size(LA, 2) == nominal_tile_size(LB, 1) ||
+        throw(DimensionMismatch("TLR contraction tile dimensions must match"))
 
     ScalarT = gemm_compute_type(mode)
     α = ScalarT(alpha)
     β = ScalarT(beta)
-    one_β = one(ScalarT)
-    ws, interior_arena, auxiliary_arena, split =
-        _prepare_dense_gemm_workspace(
-            A, B, workspace, workspace_policy; transA, transB)
-    WI, WA = split.interior, split.auxiliary
-
-    interior = () -> begin                                        # C_int
-        tlr_gemm_int_by_int(C, LA, LB, α, β; budget=WI, compute=mode,
-                            arena=interior_arena)
-        tlr_gemm_rpanel_by_bpanel(C, LA, LB, α; beta=one_β, budget=WI,
-                                  compute=mode, arena=interior_arena)
-    end
-    boundaries = () -> begin
-        tlr_gemm_int_by_rpanel(C, LA, LB, α; beta=β, budget=WA,
-                               compute=mode, arena=auxiliary_arena)
-        tlr_gemm_rpanel_by_corner(C, LA, LB, α; beta=one_β, budget=WA,
-                                  compute=mode, arena=auxiliary_arena)
-        tlr_gemm_bpanel_by_int(C, LA, LB, α; beta=β, budget=WA,
-                               compute=mode, arena=auxiliary_arena)
-        tlr_gemm_corner_by_bpanel(C, LA, LB, α; beta=one_β, budget=WA,
-                                  compute=mode, arena=auxiliary_arena)
-        tlr_gemm_corner_by_corner(C, LA, LB, α; beta=β, budget=WA,
-                                  compute=mode, arena=auxiliary_arena)
-        tlr_gemm_bpanel_by_rpanel(C, LA, LB, α; beta=one_β, budget=WA,
-                                  compute=mode, arena=auxiliary_arena)
-    end
-
-    if backend isa KernelAbstractions.CPU
-        interior();
-        boundaries()
-    else
-        with_stream(interior, backend, ws.streams[1])
-        with_stream(boundaries, backend, ws.streams[2])
-        for s in ws.streams
-            sync_stream(backend, s)
-        end
-    end
-    return C
+    ws = workspace isa DenseGemmWorkspace ? workspace :
+         DenseGemmWorkspace(A, Int(workspace))
+    required = gemm_minimum_workspace_bytes(A, B; transA, transB)
+    sizeof(ws) >= required || throw(ArgumentError(
+        "workspace has $(sizeof(ws)) bytes; at least $required bytes are required"))
+    gemm!(C, offdiagonal(A), offdiagonal(B);
+          workspace=ws, alpha=α, beta=β, transA, transB, compute=mode)
+    return _tlr_add_diagonal_terms!(C, A, B, ws, α, transA, transB, mode)
 end
 
 """
     gemm!(C, A::CompressedFTLRMatrix, B::CompressedFTLRMatrix; workspace, alpha=true, beta=false)
 
-CUDA-only exact-rank CompressedFTLR dense accumulation. Supports nominal grids
-with trailing boundary tiles and logical `N/T` operands, using grouped GEMM
-for all three stages and selecting FoldRight/FoldLeft from packed layouts.
+Exact-rank CompressedFTLR dense accumulation on CPU and CUDA. Supports nominal
+grids with trailing boundary tiles and logical `N/T` operands, using the common
+grouped interface for all three stages and selecting FoldRight/FoldLeft from
+packed layouts.
 """
 function gemm!(C::AbstractMatrix, A::CompressedFTLRMatrix{BackendT,T}, B::CompressedFTLRMatrix{BackendT,T};
     workspace, alpha=true, beta=false,
-    transA::Char='N', transB::Char='N', compute=nothing, analysis=nothing,
-    workspace_policy=InteriorFirstWorkspace()) where {BackendT,T}
-    workspace_policy isa InteriorFirstWorkspace ||
-        throw(ArgumentError("CompressedFTLR dense GEMM currently supports InteriorFirstWorkspace only"))
+    transA::Char='N', transB::Char='N', compute=nothing, analysis=nothing) where {BackendT,T}
     LA = logical_operand(A, transA)
     LB = logical_operand(B, transB)
     size(LA, 2) == size(LB, 1) || throw(DimensionMismatch("inner dimensions must match"))
@@ -122,7 +76,11 @@ function gemm!(C::AbstractMatrix, A::CompressedFTLRMatrix{BackendT,T}, B::Compre
         # (measured ~38x slower on H100 for repeated calls, and identical cost
         # for a single call since analysis does the same work once).
         _validate_compressed_ftlr_gemm(C, LA, LB, mode)
-        (maxrank(A) == 0 || maxrank(B) == 0) && return _scale_output!(C, β)
+        # Rank vectors are intentionally mutable so a reserved-capacity TLR
+        # container can still be populated through the legacy in-place API.
+        # Do not trust the construction-time cached maximum for this fast path.
+        (all(iszero, ranks(A)) || all(iszero, ranks(B))) &&
+            return _scale_output!(C, β)
         ws = workspace isa DenseGemmWorkspace ? workspace :
              DenseGemmWorkspace(A, Int(workspace))
         one_shot = analyze_compressed_gemm(

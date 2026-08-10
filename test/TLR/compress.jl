@@ -31,9 +31,10 @@ end
 
         relerr = norm(reconstruct_tlr(A_panel) - boundary.A) / norm(boundary.A)
         @test relerr <= 1e-6
-        @test size(A_panel.int_U) == (4, 3, 2)
-        @test size(A_panel.right_U) == (4, 3, 2)
-        @test size(A_panel.bottom_U) == (2, 3, 2)
+        @test A_panel.offdiag isa NextLA.CompressedFTLRMatrix
+        @test NextLA.execution_rank_policy(A_panel) === :exact
+        @test all(k -> NextLA.ranks(A_panel)[_TLRM._rank_index(A_panel, k, k)] == 0,
+                  1:NextLA.ndiag_tiles(A_panel))
         assert_tile_rank_and_error(A_panel, 1, 2, 2, boundary.a12; atol_rank=1, rtol_error=1e-6)
         assert_tile_rank_and_error(A_panel, 2, 1, 3, boundary.a21; atol_rank=1, rtol_error=1e-6)
         assert_tile_rank_and_error(A_panel, 1, 3, 2, boundary.a13; atol_rank=1, rtol_error=1e-6)
@@ -254,7 +255,7 @@ end
             ws = _TLRM.alloc_workspace(A_tlr)
             NextLA.compress!(A_tlr, dense, ws; tol=1f-4)
 
-            synchronize(A_tlr.int_U)
+            synchronize(A_tlr.offdiag.outer.data)
             relerr = norm(reconstruct_tlr(A_tlr) - boundary.A) / norm(boundary.A)
             @test relerr <= 5f-3
             @test Int(NextLA.ranks(A_tlr)[_TLRM._rank_index(A_tlr, 1, 3)]) == 2

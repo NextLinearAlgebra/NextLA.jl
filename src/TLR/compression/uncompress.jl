@@ -45,21 +45,14 @@ end
 
 Write the dense matrix represented by `A_tlr` into `A` in-place.
 
-Diagonal tiles are copied from the packed diagonal storage and off-diagonal
-tiles are reconstructed region-by-region with batched GEMMs.
+The full-grid compressed off-diagonal part is reconstructed first; its rank-zero
+diagonal slots leave zeros that are then overwritten from dense diagonal storage.
 """
 function uncompress!(A::AbstractMatrix{T}, A_tlr::TLRMatrix{<:Any,T}) where {T}
     size(A, 1) == A_tlr.m && size(A, 2) == A_tlr.n ||
         throw(DimensionMismatch("A dimensions must match A_tlr"))
-    A_tlr.m == A_tlr.n ||
-        throw(ArgumentError("uncompress! currently requires square matrices"))
-
+    uncompress!(A, offdiagonal(A_tlr))
     _copy_diagonal_to_dense!(A, A_tlr)
-
-    @inbounds foreach(lowrank_regions(A_tlr)) do region
-        _uncompress_region!(A, A_tlr, region)
-    end
-
     return A
 end
 

@@ -44,14 +44,10 @@ struct KAsSerialLoop{BPanelAxis} <: KAxisSchedule end
 """
     GridKind
 
-Interior tile-grid enumeration policy of an operand. `SkipDiag` is the dense-diagonal
-interior (the diagonal tile is stored separately, so it is excluded from the low-rank
-grid); `FullGrid` is the fully low-rank interior (every tile present). The regular core
-consults this while enumerating factor tiles; for `FullGrid` the skip helpers fold to
-identities. See `operands.jl` for the policy bodies.
+Interior tile-grid enumeration policy of a padded operand. `FullGrid` stores
+every tile, including the diagonal.
 """
 abstract type GridKind end
-struct SkipDiag <: GridKind end   # dense-diag interior: diagonal excluded
 struct FullGrid <: GridKind end   # fully low-rank: every tile present
 
 """

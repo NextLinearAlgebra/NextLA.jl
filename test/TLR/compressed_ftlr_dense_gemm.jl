@@ -156,8 +156,14 @@ end
 @testset "CompressedFTLR CUDA dense GEMM" begin
     Ahost = _compressed_ftlr_fixture(Float32)
     Bhost = _compressed_ftlr_fixture(Float32, Int[1 0; 2 1; 3 1])
-    @test_throws ArgumentError _TLRM.gemm!(zeros(Float32, 8, 8), Ahost, Bhost;
-                                             workspace=NextLA.gemm_minimum_workspace_bytes(Ahost, Bhost))
+    referenceAhost = zeros(Float32, size(Ahost))
+    referenceBhost = zeros(Float32, size(Bhost))
+    NextLA.uncompress!(referenceAhost, Ahost)
+    NextLA.uncompress!(referenceBhost, Bhost)
+    Chost = zeros(Float32, 8, 8)
+    _TLRM.gemm!(Chost, Ahost, Bhost;
+                workspace=NextLA.gemm_minimum_workspace_bytes(Ahost, Bhost))
+    @test Chost ≈ referenceAhost * referenceBhost rtol=2f-4 atol=2f-4
     for (name, AT, sync) in backends
         name == "CUDA" || continue
         A = _compressed_ftlr_to_backend(Ahost, AT)

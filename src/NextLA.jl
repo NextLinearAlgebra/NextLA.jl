@@ -104,15 +104,16 @@ using .TLRmodule: maxrank, ranks, execution_ranks, execution_maxrank, execution_
 using .TLRmodule: residuals, dense_diag, dense_diag_corner, grid_size, nominal_tile_size, tail_tile_size
 using .TLRmodule: compress!, uncompress!, alloc_workspace
 using .TLRmodule: get_factors
+using .TLRmodule: offdiagonal
 using .TLRmodule: pack_compressed_ftlr
 using .TLRmodule: gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes, gemm_workspace_bytes
-using .TLRmodule: DenseGemmWorkspace, InteriorFirstWorkspace
+using .TLRmodule: DenseGemmWorkspace
 using .TLRmodule: CompressedGemmAnalysis, CompressedMixedGemmAnalysis, analyze_compressed_gemm
 using .TLRmodule: TLRGemmWorkspace
 using .TLRmodule: tlr_gemm_minimum_workspace_bytes, tlr_gemm_maximum_workspace_bytes
 export gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes, gemm_workspace_bytes
 export execution_rank_policy
-export DenseGemmWorkspace, InteriorFirstWorkspace
+export DenseGemmWorkspace
 export CompressedGemmAnalysis, CompressedMixedGemmAnalysis, analyze_compressed_gemm
 export TLRGemmWorkspace
 export tlr_gemm_minimum_workspace_bytes, tlr_gemm_maximum_workspace_bytes

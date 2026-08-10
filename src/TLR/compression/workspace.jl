@@ -39,7 +39,13 @@ struct CompressWorkspace{CatsT,StreamV}
     streams::StreamV
 end
 
-@inline function _region_specs(A_tlr::AbstractTLRMatrix)
+"""Reusable padded sampling storage used to discover exact TLR off-diagonal ranks."""
+struct TLRCompressWorkspace{ScratchT,WorkspaceT}
+    scratch::ScratchT
+    workspace::WorkspaceT
+end
+
+@inline function _region_specs(A_tlr::PaddedFTLRMatrix)
     map(lowrank_regions(A_tlr)) do region
         U = outer_factors(A_tlr, region)
         V = inner_factors(A_tlr, region)
@@ -83,7 +89,7 @@ function _make_category_workspace(region, rank_indices,
     )
 end
 
-function _alloc_category_workspace(A_tlr::AbstractTLRMatrix{<:Any,T}, spec,
+function _alloc_category_workspace(A_tlr::PaddedFTLRMatrix{<:Any,T}, spec,
                                    r::Int) where {T}
     backend = get_backend(A_tlr)
     n = spec.n
@@ -114,12 +120,20 @@ Sampling, orthogonalization, co-range storage, and diagnostics allocate no
 device buffers after this call. Backend SVD libraries may still own internal
 solver workspace during final truncation.
 """
-function alloc_workspace(A_tlr::AbstractTLRMatrix)
+function alloc_workspace(A_tlr::PaddedFTLRMatrix)
     specs = _region_specs(A_tlr)
     cats = map(spec -> _alloc_category_workspace(A_tlr, spec, A_tlr.maxrank),
                specs)
     return CompressWorkspace(cats,
                              create_streams(A_tlr.backend, length(cats)))
+end
+
+function alloc_workspace(A_tlr::TLRMatrix{<:Any,T}) where {T}
+    scratch = PaddedFTLRMatrix(
+        get_backend(A_tlr), T, size(A_tlr)..., nominal_tile_size(A_tlr),
+        maxrank(A_tlr); tile_order=compressed_ftlr_outer_order(offdiagonal(A_tlr)),
+        rank_type=eltype(ranks(A_tlr)))
+    return TLRCompressWorkspace(scratch, alloc_workspace(scratch))
 end
 
 """

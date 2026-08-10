@@ -1,8 +1,5 @@
 # Canonical logical operands and factor-storage views.
 
-"""Tile-column of `SkipDiag` local panel position `pos` within row `r` (skips `r`)."""
-@inline local_to_col(r::Integer, pos::Integer) = pos < r ? pos : pos + 1
-
 """
     LogicalTLROperand{Op}(parent)
 
@@ -193,9 +190,8 @@ end
     InteriorOperand{Kind,OrderT,A3}
 
 Zero-copy view over one operand's flat interior factor storage `[b, maxrank, ntiles]`,
-tagged with its tile-grid extents `(qm, qn)`, traversal `order`, and enumeration
-`Kind` (`SkipDiag` / `FullGrid`). All tile addressing goes through the `Kind` policy,
-so the staged core is agnostic to whether the diagonal is stored separately.
+tagged with its tile-grid extents `(qm, qn)`, traversal `order`, and full-grid
+enumeration policy.
 """
 struct InteriorOperand{Kind<:GridKind,OrderT<:TileOrderStyle,A3<:AbstractArray}
     data::A3
@@ -207,34 +203,17 @@ end
 @inline stride1_axis_left(p::InteriorOperand) = stride1_axis_left(p.order)
 @inline stride1_axis_right(p::InteriorOperand) = stride1_axis_right(p.order)
 @inline complete_k_stack(::InteriorOperand{FullGrid}) = true
-@inline complete_k_stack(::InteriorOperand{SkipDiag}) = false
 
 @inline blockdim(p::InteriorOperand) = size(p.data, 1)   # b
 @inline rankdim(p::InteriorOperand)  = size(p.data, 2)   # maxrank
 
-"""Tiles per row of this operand's grid (excludes the diagonal for `SkipDiag`)."""
-@inline tiles_per_row(p::InteriorOperand{SkipDiag}) = p.qn - 1
 @inline tiles_per_row(p::InteriorOperand{FullGrid}) = p.qn
-"""Tiles per column of this operand's grid (excludes the diagonal for `SkipDiag`)."""
-@inline tiles_per_col(p::InteriorOperand{SkipDiag}) = p.qm - 1
 @inline tiles_per_col(p::InteriorOperand{FullGrid}) = p.qm
-"""Actual tile-column of local panel position `pos` within row `r`."""
-@inline panel_col(::InteriorOperand{SkipDiag}, r::Integer, pos::Integer) = local_to_col(r, pos)
 @inline panel_col(::InteriorOperand{FullGrid}, ::Integer, pos::Integer) = Int(pos)
-"""Scratch column of output column `j` in block `[j0:_]` for contraction `k`, or 0 to skip it."""
-@inline function col_scratch_pos(::InteriorOperand{SkipDiag}, j0::Integer, k::Integer, j::Integer)
-    j == k && return 0
-    return Int(j - j0 + 1 - ((j0 <= k) & (k < j) ? 1 : 0))
-end
 @inline col_scratch_pos(::InteriorOperand{FullGrid}, j0::Integer, ::Integer, j::Integer) =
     Int(j - j0 + 1)
-"""First / last included output column of block `[j0:j1]` for contraction `k`."""
-@inline first_offdiag_col(::InteriorOperand{SkipDiag}, j0::Integer, k::Integer) = Int(j0 == k ? j0 + 1 : j0)
 @inline first_offdiag_col(::InteriorOperand{FullGrid}, j0::Integer, ::Integer) = Int(j0)
-@inline last_offdiag_col(::InteriorOperand{SkipDiag}, j1::Integer, k::Integer) = Int(j1 == k ? j1 - 1 : j1)
 @inline last_offdiag_col(::InteriorOperand{FullGrid}, j1::Integer, ::Integer) = Int(j1)
-"""Panel-local index (in `rowpanel(k)`) of absolute column `j`."""
-@inline panel_local(::InteriorOperand{SkipDiag}, k::Integer, j::Integer) = Int(j < k ? j : j - 1)
 @inline panel_local(::InteriorOperand{FullGrid}, ::Integer, j::Integer) = Int(j)
 
 """Contiguous `[b, maxrank, tiles_per_row]` view of tile-row `r`'s panel."""
@@ -255,8 +234,6 @@ view zero-copy and avoids a gather for fixed-row factor stacks.
 end
 
 """Zero-copy factor view for logical interior tile `(i,j)`."""
-@inline tilefactor(p::InteriorOperand{SkipDiag}, i::Integer, j::Integer) =
-    view(p.data, :, :, _offdiag_index(p.order, p.qm, p.qn, Int(i), Int(j)))
 @inline tilefactor(p::InteriorOperand{FullGrid}, i::Integer, j::Integer) =
     view(p.data, :, :, tile_linear_index(p.order, p.qm, p.qn, Int(i), Int(j)))
 
@@ -265,7 +242,6 @@ end
     return InteriorOperand{typeof(kind),typeof(order),typeof(data)}(data, order, qm, qn)
 end
 
-@inline interior_grid_kind(::LogicalTLROperand{<:Any,<:TLRMatrix}) = SkipDiag()
 @inline interior_grid_kind(::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix}) = FullGrid()
 
 # Boundary factor accessors. A right panel is row-live (`X[i,bnd]`), a bottom panel is
@@ -364,8 +340,7 @@ end
     logical_operands(A, B) -> LogicalTLROperands
 
 Wrap the canonical interior factor arrays of logical `op(A)` and `op(B)` as zero-copy
-`InteriorOperand`s. Dense-diagonal operands use `SkipDiag`; fully low-rank operands
-use `FullGrid` (rectangular grids allowed).
+`InteriorOperand`s using a full grid (rectangular grids allowed).
 
 The whole-matrix `LogicalTLROperand` has already swapped factors, grid extents, and
 tile order for `T`. Because effective order drives placement, Stage-3 K-stacks and
@@ -386,20 +361,6 @@ function logical_operands(A::LogicalTLROperand{<:Any,<:PaddedFTLRMatrix},
         interior_operand(FullGrid(), outer_factors(B, _INTERIOR), ordB, qmB, qnB), # bu
         interior_operand(FullGrid(), inner_factors(B, _INTERIOR), ordB, qmB, qnB), # bv
         interior_operand(FullGrid(), outer_factors(A, _INTERIOR), ordA, qmA, qnA), # au
-    )
-end
-
-function logical_operands(A::LogicalTLROperand{<:Any,<:TLRMatrix},
-                          B::LogicalTLROperand{<:Any,<:TLRMatrix})
-    qmA, qnA = regular_grid_size(A)
-    qmB, qnB = regular_grid_size(B)
-    ordA = tile_order(A)
-    ordB = tile_order(B)
-    return LogicalTLROperands(
-        interior_operand(SkipDiag(), inner_factors(A, _INTERIOR), ordA, qmA, qnA),
-        interior_operand(SkipDiag(), outer_factors(B, _INTERIOR), ordB, qmB, qnB),
-        interior_operand(SkipDiag(), inner_factors(B, _INTERIOR), ordB, qmB, qnB),
-        interior_operand(SkipDiag(), outer_factors(A, _INTERIOR), ordA, qmA, qnA),
     )
 end
 
