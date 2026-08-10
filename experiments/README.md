@@ -10,7 +10,8 @@ final dense-output TLR GEMM poster figures.
 - `results/gemm/nextla/`: raw NextLA sweeps and selected workspace winners.
 - `results/gemm/kblas/`: KBLAS measurements.
 - `results/gemm/comparisons/`: derived NextLA/KBLAS joins.
-- `figures/gemm/poster/`: the four final experiment figures.
+- `figures/gemm/poster/`: the final experiment figures, including line and
+  grouped-bar variants of the precision-scaling result.
 - `method/` and `figures/method/`: the dynamic-programming schedule illustration.
 
 ## Environment

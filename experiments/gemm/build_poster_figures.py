@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the four poster GEMM figures and their numerical highlights."""
+"""Generate the poster GEMM figures and their numerical highlights."""
 
 from __future__ import annotations
 
@@ -405,6 +405,94 @@ def plot_precision_grid(
     return save_figure(fig, output, stem, formats, dpi)
 
 
+# --- Figure 5: precision speedup as grouped bars ---
+
+
+def plot_precision_bar_grid(
+    cc_rows: list[dict[str, str]],
+    cd_rows: list[dict[str, str]],
+    kblas_points: list[tuple[int, float, float]],
+    stem: str,
+    output: Path,
+    formats: Sequence[str],
+    dpi: int,
+) -> list[Path]:
+    """Grouped-bar counterpart of Figure 2, with bars anchored at 1x."""
+    fig, axes = plt.subplots(1, 4, figsize=(19.0, 4.8), sharex=True, sharey=True)
+    positions = list(range(len(SIZES)))
+    kblas_by_n = {n: speedup for n, speedup, _ in kblas_points}
+
+    legend_handles: list = []
+    legend_labels: list[str] = []
+    for ax, precision in zip(axes, PRECISION_ORDER):
+        layouts = [
+            ("compressed_compressed", cc_rows),
+            ("compressed_dense", cd_rows),
+        ]
+        include_kblas = precision == "fp32"
+        width = 0.25 if include_kblas else 0.34
+        offsets = (-width, 0.0, width) if include_kblas else (-width / 2, width / 2)
+
+        for offset, (layout, rows) in zip(offsets, layouts):
+            color, _marker, label = LAYOUT_STYLE[layout]
+            by_n = {
+                integer(row, "N"): num(row, "speedup_median")
+                for row in rows if row["precision"] == precision
+            }
+            values = [by_n[n] for n in SIZES]
+            bars = ax.bar(
+                [position + offset for position in positions],
+                [value - 1.0 for value in values],
+                width=width,
+                bottom=1.0,
+                color=color,
+                edgecolor="white",
+                linewidth=0.8,
+                zorder=3,
+            )
+            if precision == PRECISION_ORDER[0]:
+                legend_handles.append(bars)
+                legend_labels.append(label)
+
+        if include_kblas:
+            values = [kblas_by_n[n] for n in SIZES]
+            bars = ax.bar(
+                [position + offsets[-1] for position in positions],
+                [value - 1.0 for value in values],
+                width=width,
+                bottom=1.0,
+                color=KBLAS_COLOR,
+                edgecolor="white",
+                linewidth=0.8,
+                zorder=3,
+            )
+            legend_handles.append(bars)
+            legend_labels.append(KBLAS_LABEL)
+
+        ax.axhline(1.0, color=AXIS_COLOR, linestyle=":", linewidth=1.2, zorder=1)
+        ax.set_xticks(positions, [format_size(n) for n in SIZES])
+        ax.set_xlim(-0.65, len(SIZES) - 0.35)
+        ax.set_yscale("log", base=2)
+        ax.set_ylim(0.8, 32.0)
+        ax.set_yticks((1, 2, 4, 8, 16, 32))
+        ax.yaxis.set_major_formatter(FuncFormatter(format_speedup_tick))
+        finish_axes(ax)
+        ax.set_xlabel("N")
+        ax.set_title(
+            PRECISION_LABEL[precision], loc="center", fontsize=15,
+            color=TEXT_SECONDARY, fontweight="normal", pad=10,
+        )
+
+    axes[0].set_ylabel("Speedup")
+    fig.legend(
+        legend_handles, legend_labels, frameon=False, loc="lower center",
+        bbox_to_anchor=(0.5, 1.0), ncol=len(legend_labels),
+        columnspacing=1.4, handletextpad=0.45, fontsize=12,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.90))
+    return save_figure(fig, output, stem, formats, dpi)
+
+
 # --- Figures 3a / 3b: NextLA vs. KBLAS, padded and memory-matched panels ---
 
 
@@ -712,6 +800,10 @@ def main() -> None:
     paths += plot_precision_grid(
         cc_rows, cd_rows, kblas_points,
         "figure_2_precision_scaling_skewed_b_n8", output, formats, args.dpi
+    )
+    paths += plot_precision_bar_grid(
+        cc_rows, cd_rows, kblas_points,
+        "figure_5_precision_speedup_bars_skewed_b_n8", output, formats, args.dpi
     )
 
     nextla_rows, padded_rows = kblas_padded_candidates(skewed_rows, kblas_rows)

@@ -5,3 +5,4 @@
 /docs/Manifest.toml
 /docs/build/
 /scripts/.kblas/
+/.plenv/

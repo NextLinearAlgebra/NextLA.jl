@@ -42,10 +42,9 @@ line(x1, y1, x2, y2; stroke=C_TEXT, sw=0.5, op=1.0) = @sprintf(
     "<line x1=\"%.2f\" y1=\"%.2f\" x2=\"%.2f\" y2=\"%.2f\" stroke=\"%s\" stroke-width=\"%.2f\" stroke-opacity=\"%.2f\"/>",
     x1, y1, x2, y2, stroke, sw, op)
 
-"""One panel, schedule_uniform.svg style: full-width bands, grey below the
-last completed run, thick perimeter per run, and a bracket + fold label to the
-right of every run tall enough to hold one. `newest` (if given) is drawn with
-the highlight border and label color instead of the standard ones."""
+"""One panel, schedule_uniform.svg style: the complete DP partition is shown
+with black outlines, while completed work units receive their fold color and a
+bracket. `newest` (if given) uses the highlight border and label color."""
 function panel!(out, x0, y0, side, q, runs, nshown, newest, rho, gamma,
                 title, subtitle)
     cell = side / q
@@ -76,6 +75,15 @@ function panel!(out, x0, y0, side, q, runs, nshown, newest, rho, gamma,
     end
     for j in 0:q
         push!(out, line(x0 + j * cell, y0, x0 + j * cell, y0 + side; stroke="#CCCCCC", sw=0.5))
+    end
+
+    # The DP has already scheduled the entire output. Keep every work-unit
+    # boundary visible in black, including units that have not executed yet;
+    # color is reserved for the completed prefix below.
+    for run in runs
+        yy = y0 + (first(run.rows) - 1) * cell
+        hh = length(run.rows) * cell
+        push!(out, rect(x0, yy, side, hh, "none"; stroke="#222222", sw=2.6))
     end
 
     for (idx, run) in enumerate(runs[1:nshown])
@@ -165,7 +173,7 @@ function figure(name, rawA, rawB, bm; budget_frac=0.5, call_cost=0.0)
     #               "Run boundaries are set by solving the whole matrix at once.";
     #               size=12, fill="#555555"))
     push!(out, txt(62, 63,
-                   "Each run's fold (Right/Left) is then chosen to minimize FLOPs, using the row/column rank totals shown alongside and the tile size";
+                   "Output rows are partitioned into contiguous, workspace-fitting units to minimize total FLOPs, jointly selecting each fold direction.";
                    size=12, fill="#555555"))
 
     panel!(out, xA, y0, side, q, runs, i, nothing, rho, gamma,

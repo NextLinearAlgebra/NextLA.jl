@@ -25,6 +25,8 @@ results/gemm/nextla/memory_pareto_fp16_n16384_rank_b32_b16.csv
 FP32, both tile sizes, all three layouts, and skewed ranks in `[b/32,b/16]`.
 Every logical case is measured over the workspace grid before
 `select_workspace_winners.py` chooses its lowest median time.
+Figure 2 presents these speedups as scaling curves; Figure 5 presents the
+same selected cases as grouped bars.
 
 Canonical results:
 

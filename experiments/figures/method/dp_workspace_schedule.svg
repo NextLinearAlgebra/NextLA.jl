@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="968" height="462" viewBox="0 0 968 462">
 <rect x="0.00" y="0.00" width="968.00" height="462.00" fill="#FFFFFF" fill-opacity="1.00" stroke="none" stroke-width="0.00"/>
 <text x="62.00" y="30.00" font-family="DejaVu Sans,Helvetica,Arial,sans-serif" font-size="17" font-weight="bold" font-style="normal" fill="#222222" text-anchor="start">Dynamic programming schedules runs to minimize total FLOPs under a workspace budget</text>
-<text x="62.00" y="63.00" font-family="DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" font-weight="normal" font-style="normal" fill="#555555" text-anchor="start">Each run's fold (Right/Left) is then chosen to minimize FLOPs, using the row/column rank totals shown alongside and the tile size</text>
+<text x="62.00" y="63.00" font-family="DejaVu Sans,Helvetica,Arial,sans-serif" font-size="12" font-weight="normal" font-style="normal" fill="#555555" text-anchor="start">Output rows are partitioned into contiguous, workspace-fitting units to minimize total FLOPs, jointly selecting each fold direction.</text>
 <rect x="101.33" y="132.00" width="16.67" height="6.41" fill="#999999" fill-opacity="0.75" stroke="none" stroke-width="0.00"/>
 <rect x="98.80" y="139.81" width="19.20" height="6.41" fill="#999999" fill-opacity="0.75" stroke="none" stroke-width="0.00"/>
 <rect x="99.39" y="147.62" width="18.61" height="6.41" fill="#999999" fill-opacity="0.75" stroke="none" stroke-width="0.00"/>
@@ -135,6 +135,19 @@
 <line x1="362.38" y1="132.00" x2="362.38" y2="382.00" stroke="#CCCCCC" stroke-width="0.50" stroke-opacity="1.00"/>
 <line x1="370.19" y1="132.00" x2="370.19" y2="382.00" stroke="#CCCCCC" stroke-width="0.50" stroke-opacity="1.00"/>
 <line x1="378.00" y1="132.00" x2="378.00" y2="382.00" stroke="#CCCCCC" stroke-width="0.50" stroke-opacity="1.00"/>
+<rect x="128.00" y="132.00" width="250.00" height="31.25" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="128.00" y="163.25" width="250.00" height="7.81" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="128.00" y="171.06" width="250.00" height="23.44" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="128.00" y="194.50" width="250.00" height="7.81" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="128.00" y="202.31" width="250.00" height="15.62" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="128.00" y="217.94" width="250.00" height="7.81" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="128.00" y="225.75" width="250.00" height="23.44" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="128.00" y="249.19" width="250.00" height="7.81" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="128.00" y="257.00" width="250.00" height="39.06" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="128.00" y="296.06" width="250.00" height="23.44" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="128.00" y="319.50" width="250.00" height="23.44" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="128.00" y="342.94" width="250.00" height="23.44" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="128.00" y="366.38" width="250.00" height="15.62" fill="none" stroke="#222222" stroke-width="2.60"/>
 <rect x="128.00" y="132.00" width="250.00" height="31.25" fill="#0072B2" fill-opacity="0.85" stroke="none" stroke-width="0.00"/>
 <line x1="128.00" y1="132.00" x2="378.00" y2="132.00" stroke="#FFFFFF" stroke-width="0.50" stroke-opacity="0.35"/>
 <line x1="128.00" y1="139.81" x2="378.00" y2="139.81" stroke="#FFFFFF" stroke-width="0.50" stroke-opacity="0.35"/>
@@ -602,6 +615,19 @@
 <line x1="822.38" y1="132.00" x2="822.38" y2="382.00" stroke="#CCCCCC" stroke-width="0.50" stroke-opacity="1.00"/>
 <line x1="830.19" y1="132.00" x2="830.19" y2="382.00" stroke="#CCCCCC" stroke-width="0.50" stroke-opacity="1.00"/>
 <line x1="838.00" y1="132.00" x2="838.00" y2="382.00" stroke="#CCCCCC" stroke-width="0.50" stroke-opacity="1.00"/>
+<rect x="588.00" y="132.00" width="250.00" height="31.25" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="588.00" y="163.25" width="250.00" height="7.81" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="588.00" y="171.06" width="250.00" height="23.44" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="588.00" y="194.50" width="250.00" height="7.81" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="588.00" y="202.31" width="250.00" height="15.62" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="588.00" y="217.94" width="250.00" height="7.81" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="588.00" y="225.75" width="250.00" height="23.44" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="588.00" y="249.19" width="250.00" height="7.81" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="588.00" y="257.00" width="250.00" height="39.06" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="588.00" y="296.06" width="250.00" height="23.44" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="588.00" y="319.50" width="250.00" height="23.44" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="588.00" y="342.94" width="250.00" height="23.44" fill="none" stroke="#222222" stroke-width="2.60"/>
+<rect x="588.00" y="366.38" width="250.00" height="15.62" fill="none" stroke="#222222" stroke-width="2.60"/>
 <rect x="588.00" y="132.00" width="250.00" height="31.25" fill="#0072B2" fill-opacity="0.85" stroke="none" stroke-width="0.00"/>
 <line x1="588.00" y1="132.00" x2="838.00" y2="132.00" stroke="#FFFFFF" stroke-width="0.50" stroke-opacity="0.35"/>
 <line x1="588.00" y1="139.81" x2="838.00" y2="139.81" stroke="#FFFFFF" stroke-width="0.50" stroke-opacity="0.35"/>
