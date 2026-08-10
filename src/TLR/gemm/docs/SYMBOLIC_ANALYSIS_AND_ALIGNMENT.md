@@ -476,28 +476,25 @@ Cost:
 
 ## Relevant implementation files
 
-- `compressed_ftlr/analysis.jl`  
+- `compressed_ftlr/analysis.jl`
   Explicit analysis and execution for compressed × compressed.
 
-- `compressed_ftlr/mixed_dense.jl`  
+- `compressed_ftlr/mixed_dense.jl`
   Two-stage mixed products, aligned row-run selection, mixed analysis, and
   fallback-aware pointer-mode handling.
 
-- `compressed_ftlr/stages.jl`  
+- `compressed_ftlr/execute.jl`
   Construction of compressed × compressed numerical stages.
 
-- `gemm_grouped.jl`  
+- `gemm_grouped.jl`
   Backend-independent grouped task preparation and fallback splitting.
 
-- `ext/cuda/gemm.jl`  
+- `ext/cuda/gemm.jl`
   CUDA grouped-GEMM descriptors, alignment checks, pointer uploads, and cuBLAS
   submission.
 
-- `experiments/compressed_dense.jl`  
-  Compressed × compressed benchmark.
-
-- `experiments/dense_compressed.jl`  
-  Dense × compressed benchmark.
+- `experiments/gemm/run_workspace_tuning.jl`
+  Compressed × compressed and mixed dense/compressed benchmark campaigns.
 
 ## Summary
 
