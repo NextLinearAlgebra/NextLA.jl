@@ -22,10 +22,10 @@ gemm/
 │   ├── precision.jl      compute policy and output scaling
 │   └── arena.jl          result-independent bump arena
 ├── dense_result/
-│   ├── operands.jl       dense operands and exact-rank factor views
+│   ├── dense_operand.jl  standalone dense operand and dense-diagonal-tile views
 │   ├── workspace.jl      DenseGemmWorkspace
 │   ├── runs.jl           shared schedule/task/prepared-run execution
-│   ├── compressed_ftlr/  compressed metadata and lowering
+│   ├── compressed_ftlr/  CompressedFTLRMatrix logical-N/T accessors, metadata, and lowering
 │   ├── dense_diagonal.jl dense-diagonal cross terms
 │   └── driver.jl         dense-destination public dispatch
 └── padded_result/
