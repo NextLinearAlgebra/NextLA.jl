@@ -303,7 +303,7 @@ end
 
 # What moving `compress!` onto ARA actually buys: sampling is adaptive, so a
 # tile is never handed the wide rank-deficient panel that defeated the old
-# one-shot maxrank-width sketch (see the GEMM tree's docs/TODO.md, items 1/3).
+# one-shot maxrank-width sketch.
 @testset "compress! adapts sampling to the tile rank" begin
     b, ntiles = 64, 3
     ranks = (3, 9, 20)

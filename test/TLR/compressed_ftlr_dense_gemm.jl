@@ -35,6 +35,81 @@ end
     end
 end
 
+@testset "CompressedFTLR mixed dense GEMM on CPU" begin
+    rank_grid = Int[1 2 1; 2 0 1; 1 1 1]
+    G = NextLA.CompressedFTLRMatrix(
+        KernelAbstractions.CPU(), Float64, 9, 9, (4, 4), rank_grid)
+    rng = MersenneTwister(2026)
+    for j in 1:3, i in 1:3
+        U, V = NextLA.get_factors(G, i, j)
+        U .= randn(rng, Float64, size(U))
+        V .= randn(rng, Float64, size(V))
+    end
+    Gdense = zeros(Float64, 9, 9)
+    NextLA.uncompress!(Gdense, G)
+
+    for side in (:compressed_dense, :dense_compressed),
+        trans_dense in ('N', 'T'), trans_compressed in ('N', 'T')
+        X = randn(rng, Float64, 9, 9)
+        C0 = randn(rng, Float64, 9, 9)
+        C = copy(C0)
+        if side === :compressed_dense
+            _TLRM.gemm!(C, G, X; workspace=4096, alpha=1.25, beta=-0.5,
+                         transA=trans_compressed, transB=trans_dense)
+            opG = trans_compressed == 'N' ? Gdense : transpose(Gdense)
+            opX = trans_dense == 'N' ? X : transpose(X)
+            product = opG * opX
+        else
+            _TLRM.gemm!(C, X, G; workspace=4096, alpha=1.25, beta=-0.5,
+                         transA=trans_dense, transB=trans_compressed)
+            opX = trans_dense == 'N' ? X : transpose(X)
+            opG = trans_compressed == 'N' ? Gdense : transpose(Gdense)
+            product = opX * opG
+        end
+        @test C ≈ 1.25 .* product .- 0.5 .* C0 rtol=1e-10 atol=1e-10
+    end
+
+    X = randn(rng, Float64, 9, 9)
+    for side in (:compressed_dense, :dense_compressed)
+        C = zeros(Float64, 9, 9)
+        workspace = NextLA.DenseGemmWorkspace(G, 4096)
+        analysis = side === :compressed_dense ?
+            NextLA.analyze_compressed_gemm(C, G, X; workspace) :
+            NextLA.analyze_compressed_gemm(C, X, G; workspace)
+        try
+            if side === :compressed_dense
+                _TLRM.gemm!(C, G, X; workspace, analysis)
+                @test C ≈ Gdense * X rtol=1e-10 atol=1e-10
+            else
+                _TLRM.gemm!(C, X, G; workspace, analysis)
+                @test C ≈ X * Gdense rtol=1e-10 atol=1e-10
+            end
+        finally
+            close(analysis)
+        end
+    end
+
+    # Below one fused rank stack, the compressed-only tilewise fallback keeps
+    # the low-workspace contract without reintroducing PaddedFTLR machinery.
+    for side in (:compressed_dense, :dense_compressed)
+        C = zeros(Float64, 9, 9)
+        if side === :compressed_dense
+            _TLRM.gemm!(C, G, X; workspace=2 * sizeof(Float64))
+            @test C ≈ Gdense * X rtol=1e-10 atol=1e-10
+        else
+            _TLRM.gemm!(C, X, G; workspace=2 * sizeof(Float64))
+            @test C ≈ X * Gdense rtol=1e-10 atol=1e-10
+        end
+    end
+
+    left_plan = _TLRM._two_stage_rank_plan(_TLRM.logical_operand(G), :left)
+    right_plan = _TLRM._two_stage_rank_plan(_TLRM.logical_operand(G), :right)
+    @test all(run.fold === :left for run in
+              _TLRM._two_stage_schedule(zeros(9, 9), left_plan, 4096, Float64))
+    @test all(run.fold === :right for run in
+              _TLRM._two_stage_schedule(zeros(9, 9), right_plan, 4096, Float64))
+end
+
 @testset "CompressedFTLR clears T only for uncovered rank holes" begin
     function make_operand(ranks)
         return NextLA.CompressedFTLRMatrix(
@@ -46,19 +121,19 @@ end
     positive_plan = _TLRM._compressed_ftlr_rank_plan(positive, positive)
     positive_workspace = NextLA.DenseGemmWorkspace(
         positive, positive_plan.profile.maximum)
-    positive_arena = _TLRM.DenseGemmArena(
+    positive_arena = _TLRM.GemmArena(
         view(positive_workspace.storage, :), 1)
     C = zeros(Float32, 8, 8)
 
     right = _TLRM._build_compressed_ftlr_foldright_run(
         C, positive, positive, positive_plan, 1:2, 1:2, 1f0, 0f0,
         positive_arena)
-    @test !right.needs_tdata_zero
+    @test !right.needs_zero
 
     left = _TLRM._build_compressed_ftlr_foldleft_run(
         C, positive, positive, positive_plan, 1:2, 1:2, 1f0, 0f0,
         positive_arena)
-    @test !left.needs_tdata_zero
+    @test !left.needs_zero
 
     # FoldRight gives every active A rank rows across every output column.
     # A zero B tile therefore leaves a consumed T block unwritten.
@@ -66,10 +141,10 @@ end
     right_plan = _TLRM._compressed_ftlr_rank_plan(positive, right_B)
     right_workspace = NextLA.DenseGemmWorkspace(
         positive, sum(right_plan.profile.right_row_bytes))
-    right_arena = _TLRM.DenseGemmArena(view(right_workspace.storage, :), 1)
+    right_arena = _TLRM.GemmArena(view(right_workspace.storage, :), 1)
     right_hole = _TLRM._build_compressed_ftlr_foldright_run(
         C, positive, right_B, right_plan, 1:2, 1:2, 1f0, 0f0, right_arena)
-    @test right_hole.needs_tdata_zero
+    @test right_hole.needs_zero
 
     # FoldLeft gives every physical output row columns for every active B
     # rank. A zero A tile leaves the corresponding rows unwritten.
@@ -77,10 +152,10 @@ end
     left_plan = _TLRM._compressed_ftlr_rank_plan(left_A, positive)
     left_workspace = NextLA.DenseGemmWorkspace(
         left_A, sum(left_plan.profile.left_row_bytes))
-    left_arena = _TLRM.DenseGemmArena(view(left_workspace.storage, :), 1)
+    left_arena = _TLRM.GemmArena(view(left_workspace.storage, :), 1)
     left_hole = _TLRM._build_compressed_ftlr_foldleft_run(
         C, left_A, positive, left_plan, 1:2, 1:2, 1f0, 0f0, left_arena)
-    @test left_hole.needs_tdata_zero
+    @test left_hole.needs_zero
 end
 
 @testset "CompressedFTLR FoldLeft fuses Stage 3 across a row run" begin
@@ -93,7 +168,7 @@ end
     plan = _TLRM._compressed_ftlr_rank_plan(A, B)
     @test plan.profile.right_row_bytes === nothing
     workspace = NextLA.DenseGemmWorkspace(A, plan.profile.maximum)
-    arena = _TLRM.DenseGemmArena(view(workspace.storage, :), 1)
+    arena = _TLRM.GemmArena(view(workspace.storage, :), 1)
     C = zeros(Float32, 8, 8)
     tasks = _TLRM._build_compressed_ftlr_foldleft_run(
         C, A, B, plan, 1:2, 1:2, 1f0, 0f0, arena)

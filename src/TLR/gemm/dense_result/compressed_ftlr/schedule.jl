@@ -1,6 +1,6 @@
 """Host-only rank metadata plus the fold-cost profile derived from it, for one
-CompressedFTLR GEMM. See `rank_metadata.jl` for the pure rank facts and
-`fold_cost.jl` for how they turn into FoldRight/FoldLeft costs."""
+CompressedFTLR GEMM. See `metadata.jl` for the pure rank facts and `costs.jl`
+for how they turn into FoldRight/FoldLeft costs."""
 struct CompressedFTLRRankPlan
     a_k_prefix::Matrix{Int}      # (logical i, prefix through logical k)
     b_row_ranks::Vector{Int}     # σ_k = Σ_j rB_kj
@@ -21,12 +21,6 @@ end
 executed with a single `fold`. `cols` spanning the whole grid is the
 whole-width case; a narrower span subdivides below one output row, which is
 what lets the workspace budget be met at a granularity finer than a full row."""
-struct RaggedRowRun
-    rows::UnitRange{Int}
-    cols::UnitRange{Int}
-    fold::Symbol
-end
-
 function _compressed_ftlr_rank_plan(A, B)
     meta = _compressed_ftlr_rank_metadata(A, B)
     profile = _compressed_ftlr_fold_cost(meta, A, B)
@@ -100,7 +94,7 @@ end
 function _compressed_ftlr_row_runs(profile::RaggedWorkspaceProfile, budget::Int)
     budget >= profile.minimum || throw(ArgumentError(
         "workspace has $budget bytes; at least $(profile.minimum) bytes are required"))
-    runs = RaggedRowRun[]
+    runs = DenseResultRun[]
     i = 1
     while i <= length(profile.row_bytes)
         j = i - 1
@@ -111,7 +105,7 @@ function _compressed_ftlr_row_runs(profile::RaggedWorkspaceProfile, budget::Int)
         j >= i || (j = i)
         fold = _compressed_ftlr_select_fold(profile, i:j, budget)
         fold === nothing && throw(ArgumentError("workspace cannot schedule CompressedFTLR row $i"))
-        push!(runs, RaggedRowRun(i:j, profile.columns, fold))
+        push!(runs, DenseResultRun(i:j, profile.columns, fold))
         i = j + 1
     end
     return runs
@@ -181,16 +175,16 @@ the maximum over runs rather than their sum.
 function _compressed_ftlr_column_schedule(meta, A, B, profile::RaggedWorkspaceProfile,
                                           budget::Int)
     # Fast path: full width fits, so behave exactly as the whole-width scheduler.
-    profile.minimum <= budget && return _compressed_ftlr_schedule(profile, budget)
+    profile.minimum <= budget && return _compressed_ftlr_row_runs(profile, budget)
 
     qn = length(meta.output_col_widths)
-    runs = RaggedRowRun[]
+    runs = DenseResultRun[]
     j = 1
     while j <= qn
         block = _compressed_ftlr_widest_column_block(meta, A, B, j, qn, budget)
         block === nothing && throw(ArgumentError(
             "workspace has $budget bytes; not enough for a single output tile column"))
-        append!(runs, _compressed_ftlr_schedule(
+        append!(runs, _compressed_ftlr_row_runs(
             _compressed_ftlr_fold_cost(meta, A, B, block), budget))
         j = last(block) + 1
     end
@@ -233,6 +227,6 @@ function _prepare_compressed_ftlr_workspace(A, B, plan::CompressedFTLRRankPlan, 
             "workspace has $bytes bytes; at least $required bytes are required"))
     end
     budget = min(bytes, profile.maximum)
-    arena = DenseGemmArena(view(ws.storage, :), 1)
+    arena = GemmArena(view(ws.storage, :), 1)
     return ws, arena, budget, profile
 end

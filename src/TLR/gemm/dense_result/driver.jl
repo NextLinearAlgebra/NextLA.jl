@@ -98,22 +98,80 @@ function gemm!(C::AbstractMatrix, A::CompressedFTLRMatrix{BackendT,T}, B::Compre
     throw(ArgumentError("analysis must be nothing or CompressedGemmAnalysis"))
 end
 
-@inline function _validate_dense_backend(C, tlr, dense)
-    backend = get_backend(tlr)
+@inline function _validate_dense_backend(C, compressed, dense)
+    backend = get_backend(compressed)
     typeof(get_backend(dense)) === typeof(backend) &&
         typeof(get_backend(C)) === typeof(backend) ||
-        throw(ArgumentError("TLR, dense operand, and output must use the same backend"))
+        throw(ArgumentError(
+            "compressed operand, dense operand, and output must use the same backend"))
     return backend
 end
 
 """
-    gemm!(C, A::PaddedFTLRMatrix, B::AbstractMatrix; ...)
+    gemm!(C, A::TLRMatrix, B::AbstractMatrix; ...)
 
-Compute `C := alpha·op(A)·op(B) + beta·C` with a fully low-rank left operand
-and a standalone dense right operand. Intermediates retain the operand storage type.
+Compute `C := alpha*op(A)*op(B) + beta*C` for a dense-diagonal TLR left
+operand. The compressed off-diagonal part uses the fixed FoldRight two-stage
+lowering; the dense diagonal is then added as independent block GEMMs.
 """
-function gemm!(C::AbstractMatrix,
-    A::Union{PaddedFTLRMatrix{BackendT,T},CompressedFTLRMatrix{BackendT,T}},
+function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T},
+    B::AbstractMatrix{T};
+    workspace, alpha=true, beta=false,
+    transA::Char='N', transB::Char='N', compute=nothing) where {BackendT,T}
+    mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
+    ScalarT = gemm_compute_type(mode)
+    alpha_value = ScalarT(alpha)
+    gemm!(C, offdiagonal(A), B;
+          workspace, alpha=alpha_value, beta=ScalarT(beta), transA, transB,
+          compute=mode)
+    return _tlr_diag_times_dense!(
+        C, logical_operand(A, transA), logical_dense_operand(B, transB),
+        alpha_value, mode)
+end
+
+"""
+    gemm!(C, A::AbstractMatrix, B::TLRMatrix; ...)
+
+Compute `C := alpha*op(A)*op(B) + beta*C` for a dense-diagonal TLR right
+operand. The compressed off-diagonal part uses the fixed FoldLeft two-stage
+lowering; the dense diagonal is then added as independent block GEMMs.
+"""
+function gemm!(C::AbstractMatrix, A::AbstractMatrix{T},
+    B::TLRMatrix{BackendT,T};
+    workspace, alpha=true, beta=false,
+    transA::Char='N', transB::Char='N', compute=nothing) where {BackendT,T}
+    mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
+    ScalarT = gemm_compute_type(mode)
+    alpha_value = ScalarT(alpha)
+    gemm!(C, A, offdiagonal(B);
+          workspace, alpha=alpha_value, beta=ScalarT(beta), transA, transB,
+          compute=mode)
+    return _dense_times_tlr_diag!(
+        C, logical_dense_operand(A, transA), logical_operand(B, transB),
+        alpha_value, mode)
+end
+
+function _execute_one_shot_two_stage!(
+    C, A, B, workspace, alpha, beta, transA, transB, mode)
+    analysis = analyze_compressed_gemm(
+        C, A, B; workspace, transA, transB, compute=mode)
+    try
+        return _execute_compressed_mixed_analysis!(
+            analysis, C, A, B, workspace, alpha, beta,
+            transA, transB, mode)
+    finally
+        close(analysis)
+    end
+end
+
+"""
+    gemm!(C, A::CompressedFTLRMatrix, B::AbstractMatrix; ...)
+
+Compute `C := alpha·op(A)·op(B) + beta·C`. The first stage fuses
+`Vᵢₖ′Bₖ` contractions across an output-column run; the second stage applies
+the corresponding row-packed `Uᵢₖ` stack and accumulates into dense `C`.
+"""
+function gemm!(C::AbstractMatrix, A::CompressedFTLRMatrix{BackendT,T},
     B::AbstractMatrix{T};
     workspace, alpha=true, beta=false, analysis=nothing,
     transA::Char='N', transB::Char='N', compute=nothing) where {BackendT,T}
@@ -133,19 +191,25 @@ function gemm!(C::AbstractMatrix,
             analysis, C, A, B, workspace, ScalarT(alpha), ScalarT(beta),
             transA, transB, mode)
     end
-    _, arena, budget = _prepare_single_gemm_workspace(A, workspace)
-    return _tlr_dense_gemm!(C, LA, LB, ScalarT(alpha), ScalarT(beta),
-                            budget, mode, arena)
+    ws, arena, budget = _prepare_dense_result_workspace(A, workspace)
+    plan = _two_stage_rank_plan(LA, :right)
+    if budget < _two_stage_workspace_floor(plan, T)
+        return _compressed_dense_gemm_sequential!(
+            C, LA, LB, ScalarT(alpha), ScalarT(beta), budget, mode, arena)
+    end
+    return _execute_one_shot_two_stage!(
+        C, A, B, ws, ScalarT(alpha), ScalarT(beta), transA, transB, mode)
 end
 
 """
-    gemm!(C, A::AbstractMatrix, B::PaddedFTLRMatrix; ...)
+    gemm!(C, A::AbstractMatrix, B::CompressedFTLRMatrix; ...)
 
-Compute `C := alpha·op(A)·op(B) + beta·C` with a standalone dense left operand
-and a fully low-rank right operand. Intermediates retain the operand storage type.
+Compute `C := alpha·op(A)·op(B) + beta·C`. The mirrored two-stage lowering
+fuses dense-panel-times-`Uₖⱼ` contractions over an output-row run before applying
+the column-packed `Vₖⱼ` stack to dense `C`.
 """
 function gemm!(C::AbstractMatrix, A::AbstractMatrix{T},
-    B::Union{PaddedFTLRMatrix{BackendT,T},CompressedFTLRMatrix{BackendT,T}};
+    B::CompressedFTLRMatrix{BackendT,T};
     workspace, alpha=true, beta=false, analysis=nothing,
     transA::Char='N', transB::Char='N', compute=nothing) where {BackendT,T}
     LA = logical_dense_operand(A, transA)
@@ -164,7 +228,12 @@ function gemm!(C::AbstractMatrix, A::AbstractMatrix{T},
             analysis, C, A, B, workspace, ScalarT(alpha), ScalarT(beta),
             transA, transB, mode)
     end
-    _, arena, budget = _prepare_single_gemm_workspace(B, workspace)
-    return _dense_tlr_gemm!(C, LA, LB, ScalarT(alpha), ScalarT(beta),
-                            budget, mode, arena)
+    ws, arena, budget = _prepare_dense_result_workspace(B, workspace)
+    plan = _two_stage_rank_plan(LB, :left)
+    if budget < _two_stage_workspace_floor(plan, T)
+        return _dense_compressed_gemm_sequential!(
+            C, LA, LB, ScalarT(alpha), ScalarT(beta), budget, mode, arena)
+    end
+    return _execute_one_shot_two_stage!(
+        C, A, B, ws, ScalarT(alpha), ScalarT(beta), transA, transB, mode)
 end

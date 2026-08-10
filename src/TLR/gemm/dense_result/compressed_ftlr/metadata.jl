@@ -1,7 +1,7 @@
 """Pure per-tile rank facts for one CompressedFTLR operand pair.
 
 No cost or workspace concept lives here — only "what are the ranks and output
-tile shapes." `_compressed_ftlr_fold_cost` (fold_cost.jl) turns these facts into
+tile shapes." `_compressed_ftlr_fold_cost` (`costs.jl`) turns these facts into
 FoldRight/FoldLeft cost estimates; nothing here depends on which fold is used.
 """
 
@@ -39,7 +39,7 @@ end
 #
 # These are deliberately untyped in their first argument: they read only field
 # names shared by the rank-metadata NamedTuple and `CompressedFTLRRankPlan`, so
-# both `fold_cost.jl` (which has the former) and `execute.jl` (the latter) use
+# both `costs.jl` (which has the former) and `three_stage.jl` (the latter) use
 # the same accessors.
 
 """`σ_k` restricted to `jrange`: `Σ_{j ∈ jrange} rB_kj`."""
@@ -97,7 +97,7 @@ function _compressed_ftlr_rank_metadata(A, B)
     b_row_k_prefix = Base.zeros(Int, qk, qn + 1)
     # Count of NONZERO B tiles per contraction row, as a prefix over j. Stage 2
     # skips `(k,j)` GEMMs where `rB_kj == 0`, leaving FoldRight's arena with
-    # reserved-but-unwritten space, so `execute.jl` must know whether such a
+    # reserved-but-unwritten space, so `three_stage.jl` must know whether such a
     # hole exists. A prefix (rather than a plain flag) keeps that query O(1)
     # for an arbitrary column range, which the column-block scheduler needs.
     b_row_nonzero_prefix = Base.zeros(Int, qk, qn + 1)

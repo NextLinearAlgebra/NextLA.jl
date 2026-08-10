@@ -1,5 +1,5 @@
 # Allocation-regression coverage for the canonical TLR-output GEMM's hot
-# sampler (docs/TODO.md's dated worklog, "R3 performance closure"): the
+# sampler: the
 # canonical `gemm!(C::PaddedFTLRMatrix, A::PaddedFTLRMatrix, B::PaddedFTLRMatrix; ...)` hot sampler
 # must not rebuild a `Vector`-of-views/device-pointer-array per ARA pass.
 #
@@ -23,8 +23,8 @@
 # a few same-call operands that are run-owned but not reshape-representable
 # as a strided batch (T-formation/W-formation in `RowRightRunCoupling`/
 # `RowLeftRunCoupling`) are left on the `Vector`-of-views path -- both are
-# documented, deliberate residuals in `docs/TODO.md`'s workspace contract,
-# not oversights this test should fail on. The threshold below is instead
+# documented, deliberate residuals, not oversights this test should fail on.
+# The threshold below is instead
 # calibrated with generous headroom (roughly 3x) over the measured
 # allocation for this fixture, so it catches a regression back toward
 # rebuilding *every* batched-GEMM operand's pointer list per pass -- which
@@ -111,8 +111,7 @@ end
     end
 end
 
-# Cross-run arena reuse (docs/TODO.md's dated worklog, "R4 arena -- reusable
-# run/ARA workspace"): the canonical driver now builds one ARARunArena before
+# Cross-run arena reuse: the canonical driver builds one ARARunArena before
 # its traversal loop and resets it once per row/column run instead of letting
 # every run's ColumnRunCoupling/RowRightRunCoupling/RowLeftRunCoupling and
 # ARAWorkspace allocate fresh device storage.

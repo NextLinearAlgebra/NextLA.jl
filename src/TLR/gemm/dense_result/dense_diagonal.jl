@@ -180,9 +180,54 @@ function _tlr_diag_times_diag!(C, DA, DB, alpha, mode)
     return C
 end
 
+"""Add the block-diagonal part of `op(A::TLRMatrix) * op(B::Matrix)` to `C`.
+
+The off-diagonal part is handled by the compressed two-stage lowering. Each
+dense diagonal tile contributes to one disjoint output row block, so these
+updates need no numerical workspace and can be submitted as one grouped GEMM.
+"""
+function _tlr_diag_times_dense!(C, DA, B, alpha, mode)
+    tasks = GroupedGemmTask[]
+    sizehint!(tasks, ndiag_tiles(DA))
+    output_cols = 1:size(C, 2)
+    @inbounds for k in 1:ndiag_tiles(DA)
+        D = _diag_tile_ref(DA, k)
+        rows = _tile_axis_range(DA, k, 1)
+        inner = _tile_axis_range(DA, k, 2)
+        Bdense, opB = _dense_block(B, inner, output_cols)
+        push!(tasks, GroupedGemmTask(
+            _dense_op(D), opB, alpha, _dense_data(D), Bdense, one(alpha),
+            view(C, rows, output_cols)))
+    end
+    isempty(tasks) || precision_gemm_grouped!(tasks, mode)
+    return C
+end
+
+"""Add the block-diagonal part of `op(A::Matrix) * op(B::TLRMatrix)` to `C`.
+
+This is the mirror of [`_tlr_diag_times_dense!`](@ref): each diagonal tile
+updates one disjoint output column block after the compressed FoldLeft pass.
+"""
+function _dense_times_tlr_diag!(C, A, DB, alpha, mode)
+    tasks = GroupedGemmTask[]
+    sizehint!(tasks, ndiag_tiles(DB))
+    output_rows = 1:size(C, 1)
+    @inbounds for k in 1:ndiag_tiles(DB)
+        D = _diag_tile_ref(DB, k)
+        inner = _tile_axis_range(DB, k, 1)
+        cols = _tile_axis_range(DB, k, 2)
+        Adense, opA = _dense_block(A, output_rows, inner)
+        push!(tasks, GroupedGemmTask(
+            opA, _dense_op(D), alpha, Adense, _dense_data(D), one(alpha),
+            view(C, output_rows, cols)))
+    end
+    isempty(tasks) || precision_gemm_grouped!(tasks, mode)
+    return C
+end
+
 function _tlr_add_diagonal_terms!(C, A::TLRMatrix, B::TLRMatrix, workspace,
                                   alpha, transA::Char, transB::Char, mode)
-    _, arena, capacity = _prepare_single_gemm_workspace(A, workspace)
+    _, arena, capacity = _prepare_dense_result_workspace(A, workspace)
     OA = logical_operand(offdiagonal(A), transA)
     OB = logical_operand(offdiagonal(B), transB)
     DA = logical_operand(A, transA)

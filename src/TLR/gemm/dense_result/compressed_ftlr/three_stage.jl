@@ -93,16 +93,6 @@ end
     return reshape(view(data, offset:(offset + rows * cols - 1)), rows, cols)
 end
 
-"""Run-local task views. Building and submitting them are deliberately separate."""
-struct CompressedFTLRRunTasks{S1,S2,S3,TD}
-    stage1::S1
-    stage2::S2
-    stage3::S3
-    tdata::TD
-    needs_tdata_zero::Bool
-    scale_targets::Vector{Tuple{UnitRange{Int},UnitRange{Int}}}
-end
-
 """
 Stage 2 emits a GEMM for `(i,k,j)` only when `rA_ik` and `rB_kj` are both
 nonzero, but each fold sizes its `T` arena from one side alone: FoldRight
@@ -124,11 +114,11 @@ so the run's sum is positive iff a term is), and both B-side questions are
 answered from plan prefix tables over `jrange` -- so FoldRight costs O(qk)
 with no operand access at all.
 """
-@inline _compressed_ftlr_foldright_needs_tdata_zero(plan, rho_k, jrange) =
+@inline _compressed_ftlr_foldright_needs_zero(plan, rho_k, jrange) =
     any(k -> rho_k[k] > 0 && _compressed_ftlr_row_has_zero(plan, k, jrange),
         eachindex(rho_k))
 
-@inline _compressed_ftlr_foldleft_needs_tdata_zero(A, plan, irange, jrange) =
+@inline _compressed_ftlr_foldleft_needs_zero(A, plan, irange, jrange) =
     any(eachindex(plan.b_row_ranks)) do k
         _compressed_ftlr_row_rank(plan, k, jrange) > 0 &&
             any(i -> _compressed_ftlr_execution_rank(A, i, k) == 0, irange)
@@ -226,8 +216,8 @@ function _build_compressed_ftlr_foldright_run(C, A, B, plan::CompressedFTLRRankP
         @inbounds for i in irange
             push!(scale_targets, (_compressed_ftlr_axis_range(A, i, 1), output_cols))
         end
-        return CompressedFTLRRunTasks(
-            nothing, nothing, nothing, nothing, false, scale_targets)
+        return DenseResultRunTasks(
+            nothing, nothing, nothing, 0, nothing, false, scale_targets)
     end
 
     _arena_reset!(arena)
@@ -283,9 +273,9 @@ function _build_compressed_ftlr_foldright_run(C, A, B, plan::CompressedFTLRRankP
                                view(C, rows, output_cols))
         if s3 === nothing; s3 = GroupedGemmTask[task]; else; push!(s3, task); end
     end
-    return CompressedFTLRRunTasks(
-        s1, s2, s3, tdata,
-        _compressed_ftlr_foldright_needs_tdata_zero(plan, rho_k, jrange), scale_targets)
+    return DenseResultRunTasks(
+        s1, s2, s3, 3, tdata,
+        _compressed_ftlr_foldright_needs_zero(plan, rho_k, jrange), scale_targets)
 end
 
 """
@@ -328,8 +318,8 @@ function _build_compressed_ftlr_foldleft_run(C, A, B, plan::CompressedFTLRRankPl
             push!(scale_targets, (_compressed_ftlr_axis_range(A, i, 1),
                                   _compressed_ftlr_output_cols(B, jrange)))
         end
-        return CompressedFTLRRunTasks(
-            nothing, nothing, nothing, nothing, false, scale_targets)
+        return DenseResultRunTasks(
+            nothing, nothing, nothing, 0, nothing, false, scale_targets)
     end
     _arena_reset!(arena)
     backend = get_backend(A)
@@ -379,34 +369,9 @@ function _build_compressed_ftlr_foldleft_run(C, A, B, plan::CompressedFTLRRankPl
                                view(C, output_rows, output_cols))
         if s3 === nothing; s3 = GroupedGemmTask[task]; else; push!(s3, task); end
     end
-    return CompressedFTLRRunTasks(
-        s1, s2, s3, tdata,
-        _compressed_ftlr_foldleft_needs_tdata_zero(A, plan, irange, jrange), scale_targets)
-end
-
-function _execute_compressed_ftlr_run_tasks!(C, A, tasks::CompressedFTLRRunTasks, beta, mode)
-    tasks.needs_tdata_zero && fill!(tasks.tdata, zero(eltype(A)))
-    @inbounds for (rows, cols) in tasks.scale_targets
-        _scale_output!(view(C, rows, cols), beta)
-    end
-    tasks.stage1 === nothing || precision_gemm_grouped!(tasks.stage1, mode)
-    tasks.stage2 === nothing || precision_gemm_grouped!(tasks.stage2, mode)
-    tasks.stage3 === nothing || precision_gemm_grouped!(tasks.stage3, mode)
-    return C
-end
-
-function _execute_compressed_ftlr_foldright_run!(C, A, B, plan::CompressedFTLRRankPlan,
-                                                  irange, jrange, alpha, beta, mode, arena)
-    tasks = _build_compressed_ftlr_foldright_run(
-        C, A, B, plan, irange, jrange, alpha, beta, arena)
-    return _execute_compressed_ftlr_run_tasks!(C, A, tasks, beta, mode)
-end
-
-function _execute_compressed_ftlr_foldleft_run!(C, A, B, plan::CompressedFTLRRankPlan,
-                                                 irange, jrange, alpha, beta, mode, arena)
-    tasks = _build_compressed_ftlr_foldleft_run(
-        C, A, B, plan, irange, jrange, alpha, beta, arena)
-    return _execute_compressed_ftlr_run_tasks!(C, A, tasks, beta, mode)
+    return DenseResultRunTasks(
+        s1, s2, s3, 3, tdata,
+        _compressed_ftlr_foldleft_needs_zero(A, plan, irange, jrange), scale_targets)
 end
 
 """Dispatch a run to its fold's builder. `jrange` is the run's output tile

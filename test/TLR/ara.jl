@@ -188,7 +188,7 @@ end
         res = _TLRM.ara_build_basis!(ws, dense_sampler(X, rng);
                                      eps_rel=1e-6, r_required=3)
         # Saturation is visible in the rank vector alone -- this is why no
-        # residual is computed (see docs/TODO.md, worklog item 4).
+        # residual is computed.
         @test Array(res.ranks)[1] == 16
     end
 

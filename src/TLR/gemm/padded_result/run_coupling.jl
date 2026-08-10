@@ -34,8 +34,7 @@ strided-only view of them would otherwise suffice.
 `Y` (the ARA basis being grown) is the one operand this cannot cover: it is
 owned by the caller's `ARAWorkspace`, not this run, so its address is only
 known at the first `apply_right_run!` call and cannot be cached in this
-struct without threading a descriptor through `numerics/ara.jl` — judged out
-of scope for this pass (see `docs/TODO.md`'s workspace contract). Its
+struct without threading a descriptor through `numerics/ara.jl`. Its
 pointer array is therefore built once per `apply_right_run!` call (not once
 per GEMM within it, since the fused reduction and the beta accumulation
 share the same `Y`) and is the sampler's only remaining per-pass allocation.
@@ -46,8 +45,7 @@ convergence, not once per pass) is intentionally left entirely on the
 does not compound with pass count the way the sampler's did, and its G/H
 formation batches `rowU` over member × contraction-tile (`nmember*qk`
 pointers, needing a `qk`-blocked swap) rather than member-only, which would
-need a second, larger descriptor. See `docs/TODO.md` for this scoping
-decision.
+need a second, larger descriptor.
 """
 mutable struct ColumnRunCoupling{ST,RU,CZ,BUT,BVT,HT,TT,OT,BT,T}
     S::ST
@@ -409,7 +407,7 @@ accumulation the same way. `Y`'s own pointer array remains the one residual
 per-pass cost (see [`ColumnRunCoupling`](@ref)'s docstring for why).
 
 The co-range apply (`apply_left_row_run!`, once per run, not once per pass)
-is intentionally left on the `Vector`-of-views path; see `docs/TODO.md`.
+is intentionally left on the `Vector`-of-views path.
 """
 mutable struct RowRightRunCoupling{ST,AStackT,BOT,BStackT,BUT,BVT,HT,TT,OT,BT,T}
     S::ST
@@ -713,8 +711,8 @@ is -- it is left as a documented residual, matching `T`-formation in
 operands that were never the source of the allocation this pass targets. The
 G-formation call above it and the co-range apply
 ([`apply_right_row_run!`](@ref), once per run, not once per pass) are
-unaffected; see [`ColumnRunCoupling`](@ref)'s docstring and `docs/TODO.md`
-for the general scoping rationale.
+unaffected; see [`ColumnRunCoupling`](@ref)'s docstring for the general scoping
+rationale.
 """
 mutable struct RowLeftRunCoupling{ST,AStackT,BStackT,BUT,BVT,GT,WT,OT,BT,T}
     S::ST

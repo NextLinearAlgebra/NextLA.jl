@@ -19,7 +19,7 @@ end
     _compressed_ftlr_fold_cost(meta, A, B)
 
 Closed-form per-row byte and FLOP cost for both fold bracketings, given rank
-metadata (`rank_metadata.jl`). Mirrors the paper's boxed formulas:
+metadata (`metadata.jl`). Mirrors the paper's boxed formulas:
 
     F_R(i) = 2·n_·Σ_k rA_ik·rB_k· + 2·m_i·n_·ρ_i        (Stage 2 + Stage 3, FoldRight)
     F_L(i) = 2·m_i·Σ_k rA_ik·rB_k· + 2·m_i·n_·γ_·        (Stage 2 + Stage 3, FoldLeft)
@@ -39,7 +39,7 @@ arena even though it contributes nothing to the S arena. A per-row ternary
 shortcut on `pair_ranks[i]` would silently drop exactly this contribution and
 under-count the true workspace/FLOP need — the unconditional formula, summed via
 ordinary prefix sums over any row range, always matches what the executor
-(`execute.jl`) actually allocates and computes.
+(`three_stage.jl`) actually allocates and computes.
 """
 function _compressed_ftlr_fold_cost(meta, A, B,
                                     jrange::UnitRange{Int}=1:length(meta.output_col_widths))

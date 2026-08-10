@@ -113,32 +113,58 @@ end
 
 end
 
-@testset "full-LR with one dense operand on CPU" begin
-    RM = NextLA.TileRowMajor(); CM = NextLA.TileColMajor()
-    huge = 128 * 1024 * 1024
-    rows = (
-        ('N', 'N', RM, 1), ('N', 'T', CM, huge),
-        ('T', 'N', CM, 1), ('T', 'T', RM, huge),
-    )
-    for side in (:tlr_dense, :dense_tlr), (ta, tb, order, budget) in rows
-        assert_dense_fulllr_gemm(Array, Float64, side, 14, 11, 13, (4, 3),
-                                 order, ta, tb, _ -> nothing; budget)
+@testset "dense-diagonal TLR mixed dense GEMM on CPU" begin
+    rng = MersenneTwister(404)
+    G = NextLA.TLRMatrix(zeros(Float64, 9, 9), 4, 2)
+    fill_random_tlr!(G, Array; seed=405)
+    Gdense = reconstruct_tlr(G)
+    alpha = 1.25
+    beta = -0.5
+
+    for side in (:tlr_dense, :dense_tlr),
+        trans_tlr in ('N', 'T'), trans_dense in ('N', 'T')
+        if side === :tlr_dense
+            stored_dense = trans_dense == 'N' ? (9, 7) : (7, 9)
+            X = randn(rng, Float64, stored_dense...)
+            C0 = randn(rng, Float64, 9, 7)
+            C = copy(C0)
+            workspace = NextLA.DenseGemmWorkspace(G, 4096)
+            _TLRM.gemm!(C, G, X; workspace, alpha, beta,
+                        transA=trans_tlr, transB=trans_dense)
+            opG = trans_tlr == 'N' ? Gdense : transpose(Gdense)
+            opX = trans_dense == 'N' ? X : transpose(X)
+            reference = alpha .* (opG * opX) .+ beta .* C0
+        else
+            stored_dense = trans_dense == 'N' ? (6, 9) : (9, 6)
+            X = randn(rng, Float64, stored_dense...)
+            C0 = randn(rng, Float64, 6, 9)
+            C = copy(C0)
+            workspace = NextLA.DenseGemmWorkspace(G, 4096)
+            _TLRM.gemm!(C, X, G; workspace, alpha, beta,
+                        transA=trans_dense, transB=trans_tlr)
+            opX = trans_dense == 'N' ? X : transpose(X)
+            opG = trans_tlr == 'N' ? Gdense : transpose(Gdense)
+            reference = alpha .* (opX * opG) .+ beta .* C0
+        end
+        @test C ≈ reference rtol=1e-10 atol=1e-10
     end
 
-    A = NextLA.PaddedFTLRMatrix(zeros(Float64, 8, 9), (4, 3), 2)
-    @test_throws DimensionMismatch _TLRM.gemm!(
-        zeros(8, 7), A, zeros(8, 7); workspace=1)
-    @test_throws DimensionMismatch _TLRM.gemm!(
-        zeros(7, 8), zeros(7, 8), A; workspace=1)
-    @test_throws ArgumentError _TLRM.gemm!(
-        zeros(8, 7), A, zeros(9, 7); transB='X', workspace=1)
+    # A zero-rank off-diagonal still carries a nonzero dense diagonal. This
+    # also verifies that the diagonal updates work with a zero-byte workspace.
+    D = NextLA.TLRMatrix(zeros(Float64, 9, 9), 4, 0)
+    fill_random_tlr!(D, Array; seed=406)
+    Ddense = reconstruct_tlr(D)
+    Xright = randn(rng, Float64, 9, 5)
+    Cright = randn(rng, Float64, 9, 5)
+    Cright0 = copy(Cright)
+    _TLRM.gemm!(Cright, D, Xright; workspace=0, alpha, beta)
+    @test Cright ≈ alpha .* (Ddense * Xright) .+ beta .* Cright0
 
-    Z = NextLA.PaddedFTLRMatrix(zeros(Float64, 8, 9), (4, 3), 0)
-    Cz = ones(8, 7); _TLRM.gemm!(
-        Cz, Z, zeros(9, 7); beta=-0.5, workspace=1)
-    Dz = ones(6, 9); _TLRM.gemm!(
-        Dz, zeros(6, 8), Z; beta=0.25, workspace=1)
-    @test all(Cz .== -0.5) && all(Dz .== 0.25)
+    Xleft = randn(rng, Float64, 5, 9)
+    Cleft = randn(rng, Float64, 5, 9)
+    Cleft0 = copy(Cleft)
+    _TLRM.gemm!(Cleft, Xleft, D; workspace=0, alpha, beta)
+    @test Cleft ≈ alpha .* (Xleft * Ddense) .+ beta .* Cleft0
 end
 
 @testset "TLR gemm! to dense on CUDA" begin
@@ -149,42 +175,6 @@ end
             assert_tlr_gemm_matches_dense(ArrayType, Float32, 12, 4, 2, orders..., synchronize;
                                           budget=1, alpha=Float32(1.2), beta=Float32(0.25),
                                           atol=5f-3, rtol=5f-3)
-
-            @testset "precision policy" begin
-                A16 = NextLA.PaddedFTLRMatrix(ArrayType(zeros(Float16, 10, 10)), 4, 2;
-                                       tile_order=orders[1])
-                B16 = NextLA.PaddedFTLRMatrix(ArrayType(zeros(Float16, 10, 10)), 4, 2;
-                                       tile_order=orders[2])
-                fill_random_tlr!(A16, ArrayType; seed=501)
-                fill_random_tlr!(B16, ArrayType; seed=502)
-
-                Dright = ArrayType(randn(Float16, 10, 7))
-                Cright = ArrayType(zeros(Float32, 10, 7))
-                NextLA.TLRmodule.gemm!(Cright, A16, Dright; compute=Float32,
-                                       workspace=16)
-                synchronize(Cright)
-                @test isapprox(Array(Cright), Float32.(reconstruct_tlr(A16)) *
-                                              Float32.(Array(Dright)); atol=0.2f0, rtol=0.03f0)
-
-                Dleft = ArrayType(randn(Float16, 6, 10))
-                Cleft = ArrayType(zeros(Float32, 6, 10))
-                NextLA.TLRmodule.gemm!(Cleft, Dleft, B16; compute=Float32,
-                                       workspace=16)
-                synchronize(Cleft)
-                @test isapprox(Array(Cleft), Float32.(Array(Dleft)) *
-                                             Float32.(reconstruct_tlr(B16)); atol=0.2f0, rtol=0.03f0)
-
-                A32 = NextLA.PaddedFTLRMatrix(ArrayType(zeros(Float32, 8, 8)), 4, 2)
-                fill_random_tlr!(A32, ArrayType; seed=503)
-                Ctf32 = ArrayType(zeros(Float32, 8, 8))
-
-                Dtf32 = ArrayType(randn(Float32, 8, 6))
-                NextLA.TLRmodule.gemm!(view(Ctf32, :, 1:6), A32, Dtf32;
-                                       compute=NextLA.TF32(), workspace=1024)
-                synchronize(Ctf32)
-                @test isapprox(Array(Ctf32[:, 1:6]), reconstruct_tlr(A32) * Array(Dtf32);
-                               atol=0.1f0, rtol=0.03f0)
-            end
         end
     end
 end

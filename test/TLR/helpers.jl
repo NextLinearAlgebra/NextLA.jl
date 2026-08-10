@@ -203,39 +203,6 @@ function assert_tlr_gemm_matches_dense(ArrayType::Type, T::Type, n::Int, b::Int,
                               budget, alpha, beta, atol, rtol)
 end
 
-function assert_dense_fulllr_gemm(ArrayType::Type, ::Type{T}, side::Symbol,
-                                  m, k, n, tiles, order, transA, transB, synchronize;
-                                  budget, atol=1e-9, rtol=1e-9) where {T}
-    stored(rows, cols, op) = uppercase(op) == 'T' ? (cols, rows) : (rows, cols)
-    optiles(ts, op) = uppercase(op) == 'T' ? reverse(ts) : ts
-    opd(X, op) = uppercase(op) == 'T' ? transpose(X) : X
-    α, β = T(1.3), T(-0.4)
-    C0 = randn(MersenneTwister(303), T, m, n)
-    C = ArrayType(C0)
-
-    if side === :tlr_dense
-        A = NextLA.PaddedFTLRMatrix(ArrayType(zeros(T, stored(m, k, transA)...)),
-                             optiles(tiles, transA), 3; tile_order=order)
-        fill_random_tlr!(A, ArrayType; seed=101)
-        B = ArrayType(randn(MersenneTwister(202), T, stored(k, n, transB)...))
-        workspace = max(budget, 3 * sizeof(T))
-        NextLA.TLRmodule.gemm!(C, A, B; alpha=α, beta=β, transA, transB,
-                               workspace)
-        ref = α * opd(reconstruct_tlr(A), transA) * opd(Array(B), transB) + β * C0
-    else
-        A = ArrayType(randn(MersenneTwister(101), T, stored(m, k, transA)...))
-        B = NextLA.PaddedFTLRMatrix(ArrayType(zeros(T, stored(k, n, transB)...)),
-                             optiles(tiles, transB), 3; tile_order=order)
-        fill_random_tlr!(B, ArrayType; seed=202)
-        workspace = max(budget, 3 * sizeof(T))
-        NextLA.TLRmodule.gemm!(C, A, B; alpha=α, beta=β, transA, transB,
-                               workspace)
-        ref = α * opd(Array(A), transA) * opd(reconstruct_tlr(B), transB) + β * C0
-    end
-    synchronize(C)
-    @test isapprox(Array(C), ref; atol, rtol)
-end
-
 function assert_dense_diag_transpose_matches(n, b, r, oA, oB, transA, transB;
                                              budget, alpha=1.3, beta=-0.4,
                                              ArrayType=Array, synchronize=_ -> nothing,

@@ -124,8 +124,8 @@ Sampling is adaptive: each tile stops once its own range is captured, rather
 than every tile paying a single sketch at the full `maxrank` width. That earlier
 scheme produced a panel that was rank deficient by construction on any tile of
 true rank below capacity, which is precisely where a one-shot wide sketch stops
-revealing rank (`docs/TODO.md` in the GEMM tree, worklog items 1 and 3); the
-prune then decided on a basis that `κ(R₁)` had already destroyed.
+revealing rank; the prune then decided on a basis that `κ(R₁)` had already
+destroyed.
 
 The reported error is exact rather than indicative. With `Q` orthonormal,
 `‖A − QQᵀA‖² = ‖A‖² − ‖Z‖²` by Pythagoras, and the truncation adds

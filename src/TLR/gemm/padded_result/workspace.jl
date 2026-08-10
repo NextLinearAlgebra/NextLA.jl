@@ -21,7 +21,7 @@ scratch, which is live only during sampling.
 `nothing`, so every call site can be written once and work whether or not an
 arena was supplied.
 """
-struct ARARunArena{PA<:DenseGemmArena,TA<:DenseGemmArena,HA<:DenseGemmArena}
+struct ARARunArena{PA<:GemmArena,TA<:GemmArena,HA<:GemmArena}
     persistent_t::PA
     phase_t::TA
     phase_thi::HA
@@ -36,9 +36,9 @@ function ARARunArena(backend, ::Type{T}, ::Type{Thi},
     phase = allocate(backend, T, cld(Int(phase_t_bytes), sizeof(T)))
     phase_hi = allocate(backend, Thi, cld(Int(phase_thi_bytes), sizeof(Thi)))
     return ARARunArena(
-        DenseGemmArena(persistent, 1),
-        DenseGemmArena(phase, 1),
-        DenseGemmArena(phase_hi, 1),
+        GemmArena(persistent, 1),
+        GemmArena(phase, 1),
+        GemmArena(phase_hi, 1),
     )
 end
 

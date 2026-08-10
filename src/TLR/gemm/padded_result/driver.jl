@@ -1,6 +1,6 @@
 # gemm! entry point for the canonical TLR-output GEMM: produces a
-# compressed TLR C via ARA sampling (single_tile_coupling.jl/run_coupling.jl,
-# single_tile_sampling.jl/rolling_schedule.jl). Sampling-side selection, run
+# compressed TLR C via ARA sampling (run_coupling.jl/rolling_schedule.jl).
+# Sampling-side selection, run
 # scatter, and the reusable-workspace-driven traversal loop live here.
 
 @inline _active_rank_cap(A::PaddedFTLRMatrix) =

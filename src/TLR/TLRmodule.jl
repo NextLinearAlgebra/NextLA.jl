@@ -57,7 +57,9 @@ include("numerics/ara.jl")
 
 include("compression/compress.jl")
 include("compression/uncompress.jl")
-include("gemm/operands.jl")
+include("gemm/common/operands.jl")
+include("gemm/common/precision.jl")
+include("gemm/common/arena.jl")
 include("gemm/dense_result.jl")
 include("gemm/padded_result.jl")
 
