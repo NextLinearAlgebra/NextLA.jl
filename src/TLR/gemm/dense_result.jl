@@ -1,6 +1,4 @@
 # Dense-output GEMM for exact packed factors and dense-diagonal TLR operands.
-# `common/axis_strategy.jl` is included earlier because the padded-result ARA
-# path still uses its factor-layout traits.
 include("common/precision.jl")
 include("common/workspace.jl")
 include("dense_result/compressed_ftlr/rank_metadata.jl")

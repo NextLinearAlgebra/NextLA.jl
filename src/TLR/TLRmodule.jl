@@ -57,7 +57,6 @@ include("numerics/ara.jl")
 
 include("compression/compress.jl")
 include("compression/uncompress.jl")
-include("gemm/common/axis_strategy.jl")
 include("gemm/operands.jl")
 include("gemm/dense_result.jl")
 include("gemm/padded_result.jl")

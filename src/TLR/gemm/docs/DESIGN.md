@@ -30,8 +30,8 @@ For `TLRMatrix`, the logical view also provides dense diagonal tile references
 with the BLAS operation needed after transposition. Off-diagonal factors are
 obtained from its full-grid compressed child, whose diagonal ranks are zero.
 
-`InteriorOperand`, `PanelOperand`, and `CornerOperand` remain storage-addressing
-helpers for the padded-output ARA implementation. They do not own storage.
+`InteriorOperand` remains a storage-addressing helper for the regular-grid
+padded-output ARA implementation. It does not own storage.
 
 ## Regular low-rank core
 

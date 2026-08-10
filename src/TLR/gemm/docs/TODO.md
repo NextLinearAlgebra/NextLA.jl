@@ -368,12 +368,10 @@ among contraction, orthogonalization, and finalization.
 Before implementing shared cross-lane slot ownership, recover cross-lane
 occupancy by growing a single batched-GEMM call's batch count rather than by
 running several lane schedulers on independent streams. `dense_result/low_rank_terms.jl`'s
-`execute_dense_stage3!(::KAsSerialLoop, ::FoldRight, run::ColumnRun, ...)`
-already does exactly this for the dense-output path: for one fixed
-contraction tile `k`, it folds every row-panel × column-panel pair in the run
-into one `precision_gemm_batched!` call (the shared operand's pointer is
-simply pushed once per pairing, not broadcast) rather than issuing one launch
-per pairing. The same mechanism — one bigger pointer-batched call spanning
+compressed run builders already do this for the dense-output path: they fuse
+all compatible row/column work in a run into grouped Stage-3 submissions rather
+than issuing one launch per tile pair. The same mechanism — one bigger
+pointer-batched call spanning
 several lanes' pending/active members — applies here: it needs no stream
 primitive, no shared free-list, and no cross-stream ordering, only a larger
 batch built from whichever lanes have members ready. It gives up the
