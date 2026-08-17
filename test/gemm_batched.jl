@@ -6,7 +6,7 @@ using Logging
 @test !(:gemmEx! in names(NextLA))
 @test !(:gemmEx_batched! in names(NextLA))
 @test NextLA.gemm! !== LinearAlgebra.mul!
-@test NextLA.TLRmodule.gemm! === NextLA.gemm!
+@test parentmodule(NextLA.gemm!) === NextLA
 
 let
     A = Float64[1 2; 3 4]

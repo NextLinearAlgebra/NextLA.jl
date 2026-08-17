@@ -1,6 +1,6 @@
 # Allocation-regression coverage for the canonical TLR-output GEMM's hot
 # sampler: the
-# canonical `gemm!(C::PaddedFTLRMatrix, A::PaddedFTLRMatrix, B::PaddedFTLRMatrix; ...)` hot sampler
+# canonical `gemm!(C::CompressedFTLRMatrix, A::CompressedFTLRMatrix, B::CompressedFTLRMatrix; ...)` hot sampler
 # must not rebuild a `Vector`-of-views/device-pointer-array per ARA pass.
 #
 # CUDA-only: Julia's `@allocated` counts host heap bytes but cannot see a GPU
@@ -21,9 +21,9 @@
 # `trsm_batched!`/`potrfBatched!` calls allocate a transient device pointer
 # array on every ARA pass independent of anything in `padded_result/run_coupling.jl`, and
 # a few same-call operands that are run-owned but not reshape-representable
-# as a strided batch (T-formation/W-formation in `RowRightRunCoupling`/
-# `RowLeftRunCoupling`) are left on the `Vector`-of-views path -- both are
-# documented, deliberate residuals, not oversights this test should fail on.
+# as a strided batch (coupling-sketch formation in `RunCoupling`) are left on
+# the `Vector`-of-views path -- both are documented, deliberate residuals,
+# not oversights this test should fail on.
 # The threshold below is instead
 # calibrated with generous headroom (roughly 3x) over the measured
 # allocation for this fixture, so it catches a regression back toward
@@ -44,14 +44,14 @@ if isdefined(@__MODULE__, :CUDA)
                              transA, transB, rA=3, rB=4, seed=1200)
         T = Float64
         A, B, C = _canonical_tlr_fixture(T, ArrayType; rA, rB, seed)
-        f = () -> NextLA.TLRmodule.gemm!(
+        f = () -> NextLA.gemm!(
             C, A, B; alpha=1.2, beta=0.0, transA, transB,
             tol=1e-7, rel=true, eps_rel=1e-7, r_required=3, block=4,
         )
         f()  # warm up: first call pays JIT/dispatch-resolution cost
-        synchronize(C.int_U)
+        synchronize(C.outer.data)
         bytes = _cuda_allocated(f)
-        synchronize(C.int_U)
+        synchronize(C.outer.data)
         return bytes
     end
 end
@@ -88,13 +88,13 @@ if isdefined(@__MODULE__, :CUDA)
                 C, A, B; transA='N', transB='T', block=4)
         workspace = NextLA.TLRGemmWorkspace(
             C, A, B; bytes, transA='N', transB='T', block=4)
-        f = () -> NextLA.TLRmodule.gemm!(
+        f = () -> NextLA.gemm!(
             C, A, B; transA='N', transB='T', tol=1e-7, rel=true,
             eps_rel=1e-7, r_required=3, block=4, workspace)
         f()
-        synchronize(C.int_U)
+        synchronize(C.outer.data)
         allocated = _cuda_allocated(f)
-        synchronize(C.int_U)
+        synchronize(C.outer.data)
         return allocated
     end
 end
@@ -113,8 +113,7 @@ end
 
 # Cross-run arena reuse: the canonical driver builds one ARARunArena before
 # its traversal loop and resets it once per row/column run instead of letting
-# every run's ColumnRunCoupling/RowRightRunCoupling/RowLeftRunCoupling and
-# ARAWorkspace allocate fresh device storage.
+# every run's RunCoupling and ARAWorkspace allocate fresh device storage.
 #
 # A naive "grow the whole grid" comparison can't isolate this: for a square
 # matrix, growing n grows both the per-run size (nmember, scales with the
@@ -132,21 +131,25 @@ if isdefined(@__MODULE__, :CUDA)
         T = Float64
         b = 16
         qk = qn = 3
-        A = NextLA.PaddedFTLRMatrix(ArrayType(zeros(T, qm * b, qk * b)), b, rA)
-        B = NextLA.PaddedFTLRMatrix(ArrayType(zeros(T, qk * b, qn * b)), b, rB)
-        C = NextLA.PaddedFTLRMatrix(ArrayType(zeros(T, qm * b, qn * b)), b, 16)
+        backend = _canonical_tlr_backend(ArrayType)
+        A = NextLA.CompressedFTLRMatrix(backend, T, qm * b, qk * b, b, fill(rA, qm, qk);
+                                        execution_rank_policy=:exact)
+        B = NextLA.CompressedFTLRMatrix(backend, T, qk * b, qn * b, b, fill(rB, qk, qn);
+                                        execution_rank_policy=:exact)
+        C = NextLA.CompressedFTLRMatrix(backend, T, qm * b, qn * b, b, zeros(Int, qm, qn);
+                                        execution_ranks=fill(16, qm, qn))
         fill_random_tlr!(A, ArrayType; seed=seed + 1)
         fill_random_tlr!(B, ArrayType; seed=seed + 2)
         workspace = NextLA.TLRGemmWorkspace(C, A, B; block=4)
-        f = () -> NextLA.TLRmodule.gemm!(
+        f = () -> NextLA.gemm!(
             C, A, B; alpha=1.2, beta=0.0, transA='N', transB='N',
             tol=1e-7, rel=true, eps_rel=1e-7, r_required=3, block=4,
             workspace,
         )
         f()
-        synchronize(C.int_U)
+        synchronize(C.outer.data)
         bytes = _cuda_allocated(f)
-        synchronize(C.int_U)
+        synchronize(C.outer.data)
         return bytes
     end
 end

@@ -3,7 +3,7 @@
 # Sampling-side selection, run
 # scatter, and the reusable-workspace-driven traversal loop live here.
 
-@inline _active_rank_cap(A::PaddedFTLRMatrix) =
+@inline _active_rank_cap(A::CompressedFTLRMatrix) =
     isempty(A.ranks) ? 0 : min(maxrank(A), maximum(Int, A.ranks))
 
 @inline function _right_sampling_workspace_elems(qm::Int, qk::Int,
@@ -23,25 +23,40 @@ end
 end
 
 """
+    _require_complementary_packing(X, name)
+
+`padded_result`'s zero-copy paths need `X`'s *logical* outer order to be
+`TileRowMajor` and inner order `TileColMajor` — the default complementary
+packing every `CompressedFTLRMatrix` here is constructed with. Under that
+packing this holds for both `'N'` and `'T'` (composing `_transpose_order`
+with itself returns the original order), which is what lets one code path
+serve all four transpose combinations instead of gating on which side is
+zero-copy for a given transpose flag.
+"""
+@inline function _require_complementary_packing(X, name::String)
+    compressed_ftlr_outer_order(X) isa TileRowMajor &&
+        compressed_ftlr_inner_order(X) isa TileColMajor || throw(ArgumentError(
+        "canonical TLR gemm! requires complementary packing (outer row-major, " *
+        "inner col-major) for $name"))
+    return nothing
+end
+
+"""
     choose_tlr_sampling_side(LA, LB, rmaxC, block, rA, rB) -> Symbol
 
-Choose the repeated ARA apply from the logical layouts. A logical row-major A
-permits zero-copy right sampling; a logical column-major B permits zero-copy
-left sampling. When both are available, compare the peak retained core
-workspace of one fixed-column right run with one fixed-row left run.
+Choose the repeated ARA apply from the logical layouts. Under the
+complementary packing `_require_complementary_packing` requires, both a
+zero-copy right sampling stack (from `A`) and a zero-copy left sampling stack
+(from `B`) are always available, for any transpose combination — so this is a
+pure cost comparison: the peak retained core workspace of one fixed-column
+right run vs. one fixed-row left run.
 """
 function choose_tlr_sampling_side(LA::LogicalTLROperand,
                                   LB::LogicalTLROperand,
                                   rmaxC::Int, block::Int,
                                   rA::Int, rB::Int)
-    can_right = tile_order(LA) isa TileRowMajor
-    can_left = tile_order(LB) isa TileColMajor
-    can_right || can_left || throw(ArgumentError(
-        "canonical TLR GEMM does not yet support transA='T', transB='N': " *
-        "neither contraction stack is contiguous; run-level packing/reduction " *
-        "is deferred to the general-storage API"))
-    can_right && !can_left && return :right
-    can_left && !can_right && return :left
+    _require_complementary_packing(LA, "A")
+    _require_complementary_packing(LB, "B")
 
     qm, qk = grid_size(LA)
     _, qn = grid_size(LB)
@@ -68,45 +83,55 @@ end
 end
 
 """
-    _store_tlr_run!(C, U, V, ranks_run, err_run, slots, ranks_dev, err_dev,
-                    slots_dev, slots_host)
+    _store_tlr_run!(C, U, V, ranks_run, err_run, outer_slots, inner_slots,
+                    ranks_dev, err_dev, slots_dev, slots_host)
 
 Scatter one run's factors and diagnostics into `C`'s canonical storage.
-`slots_dev` is caller-owned scratch (sized to at least `length(slots)`,
+`C.outer` (row-major) and `C.inner` (col-major) linearize the same logical
+`(i,j)` tile to *different* scalar slots, so two slot maps are needed —
+`outer_slots` also drives `ranks_dev`/`err_dev`, since `C`'s own diagnostic
+rank-vector order matches `C.outer`'s (both `TileRowMajor` by construction).
+`slots_dev` is caller-owned scratch (sized to at least `length(outer_slots)`,
 reused across the driver's traversal of `C`'s rows/columns) rather than
 allocated here, since every run in that traversal needs an identically-sized
 buffer.
 """
-function _store_tlr_run!(C::PaddedFTLRMatrix, U, V, ranks_run, err_run,
-                         slots::AbstractVector{Int}, ranks_dev, err_dev,
-                         slots_dev, slots_host)
+function _store_tlr_run!(C::CompressedFTLRMatrix, U, V, ranks_run, err_run,
+                         outer_slots::AbstractVector{Int},
+                         inner_slots::AbstractVector{Int},
+                         ranks_dev, err_dev, slots_dev, slots_host)
     backend = get_backend(C)
-    count = length(slots)
+    count = length(outer_slots)
     @inbounds for p in 1:count
-        slots_host[p] = Int32(slots[p])
+        slots_host[p] = Int32(outer_slots[p])
     end
     copyto!(slots_dev, slots_host)
-    sd = view(slots_dev, 1:count)
+    sd_outer = view(slots_dev, 1:count)
     _store_tlr_run_factor_kernel!(backend)(
-        C.int_U, U, sd; ndrange=size(U),
-    )
-    _store_tlr_run_factor_kernel!(backend)(
-        C.int_V, V, sd; ndrange=size(V),
+        _compressed_ftlr_uniform_view(C.outer), U, sd_outer; ndrange=size(U),
     )
     _store_tlr_run_diagnostic_kernel!(backend)(
-        ranks_dev, err_dev, ranks_run, err_run, sd; ndrange=count,
+        ranks_dev, err_dev, ranks_run, err_run, sd_outer; ndrange=count,
+    )
+    @inbounds for p in 1:count
+        slots_host[p] = Int32(inner_slots[p])
+    end
+    copyto!(slots_dev, slots_host)
+    sd_inner = view(slots_dev, 1:count)
+    _store_tlr_run_factor_kernel!(backend)(
+        _compressed_ftlr_uniform_view(C.inner), V, sd_inner; ndrange=size(V),
     )
     return nothing
 end
 
-function _validate_canonical_tlr_gemm(C::PaddedFTLRMatrix,
-                                      A::PaddedFTLRMatrix,
-                                      B::PaddedFTLRMatrix,
+function _validate_canonical_tlr_gemm(C::CompressedFTLRMatrix,
+                                      A::CompressedFTLRMatrix,
+                                      B::CompressedFTLRMatrix,
                                       LA::LogicalTLROperand,
                                       LB::LogicalTLROperand)
-    all(tile_order(X) isa TileRowMajor for X in (C, A, B)) ||
-        throw(ArgumentError(
-            "canonical TLR gemm! requires physical TileRowMajor storage for C, A, and B"))
+    _require_complementary_packing(C, "C")
+    _require_complementary_packing(LA, "A")
+    _require_complementary_packing(LB, "B")
     size(LA, 2) == size(LB, 1) ||
         throw(DimensionMismatch("inner dimensions must match"))
     size(C) == (size(LA, 1), size(LB, 2)) ||
@@ -122,9 +147,9 @@ function _validate_canonical_tlr_gemm(C::PaddedFTLRMatrix,
     return nothing
 end
 
-function _tlr_gemm_workspace_spec(C::PaddedFTLRMatrix{BackendT,T},
-                                  A::PaddedFTLRMatrix{BackendT,T},
-                                  B::PaddedFTLRMatrix{BackendT,T};
+function _tlr_gemm_workspace_spec(C::CompressedFTLRMatrix{BackendT,T},
+                                  A::CompressedFTLRMatrix{BackendT,T},
+                                  B::CompressedFTLRMatrix{BackendT,T};
                                   transA::Char='N', transB::Char='N',
                                   block::Int=32) where {BackendT,T}
     LA = logical_operand(A, transA)
@@ -133,20 +158,25 @@ function _tlr_gemm_workspace_spec(C::PaddedFTLRMatrix{BackendT,T},
     qm, qk = grid_size(LA)
     _, qn = grid_size(LB)
     rA, rB = _active_rank_cap(A), _active_rank_cap(B)
-    blk = min(block, max(maxrank(C), 1))
-    side = choose_tlr_sampling_side(LA, LB, maxrank(C), blk, rA, rB)
-    family = side === :right && tile_order(LB) isa TileColMajor ?
-        :column : (side === :right ? :row_right : :row_left)
+    cap = execution_maxrank(C)
+    blk = min(block, max(cap, 1))
+    side = choose_tlr_sampling_side(LA, LB, cap, blk, rA, rB)
+    # Complementary packing makes compressed_ftlr_inner_order(LB) isa
+    # TileColMajor unconditionally true, so the fixed-row "family=:row_right"
+    # variant (right-sampling with the row fixed, rather than the column) is
+    # never selected -- it's superseded by :column, which is strictly
+    # available whenever :right is. Only two families remain reachable.
+    family = side === :right ? :column : :row_left
     nmember = family === :column ? qm : qn
     bm = nominal_tile_size(C, 1)
     bn = nominal_tile_size(C, 2)
     Thi = tlr_orthogonalization_type(T)
     arena_bytes = ara_run_workspace_bytes(
-        family, rA, rB, qk, nmember, blk, maxrank(C), bm, bn, T, Thi)
+        family, rA, rB, qk, nmember, blk, cap, bm, bn, T, Thi)
     key = (
         backend=typeof(get_backend(C)), T=T, rankT=eltype(C.ranks),
         family=family, qm=qm, qk=qk, qn=qn, nmember=nmember,
-        rA=rA, rB=rB, block=blk, maxrank=maxrank(C), bm=bm, bn=bn,
+        rA=rA, rB=rB, block=blk, maxrank=cap, bm=bm, bn=bn,
     )
     return (; LA, LB, side, family, nmember, arena_bytes, key, Thi)
 end
@@ -176,28 +206,32 @@ function _prepare_tlr_gemm_workspace(C, A, B, workspace;
 end
 
 """
-    gemm!(C::PaddedFTLRMatrix, A::PaddedFTLRMatrix, B::PaddedFTLRMatrix;
+    gemm!(C::CompressedFTLRMatrix, A::CompressedFTLRMatrix, B::CompressedFTLRMatrix;
           alpha=true, beta=false, transA='N', transB='N',
           tol=0, rel=false, eps_rel=nothing, r_required=10, block=32,
           compute=nothing, workspace=nothing) -> C
 
-Canonical physical-row-major TLR result GEMM:
+Canonical TLR-output GEMM:
 
     C := alpha * op(A) * op(B) + beta * C
 
-`C`, `A`, and `B` must all be physically `TileRowMajor`. `NN` uses right
-sampling, `TT` uses left sampling, and `NT` chooses between both zero-copy
-terminal stacks from rank-derived intermediate workspace. `TN` is deliberately
-unsupported until the general-storage packing/reduction path is implemented.
+`C`, `A`, and `B` must all use the default complementary packing (`outer`
+row-major, `inner` column-major) — `C` is normally built via the
+reserved-capacity `CompressedFTLRMatrix` constructor (`ranks_in` all zero,
+`execution_ranks` set to the desired capacity). Because that packing's
+logical outer/inner order is transpose-invariant, all four transpose
+combinations (`NN`, `NT`, `TN`, `TT`) are supported and use the same cost-based
+choice between a zero-copy right-sampling stack (from `A`) and a zero-copy
+left-sampling stack (from `B`); `choose_tlr_sampling_side` reports which.
 
 `tol` controls final Frobenius truncation. `eps_rel` controls adaptive range
 capture and defaults to `max(tol, ara_stopping_floor(promoted_type))`.
 `workspace` accepts a byte count or a reusable `TLRGemmWorkspace`; omitting
 it constructs one temporary workspace for convenience.
 """
-function _gemm_tlr!(C::PaddedFTLRMatrix{BackendT,T},
-                    A::PaddedFTLRMatrix{BackendT,T},
-                    B::PaddedFTLRMatrix{BackendT,T};
+function _gemm_tlr!(C::CompressedFTLRMatrix{BackendT,T},
+                    A::CompressedFTLRMatrix{BackendT,T},
+                    B::CompressedFTLRMatrix{BackendT,T};
                alpha=true, beta=false,
                transA::Char='N', transB::Char='N',
                tol::Real=0.0, rel::Bool=false,
@@ -229,19 +263,19 @@ function _gemm_tlr!(C::PaddedFTLRMatrix{BackendT,T},
     qm, qk = grid_size(LA)
     _, qn = grid_size(LB)
     rA, rB = _active_rank_cap(A), _active_rank_cap(B)
-    blk = min(block, max(maxrank(C), 1))
-    side = workspace_spec.side
+    cap_C = execution_maxrank(C)
+    blk = min(block, max(cap_C, 1))
     backend = get_backend(C)
     ranks_dev = ws_owner.ranks_global
     err_dev = ws_owner.errors_global
     bm_tile = nominal_tile_size(C, 1)
     bn_tile = nominal_tile_size(C, 2)
 
-    if side === :right && tile_order(LB) isa TileColMajor
+    if workspace_spec.family === :column
         # NT, right choice: fixed columns share H. `arena` and `ws_owner`'s
         # traversal/diagnostic buffers are sized once for this family/shape
         # and reused (reset) across every column below; each iteration
-        # constructs a fresh `ColumnRunCoupling`/`ARAWorkspace` from the
+        # constructs a fresh `RunCoupling{:column}`/`ARAWorkspace` from the
         # arena and drives it to convergence via `_rolling_lane_loop!`,
         # which rolls pending members into released slots as active ones
         # retire instead of running the whole column as one fixed batch.
@@ -250,48 +284,37 @@ function _gemm_tlr!(C::PaddedFTLRMatrix{BackendT,T},
         for j in 1:qn
             _arena_reset!(arena)
             initial = 1:min(cap, qm)
-            run = ColumnRunCoupling(
-                ops, initial, j; alpha=α, beta=β, C=LC,
-                block=blk, maxrank=maxrank(C), rA, rB, compute=mode, arena)
+            run = RunCoupling(
+                Val(:column), ops, initial, j; alpha=α, beta=β, C=LC,
+                block=blk, maxrank=cap_C, rA, rB, compute=mode, arena)
             ara_ws = ARAWorkspace(
-                T, backend, bm_tile, maxrank(C), cap; block=blk, arena,
+                T, backend, bm_tile, cap_C, cap; block=blk, arena,
                 state_storage=ws_owner.ara_state)
             _rolling_lane_loop!(
                 C, run, ara_ws, 1:qm, j, ops, arena, ws_owner;
                 beta=β, eps_rel=sample_tol, r_required, tol, rel,
-                compute=mode, side=:right, stats,
+                compute=mode, stats,
             )
         end
     else
-        # NN right sampling, or NT/TT left sampling: fixed output rows.
+        # side === :left: fixed output rows, left sampling.
         arena = ws_owner.arena
         cap = ws_owner.key.capacity
         for i in 1:qm
             _arena_reset!(arena)
             initial = 1:min(cap, qn)
-            if side === :right
-                run = RowRightRunCoupling(
-                    ops, i, initial; alpha=α, beta=β, C=LC,
-                    block=blk, maxrank=maxrank(C), rA, rB, compute=mode,
-                    arena, index_scratch=ws_owner.indices,
-                )
-                ara_ws = ARAWorkspace(
-                    T, backend, bm_tile, maxrank(C), cap; block=blk, arena,
-                    state_storage=ws_owner.ara_state)
-            else
-                run = RowLeftRunCoupling(
-                    ops, i, initial; alpha=α, beta=β, C=LC,
-                    block=blk, maxrank=maxrank(C), rA, rB, compute=mode,
-                    arena,
-                )
-                ara_ws = ARAWorkspace(
-                    T, backend, bn_tile, maxrank(C), cap; block=blk, arena,
-                    state_storage=ws_owner.ara_state)
-            end
+            run = RunCoupling(
+                Val(:row), ops, i, initial; alpha=α, beta=β, C=LC,
+                block=blk, maxrank=cap_C, rA, rB, compute=mode,
+                arena,
+            )
+            ara_ws = ARAWorkspace(
+                T, backend, bn_tile, cap_C, cap; block=blk, arena,
+                state_storage=ws_owner.ara_state)
             _rolling_lane_loop!(
                 C, run, ara_ws, 1:qn, i, ops, arena, ws_owner;
                 beta=β, eps_rel=sample_tol, r_required, tol, rel,
-                compute=mode, side, stats,
+                compute=mode, stats,
             )
         end
     end
@@ -305,9 +328,9 @@ function _gemm_tlr!(C::PaddedFTLRMatrix{BackendT,T},
     return C
 end
 
-function gemm!(C::PaddedFTLRMatrix{BackendT,T},
-               A::PaddedFTLRMatrix{BackendT,T},
-               B::PaddedFTLRMatrix{BackendT,T};
+function gemm!(C::CompressedFTLRMatrix{BackendT,T},
+               A::CompressedFTLRMatrix{BackendT,T},
+               B::CompressedFTLRMatrix{BackendT,T};
                alpha=true, beta=false,
                transA::Char='N', transB::Char='N',
                tol::Real=0.0, rel::Bool=false,
@@ -324,8 +347,8 @@ end
 Internal profiling entry point for the R4a scheduler. It intentionally keeps
 instrumentation out of the public `gemm!` keyword contract.
 """
-function _tlr_gemm_schedule_stats!(C::PaddedFTLRMatrix, A::PaddedFTLRMatrix, B::PaddedFTLRMatrix;
-                                   kwargs...)
+function _tlr_gemm_schedule_stats!(C::CompressedFTLRMatrix, A::CompressedFTLRMatrix,
+                                   B::CompressedFTLRMatrix; kwargs...)
     stats = TLRGemmScheduleStats()
     _gemm_tlr!(C, A, B; kwargs..., stats)
     return stats

@@ -338,3 +338,62 @@ function compress!(A_tlr::PaddedFTLRMatrix{<:Any,T}, A::AbstractMatrix{T},
 
     A_tlr
 end
+
+"""
+    compress!(A_tlr::CompressedFTLRMatrix, A::AbstractMatrix; tol=0.0, rel=false)
+
+Populate `A_tlr`'s reserved factor storage in place from the dense matrix `A`.
+`A_tlr` must already have enough reserved capacity (`execution_ranks`) for the
+ranks ARA discovers — construct it with `execution_ranks` set to the desired
+capacity ceiling; throws if a discovered rank exceeds what was reserved at a
+given tile. Only `A_tlr`'s own `outer`/`inner` storage, `ranks`, and `resid`
+are written; `execution_ranks`/`maxrank`/`execution_maxrank` reflect the
+reserved capacity and are unchanged.
+
+**`maxrank(A_tlr)` stays frozen at whatever it was built with (`0`, if built
+via the zero-`ranks_in`/explicit-`execution_ranks` reserve-capacity pattern),
+never the real ranks this call discovers** — `CompressedFTLRMatrix` is
+immutable, so a scalar field set at construction cannot be updated later, only
+the array fields it owns. Code that reads `maxrank(A_tlr)` expecting it to
+reflect real content (e.g. `padded_result`'s `_active_rank_cap`, used for
+*input* operands to the canonical TLR-output GEMM) will silently see `0` for a
+container populated this way. This method is meant for containers, like a
+canonical GEMM's *output* `C`, where downstream code reads
+`execution_maxrank` instead and never reads `maxrank`. To build a container
+usable as a canonical-GEMM *input* — where `maxrank` must reflect real
+content — construct fresh with `ranks_in` set to the true per-tile ranks
+(mirroring `pack_compressed_ftlr`'s pattern), not this reserve-then-populate
+one.
+
+Rank discovery reuses the same ARA sampling core as `PaddedFTLRMatrix`'s
+compression, via a private scratch sized to `A_tlr`'s reserved capacity — this
+is a plain, unamortised populate-from-dense path (no reusable workspace),
+intended for building fixtures and tests rather than a hot loop.
+"""
+function compress!(A_tlr::CompressedFTLRMatrix{<:Any,T}, A::AbstractMatrix{T};
+    tol::Real=0.0, rel::Bool=false) where {T}
+
+    size(A) == size(A_tlr) || throw(DimensionMismatch("A dimensions must match A_tlr"))
+    tol >= 0 || throw(ArgumentError("tol must be >= 0"))
+
+    qm, qn = grid_size(A_tlr)
+    capacity = execution_maxrank(A_tlr)
+    scratch = PaddedFTLRMatrix(get_backend(A_tlr), T, A_tlr.m, A_tlr.n,
+                               nominal_tile_size(A_tlr), capacity)
+    compress!(scratch, A; tol, rel)
+
+    @inbounds for j in 1:qn, i in 1:qm
+        r = Int(ranks(scratch)[_rank_index(scratch, i, j)])
+        cap_ij = _compressed_ftlr_execution_rank(A_tlr, i, j)
+        r <= cap_ij || throw(ArgumentError(
+            "discovered rank $r at ($i, $j) exceeds A_tlr's reserved capacity $cap_ij"))
+        idx = _rank_index(A_tlr, i, j)
+        A_tlr.ranks[idx] = r
+        A_tlr.resid[idx] = residuals(scratch)[_rank_index(scratch, i, j)]
+        r == 0 && continue
+        U, V = get_factors(scratch, i, j)
+        copyto!(compressed_ftlr_outer(A_tlr, i, j), U)
+        copyto!(compressed_ftlr_inner(A_tlr, i, j), V)
+    end
+    A_tlr
+end

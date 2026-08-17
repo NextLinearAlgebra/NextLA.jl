@@ -8,7 +8,7 @@ The destination representation is the top-level implementation boundary.
 | `AbstractMatrix` | compressed × dense, dense × compressed | `dense_result/` two-stage specializations |
 | `AbstractMatrix` | dense-diagonal TLR × dense, dense × dense-diagonal TLR | compressed two-stage specialization plus block-diagonal updates |
 | `AbstractMatrix` | dense-diagonal TLR × dense-diagonal TLR | compressed product plus diagonal updates |
-| `PaddedFTLRMatrix` | padded × padded | `padded_result/` ARA recompression |
+| `CompressedFTLRMatrix` (reserved-capacity) | compressed × compressed | `padded_result/` ARA recompression |
 
 No dense-result code depends on the padded-result scheduler, and no
 padded-result code participates in dense accumulation.
@@ -29,11 +29,11 @@ gemm/
 │   ├── dense_diagonal.jl dense-diagonal cross terms
 │   └── driver.jl         dense-destination public dispatch
 └── padded_result/
-    ├── operands.jl       padded factor-panel views
+    ├── operands.jl       interior factor-panel views over CompressedFTLRMatrix
     ├── workspace.jl      TLRGemmWorkspace and ARA arenas
-    ├── *coupling.jl      implicit product operators
-    ├── *schedule.jl      rolling ARA scheduler
-    └── driver.jl         padded-destination public dispatch
+    ├── run_coupling.jl   RunCoupling{Fixed} implicit product operator
+    ├── rolling_schedule.jl rolling ARA scheduler
+    └── driver.jl         canonical-destination public dispatch
 ```
 
 `dense_result.jl` and `padded_result.jl` are the only subsystem include files.
@@ -84,10 +84,17 @@ A workspace too small for one fused two-stage rank stack uses the compressed-onl
 tilewise fallback. This fallback exists solely to preserve the low-workspace API;
 there is no generic PaddedFTLR × dense implementation.
 
-## PaddedFTLR accumulation
+## Canonical (padded-result) accumulation
 
-`gemm!(C::PaddedFTLRMatrix, A::PaddedFTLRMatrix, B::PaddedFTLRMatrix)` never
-materializes a dense output tile. It exposes the product as implicit factor-list
-operators and runs a blocked adaptive randomized approximation into `C`'s fixed
-rank capacity. See [`padded_result/README.md`](padded_result/README.md) and
+`gemm!(C::CompressedFTLRMatrix, A::CompressedFTLRMatrix, B::CompressedFTLRMatrix)`
+never materializes a dense output tile. It exposes the product as implicit
+factor-list operators and runs a blocked adaptive randomized approximation
+into `C`'s reserved rank capacity (`C` is constructed with uniform
+`execution_ranks` and logical `ranks` all zero, the direct analogue of the
+fixed-`maxrank` container this subsystem used before `PaddedFTLRMatrix` was
+collapsed into `CompressedFTLRMatrix`). `C`, `A`, and `B` must all use the
+default complementary packing, which is what lets one code path serve all
+four transpose combinations instead of gating on which side happens to be
+zero-copy for a given transpose flag. See
+[`padded_result/README.md`](padded_result/README.md) and
 [`padded_result/algorithm.tex`](padded_result/algorithm.tex).

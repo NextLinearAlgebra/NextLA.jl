@@ -111,6 +111,14 @@ function reconstruct_tlr(A_tlr::NextLA.PaddedFTLRMatrix)
     return A
 end
 
+function reconstruct_tlr(A_tlr::NextLA.CompressedFTLRMatrix)
+    T = eltype(A_tlr)
+    backend = KernelAbstractions.get_backend(A_tlr)
+    A = KernelAbstractions.zeros(backend, T, size(A_tlr))
+    NextLA.uncompress!(A, A_tlr)
+    return Array(A)
+end
+
 expected_storage_slot(A_tlr::NextLA.AbstractTLRMatrix, i::Int, j::Int) =
     NextLA.TLRmodule._rank_index(A_tlr, i, j)
 
@@ -173,6 +181,33 @@ function fill_random_tlr!(A_tlr::NextLA.PaddedFTLRMatrix, ArrayType::Type; seed:
     return A_tlr
 end
 
+"""
+Fill every tile up to `A_tlr`'s reserved capacity (`execution_ranks`) with
+random factor content and mark that whole width as real rank
+(`A_tlr.ranks[idx] = execution_ranks[idx]`) -- the `CompressedFTLRMatrix`
+analog of `PaddedFTLRMatrix`'s `A_tlr.ranks .= A_tlr.maxrank`. Works
+uniformly whether `A_tlr` was built with real ranks already (a GEMM input)
+or via the zero-`ranks_in`/explicit-`execution_ranks` reserve-capacity
+pattern (a GEMM output `C` being given prior content for a `beta != 0`
+test) -- both cases just mean "claim the full physically-reserved width."
+"""
+function fill_random_tlr!(A_tlr::NextLA.CompressedFTLRMatrix, ArrayType::Type; seed::Integer)
+    rng = MersenneTwister(seed)
+    T = eltype(A_tlr)
+    qm, qn = NextLA.grid_size(A_tlr)
+    for j in 1:qn, i in 1:qm
+        idx = NextLA.TLRmodule._rank_index(A_tlr, i, j)
+        r = Int(NextLA.execution_ranks(A_tlr)[idx])
+        r == 0 && continue
+        U = NextLA.TLRmodule.compressed_ftlr_execution_outer(A_tlr, i, j)
+        V = NextLA.TLRmodule.compressed_ftlr_execution_inner(A_tlr, i, j)
+        U .= ArrayType(randn(rng, T, size(U)))
+        V .= ArrayType(randn(rng, T, size(V)))
+        A_tlr.ranks[idx] = r
+    end
+    return A_tlr
+end
+
 # ── Dense-reference GEMM drivers ──────────────────────────────────────────────
 
 # Core driver: `gemm!` on prefilled TLR operands against the tile-by-tile dense
@@ -184,7 +219,7 @@ function assert_gemm_matches_dense(ArrayType::Type, A_tlr, B_tlr, synchronize;
     C0_cpu = randn(rng, T, size(A_tlr, 1), size(B_tlr, 2))
     C = ArrayType(C0_cpu)
     workspace = max(budget, NextLA.gemm_minimum_workspace_bytes(A_tlr, B_tlr))
-    NextLA.TLRmodule.gemm!(C, A_tlr, B_tlr; alpha=alpha, beta=beta, workspace)
+    NextLA.gemm!(C, A_tlr, B_tlr; alpha=alpha, beta=beta, workspace)
     synchronize(C)
 
     C_ref = alpha * reconstruct_tlr(A_tlr) * reconstruct_tlr(B_tlr) + beta * C0_cpu
@@ -217,7 +252,7 @@ function assert_dense_diag_transpose_matches(n, b, r, oA, oB, transA, transB;
         budget,
         NextLA.gemm_minimum_workspace_bytes(A, B; transA, transB),
     )
-    NextLA.TLRmodule.gemm!(C, A, B; alpha, beta, transA, transB, workspace)
+    NextLA.gemm!(C, A, B; alpha, beta, transA, transB, workspace)
     synchronize(C)
     opd(X, t) = uppercase(t) == 'T' ? transpose(X) : X
     ref = alpha .* (opd(reconstruct_tlr(A), transA) * opd(reconstruct_tlr(B), transB)) .+ beta .* C0

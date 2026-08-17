@@ -54,13 +54,13 @@ end
         C0 = randn(rng, Float64, 9, 9)
         C = copy(C0)
         if side === :compressed_dense
-            _TLRM.gemm!(C, G, X; workspace=4096, alpha=1.25, beta=-0.5,
+            NextLA.gemm!(C, G, X; workspace=4096, alpha=1.25, beta=-0.5,
                          transA=trans_compressed, transB=trans_dense)
             opG = trans_compressed == 'N' ? Gdense : transpose(Gdense)
             opX = trans_dense == 'N' ? X : transpose(X)
             product = opG * opX
         else
-            _TLRM.gemm!(C, X, G; workspace=4096, alpha=1.25, beta=-0.5,
+            NextLA.gemm!(C, X, G; workspace=4096, alpha=1.25, beta=-0.5,
                          transA=trans_dense, transB=trans_compressed)
             opX = trans_dense == 'N' ? X : transpose(X)
             opG = trans_compressed == 'N' ? Gdense : transpose(Gdense)
@@ -78,10 +78,10 @@ end
             NextLA.analyze_compressed_gemm(C, X, G; workspace)
         try
             if side === :compressed_dense
-                _TLRM.gemm!(C, G, X; workspace, analysis)
+                NextLA.gemm!(C, G, X; workspace, analysis)
                 @test C ≈ Gdense * X rtol=1e-10 atol=1e-10
             else
-                _TLRM.gemm!(C, X, G; workspace, analysis)
+                NextLA.gemm!(C, X, G; workspace, analysis)
                 @test C ≈ X * Gdense rtol=1e-10 atol=1e-10
             end
         finally
@@ -94,10 +94,10 @@ end
     for side in (:compressed_dense, :dense_compressed)
         C = zeros(Float64, 9, 9)
         if side === :compressed_dense
-            _TLRM.gemm!(C, G, X; workspace=2 * sizeof(Float64))
+            NextLA.gemm!(C, G, X; workspace=2 * sizeof(Float64))
             @test C ≈ Gdense * X rtol=1e-10 atol=1e-10
         else
-            _TLRM.gemm!(C, X, G; workspace=2 * sizeof(Float64))
+            NextLA.gemm!(C, X, G; workspace=2 * sizeof(Float64))
             @test C ≈ X * Gdense rtol=1e-10 atol=1e-10
         end
     end
@@ -195,7 +195,7 @@ end
         for bytes in unique((NextLA.gemm_minimum_workspace_bytes(A, B),
                              NextLA.gemm_maximum_workspace_bytes(A, B)))
             C0 = rand(rng, Float32, 9, 11); C = AT(copy(C0))
-            _TLRM.gemm!(C, A, B; workspace=bytes, alpha=1.25f0, beta=-0.5f0)
+            NextLA.gemm!(C, A, B; workspace=bytes, alpha=1.25f0, beta=-0.5f0)
             sync(C)
             @test Array(C) ≈ 1.25f0 .* (refA * refB) .- 0.5f0 .* C0 rtol=3f-4 atol=3f-4
         end
@@ -219,7 +219,7 @@ end
             for bytes in unique((minbytes, maxbytes))
                 C0 = rand(Float32, size(opA, 1), size(opB, 2))
                 C = AT(copy(C0))
-                _TLRM.gemm!(C, A, B; workspace=bytes, alpha=1.25f0, beta=-0.5f0,
+                NextLA.gemm!(C, A, B; workspace=bytes, alpha=1.25f0, beta=-0.5f0,
                              transA, transB)
                 sync(C)
                 @test Array(C) ≈ 1.25f0 .* (opA * opB) .- 0.5f0 .* C0 rtol=2f-4 atol=2f-4
@@ -236,7 +236,7 @@ end
     NextLA.uncompress!(referenceAhost, Ahost)
     NextLA.uncompress!(referenceBhost, Bhost)
     Chost = zeros(Float32, 8, 8)
-    _TLRM.gemm!(Chost, Ahost, Bhost;
+    NextLA.gemm!(Chost, Ahost, Bhost;
                 workspace=NextLA.gemm_minimum_workspace_bytes(Ahost, Bhost))
     @test Chost ≈ referenceAhost * referenceBhost rtol=2f-4 atol=2f-4
     for (name, AT, sync) in backends
@@ -254,7 +254,7 @@ end
         for bytes in unique((minbytes, maxbytes))
             C0 = rand(Float32, size(A, 1), size(B, 2))
             C = AT(copy(C0))
-            _TLRM.gemm!(C, A, B; workspace=bytes, alpha=1.5f0, beta=-0.25f0)
+            NextLA.gemm!(C, A, B; workspace=bytes, alpha=1.5f0, beta=-0.25f0)
             sync(C)
             @test Array(C) ≈ 1.5f0 .* (referenceA * referenceB) .- 0.25f0 .* C0 rtol=2f-4 atol=2f-4
         end
@@ -288,7 +288,7 @@ end
                     C, G, X; workspace,
                     transA=trans_compressed, transB=trans_dense)
                 @test !analysis.has_fallback
-                _TLRM.gemm!(
+                NextLA.gemm!(
                     C, G, X; workspace, alpha=1.25f0, beta=-0.5f0,
                     transA=trans_compressed, transB=trans_dense, analysis)
                 opG = trans_compressed == 'N' ? Hdense : transpose(Hdense)
@@ -298,7 +298,7 @@ end
                     C, X, G; workspace,
                     transA=trans_dense, transB=trans_compressed)
                 @test !analysis.has_fallback
-                _TLRM.gemm!(
+                NextLA.gemm!(
                     C, X, G; workspace, alpha=1.25f0, beta=-0.5f0,
                     transA=trans_dense, transB=trans_compressed, analysis)
                 opX = trans_dense == 'N' ? Xhost : transpose(Xhost)
@@ -341,12 +341,12 @@ end
                 A, B; bytes=NextLA.gemm_maximum_workspace_bytes(A, B))
             C = AT(zeros(T, size(A, 1), size(B, 2)))
             analysis = NextLA.analyze_compressed_gemm(C, A, B; workspace, compute)
-            _TLRM.gemm!(C, A, B; workspace, compute, analysis)
+            NextLA.gemm!(C, A, B; workspace, compute, analysis)
             sync(C)
             @test norm(Float32.(Array(C)) - reference) / norm(reference) < tolerance
             # Same result through the transient (no-analysis) entry point.
             fill!(C, zero(T))
-            _TLRM.gemm!(C, A, B; workspace, compute)
+            NextLA.gemm!(C, A, B; workspace, compute)
             sync(C)
             @test norm(Float32.(Array(C)) - reference) / norm(reference) < tolerance
             close(analysis)

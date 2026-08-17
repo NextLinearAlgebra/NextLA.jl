@@ -79,6 +79,35 @@ end
 @inline execution_maxrank(A::CompressedFTLRMatrix) = A.execution_maxrank
 @inline execution_rank_policy(A::CompressedFTLRMatrix) = A.execution_rank_policy
 
+"""
+    _compressed_ftlr_uniform_view(f::CompressedFTLRPackedFactors)
+
+Reinterpret `f`'s packed storage as a dense `[extent, capacity, qm*qn]` array,
+where the third index is `f`'s own tile order
+(`tile_linear_index(f.order, qm, qn, i, j)`). Valid only when every tile shares
+the same stored capacity and logical extent along `f`'s axis — i.e. `f`
+belongs to a reserved-capacity, regular-grid `CompressedFTLRMatrix` (as
+`padded_result/` constructs for its canonical TLR-output GEMM). Throws if that
+uniformity does not hold, rather than silently returning a misinterpreted view.
+"""
+function _compressed_ftlr_uniform_view(f::CompressedFTLRPackedFactors)
+    ntiles = f.qm * f.qn
+    ntiles == 0 && return reshape(view(f.data, 1:0), 0, 0, 0)
+    ld = f.leading_dimensions[1]
+    extent = f.logical_dimensions[1]
+    (all(==(ld), f.leading_dimensions) && all(==(extent), f.logical_dimensions)) ||
+        throw(ArgumentError("packed factors are not on a regular grid (nonuniform tile extent)"))
+    stride = f.offsets[2] - f.offsets[1]
+    stride % ld == 0 || throw(ArgumentError(
+        "packed factor stride is not a multiple of its leading dimension"))
+    capacity = stride ÷ ld
+    all(k -> f.offsets[k + 1] - f.offsets[k] == stride, 1:ntiles) || throw(ArgumentError(
+        "packed factors do not have a uniform per-tile capacity; not a reserved-capacity container"))
+    length(f.data) == stride * ntiles || throw(ArgumentError(
+        "packed factor storage size is inconsistent with a uniform-capacity layout"))
+    return view(reshape(f.data, ld, capacity, ntiles), 1:extent, :, :)
+end
+
 @inline function _compressed_ftlr_execution_rank(r::Integer, policy::Symbol=:q8)
     r = Int(r)
     r >= 0 || throw(ArgumentError("CompressedFTLR ranks must be nonnegative"))

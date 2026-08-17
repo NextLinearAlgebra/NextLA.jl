@@ -42,10 +42,10 @@ end
     for bytes in unique((lo, NextLA.gemm_maximum_workspace_bytes(A, B)))
         workspace = NextLA.DenseGemmWorkspace(A, B; bytes)
         C = zeros(Float64, size(A, 1), size(B, 2))
-        NextLA.TLRmodule.gemm!(C, A, B; workspace)
+        NextLA.gemm!(C, A, B; workspace)
         @test C ≈ reference
     end
-    @test_throws ArgumentError NextLA.TLRmodule.gemm!(
+    @test_throws ArgumentError NextLA.gemm!(
         zeros(Float64, size(A, 1), size(B, 2)), A, B; workspace=lo - 1)
 end
 
@@ -60,7 +60,7 @@ end
 
     C = zeros(Float64, 8, 8)
     workspace = NextLA.gemm_minimum_workspace_bytes(A, B)
-    NextLA.TLRmodule.gemm!(C, A, B; workspace)
+    NextLA.gemm!(C, A, B; workspace)
     @test C ≈ reconstruct_tlr(A) * reconstruct_tlr(B)
 end
 
@@ -129,7 +129,7 @@ end
             C0 = randn(rng, Float64, 9, 7)
             C = copy(C0)
             workspace = NextLA.DenseGemmWorkspace(G, 4096)
-            _TLRM.gemm!(C, G, X; workspace, alpha, beta,
+            NextLA.gemm!(C, G, X; workspace, alpha, beta,
                         transA=trans_tlr, transB=trans_dense)
             opG = trans_tlr == 'N' ? Gdense : transpose(Gdense)
             opX = trans_dense == 'N' ? X : transpose(X)
@@ -140,7 +140,7 @@ end
             C0 = randn(rng, Float64, 6, 9)
             C = copy(C0)
             workspace = NextLA.DenseGemmWorkspace(G, 4096)
-            _TLRM.gemm!(C, X, G; workspace, alpha, beta,
+            NextLA.gemm!(C, X, G; workspace, alpha, beta,
                         transA=trans_dense, transB=trans_tlr)
             opX = trans_dense == 'N' ? X : transpose(X)
             opG = trans_tlr == 'N' ? Gdense : transpose(Gdense)
@@ -157,13 +157,13 @@ end
     Xright = randn(rng, Float64, 9, 5)
     Cright = randn(rng, Float64, 9, 5)
     Cright0 = copy(Cright)
-    _TLRM.gemm!(Cright, D, Xright; workspace=0, alpha, beta)
+    NextLA.gemm!(Cright, D, Xright; workspace=0, alpha, beta)
     @test Cright ≈ alpha .* (Ddense * Xright) .+ beta .* Cright0
 
     Xleft = randn(rng, Float64, 5, 9)
     Cleft = randn(rng, Float64, 5, 9)
     Cleft0 = copy(Cleft)
-    _TLRM.gemm!(Cleft, Xleft, D; workspace=0, alpha, beta)
+    NextLA.gemm!(Cleft, Xleft, D; workspace=0, alpha, beta)
     @test Cleft ≈ alpha .* (Xleft * Ddense) .+ beta .* Cleft0
 end
 
@@ -185,7 +185,7 @@ end
         A = NextLA.TLRMatrix(ArrayType(zeros(Float32, 8, 8)), 4, 2)
         B = NextLA.TLRMatrix(ArrayType(zeros(Float32, 8, 8)), 4, 2)
         C = ArrayType(zeros(Float32, 8, 8))
-        @test_throws ArgumentError NextLA.TLRmodule.gemm!(
+        @test_throws ArgumentError NextLA.gemm!(
             C, A, B; compute=NextLA.TF32(), workspace=1)
     end
 end
