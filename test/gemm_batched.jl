@@ -5,7 +5,18 @@ using Logging
 @test NextLA.GEMM_COMPUTE_TYPES == (Float16, Float32, Float64, ComplexF32, ComplexF64, Int32)
 @test !(:gemmEx! in names(NextLA))
 @test !(:gemmEx_batched! in names(NextLA))
-@test NextLA.gemm! === LinearAlgebra.mul!
+@test NextLA.gemm! !== LinearAlgebra.mul!
+@test NextLA.TLRmodule.gemm! === NextLA.gemm!
+
+let
+    A = Float64[1 2; 3 4]
+    B = Float64[5 6; 7 8]
+    C = zeros(2, 2)
+    @test NextLA.gemm!(C, A, B) === C
+    @test C == A * B
+    @test NextLA.gemm!(C, A, B; alpha=2.0, beta=3.0) === C
+    @test C == 5 .* (A * B)
+end
 @test NextLA.default_compute_type(Float16(1), Float16[1 2; 3 4], Float16[1 0; 0 1], Float16(0), Float16[0 0; 0 0]) == Float16
 @test NextLA.gemm_compute_type(NextLA.TLRmodule.default_gemm_compute_mode(Float16)) == Float32
 

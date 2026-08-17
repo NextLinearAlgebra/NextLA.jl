@@ -1,6 +1,25 @@
 export gemm!
 
-const gemm! = LinearAlgebra.mul!
+"""
+    gemm!(C, A, B; alpha=true, beta=false, kwargs...)
+
+Compute `C := alpha * A * B + beta * C` in place.
+
+`gemm!` is the common NextLA dispatch point for dense and structured matrix
+products. Dense matrix products forward to [`LinearAlgebra.mul!`](@ref), while
+structured matrix types provide specialized methods.
+"""
+function gemm! end
+
+function gemm!(C::AbstractMatrix, A::AbstractMatrix, B::AbstractMatrix;
+               alpha::Number=true, beta::Number=false)
+    return LinearAlgebra.mul!(C, A, B, alpha, beta)
+end
+
+function gemm!(C::AbstractMatrix, A::AbstractMatrix, B::AbstractMatrix,
+               alpha::Number, beta::Number)
+    return LinearAlgebra.mul!(C, A, B, alpha, beta)
+end
 
 @inline function _gemm_dims(transA::Char,
                             transB::Char,

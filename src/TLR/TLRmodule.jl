@@ -12,6 +12,7 @@ using KernelAbstractions
 using KernelAbstractions: zeros, allocate
 using KernelAbstractions.Extras: @unroll
 
+import ..NextLA: gemm!
 using ..NextLA: gemm_batched!, trsm_batched!, potrf_batched!
 using ..NextLA: precision_gemm!, precision_gemm_batched!, precision_gemm_grouped!, GroupedGemmTask
 using ..NextLA: gemm_compute_mode, gemm_compute_type, supports_grouped_gemm, supports_bfloat16_grouped_gemm
