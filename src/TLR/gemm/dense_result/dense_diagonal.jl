@@ -30,10 +30,10 @@ end
 """Workspace element counts for the two off-diagonal/dense-diagonal cross terms."""
 function _tlr_diagonal_intermediate_sizes(A::TLRMatrix, B::TLRMatrix,
                                           transA::Char, transB::Char)
-    OA = logical_operand(offdiagonal(A), transA)
-    OB = logical_operand(offdiagonal(B), transB)
-    DA = logical_operand(A, transA)
-    DB = logical_operand(B, transB)
+    DA = transA == 'T' ? transpose(A) : A
+    DB = transB == 'T' ? transpose(B) : B
+    OA = offdiagonal(DA)
+    OB = offdiagonal(DB)
     _, qk = grid_size(OA)
     qkB, _ = grid_size(OB)
     qk == qkB || throw(DimensionMismatch("TLR contraction grids do not match"))
@@ -228,10 +228,10 @@ end
 function _tlr_add_diagonal_terms!(C, A::TLRMatrix, B::TLRMatrix, workspace,
                                   alpha, transA::Char, transB::Char, mode)
     _, arena, capacity = _prepare_dense_result_workspace(A, workspace)
-    OA = logical_operand(offdiagonal(A), transA)
-    OB = logical_operand(offdiagonal(B), transB)
-    DA = logical_operand(A, transA)
-    DB = logical_operand(B, transB)
+    DA = transA == 'T' ? transpose(A) : A
+    DB = transB == 'T' ? transpose(B) : B
+    OA = offdiagonal(DA)
+    OB = offdiagonal(DB)
     _tlr_offdiag_times_diag!(C, OA, DB, alpha, mode, arena, capacity)
     _tlr_diag_times_offdiag!(C, DA, OB, alpha, mode, arena, capacity)
     _tlr_diag_times_diag!(C, DA, DB, alpha, mode)

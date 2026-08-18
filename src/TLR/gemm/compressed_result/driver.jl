@@ -152,8 +152,8 @@ function _tlr_gemm_workspace_spec(C::CompressedFTLRMatrix{BackendT,T},
                                   B::CompressedFTLRMatrix{BackendT,T};
                                   transA::Char='N', transB::Char='N',
                                   block::Int=32) where {BackendT,T}
-    LA = logical_operand(A, transA)
-    LB = logical_operand(B, transB)
+    LA = transA == 'T' ? transpose(A) : A
+    LB = transB == 'T' ? transpose(B) : B
     _validate_canonical_tlr_gemm(C, A, B, LA, LB)
     qm, qk = grid_size(LA)
     _, qn = grid_size(LB)
@@ -215,8 +215,8 @@ function _gemm_tlr!(C::CompressedFTLRMatrix{BackendT,T},
                eps_rel=nothing, r_required::Int=10, block::Int=32,
                compute=nothing, workspace=nothing,
                stats=nothing) where {BackendT,T}
-    LA = logical_operand(A, transA)
-    LB = logical_operand(B, transB)
+    LA = transA == 'T' ? transpose(A) : A
+    LB = transB == 'T' ? transpose(B) : B
     _validate_canonical_tlr_gemm(C, A, B, LA, LB)
     tol >= 0 || throw(ArgumentError("tol must be nonnegative"))
     r_required >= 1 || throw(ArgumentError("r_required must be positive"))
@@ -235,7 +235,18 @@ function _gemm_tlr!(C::CompressedFTLRMatrix{BackendT,T},
 
     ws_owner, workspace_spec = _prepare_tlr_gemm_workspace(
         C, A, B, workspace; transA, transB, block)
-    ops = compressed_product_operands(LA, LB)
+    qmA, qnA = regular_grid_size(LA)
+    qmB, qnB = regular_grid_size(LB)
+    ops = (
+        av=(data=_compressed_ftlr_uniform_view(_compressed_ftlr_inner_storage(LA)),
+            order=compressed_ftlr_inner_order(LA), qm=qmA, qn=qnA),
+        bu=(data=_compressed_ftlr_uniform_view(_compressed_ftlr_outer_storage(LB)),
+            order=compressed_ftlr_outer_order(LB), qm=qmB, qn=qnB),
+        bv=(data=_compressed_ftlr_uniform_view(_compressed_ftlr_inner_storage(LB)),
+            order=compressed_ftlr_inner_order(LB), qm=qmB, qn=qnB),
+        au=(data=_compressed_ftlr_uniform_view(_compressed_ftlr_outer_storage(LA)),
+            order=compressed_ftlr_outer_order(LA), qm=qmA, qn=qnA),
+    )
     LC = C
     qm, qk = grid_size(LA)
     _, qn = grid_size(LB)
@@ -382,8 +393,8 @@ function gemm(A::CompressedFTLRMatrix{BackendT,T},
     workspace isa TLRGemmWorkspace && throw(ArgumentError(
         "allocation-returning gemm accepts workspace=nothing or a byte count; " *
         "a TLRGemmWorkspace is bound to private output staging"))
-    LA = logical_operand(A, transA)
-    LB = logical_operand(B, transB)
+    LA = transA == 'T' ? transpose(A) : A
+    LB = transB == 'T' ? transpose(B) : B
     size(LA, 2) == size(LB, 1) ||
         throw(DimensionMismatch("inner dimensions must match"))
     nominal_tile_size(LA, 2) == nominal_tile_size(LB, 1) ||

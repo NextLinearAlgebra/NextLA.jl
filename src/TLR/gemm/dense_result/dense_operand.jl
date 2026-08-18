@@ -6,9 +6,8 @@ struct LogicalDenseOperand{Op,A<:AbstractMatrix}
 end
 
 @inline logical_dense_operand(A::AbstractMatrix, op::Char='N') =
-    _logical_dense_operand(A, Val(_normalize_tlr_op(op)))
-@inline _logical_dense_operand(A, ::Val{'N'}) = LogicalDenseOperand{:N,typeof(A)}(A)
-@inline _logical_dense_operand(A, ::Val{'T'}) = LogicalDenseOperand{:T,typeof(A)}(A)
+    op == 'T' ? LogicalDenseOperand{:T,typeof(A)}(A) :
+                LogicalDenseOperand{:N,typeof(A)}(A)
 Base.eltype(A::LogicalDenseOperand) = eltype(A.data)
 Base.size(A::LogicalDenseOperand{:N}) = size(A.data)
 Base.size(A::LogicalDenseOperand{:T}) = reverse(size(A.data))

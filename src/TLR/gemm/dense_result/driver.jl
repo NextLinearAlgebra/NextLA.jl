@@ -28,8 +28,8 @@ converted to that compute type.
 function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T};
     workspace, alpha=true, beta=false,
     transA::Char=('N'), transB::Char=('N'), compute=nothing) where {BackendT,T}
-    LA = logical_operand(A, transA)
-    LB = logical_operand(B, transB)
+    LA = transA == 'T' ? transpose(A) : A
+    LB = transB == 'T' ? transpose(B) : B
     _validate_logical_gemm(C, LA, LB)
     mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
     backend = get_backend(A)
@@ -62,8 +62,8 @@ packed layouts.
 function gemm!(C::AbstractMatrix, A::CompressedFTLRMatrix{BackendT,T}, B::CompressedFTLRMatrix{BackendT,T};
     workspace, alpha=true, beta=false,
     transA::Char='N', transB::Char='N', compute=nothing, analysis=nothing) where {BackendT,T}
-    LA = logical_operand(A, transA)
-    LB = logical_operand(B, transB)
+    LA = transA == 'T' ? transpose(A) : A
+    LB = transB == 'T' ? transpose(B) : B
     size(LA, 2) == size(LB, 1) || throw(DimensionMismatch("inner dimensions must match"))
     size(C) == (size(LA, 1), size(LB, 2)) ||
         throw(DimensionMismatch("C must be size(op(A),1) × size(op(B),2)"))
@@ -127,7 +127,7 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T},
           workspace, alpha=alpha_value, beta=ScalarT(beta), transA, transB,
           compute=mode)
     return _tlr_diag_times_dense!(
-        C, logical_operand(A, transA), logical_dense_operand(B, transB),
+        C, transA == 'T' ? transpose(A) : A, logical_dense_operand(B, transB),
         alpha_value, mode)
 end
 
@@ -149,7 +149,7 @@ function gemm!(C::AbstractMatrix, A::AbstractMatrix{T},
           workspace, alpha=alpha_value, beta=ScalarT(beta), transA, transB,
           compute=mode)
     return _dense_times_tlr_diag!(
-        C, logical_dense_operand(A, transA), logical_operand(B, transB),
+        C, logical_dense_operand(A, transA), transB == 'T' ? transpose(B) : B,
         alpha_value, mode)
 end
 
@@ -177,7 +177,7 @@ function gemm!(C::AbstractMatrix, A::CompressedFTLRMatrix{BackendT,T},
     B::AbstractMatrix{T};
     workspace, alpha=true, beta=false, analysis=nothing,
     transA::Char='N', transB::Char='N', compute=nothing) where {BackendT,T}
-    LA = logical_operand(A, transA)
+    LA = transA == 'T' ? transpose(A) : A
     LB = logical_dense_operand(B, transB)
     size(LA, 2) == size(LB, 1) || throw(DimensionMismatch("inner dimensions must match"))
     size(C) == (size(LA, 1), size(LB, 2)) ||
@@ -216,7 +216,7 @@ function gemm!(C::AbstractMatrix, A::AbstractMatrix{T},
     workspace, alpha=true, beta=false, analysis=nothing,
     transA::Char='N', transB::Char='N', compute=nothing) where {BackendT,T}
     LA = logical_dense_operand(A, transA)
-    LB = logical_operand(B, transB)
+    LB = transB == 'T' ? transpose(B) : B
     size(LA, 2) == size(LB, 1) || throw(DimensionMismatch("inner dimensions must match"))
     size(C) == (size(LA, 1), size(LB, 2)) ||
         throw(DimensionMismatch("C must be size(op(A),1) × size(op(B),2)"))

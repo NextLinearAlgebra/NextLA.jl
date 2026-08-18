@@ -81,3 +81,10 @@ end
     tm, tn = tile_size(A, Int(tile_i), Int(tile_j))
     return view(dense, p0:(p0+tm-1), q0:(q0+tn-1))
 end
+
+"""Logical row/column range of one TLR tile along `axis`."""
+@inline function _tile_axis_range(A::AbstractTLRMatrix, tile::Int, axis::Int)
+    first = (tile - 1) * nominal_tile_size(A, axis) + 1
+    extent = tile_size(A, axis == 1 ? tile : 1, axis == 2 ? tile : 1)[axis]
+    return first:(first + extent - 1)
+end

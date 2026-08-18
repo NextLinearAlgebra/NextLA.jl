@@ -40,13 +40,16 @@ this value is valid but yields the most subdivided (and therefore slowest)
 schedule; `gemm_maximum_workspace_bytes` is the value that runs fastest."""
 function gemm_minimum_workspace_bytes(A::CompressedFTLRMatrix, B::CompressedFTLRMatrix;
                                       transA::Char='N', transB::Char='N')
-    LA, LB = logical_operand(A, transA), logical_operand(B, transB)
+    LA = transA == 'T' ? transpose(A) : A
+    LB = transB == 'T' ? transpose(B) : B
     return _compressed_ftlr_column_floor(_compressed_ftlr_rank_plan(LA, LB), LA, LB)
 end
 
 function gemm_maximum_workspace_bytes(A::CompressedFTLRMatrix, B::CompressedFTLRMatrix;
                                       transA::Char='N', transB::Char='N')
-    return _compressed_ftlr_rank_plan(logical_operand(A, transA), logical_operand(B, transB)).profile.maximum
+    LA = transA == 'T' ? transpose(A) : A
+    LB = transB == 'T' ? transpose(B) : B
+    return _compressed_ftlr_rank_plan(LA, LB).profile.maximum
 end
 
 """
@@ -71,7 +74,8 @@ output rows, once the budget falls below a full-width row.
 function gemm_workspace_bytes(A::CompressedFTLRMatrix, B::CompressedFTLRMatrix;
                               runs::Int=1, transA::Char='N', transB::Char='N')
     runs >= 1 || throw(ArgumentError("runs must be positive; got $runs"))
-    LA, LB = logical_operand(A, transA), logical_operand(B, transB)
+    LA = transA == 'T' ? transpose(A) : A
+    LB = transB == 'T' ? transpose(B) : B
     plan = _compressed_ftlr_rank_plan(LA, LB)
     lo = _compressed_ftlr_column_floor(plan, LA, LB)
     hi = plan.profile.maximum

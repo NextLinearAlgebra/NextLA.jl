@@ -101,11 +101,11 @@ end
 
 Fixed-column constructor: the run covers output tiles `(rows, j)`.
 """
-function RunCoupling(::Val{:column}, ops::CompressedProductOperands, rows, j::Integer;
+function RunCoupling(::Val{:column}, ops, rows, j::Integer;
                      alpha, beta=false, C=nothing,
                      block::Int, maxrank::Int,
-                     rA::Int=rankdim(ops.au),
-                     rB::Int=rankdim(ops.bv),
+                     rA::Int=size(ops.au.data, 2),
+                     rB::Int=size(ops.bv.data, 2),
                      compute=nothing, arena=nothing)
     ids = collect(Int, rows)
     nmember = length(ids)
@@ -142,8 +142,8 @@ function RunCoupling(::Val{:column}, ops::CompressedProductOperands, rows, j::In
         (nothing, nothing)
     else
         C === nothing && throw(ArgumentError("C must be supplied when beta != 0"))
-        uv = [_beta_tile_factors(C, i, Int(j)) for i in ids]
-        ([x[1] for x in uv], [x[2] for x in uv])
+        ([compressed_ftlr_storage_outer(C, i, Int(j)) for i in ids],
+         [compressed_ftlr_storage_inner(C, i, Int(j)) for i in ids])
     end
 
     # S-construction packing is dead here. Rewind only phase scratch; the
@@ -182,11 +182,11 @@ end
 
 Fixed-row constructor: the run covers output tiles `(i, cols)`.
 """
-function RunCoupling(::Val{:row}, ops::CompressedProductOperands, i::Integer, cols;
+function RunCoupling(::Val{:row}, ops, i::Integer, cols;
                      alpha, beta=false, C=nothing,
                      block::Int, maxrank::Int,
-                     rA::Int=rankdim(ops.au),
-                     rB::Int=rankdim(ops.bv),
+                     rA::Int=size(ops.au.data, 2),
+                     rB::Int=size(ops.bv.data, 2),
                      compute=nothing, arena=nothing)
     ids = collect(Int, cols)
     nmember = length(ids)
@@ -219,8 +219,8 @@ function RunCoupling(::Val{:row}, ops::CompressedProductOperands, i::Integer, co
         (nothing, nothing)
     else
         C === nothing && throw(ArgumentError("C must be supplied when beta != 0"))
-        uv = [_beta_tile_factors(C, Int(i), j) for j in ids]
-        ([x[1] for x in uv], [x[2] for x in uv])
+        ([compressed_ftlr_storage_outer(C, Int(i), j) for j in ids],
+         [compressed_ftlr_storage_inner(C, Int(i), j) for j in ids])
     end
     rC = betaU === nothing ? 0 : size(first(betaU), 2)
 
@@ -551,14 +551,6 @@ end
     @inbounds dest[i, k, kidx] = src[i, k, tile]
 end
 
-@kernel function _pack_factor_columns_kernel!(dest, src, cols, qm::Int, qn::Int,
-                                              row_major::Bool)
-    i, k, kidx, p = @index(Global, NTuple)
-    col = Int(@inbounds cols[p])
-    tile = row_major ? col + (kidx - 1) * qn : kidx + (col - 1) * qm
-    @inbounds dest[i, k, kidx, p] = src[i, k, tile]
-end
-
 @kernel function _pack_factor_column_kernel!(dest, src, col::Int, qm::Int, qn::Int,
                                              row_major::Bool)
     i, k, kidx = @index(Global, NTuple)
@@ -566,72 +558,56 @@ end
     @inbounds dest[i, k, kidx] = src[i, k, tile]
 end
 
-@inline _is_row_major(order) = order isa TileRowMajor
-
-function _factor_row_stack(p::InteriorOperand, row::Int, rank::Int;
+function _factor_row_stack(p, row::Int, rank::Int;
                            arena=nothing, force_pack::Bool=false)
-    if !force_pack && p.order isa TileRowMajor && rank == rankdim(p)
-        return rowpanel(p, row)
+    if !force_pack && p.order isa TileRowMajor && rank == size(p.data, 2)
+        return view(p.data, :, :,
+                    (row - 1) * p.qn + 1:row * p.qn)
     end
     backend = get_backend(p.data)
     dest = _workspace_array!(arena, backend, eltype(p.data), size(p.data, 1), rank, p.qn)
     rank == 0 && return dest
     _pack_factor_row_kernel!(backend)(
-        dest, p.data, row, p.qm, p.qn, _is_row_major(p.order);
+        dest, p.data, row, p.qm, p.qn, p.order isa TileRowMajor;
         ndrange=size(dest),
     )
     return dest
 end
 
-function _factor_column_stack(p::InteriorOperand, col::Int, rank::Int;
+function _factor_column_stack(p, col::Int, rank::Int;
                               arena=nothing, force_pack::Bool=false)
-    if !force_pack && p.order isa TileColMajor && rank == rankdim(p)
-        return colpanel(p, col)
+    if !force_pack && p.order isa TileColMajor && rank == size(p.data, 2)
+        return view(p.data, :, :,
+                    (col - 1) * p.qm + 1:col * p.qm)
     end
     backend = get_backend(p.data)
     dest = _workspace_array!(arena, backend, eltype(p.data), size(p.data, 1), rank, p.qm)
     rank == 0 && return dest
     _pack_factor_column_kernel!(backend)(
-        dest, p.data, col, p.qm, p.qn, _is_row_major(p.order);
+        dest, p.data, col, p.qm, p.qn, p.order isa TileRowMajor;
         ndrange=size(dest),
     )
     return dest
 end
 
-function _factor_column_stacks(p::InteriorOperand, cols::Vector{Int}, rank::Int;
-                               arena=nothing, index_scratch=nothing)
-    backend = get_backend(p.data)
-    nmember = length(cols)
-    dest = _workspace_array!(arena, backend, eltype(p.data), size(p.data, 1), rank, p.qm, nmember)
-    (rank == 0 || nmember == 0) && return dest
-    cols_dev = index_scratch === nothing ?
-        allocate(backend, Int32, nmember) :
-        view(index_scratch, 1:nmember)
-    copyto!(cols_dev, Int32.(cols))
-    _pack_factor_columns_kernel!(backend)(
-        dest, p.data, cols_dev, p.qm, p.qn, _is_row_major(p.order);
-        ndrange=size(dest),
-    )
-    return dest
+@inline function _trimmed_tile(p, i::Int, j::Int, rank::Int)
+    slot = tile_linear_index(p.order, p.qm, p.qn, i, j)
+    return view(p.data, :, 1:rank, slot)
 end
 
-@inline function _trimmed_tile(p::InteriorOperand, i::Int, j::Int, rank::Int)
-    view(tilefactor(p, i, j), :, 1:rank)
-end
-
-function _pack_factor_row_into!(dest, p::InteriorOperand, row::Int)
+function _pack_factor_row_into!(dest, p, row::Int)
     isempty(dest) && return dest
     _pack_factor_row_kernel!(get_backend(dest))(
-        dest, p.data, row, p.qm, p.qn, _is_row_major(p.order);
+        dest, p.data, row, p.qm, p.qn, p.order isa TileRowMajor;
         ndrange=size(dest),
     )
     return dest
 end
 
-function _pack_factor_column_into!(dest, p::InteriorOperand, col::Int)
+function _pack_factor_column_into!(dest, p, col::Int)
     isempty(dest) && return dest
     _pack_factor_column_kernel!(get_backend(dest))(
-        dest, p.data, col, p.qm, p.qn, _is_row_major(p.order);
+        dest, p.data, col, p.qm, p.qn, p.order isa TileRowMajor;
         ndrange=size(dest),
     )
     return dest
@@ -641,7 +617,8 @@ end
 
 function _update_beta_slot!(run::RunCoupling{:column}, C, fixed::Int, member::Int, slot::Int)
     run.betaU === nothing && return
-    u, v = _beta_tile_factors(C, member, fixed)
+    u = compressed_ftlr_storage_outer(C, member, fixed)
+    v = compressed_ftlr_storage_inner(C, member, fixed)
     run.betaU[slot] = u
     run.betaV[slot] = v
     run.betaU_ptrs !== nothing &&
@@ -652,7 +629,8 @@ end
 
 function _update_beta_slot!(run::RunCoupling{:row}, C, fixed::Int, member::Int, slot::Int)
     run.betaU === nothing && return
-    u, v = _beta_tile_factors(C, fixed, member)
+    u = compressed_ftlr_storage_outer(C, fixed, member)
+    v = compressed_ftlr_storage_inner(C, fixed, member)
     run.betaU[slot] = u
     run.betaV[slot] = v
     run.betaU_ptrs !== nothing &&

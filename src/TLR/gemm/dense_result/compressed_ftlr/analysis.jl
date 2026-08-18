@@ -53,10 +53,8 @@ function analyze_compressed_gemm(
 ) where {BackendT,T}
     workspace isa DenseGemmWorkspace || throw(ArgumentError(
         "symbolic compressed GEMM analysis requires a reusable DenseGemmWorkspace"))
-    opA = _normalize_tlr_op(transA)
-    opB = _normalize_tlr_op(transB)
-    LA = logical_operand(A, opA)
-    LB = logical_operand(B, opB)
+    LA = transA == 'T' ? transpose(A) : A
+    LB = transB == 'T' ? transpose(B) : B
     size(LA, 2) == size(LB, 1) || throw(DimensionMismatch("inner dimensions must match"))
     size(C) == (size(LA, 1), size(LB, 2)) ||
         throw(DimensionMismatch("C must be size(op(A),1) × size(op(B),2)"))
@@ -80,7 +78,7 @@ function analyze_compressed_gemm(
     end
 
     analysis = CompressedGemmAnalysis(
-        C, A, B, workspace, LA, LB, opA, opB, mode, plan, prepared_runs,
+        C, A, B, workspace, LA, LB, transA, transB, mode, plan, prepared_runs,
         copy(ranks(A)), copy(ranks(B)),
         sizeof(workspace),
         _dense_result_runs_have_fallback(prepared_runs),

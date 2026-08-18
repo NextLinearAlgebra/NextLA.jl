@@ -118,8 +118,7 @@ function _validate_dense_result_analysis_binding(
         throw(ArgumentError("analysis is bound to different matrix objects"))
     workspace === analysis.workspace && sizeof(workspace) == analysis.workspace_bytes ||
         throw(ArgumentError("analysis numerical workspace does not match"))
-    _normalize_tlr_op(transA) == analysis.transA &&
-        _normalize_tlr_op(transB) == analysis.transB ||
+    transA == analysis.transA && transB == analysis.transB ||
         throw(ArgumentError("analysis transpose modes do not match"))
     typeof(mode) === typeof(analysis.compute) ||
         throw(ArgumentError("analysis compute policy does not match"))

@@ -286,7 +286,7 @@ function analyze_compressed_gemm(
     workspace isa DenseGemmWorkspace || throw(ArgumentError(
         "symbolic two-stage GEMM analysis requires a reusable DenseGemmWorkspace"))
     LA = logical_dense_operand(A, transA)
-    LB = logical_operand(B, transB)
+    LB = transB == 'T' ? transpose(B) : B
     size(LA, 2) == size(LB, 1) || throw(DimensionMismatch("inner dimensions must match"))
     size(C) == (size(LA, 1), size(LB, 2)) ||
         throw(DimensionMismatch("C has the wrong dimensions"))
@@ -298,7 +298,7 @@ function analyze_compressed_gemm(
     plan = _two_stage_rank_plan(LB, :left)
     runs = _prepare_two_stage_runs(C, LA, LB, LB, plan, budget, mode, arena)
     return _new_compressed_mixed_analysis(
-        C, A, B, workspace, _normalize_tlr_op(transA), _normalize_tlr_op(transB),
+        C, A, B, workspace, transA, transB,
         mode, :left, plan, B, runs)
 end
 
@@ -309,7 +309,7 @@ function analyze_compressed_gemm(
 ) where {BackendT,T}
     workspace isa DenseGemmWorkspace || throw(ArgumentError(
         "symbolic two-stage GEMM analysis requires a reusable DenseGemmWorkspace"))
-    LA = logical_operand(A, transA)
+    LA = transA == 'T' ? transpose(A) : A
     LB = logical_dense_operand(B, transB)
     size(LA, 2) == size(LB, 1) || throw(DimensionMismatch("inner dimensions must match"))
     size(C) == (size(LA, 1), size(LB, 2)) ||
@@ -322,7 +322,7 @@ function analyze_compressed_gemm(
     plan = _two_stage_rank_plan(LA, :right)
     runs = _prepare_two_stage_runs(C, LA, LB, LA, plan, budget, mode, arena)
     return _new_compressed_mixed_analysis(
-        C, A, B, workspace, _normalize_tlr_op(transA), _normalize_tlr_op(transB),
+        C, A, B, workspace, transA, transB,
         mode, :right, plan, A, runs)
 end
 
