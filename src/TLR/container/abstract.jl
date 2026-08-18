@@ -27,13 +27,13 @@ Base.size(A::TransposeTLRMatrix) = reverse(size(parent(A)))
 
 @inline nominal_tile_size(A::AbstractTLRMatrix) = A.nominal_tile_size
 @inline nominal_tile_size(A::TransposeTLRMatrix) = reverse(nominal_tile_size(parent(A)))
-@inline nominal_tile_size(A::AbstractTLRMatrix, axis::Integer) =
-    nominal_tile_size(A)[Int(axis)]
+@inline nominal_tile_size(A::AbstractTLRMatrix, axis::Int) =
+    nominal_tile_size(A)[axis]
 
 @inline tail_tile_size(A::AbstractTLRMatrix) = A.tail_tile_size
 @inline tail_tile_size(A::TransposeTLRMatrix) = reverse(tail_tile_size(parent(A)))
-@inline tail_tile_size(A::AbstractTLRMatrix, axis::Integer) =
-    tail_tile_size(A)[Int(axis)]
+@inline tail_tile_size(A::AbstractTLRMatrix, axis::Int) =
+    tail_tile_size(A)[axis]
 
 """Full tile grid including partial boundary tiles: `(n_tile_rows, n_tile_cols)`."""
 @inline grid_size(A::AbstractTLRMatrix) =
@@ -76,9 +76,9 @@ end
         (tile_j - 1) * nominal_tile_size(A, 2) + 1)
 end
 
-@inline function _dense_tile_view(dense::AbstractMatrix, A, tile_i::Integer, tile_j::Integer)
-    p0, q0 = tile_origin_coords(A, Int(tile_i), Int(tile_j))
-    tm, tn = tile_size(A, Int(tile_i), Int(tile_j))
+@inline function _dense_tile_view(dense::AbstractMatrix, A, tile_i::Int, tile_j::Int)
+    p0, q0 = tile_origin_coords(A, tile_i, tile_j)
+    tm, tn = tile_size(A, tile_i, tile_j)
     return view(dense, p0:(p0+tm-1), q0:(q0+tn-1))
 end
 

@@ -187,8 +187,8 @@ end
 function _prepare_compressed_ftlr_workspace(A, B, plan, workspace)
     profile = plan.profile
     T = eltype(A)
-    ws = if workspace isa Integer
-        DenseGemmWorkspace(A, Int(workspace))
+    ws = if workspace isa Int
+        DenseGemmWorkspace(A, workspace)
     elseif workspace isa DenseGemmWorkspace
         eltype(workspace) === T || throw(ArgumentError(
             "workspace element type $(eltype(workspace)) does not match operand type $T"))

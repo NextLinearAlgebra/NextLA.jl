@@ -150,12 +150,12 @@ end
     factor = @index(Group, Linear)
     lane = @index(Local, Linear)
     logical_rows = size(source, 1)
-    active = logical_rows * Int(@inbounds ranks[factor])
+    active = logical_rows * (@inbounds ranks[factor])
     k = lane
     while k <= active
         row = (k - 1) % logical_rows + 1
         col = (k - 1) ÷ logical_rows + 1
-        @inbounds destination[Int(offsets[factor]) + (col-1)*ld + row-1] =
+        @inbounds destination[offsets[factor] + (col-1)*ld + row-1] =
             source[row, col, factor]
         k += @groupsize()[1]
     end
@@ -182,7 +182,7 @@ function _scatter_factor_batch!(C::CompressedFTLRMatrix, cat, side::Symbol)
 end
 
 function _finalize_compressed_ftlr(ws::FTLRCompressionWorkspace;
-                                   rank_multiple::Integer=0,
+                                   rank_multiple::Int=0,
                                    outer_order=TileRowMajor,
                                    inner_order=TileColMajor)
     key = ws.key
@@ -194,13 +194,13 @@ function _finalize_compressed_ftlr(ws::FTLRCompressionWorkspace;
         rk = cat.ranks isa Vector ? cat.ranks : Array(cat.ranks)
         err = cat.errors_sq isa Vector ? cat.errors_sq : Array(cat.errors_sq)
         @inbounds for (k, (i, j)) in enumerate(cat.tile_ids)
-            rank_grid[i, j] = Int(rk[k])
+            rank_grid[i, j] = rk[k]
             residual_grid[i, j] = sqrt(max(Float64(real(err[k])), 0.0))
         end
     end
     C = CompressedFTLRMatrix(
         backend, key.T, key.m, key.n, key.tile_size, rank_grid;
-        outer_order, inner_order, rank_multiple, rank_type=key.rank_type)
+        outer_order, inner_order, rank_multiple)
     @inbounds for j in axes(rank_grid, 2), i in axes(rank_grid, 1)
         slot = tile_linear_index(C.outer.order, C.outer.qm, C.outer.qn, i, j)
         C.resid[slot] = residual_grid[i, j]
@@ -228,17 +228,16 @@ function CompressedFTLRMatrix(A::AbstractMatrix{T},
                               maxrank::Int,
                               tol::Real=0.0,
                               rel::Bool=false,
-                              rank_multiple::Integer=0,
+                              rank_multiple::Int=0,
                               workspace::Union{Nothing,FTLRCompressionWorkspace}=nothing,
                               outer_order=TileRowMajor,
-    inner_order=TileColMajor,
-    rank_type::Type{<:Integer}=Int32) where {T}
+                              inner_order=TileColMajor) where {T}
     tol >= 0 || throw(ArgumentError("tol must be nonnegative"))
     rank_multiple >= 0 || throw(ArgumentError("rank_multiple must be nonnegative"))
     ws = workspace === nothing ? FTLRCompressionWorkspace(
-        A, tile_size; maxrank, diagonal=:compressed, rank_type) : workspace
+        A, tile_size; maxrank, diagonal=:compressed) : workspace
     _validate_compression_workspace(
-        ws, A, tile_size, maxrank, :compressed, rank_type)
+        ws, A, tile_size, maxrank, :compressed)
     _compress_all_categories!(A, ws, Float64(tol)^2, rel)
     return _finalize_compressed_ftlr(
         ws; rank_multiple, outer_order, inner_order)
@@ -258,14 +257,13 @@ function TLRMatrix(A::AbstractMatrix{T}, tile_size::NTuple{2,Int};
                    maxrank::Int,
                    tol::Real=0.0,
                    rel::Bool=false,
-                   rank_multiple::Integer=0,
-                   workspace::Union{Nothing,FTLRCompressionWorkspace}=nothing,
-                   rank_type::Type{<:Integer}=Int32) where {T}
+                   rank_multiple::Int=0,
+                   workspace::Union{Nothing,FTLRCompressionWorkspace}=nothing) where {T}
     tol >= 0 || throw(ArgumentError("tol must be nonnegative"))
     rank_multiple >= 0 || throw(ArgumentError("rank_multiple must be nonnegative"))
     ws = workspace === nothing ? FTLRCompressionWorkspace(
-        A, tile_size; maxrank, diagonal=:dense, rank_type) : workspace
-    _validate_compression_workspace(ws, A, tile_size, maxrank, :dense, rank_type)
+        A, tile_size; maxrank, diagonal=:dense) : workspace
+    _validate_compression_workspace(ws, A, tile_size, maxrank, :dense)
     _compress_all_categories!(A, ws, Float64(tol)^2, rel)
     offdiag = _finalize_compressed_ftlr(ws; rank_multiple)
     C = TLRMatrix(offdiag)

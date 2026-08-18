@@ -121,7 +121,7 @@ end
 function _rolling_lane_loop!(Cout, run, ara_ws, allmembers::AbstractVector{Int},
                              fixed::Int, ops, arena, ws_owner;
                              beta, eps_rel, r_required, tol, rel, compute)
-    cap = ws_owner.key.capacity
+    cap = ws_owner.capacity
     member_ids = ws_owner.member_ids
     progress = ws_owner.progress
     initial = min(cap, length(allmembers))

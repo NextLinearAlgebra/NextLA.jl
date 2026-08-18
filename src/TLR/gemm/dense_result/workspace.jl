@@ -6,15 +6,15 @@ end
 Base.eltype(::DenseGemmWorkspace{T}) where {T} = T
 Base.sizeof(ws::DenseGemmWorkspace) = sizeof(ws.storage)
 
-function DenseGemmWorkspace(A::AbstractTLRMatrix{T}, bytes::Integer) where {T}
+function DenseGemmWorkspace(A::AbstractTLRMatrix{T}, bytes::Int) where {T}
     bytes >= 0 || throw(ArgumentError("workspace bytes must be nonnegative"))
-    storage = allocate(get_backend(A), T, fld(Int(bytes), sizeof(T)))
+    storage = allocate(get_backend(A), T, fld(bytes, sizeof(T)))
     return DenseGemmWorkspace(storage)
 end
 
 function DenseGemmWorkspace(A::AbstractTLRMatrix{T},
                             B::AbstractTLRMatrix{T};
-                            bytes::Integer,
+                            bytes::Int,
                             transA::Char='N', transB::Char='N') where {T}
     required = gemm_minimum_workspace_bytes(A, B; transA, transB)
     bytes >= required || throw(ArgumentError(
@@ -27,8 +27,8 @@ end
 
 function _prepare_dense_result_workspace(
     A::AbstractTLRMatrix{T}, workspace) where {T}
-    ws = if workspace isa Integer
-        DenseGemmWorkspace(A, Int(workspace))
+    ws = if workspace isa Int
+        DenseGemmWorkspace(A, workspace)
     elseif workspace isa DenseGemmWorkspace
         eltype(workspace) === T || throw(ArgumentError(
             "workspace element type $(eltype(workspace)) does not match operand type $T"))

@@ -84,24 +84,12 @@ mutable struct RunCoupling{Fixed,ST,SHT,MT,BUT,BVT,PT,SKT,OT,BT,T}
     qk::Int
 end
 
-@inline function _run_coupling(::Val{Fixed}, S, shared, member, betaU, betaV,
-                               member_ptrs, sketch_ptrs, betaU_ptrs, betaV_ptrs,
-                               sharedOm_ptrs, beta_tmp_ptrs, proj, sketch, Omega,
-                               beta_tmp, alpha::T, qk::Int) where {Fixed,T}
-    return RunCoupling{Fixed,typeof(S),typeof(shared),typeof(member),typeof(betaU),
-                       typeof(betaV),typeof(proj),typeof(sketch),typeof(Omega),
-                       typeof(beta_tmp),T}(
-        S, shared, member, betaU, betaV, member_ptrs, sketch_ptrs, betaU_ptrs,
-        betaV_ptrs, sharedOm_ptrs, beta_tmp_ptrs, proj, sketch, Omega, beta_tmp,
-        alpha, qk)
-end
-
 """
     RunCoupling(Val(:column), ops, rows, j; alpha, beta=false, C=nothing, block, maxrank)
 
 Fixed-column constructor: the run covers output tiles `(rows, j)`.
 """
-function RunCoupling(::Val{:column}, ops, rows, j::Integer;
+function RunCoupling(::Val{:column}, ops, rows, j::Int;
                      alpha, beta=false, C=nothing,
                      block::Int, maxrank::Int,
                      rA::Int=size(ops.au.data, 2),
@@ -119,8 +107,8 @@ function RunCoupling(::Val{:column}, ops, rows, j::Integer;
         for i in ids
     ]
     rowV = [_factor_row_stack(ops.av, i, rA; arena=tarena) for i in ids]
-    colW = _factor_column_stack(ops.bu, Int(j), rB; arena=tarena)
-    shared = _factor_column_stack(ops.bv, Int(j), rB; arena=parena)
+    colW = _factor_column_stack(ops.bu, j, rB; arena=tarena)
+    shared = _factor_column_stack(ops.bv, j, rB; arena=parena)
     T = eltype(shared)
     mode = compute === nothing ? default_gemm_compute_mode(T) :
            gemm_compute_mode(compute)
@@ -142,8 +130,8 @@ function RunCoupling(::Val{:column}, ops, rows, j::Integer;
         (nothing, nothing)
     else
         C === nothing && throw(ArgumentError("C must be supplied when beta != 0"))
-        ([compressed_ftlr_storage_outer(C, i, Int(j)) for i in ids],
-         [compressed_ftlr_storage_inner(C, i, Int(j)) for i in ids])
+        ([compressed_ftlr_storage_outer(C, i, j) for i in ids],
+         [compressed_ftlr_storage_inner(C, i, j) for i in ids])
     end
 
     # S-construction packing is dead here. Rewind only phase scratch; the
@@ -172,7 +160,10 @@ function RunCoupling(::Val{:column}, ops, rows, j::Integer;
     beta_tmp_ptrs = has_beta_ptrs ?
         BatchPtrDescriptor([view(beta_tmp, :, :, p) for p in 1:nmember]) : nothing
 
-    return _run_coupling(Val(:column), S, shared, member, betaU, betaV,
+    return RunCoupling{:column,typeof(S),typeof(shared),typeof(member),
+                       typeof(betaU),typeof(betaV),typeof(proj),typeof(sketch),
+                       typeof(Omega),typeof(beta_tmp),T}(
+        S, shared, member, betaU, betaV,
         member_ptrs, sketch_ptrs, betaU_ptrs, betaV_ptrs, sharedOm_ptrs, beta_tmp_ptrs,
         proj, sketch, Omega, beta_tmp, T(alpha), qk)
 end
@@ -182,7 +173,7 @@ end
 
 Fixed-row constructor: the run covers output tiles `(i, cols)`.
 """
-function RunCoupling(::Val{:row}, ops, i::Integer, cols;
+function RunCoupling(::Val{:row}, ops, i::Int, cols;
                      alpha, beta=false, C=nothing,
                      block::Int, maxrank::Int,
                      rA::Int=size(ops.au.data, 2),
@@ -199,8 +190,8 @@ function RunCoupling(::Val{:row}, ops, i::Integer, cols;
     bn = size(ops.bv.data, 1)
     parena = _run_persistent_t_arena(arena)
     tarena = _run_t_arena(arena)
-    Ainner = [_trimmed_tile(ops.av, Int(i), kidx, rA) for kidx in 1:qk]
-    shared = _factor_row_stack(ops.au, Int(i), rA; arena=parena)
+    Ainner = [_trimmed_tile(ops.av, i, kidx, rA) for kidx in 1:qk]
+    shared = _factor_row_stack(ops.au, i, rA; arena=parena)
     Bouter = [[_trimmed_tile(ops.bu, kidx, j, rB) for kidx in 1:qk] for j in ids]
     member = [
         _factor_column_stack(ops.bv, j, rB; arena=parena, force_pack=true)
@@ -219,8 +210,8 @@ function RunCoupling(::Val{:row}, ops, i::Integer, cols;
         (nothing, nothing)
     else
         C === nothing && throw(ArgumentError("C must be supplied when beta != 0"))
-        ([compressed_ftlr_storage_outer(C, Int(i), j) for j in ids],
-         [compressed_ftlr_storage_inner(C, Int(i), j) for j in ids])
+        ([compressed_ftlr_storage_outer(C, i, j) for j in ids],
+         [compressed_ftlr_storage_inner(C, i, j) for j in ids])
     end
     rC = betaU === nothing ? 0 : size(first(betaU), 2)
 
@@ -246,7 +237,10 @@ function RunCoupling(::Val{:row}, ops, i::Integer, cols;
     beta_tmp_ptrs = has_beta_ptrs ?
         BatchPtrDescriptor([view(beta_tmp, :, :, p) for p in 1:nmember]) : nothing
 
-    return _run_coupling(Val(:row), S, shared, member, betaU, betaV,
+    return RunCoupling{:row,typeof(S),typeof(shared),typeof(member),
+                       typeof(betaU),typeof(betaV),typeof(proj),typeof(sketch),
+                       typeof(Omega),typeof(beta_tmp),T}(
+        S, shared, member, betaU, betaV,
         member_ptrs, sketch_ptrs, betaU_ptrs, betaV_ptrs, sharedOm_ptrs, beta_tmp_ptrs,
         proj, sketch, Omega, beta_tmp, T(alpha), qk)
 end

@@ -28,13 +28,13 @@ struct ARARunArena{PA<:GemmArena,TA<:GemmArena,HA<:GemmArena}
 end
 
 function ARARunArena(backend, ::Type{T}, ::Type{Thi},
-                     persistent_t_bytes::Integer, phase_t_bytes::Integer,
-                     phase_thi_bytes::Integer) where {T,Thi}
+                     persistent_t_bytes::Int, phase_t_bytes::Int,
+                     phase_thi_bytes::Int) where {T,Thi}
     persistent_t_bytes >= 0 && phase_t_bytes >= 0 && phase_thi_bytes >= 0 ||
         throw(ArgumentError("arena byte counts must be nonnegative"))
-    persistent = allocate(backend, T, cld(Int(persistent_t_bytes), sizeof(T)))
-    phase = allocate(backend, T, cld(Int(phase_t_bytes), sizeof(T)))
-    phase_hi = allocate(backend, Thi, cld(Int(phase_thi_bytes), sizeof(Thi)))
+    persistent = allocate(backend, T, cld(persistent_t_bytes, sizeof(T)))
+    phase = allocate(backend, T, cld(phase_t_bytes, sizeof(T)))
+    phase_hi = allocate(backend, Thi, cld(phase_thi_bytes, sizeof(Thi)))
     return ARARunArena(
         GemmArena(persistent, 1),
         GemmArena(phase, 1),
@@ -84,7 +84,8 @@ struct TLRGemmWorkspace{A,U,V,RS,ES,I,RD,ED,AS,M,P,O,IH,K}
     output_slots::O
     output_slots_inner::O
     indices_host::IH
-    key::K
+    operation::K
+    capacity::Int
 end
 
 function Base.sizeof(ws::TLRGemmWorkspace)
@@ -103,22 +104,21 @@ end
 function TLRGemmWorkspace(C::CompressedFTLRMatrix{BackendT,T}, spec;
                           bytes=nothing) where {BackendT,T}
     requested = bytes === nothing ?
-        _tlr_gemm_workspace_bytes(spec, spec.key.nmember) : Int(bytes)
+        _tlr_gemm_workspace_bytes(spec, spec.nmember) : bytes
     requested >= _tlr_gemm_workspace_bytes(spec, 1) || throw(ArgumentError(
         "workspace has $requested bytes; at least " *
         "$(_tlr_gemm_workspace_bytes(spec, 1)) bytes are required"))
     capacity = _tlr_workspace_capacity(spec, requested)
     backend = get_backend(C)
     ab = ara_run_workspace_bytes(
-        spec.key.family, spec.key.rA, spec.key.rB, spec.key.qk, capacity,
-        spec.key.block, spec.key.maxrank, spec.key.bm, spec.key.bn,
+        spec.family, spec.rA, spec.rB, spec.qk, capacity,
+        spec.block, spec.maxrank, spec.bm, spec.bn,
         T, spec.Thi)
     arena = ARARunArena(
         backend, T, spec.Thi, ab.persistent_t_bytes,
         ab.phase_t_bytes, ab.phase_thi_bytes)
     n = capacity
-    key = (; operation=spec.key, capacity)
-    opkey = spec.key
+    opkey = spec
     ara_state = (
         dR=allocate(backend, Float64, opkey.block, n),
         status=allocate(backend, Int32, n),
@@ -147,17 +147,18 @@ function TLRGemmWorkspace(C::CompressedFTLRMatrix{BackendT,T}, spec;
         Vector{Int}(undef, n),
         Vector{Int}(undef, n),
         Vector{Int32}(undef, n),
-        key,
+        spec,
+        capacity,
     )
 end
 
 function _tlr_gemm_workspace_bytes(spec, capacity::Int)
-    1 <= capacity <= spec.key.nmember ||
-        throw(ArgumentError("slot capacity must be in 1:$(spec.key.nmember)"))
-    k = spec.key
+    1 <= capacity <= spec.nmember ||
+        throw(ArgumentError("slot capacity must be in 1:$(spec.nmember)"))
+    k = spec
     ab = ara_run_workspace_bytes(
         k.family, k.rA, k.rB, k.qk, capacity, k.block,
-        k.maxrank, k.bm, k.bn, k.T, spec.Thi)
+        k.maxrank, k.bm, k.bn, k.T, k.Thi)
     arena = ab.persistent_t_bytes + ab.phase_t_bytes + ab.phase_thi_bytes
     traversal_t = (k.bm + k.bn) * k.maxrank * capacity * sizeof(k.T)
     diagnostics = capacity * sizeof(k.rankT) +
@@ -171,7 +172,7 @@ function _tlr_gemm_workspace_bytes(spec, capacity::Int)
 end
 
 function _tlr_workspace_capacity(spec, bytes::Int)
-    lo, hi = 1, spec.key.nmember
+    lo, hi = 1, spec.nmember
     while lo < hi
         mid = (lo + hi + 1) >>> 1
         if _tlr_gemm_workspace_bytes(spec, mid) <= bytes

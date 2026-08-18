@@ -6,17 +6,14 @@ The object owns device pointer tables and is bound to the output, operands,
 workspace, logical operations, compute policy, and rank metadata used to create it.
 Factor values and numerical scalars may be changed between numerical calls.
 """
-mutable struct CompressedGemmAnalysis{CT,AT,BT,WT,LAT,LBT,ModeT,PlanT,RAT,RBT}
+mutable struct CompressedGemmAnalysis{CT,AT,BT,WT,ModeT,RAT,RBT}
     C::CT
     A::AT
     B::BT
     workspace::WT
-    logical_A::LAT
-    logical_B::LBT
     transA::Char
     transB::Char
     compute::ModeT
-    plan::PlanT
     runs::Vector{PreparedDenseResultRun}
     # Snapshots in the operands' own rank type: the guard runs on every
     # numerical call, and converting to `Int` there would allocate four
@@ -29,11 +26,7 @@ mutable struct CompressedGemmAnalysis{CT,AT,BT,WT,LAT,LBT,ModeT,PlanT,RAT,RBT}
     closed::Bool
 end
 
-function _destroy_compressed_gemm_analysis!(analysis::CompressedGemmAnalysis)
-    return _close_dense_result_analysis!(analysis)
-end
-
-Base.close(analysis::CompressedGemmAnalysis) = _destroy_compressed_gemm_analysis!(analysis)
+Base.close(analysis::CompressedGemmAnalysis) = _close_dense_result_analysis!(analysis)
 
 """
     analyze_compressed_gemm(C, A, B; workspace, transA='N', transB='N', compute=nothing)
@@ -72,20 +65,24 @@ function analyze_compressed_gemm(
     # otherwise this is exactly the whole-width row-run schedule.
     schedule = _compressed_ftlr_column_schedule(plan, LA, LB, profile, budget)
     prepared_runs = _prepare_dense_result_runs(schedule, mode) do run
-        _build_compressed_ftlr_run(
-                C, LA, LB, plan, run.rows, run.cols, run.fold,
+        run.fold === :right ?
+            _build_compressed_ftlr_foldright_run(
+                C, LA, LB, plan, run.rows, run.cols,
+                placeholder_alpha, placeholder_beta, arena) :
+            _build_compressed_ftlr_foldleft_run(
+                C, LA, LB, plan, run.rows, run.cols,
                 placeholder_alpha, placeholder_beta, arena)
     end
 
     analysis = CompressedGemmAnalysis(
-        C, A, B, workspace, LA, LB, transA, transB, mode, plan, prepared_runs,
+        C, A, B, workspace, transA, transB, mode, prepared_runs,
         copy(ranks(A)), copy(ranks(B)),
         sizeof(workspace),
         _dense_result_runs_have_fallback(prepared_runs),
         false)
     finalizer(analysis) do object
         try
-            _destroy_compressed_gemm_analysis!(object)
+            _close_dense_result_analysis!(object)
         catch
             # Device teardown may precede Julia object finalization.
         end
@@ -103,7 +100,7 @@ function _execute_compressed_gemm_analysis!(
         throw(ArgumentError("left operand exact ranks changed after symbolic analysis"))
     ranks(B) == analysis.B_ranks ||
         throw(ArgumentError("right operand exact ranks changed after symbolic analysis"))
-    backend = get_backend(analysis.logical_A)
+    backend = get_backend(A)
     return _execute_prepared_dense_result_runs!(
         analysis.runs, C, backend, eltype(A), alpha, beta,
         analysis.has_fallback)

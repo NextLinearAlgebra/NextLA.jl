@@ -93,7 +93,7 @@ end
     return reshape(view(data, offset:(offset + rows * cols - 1)), rows, cols)
 end
 
-"""
+#=
 Stage 2 emits a GEMM for `(i,k,j)` only when `rA_ik` and `rB_kj` are both
 nonzero, but each fold sizes its `T` arena from one side alone: FoldRight
 reserves rows for every active `rA_ik` across all output columns, FoldLeft
@@ -113,17 +113,7 @@ in the run and *some* `j` to disagree:
 so the run's sum is positive iff a term is), and both B-side questions are
 answered from plan prefix tables over `jrange` -- so FoldRight costs O(qk)
 with no operand access at all.
-"""
-@inline _compressed_ftlr_foldright_needs_zero(plan, rho_k, jrange) =
-    any(k -> rho_k[k] > 0 && _compressed_ftlr_row_has_zero(plan, k, jrange),
-        eachindex(rho_k))
-
-@inline _compressed_ftlr_foldleft_needs_zero(A, plan, irange, jrange) =
-    any(1:plan.qk) do k
-        _compressed_ftlr_row_rank(plan, k, jrange) > 0 &&
-            any(i -> _compressed_ftlr_storage_rank(A, i, k) == 0, irange)
-    end
-
+=#
 """
 Stage-1 arena layout for one run: `S` is one dense `(rho_k × σ_k)` block per
 active `k`, fused across every row in the run (see `_compressed_ftlr_run_v_stack`),
@@ -276,7 +266,11 @@ function _build_compressed_ftlr_foldright_run(C, A, B, plan,
     end
     return DenseResultRunTasks(
         s1, isempty(s2) ? nothing : s2, isempty(s3) ? nothing : s3, 3, tdata,
-        _compressed_ftlr_foldright_needs_zero(plan, rho_k, jrange), scale_targets)
+        any(k -> rho_k[k] > 0 &&
+                 plan.b_row_nonzero_prefix[k, last(jrange) + 1] -
+                 plan.b_row_nonzero_prefix[k, first(jrange)] < length(jrange),
+            eachindex(rho_k)),
+        scale_targets)
 end
 
 """
@@ -372,14 +366,9 @@ function _build_compressed_ftlr_foldleft_run(C, A, B, plan,
     end
     return DenseResultRunTasks(
         s1, isempty(s2) ? nothing : s2, isempty(s3) ? nothing : s3, 3, tdata,
-        _compressed_ftlr_foldleft_needs_zero(A, plan, irange, jrange), scale_targets)
-end
-
-"""Dispatch a run to its fold's builder. `jrange` is the run's output tile
-column span -- `1:qn` reproduces whole-width behaviour exactly."""
-@inline function _build_compressed_ftlr_run(C, A, B, plan,
-                                            irange, jrange, fold, alpha, beta, arena)
-    return fold === :right ?
-        _build_compressed_ftlr_foldright_run(C, A, B, plan, irange, jrange, alpha, beta, arena) :
-        _build_compressed_ftlr_foldleft_run(C, A, B, plan, irange, jrange, alpha, beta, arena)
+        any(1:plan.qk) do k
+            _compressed_ftlr_row_rank(plan, k, jrange) > 0 &&
+                any(i -> _compressed_ftlr_storage_rank(A, i, k) == 0, irange)
+        end,
+        scale_targets)
 end

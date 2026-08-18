@@ -80,7 +80,7 @@ function TLRMatrix(offdiag::CompressedFTLRMatrix{BackendT,T}) where {BackendT,T}
     corner_tn = n_diag == nt && !iszero(tail_n) ? tail_n : bn
     has_corner = n_diag > 0 && (corner_tm != bm || corner_tn != bn)
     backend = get_backend(offdiag)
-    D = zeros(backend, T, bm, bn, n_diag - Int(has_corner))
+    D = zeros(backend, T, bm, bn, n_diag - has_corner)
     D_corner = zeros(
         backend, T, max(corner_tm, 1), max(corner_tn, 1), has_corner ? 1 : 0)
     return TLRMatrix{BackendT,T,typeof(D),typeof(offdiag)}(offdiag, D, D_corner)
@@ -94,10 +94,9 @@ The supplied full-grid rank matrix must contain zeros on its diagonal.
 """
 function TLRMatrix(
     backend::Backend, ::Type{T}, m::Int, n::Int,
-    tile_size::NTuple{2,Int}, ranks_in::AbstractMatrix{<:Integer};
+    tile_size::NTuple{2,Int}, ranks_in::AbstractMatrix{Int};
     outer_order=TileRowMajor, inner_order=TileColMajor,
-    rank_multiple::Integer=0,
-    rank_type::Type{<:Integer}=Int32,
+    rank_multiple::Int=0,
 ) where {T}
     (outer_order === TileRowMajor || outer_order isa TileRowMajor) || throw(ArgumentError(
         "TLRMatrix requires outer_order=TileRowMajor"))
@@ -105,13 +104,13 @@ function TLRMatrix(
         "TLRMatrix requires inner_order=TileColMajor"))
     offdiag = CompressedFTLRMatrix(
         backend, T, m, n, tile_size, ranks_in;
-        outer_order, inner_order, rank_multiple, rank_type)
+        outer_order, inner_order, rank_multiple)
     return TLRMatrix(offdiag)
 end
 
 function TLRMatrix(
     backend::Backend, ::Type{T}, m::Int, n::Int, b::Int,
-    ranks_in::AbstractMatrix{<:Integer}; kwargs...,
+    ranks_in::AbstractMatrix{Int}; kwargs...,
 ) where {T}
     return TLRMatrix(backend, T, m, n, (b, b), ranks_in; kwargs...)
 end

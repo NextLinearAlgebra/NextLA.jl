@@ -92,7 +92,7 @@ end
     U = zeros(Float64, b, cap, count)
     V = zeros(Float64, b, cap, count)
     ws = _TLRM._make_category_workspace(
-        (b, b), [(k, 1) for k in 1:count], collect(1:count), U, V)
+        (b, b), [(k, 1) for k in 1:count], U, V)
     @test parent(ws.Z) === V
     _TLRM.compress_tiles!(_TLRM.PackedTiles(tiles), ws; eps_sq=1e-12, rel=false)
     got = Array(ws.ranks)

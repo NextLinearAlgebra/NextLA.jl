@@ -12,8 +12,7 @@ struct FTLRCompressionWorkspace{CatsT,StreamV,KeyT}
 end
 
 function _make_category_workspace(tile_shape::NTuple{2,Int}, tile_ids,
-                                  rank_indices, U::AbstractArray{T,3}, V;
-                                  rank_type::Type=Int32,
+                                  U::AbstractArray{T,3}, V;
                                   block::Int=max(min(32, size(U, 2), tile_shape...), 1),
                                   p0s=nothing, q0s=nothing) where {T}
     tm, tn = tile_shape
@@ -22,7 +21,6 @@ function _make_category_workspace(tile_shape::NTuple{2,Int}, tile_ids,
     size(U) == (tm, kout, ntiles) || throw(DimensionMismatch("invalid U batch shape"))
     size(V) == (tn, kout, ntiles) || throw(DimensionMismatch("invalid V batch shape"))
     length(tile_ids) == ntiles || throw(DimensionMismatch("tile_ids must match batch size"))
-    length(rank_indices) == ntiles || throw(DimensionMismatch("rank_indices must match batch size"))
     backend = get_backend(U)
     S = min(kout, tm, tn)
     blk = S == 0 ? 0 : max(min(block, S), 1)
@@ -35,10 +33,10 @@ function _make_category_workspace(tile_shape::NTuple{2,Int}, tile_ids,
     qdev = q0s === nothing ? empty_i32 : q0s
     Y = S == 0 ? zeros(backend, T, tm, 0, ntiles) : ara.Yblk
     return (
-        tile_shape, tile_ids, rank_indices, U, V,
-        ranks=zeros(backend, rank_type, ntiles),
+        tile_shape, tile_ids, U, V,
+        ranks=zeros(backend, Int, ntiles),
         errors_sq=zeros(backend, Float64, ntiles),
-        S, R_keep=min(kout, S), Z, V_tiles=_batch_views(Z, S),
+        R_keep=min(kout, S), Z, V_tiles=_batch_views(Z, S),
         p0s=pdev, q0s=qdev, ara, Q_tiles=_batch_views(Q, S), omega,
         omega_tiles=_batch_views(omega, blk), Y_tiles=_batch_views(Y, blk),
     )
@@ -70,14 +68,12 @@ function FTLRCompressionWorkspace(A::AbstractMatrix{T},
                                   tile_size::NTuple{2,Int};
                                   maxrank::Int,
                                   diagonal::Symbol=:compressed,
-                                  rank_type::Type{<:Integer}=Int32,
                                   block::Int=max(min(32, maxrank), 1)) where {T}
     m, n = size(A)
     bm, bn = tile_size
     m > 0 && n > 0 && bm > 0 && bn > 0 && maxrank >= 0 || throw(ArgumentError(
         "matrix and tile dimensions must be positive and maxrank nonnegative"))
     backend = get_backend(A)
-    qm, qn = cld(m, bm), cld(n, bn)
     specs = _compression_batch_specs(m, n, tile_size, diagonal)
     cats = map(specs) do spec
         ids = spec.tile_ids
@@ -87,16 +83,12 @@ function FTLRCompressionWorkspace(A::AbstractMatrix{T},
         q0_host = Int32[(j - 1) * bn + 1 for (_, j) in ids]
         p0s = copyto!(allocate(backend, Int32, count), p0_host)
         q0s = copyto!(allocate(backend, Int32, count), q0_host)
-        rank_indices = [tile_linear_index(TileRowMajor(), qm, qn, i, j)
-                        for (i, j) in ids]
         U = zeros(backend, T, tm, maxrank, count)
         V = zeros(backend, T, tn, maxrank, count)
         _make_category_workspace(
-            spec.shape, ids, rank_indices, U, V;
-            rank_type, block, p0s, q0s)
+            spec.shape, ids, U, V; block, p0s, q0s)
     end
-    key = (; backend=typeof(backend), device=backend, T, m, n, tile_size, maxrank,
-           diagonal, rank_type, block)
+    key = (; device=backend, T, m, n, tile_size, maxrank, diagonal)
     return FTLRCompressionWorkspace(cats, create_streams(backend, length(cats)), key)
 end
 
@@ -107,15 +99,14 @@ function _validate_compression_workspace(ws::FTLRCompressionWorkspace,
                                          A::AbstractMatrix,
                                          tile_size::NTuple{2,Int},
                                          maxrank::Int,
-                                         diagonal::Symbol,
-                                         rank_type::Type{<:Integer})
+                                         diagonal::Symbol)
     key = ws.key
     expected = (typeof(get_backend(A)), eltype(A), size(A, 1), size(A, 2),
-                tile_size, maxrank, diagonal, rank_type)
-    actual = (key.backend, key.T, key.m, key.n, key.tile_size, key.maxrank,
-              key.diagonal, key.rank_type)
+                tile_size, maxrank, diagonal)
+    actual = (typeof(key.device), key.T, key.m, key.n, key.tile_size, key.maxrank,
+              key.diagonal)
     actual == expected || throw(ArgumentError(
         "FTLRCompressionWorkspace does not match source, geometry, maxrank, " *
-        "diagonal policy, or rank type"))
+        "or diagonal policy"))
     return ws
 end

@@ -35,7 +35,7 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backend
     α = ScalarT(alpha)
     β = ScalarT(beta)
     ws = workspace isa DenseGemmWorkspace ? workspace :
-         DenseGemmWorkspace(A, Int(workspace))
+         DenseGemmWorkspace(A, workspace)
     required = gemm_minimum_workspace_bytes(A, B; transA, transB)
     sizeof(ws) >= required || throw(ArgumentError(
         "workspace has $(sizeof(ws)) bytes; at least $required bytes are required"))
@@ -80,7 +80,7 @@ function gemm!(C::AbstractMatrix, A::CompressedFTLRMatrix{BackendT,T}, B::Compre
         (all(iszero, ranks(A)) || all(iszero, ranks(B))) &&
             return _scale_output!(C, β)
         ws = workspace isa DenseGemmWorkspace ? workspace :
-             DenseGemmWorkspace(A, Int(workspace))
+             DenseGemmWorkspace(A, workspace)
         one_shot = analyze_compressed_gemm(
             C, A, B; workspace=ws, transA, transB, compute=mode)
         try

@@ -9,7 +9,7 @@ and terminal-stage executor as compressed × compressed.
 @inline _dense_block(A::AbstractMatrix, rows, cols) = (view(A, rows, cols), 'N')
 @inline _dense_block(A::Transpose, rows, cols) = (view(parent(A), cols, rows), 'T')
 
-mutable struct CompressedMixedGemmAnalysis{CT,AT,BT,WT,ModeT,PlanT,RT}
+mutable struct CompressedMixedGemmAnalysis{CT,AT,BT,WT,ModeT,RT}
     C::CT
     A::AT
     B::BT
@@ -18,7 +18,6 @@ mutable struct CompressedMixedGemmAnalysis{CT,AT,BT,WT,ModeT,PlanT,RT}
     transB::Char
     compute::ModeT
     fold::Symbol
-    plan::PlanT
     # Copy in the compressed operand's own rank type.
     ranks::RT
     workspace_bytes::Int
@@ -242,22 +241,18 @@ function _prepare_two_stage_runs(C, A, B, compressed, plan, budget, mode, arena)
     end
 end
 
-function _destroy_compressed_mixed_analysis!(analysis::CompressedMixedGemmAnalysis)
-    return _close_dense_result_analysis!(analysis)
-end
-
 Base.close(analysis::CompressedMixedGemmAnalysis) =
-    _destroy_compressed_mixed_analysis!(analysis)
+    _close_dense_result_analysis!(analysis)
 
 function _new_compressed_mixed_analysis(
-    C, A, B, workspace, transA, transB, mode, fold, plan, compressed, runs)
+    C, A, B, workspace, transA, transB, mode, fold, compressed, runs)
     analysis = CompressedMixedGemmAnalysis(
-        C, A, B, workspace, transA, transB, mode, fold, plan,
+        C, A, B, workspace, transA, transB, mode, fold,
         copy(ranks(compressed)),
         sizeof(workspace), runs, _dense_result_runs_have_fallback(runs), false)
     finalizer(analysis) do object
         try
-            _destroy_compressed_mixed_analysis!(object)
+            _close_dense_result_analysis!(object)
         catch
             # Device teardown may precede Julia object finalization.
         end
@@ -286,7 +281,7 @@ function analyze_compressed_gemm(
     runs = _prepare_two_stage_runs(C, LA, LB, LB, plan, budget, mode, arena)
     return _new_compressed_mixed_analysis(
         C, A, B, workspace, transA, transB,
-        mode, :left, plan, B, runs)
+        mode, :left, B, runs)
 end
 
 function analyze_compressed_gemm(
@@ -310,7 +305,7 @@ function analyze_compressed_gemm(
     runs = _prepare_two_stage_runs(C, LA, LB, LA, plan, budget, mode, arena)
     return _new_compressed_mixed_analysis(
         C, A, B, workspace, transA, transB,
-        mode, :right, plan, A, runs)
+        mode, :right, A, runs)
 end
 
 function _execute_compressed_mixed_analysis!(

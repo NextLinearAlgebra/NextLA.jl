@@ -109,8 +109,6 @@ function _store_tlr_run!(C::CompressedFTLRMatrix, U, V, ranks_run, err_run,
 end
 
 function _validate_canonical_tlr_gemm(C::CompressedFTLRMatrix,
-                                      A::CompressedFTLRMatrix,
-                                      B::CompressedFTLRMatrix,
                                       LA::AbstractTLRMatrix,
                                       LB::AbstractTLRMatrix)
     _require_complementary_packing(C, "C")
@@ -138,7 +136,7 @@ function _tlr_gemm_workspace_spec(C::CompressedFTLRMatrix{BackendT,T},
                                   block::Int=32) where {BackendT,T}
     LA = transA == 'T' ? transpose(A) : A
     LB = transB == 'T' ? transpose(B) : B
-    _validate_canonical_tlr_gemm(C, A, B, LA, LB)
+    _validate_canonical_tlr_gemm(C, LA, LB)
     qm, qk = grid_size(LA)
     _, qn = grid_size(LB)
     rA, rB = _active_rank_cap(A), _active_rank_cap(B)
@@ -154,13 +152,12 @@ function _tlr_gemm_workspace_spec(C::CompressedFTLRMatrix{BackendT,T},
     nmember = family === :column ? qm : qn
     bm = nominal_tile_size(C, 1)
     bn = nominal_tile_size(C, 2)
-    Thi = tlr_orthogonalization_type(T)
-    key = (
+    return (
         backend=typeof(get_backend(C)), T=T, rankT=eltype(C.ranks),
         family=family, qm=qm, qk=qk, qn=qn, nmember=nmember,
         rA=rA, rB=rB, block=blk, maxrank=cap, bm=bm, bn=bn,
+        Thi=tlr_orthogonalization_type(T),
     )
-    return (; key, Thi)
 end
 
 function _prepare_tlr_gemm_workspace(C, A, B, workspace;
@@ -168,16 +165,16 @@ function _prepare_tlr_gemm_workspace(C, A, B, workspace;
     spec = _tlr_gemm_workspace_spec(C, A, B; transA, transB, block)
     if workspace === nothing
         return TLRGemmWorkspace(C, spec), spec
-    elseif workspace isa Integer
+    elseif workspace isa Int
         workspace >= 0 ||
             throw(ArgumentError("workspace bytes must be nonnegative"))
         required = _tlr_gemm_workspace_bytes(spec, 1)
         workspace >= required || throw(ArgumentError(
             "workspace has $workspace bytes; at least $required bytes are required"))
-        ws = TLRGemmWorkspace(C, spec; bytes=Int(workspace))
+        ws = TLRGemmWorkspace(C, spec; bytes=workspace)
         return ws, spec
     elseif workspace isa TLRGemmWorkspace
-        workspace.key.operation == spec.key || throw(ArgumentError(
+        workspace.operation == spec || throw(ArgumentError(
             "TLRGemmWorkspace geometry, backend, or element type does not match this operation"))
         return workspace, spec
     end
@@ -196,7 +193,7 @@ function _gemm_tlr!(C::CompressedFTLRMatrix{BackendT,T},
                compute=nothing, workspace=nothing) where {BackendT,T}
     LA = transA == 'T' ? transpose(A) : A
     LB = transB == 'T' ? transpose(B) : B
-    _validate_canonical_tlr_gemm(C, A, B, LA, LB)
+    _validate_canonical_tlr_gemm(C, LA, LB)
     tol >= 0 || throw(ArgumentError("tol must be nonnegative"))
     r_required >= 1 || throw(ArgumentError("r_required must be positive"))
     block >= 1 || throw(ArgumentError("block must be positive"))
@@ -226,7 +223,6 @@ function _gemm_tlr!(C::CompressedFTLRMatrix{BackendT,T},
         au=(data=_compressed_ftlr_uniform_view(_compressed_ftlr_outer_storage(LA)),
             order=compressed_ftlr_outer_order(LA), qm=qmA, qn=qnA),
     )
-    LC = C
     qm, qk = grid_size(LA)
     _, qn = grid_size(LB)
     rA, rB = _active_rank_cap(A), _active_rank_cap(B)
@@ -238,7 +234,7 @@ function _gemm_tlr!(C::CompressedFTLRMatrix{BackendT,T},
     bm_tile = nominal_tile_size(C, 1)
     bn_tile = nominal_tile_size(C, 2)
 
-    if workspace_spec.key.family === :column
+    if workspace_spec.family === :column
         # NT, right choice: fixed columns share H. `arena` and `ws_owner`'s
         # traversal/diagnostic buffers are sized once for this family/shape
         # and reused (reset) across every column below; each iteration
@@ -247,12 +243,12 @@ function _gemm_tlr!(C::CompressedFTLRMatrix{BackendT,T},
         # which rolls pending members into released slots as active ones
         # retire instead of running the whole column as one fixed batch.
         arena = ws_owner.arena
-        cap = ws_owner.key.capacity
+        cap = ws_owner.capacity
         for j in 1:qn
             _arena_reset!(arena)
             initial = 1:min(cap, qm)
             run = RunCoupling(
-                Val(:column), ops, initial, j; alpha=α, beta=β, C=LC,
+                Val(:column), ops, initial, j; alpha=α, beta=β, C,
                 block=blk, maxrank=cap_C, rA, rB, compute=mode, arena)
             ara_ws = ARAWorkspace(
                 T, backend, bm_tile, cap_C, cap; block=blk, arena,
@@ -266,12 +262,12 @@ function _gemm_tlr!(C::CompressedFTLRMatrix{BackendT,T},
     else
         # side === :left: fixed output rows, left sampling.
         arena = ws_owner.arena
-        cap = ws_owner.key.capacity
+        cap = ws_owner.capacity
         for i in 1:qm
             _arena_reset!(arena)
             initial = 1:min(cap, qn)
             run = RunCoupling(
-                Val(:row), ops, i, initial; alpha=α, beta=β, C=LC,
+                Val(:row), ops, i, initial; alpha=α, beta=β, C,
                 block=blk, maxrank=cap_C, rA, rB, compute=mode,
                 arena,
             )
@@ -300,8 +296,7 @@ function _uniform_ara_operand(A::CompressedFTLRMatrix{BackendT,T}) where {Backen
     cap = maxrank(A)
     uniform = CompressedFTLRMatrix(
         get_backend(A), T, size(A)..., nominal_tile_size(A), fill(cap, qm, qn);
-        outer_order=TileRowMajor, inner_order=TileColMajor,
-        rank_type=eltype(ranks(A)))
+        outer_order=TileRowMajor, inner_order=TileColMajor)
     @inbounds for j in 1:qn, i in 1:qm
         r = _compressed_ftlr_rank(A, i, j)
         r == 0 && continue
@@ -315,16 +310,16 @@ function _uniform_ara_operand(A::CompressedFTLRMatrix{BackendT,T}) where {Backen
 end
 
 function _pack_ara_output(staging::CompressedFTLRMatrix;
-                          rank_multiple::Integer=0)
+                          rank_multiple::Int=0)
     qm, qn = grid_size(staging)
-    rank_grid = [Int(ranks(staging)[
-                     tile_linear_index(staging.outer.order, qm, qn, i, j)])
+    rank_grid = [ranks(staging)[
+                     tile_linear_index(staging.outer.order, qm, qn, i, j)]
                  for i in 1:qm, j in 1:qn]
     C = CompressedFTLRMatrix(
         get_backend(staging), eltype(staging), size(staging)...,
         nominal_tile_size(staging), rank_grid;
         outer_order=TileRowMajor, inner_order=TileColMajor,
-        rank_multiple, rank_type=eltype(ranks(staging)))
+        rank_multiple)
     @inbounds for j in 1:qn, i in 1:qm
         slot = tile_linear_index(C.outer.order, qm, qn, i, j)
         C.resid[slot] = residuals(staging)[
@@ -361,7 +356,7 @@ backend rank quantum; incompatible calls throw before scheduling.
 function gemm(A::CompressedFTLRMatrix{BackendT,T},
               B::CompressedFTLRMatrix{BackendT,T};
               maxrank::Int,
-              rank_multiple::Integer=0,
+              rank_multiple::Int=0,
               alpha=true,
               transA::Char='N', transB::Char='N',
               tol::Real=0.0, rel::Bool=false,
@@ -407,8 +402,7 @@ function gemm(A::CompressedFTLRMatrix{BackendT,T},
         return CompressedFTLRMatrix(
             get_backend(A), T, size(LA, 1), size(LB, 2), out_tile,
             Base.zeros(Int, qm, qn); rank_multiple,
-            outer_order=TileRowMajor, inner_order=TileColMajor,
-            rank_type=promote_type(eltype(ranks(A)), eltype(ranks(B))))
+            outer_order=TileRowMajor, inner_order=TileColMajor)
     end
 
     UA = _uniform_ara_operand(A)
@@ -416,8 +410,7 @@ function gemm(A::CompressedFTLRMatrix{BackendT,T},
     staging = CompressedFTLRMatrix(
         get_backend(A), T, size(LA, 1), size(LB, 2), out_tile,
         fill(maxrank, qm, qn);
-        outer_order=TileRowMajor, inner_order=TileColMajor,
-        rank_type=promote_type(eltype(ranks(A)), eltype(ranks(B))))
+        outer_order=TileRowMajor, inner_order=TileColMajor)
     _gemm_tlr!(
         staging, UA, UB; alpha, beta=false, transA, transB, tol, rel, eps_rel,
         r_required, block, compute=mode, workspace)

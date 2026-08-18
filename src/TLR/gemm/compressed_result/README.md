@@ -16,8 +16,8 @@ and inner factors tile-column-major. This makes the logical factor orders
 transpose-invariant and supports `NN`, `NT`, `TN`, and `TT` with the same
 sampling-side cost comparison.
 
-- `operands.jl` provides uniform run-local factor panels.
-- `run_coupling.jl` implements the fixed-row/fixed-column implicit product.
+- `run_coupling.jl` packs run-local factor panels and implements the
+  fixed-row/fixed-column implicit product.
 - `rolling_schedule.jl` greedily admits pending tiles as converged slots retire.
 - `workspace.jl` owns numerical ARA arenas and scheduler scratch.
 - `driver.jl` validates the contract, stages operands, runs ARA, and packs the

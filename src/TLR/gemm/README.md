@@ -17,15 +17,14 @@ known until ARA converges.
 
 ```text
 gemm/
-├── common/               logical operands, precision, bump arena
+├── common/               precision policy and bump arena
 ├── dense_result/         dense accumulation
 │   ├── compressed_ftlr/  rank metadata and two/three-stage lowering
 │   ├── dense_diagonal.jl dense diagonal cross terms
 │   └── driver.jl         public gemm! dispatch
 └── compressed_result/    ARA compressed-output construction
-    ├── operands.jl       uniform run-local factor panels
     ├── workspace.jl      ARA arenas
-    ├── run_coupling.jl   implicit product operator
+    ├── run_coupling.jl   factor panels and implicit product operator
     ├── rolling_schedule.jl runtime admission and retirement
     └── driver.jl         allocation-returning gemm
 ```

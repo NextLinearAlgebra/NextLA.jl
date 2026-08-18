@@ -51,13 +51,6 @@ end
     return lo:hi
 end
 
-"""Does B have a rank-zero tile at contraction row `k` within `jrange`?"""
-@inline function _compressed_ftlr_row_has_zero(meta, k::Int, jrange)
-    nonzero = meta.b_row_nonzero_prefix[k, last(jrange) + 1] -
-              meta.b_row_nonzero_prefix[k, first(jrange)]
-    return nonzero < length(jrange)
-end
-
 """
     _compressed_ftlr_rank_metadata(A, B)
 

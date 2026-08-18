@@ -17,7 +17,7 @@ struct CompressedFTLRPackedFactors{AT<:AbstractVector,O<:TileOrderStyle}
     qn::Int
 end
 
-struct CompressedFTLRMatrix{BackendT<:Backend,T,AT<:AbstractVector{T},RankT<:Integer,
+struct CompressedFTLRMatrix{BackendT<:Backend,T,AT<:AbstractVector{T},
                   OuterT<:TileOrderStyle,InnerT<:TileOrderStyle} <: AbstractTLRMatrix{T}
     backend::BackendT
     m::Int
@@ -26,7 +26,7 @@ struct CompressedFTLRMatrix{BackendT<:Backend,T,AT<:AbstractVector{T},RankT<:Int
     tail_tile_size::NTuple{2,Int}
     outer::CompressedFTLRPackedFactors{AT,OuterT}
     inner::CompressedFTLRPackedFactors{AT,InnerT}
-    ranks::Vector{RankT}
+    ranks::Vector{Int}
     rank_multiple::Int
     resid::Vector{Float64}
     maxrank::Int
@@ -34,7 +34,7 @@ end
 
 @inline function _compressed_ftlr_rank(A::CompressedFTLRMatrix, i::Int, j::Int)
     slot = tile_linear_index(A.outer.order, A.outer.qm, A.outer.qn, i, j)
-    return Int(A.ranks[slot])
+    return A.ranks[slot]
 end
 @inline _compressed_ftlr_rank(
     A::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) =
@@ -153,7 +153,7 @@ end
 """
     CompressedFTLRMatrix(backend, T, m, n, tile_size, ranks;
                outer_order=TileRowMajor, inner_order=TileColMajor,
-               rank_multiple=0, rank_type=Int32)
+               rank_multiple=0)
 
 Allocate a finalized CompressedFTLR matrix from known logical tile ranks.
 Physical factor widths equal the logical ranks when `rank_multiple == 0` and
@@ -162,10 +162,9 @@ have one trailing row and/or column tile.
 """
 
 function CompressedFTLRMatrix(backend::Backend, ::Type{T}, m::Int, n::Int,
-                    tile_size::NTuple{2,Int}, ranks_in::AbstractMatrix{<:Integer};
+                    tile_size::NTuple{2,Int}, ranks_in::AbstractMatrix{Int};
                     outer_order=TileRowMajor, inner_order=TileColMajor,
-                    rank_multiple::Integer=0,
-                    rank_type::Type{<:Integer}=Int32) where {T}
+                    rank_multiple::Int=0) where {T}
     bm, bn = tile_size
     m > 0 && n > 0 && bm > 0 && bn > 0 ||
         throw(ArgumentError("m, n, and tile dimensions must be positive"))
@@ -174,7 +173,7 @@ function CompressedFTLRMatrix(backend::Backend, ::Type{T}, m::Int, n::Int,
         throw(DimensionMismatch("ranks must be a $qm × $qn matrix"))
     all(>=(0), ranks_in) || throw(ArgumentError("CompressedFTLR ranks must be nonnegative"))
     rank_multiple >= 0 || throw(ArgumentError("rank_multiple must be nonnegative"))
-    multiple = Int(rank_multiple)
+    multiple = rank_multiple
     rowdims = [min(bm, m - (i - 1) * bm) for i in 1:qm]
     coldims = [min(bn, n - (j - 1) * bn) for j in 1:qn]
     @inbounds for j in 1:qn, i in 1:qm
@@ -185,7 +184,7 @@ function CompressedFTLRMatrix(backend::Backend, ::Type{T}, m::Int, n::Int,
     outer_style = outer_order isa Type ? outer_order() : outer_order
     inner_style = inner_order isa Type ? inner_order() : inner_order
     storage_rank_at = function (i, j)
-        r = Int(ranks_in[i, j])
+        r = ranks_in[i, j]
         return iszero(r) || iszero(multiple) ? r : cld(r, multiple) * multiple
     end
     # Multiple-of-eight leading dimensions keep every packed factor base
@@ -200,19 +199,19 @@ function CompressedFTLRMatrix(backend::Backend, ::Type{T}, m::Int, n::Int,
     vdata = zeros(backend, T, voffsets[end] - 1)
     outer = CompressedFTLRPackedFactors(udata, uoffsets, outer_style, uld, rowdims, :row, qm, qn)
     inner = CompressedFTLRPackedFactors(vdata, voffsets, inner_style, vld, coldims, :col, qm, qn)
-    rankvec = Vector{rank_type}(undef, qm * qn)
+    rankvec = Vector{Int}(undef, qm * qn)
     @inbounds for j in 1:qn, i in 1:qm
-        rankvec[tile_linear_index(outer_style, qm, qn, i, j)] = rank_type(ranks_in[i, j])
+        rankvec[tile_linear_index(outer_style, qm, qn, i, j)] = ranks_in[i, j]
     end
     resid = Base.zeros(Float64, qm * qn)
-    return CompressedFTLRMatrix{typeof(backend),T,typeof(udata),rank_type,typeof(outer_style),
+    return CompressedFTLRMatrix{typeof(backend),T,typeof(udata),typeof(outer_style),
                       typeof(inner_style)}(
         backend, m, n, tile_size, (m % bm, n % bn), outer, inner,
         rankvec, multiple, resid, isempty(rankvec) ? 0 : maximum(rankvec))
 end
 
 function CompressedFTLRMatrix(backend::Backend, ::Type{T}, m::Int, n::Int, b::Int,
-                    ranks_in::AbstractMatrix{<:Integer}; kwargs...) where {T}
+                    ranks_in::AbstractMatrix{Int}; kwargs...) where {T}
     return CompressedFTLRMatrix(backend, T, m, n, (b, b), ranks_in; kwargs...)
 end
 
