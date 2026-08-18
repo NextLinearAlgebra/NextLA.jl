@@ -29,10 +29,13 @@ end
 @inline _dense_op(::LogicalDenseTile{:N}) = 'N'
 @inline _dense_op(::LogicalDenseTile{:T}) = 'T'
 
-@inline function _diag_tile_ref(
-    A::LogicalTLROperand{Op,<:TLRMatrix}, k::Int) where {Op}
-    tile = _diag_tile_view(physical(A), k)
-    return LogicalDenseTile{Op,typeof(tile)}(tile)
+@inline function _diag_tile_ref(A::TLRMatrix, k::Int)
+    tile = _diag_tile_view(A, k)
+    return LogicalDenseTile{:N,typeof(tile)}(tile)
 end
-@inline ndiag_tiles(A::LogicalTLROperand{<:Any,<:TLRMatrix}) =
-    ndiag_tiles(physical(A))
+
+@inline function _diag_tile_ref(
+    A::TransposeTLRMatrix{<:Any,<:TLRMatrix}, k::Int)
+    tile = _diag_tile_view(parent(A), k)
+    return LogicalDenseTile{:T,typeof(tile)}(tile)
+end

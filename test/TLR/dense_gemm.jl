@@ -60,13 +60,13 @@ end
     @test C ≈ reconstruct_tlr(A) * reconstruct_tlr(B)
 end
 
-# Whole-matrix transpose is a relabeling of stored factors (`logical_operands`) plus
-# effective-order axis inference — the executors are unchanged.
-@testset "whole-matrix logical N/T operands" begin
+# Whole-matrix transpose is a zero-copy container view; the executors consume
+# its transposed geometry, factor roles, and tile order directly.
+@testset "container-level TLR transpose" begin
     RM = NextLA.TileRowMajor(); CM = NextLA.TileColMajor()
     A = NextLA.CompressedFTLRMatrix(
         KernelAbstractions.CPU(), Float64, 11, 14, (4, 3), fill(2, 3, 5))
-    At = NextLA.TLRmodule.logical_operand(A, 'T')
+    At = transpose(A)
     @test size(At) == (14, 11)
     @test NextLA.TLRmodule.nominal_tile_size(At) == (3, 4)
     @test NextLA.TLRmodule.tail_tile_size(At) == (2, 3)
@@ -76,7 +76,11 @@ end
     @test NextLA.TLRmodule.compressed_ftlr_inner_order(At) isa NextLA.TileColMajor
 
     D = random_tlr_matrix(Array, Float64, 14, 4, 2; seed=91)
-    Dt = NextLA.TLRmodule.logical_operand(D, 't')
+    Dt = transpose(D)
+    @test NextLA.offdiagonal(Dt) isa NextLA.TLRmodule.TransposeTLRMatrix
+    @test size(NextLA.dense_diag(Dt))[1:2] == reverse(size(NextLA.dense_diag(D))[1:2])
+    @test size.(NextLA.get_factors(Dt, 2, 1)) ==
+          reverse(size.(NextLA.get_factors(D, 1, 2)))
     dref = NextLA.TLRmodule._diag_tile_ref(Dt, 1)
     @test parent(NextLA.TLRmodule._dense_data(dref)) === D.D
     @test NextLA.TLRmodule._dense_op(dref) == 'T'

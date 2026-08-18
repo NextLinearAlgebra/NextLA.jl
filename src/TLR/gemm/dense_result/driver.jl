@@ -1,7 +1,8 @@
 # gemm! entry points for the dense-output TLR GEMM: materializes a dense
 # C from compressed full-grid factors and optional dense diagonal storage.
 
-@inline function _validate_logical_gemm(C, LA::LogicalTLROperand, LB::LogicalTLROperand)
+@inline function _validate_logical_gemm(
+    C, LA::AbstractTLRMatrix, LB::AbstractTLRMatrix)
     size(LA, 2) == size(LB, 1) ||
         throw(DimensionMismatch("inner dimensions must match: size(op(A),2) == size(op(B),1)"))
     size(C) == (size(LA, 1), size(LB, 2)) ||

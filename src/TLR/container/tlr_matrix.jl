@@ -14,6 +14,8 @@ struct TLRMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},
 end
 
 @inline offdiagonal(A::TLRMatrix) = A.offdiag
+@inline offdiagonal(A::TransposeTLRMatrix{<:Any,<:TLRMatrix}) =
+    transpose(offdiagonal(parent(A)))
 Base.size(A::TLRMatrix) = size(A.offdiag)
 @inline nominal_tile_size(A::TLRMatrix) = nominal_tile_size(A.offdiag)
 @inline tail_tile_size(A::TLRMatrix) = tail_tile_size(A.offdiag)
@@ -26,8 +28,14 @@ Base.size(A::TLRMatrix) = size(A.offdiag)
 @inline maximum_storage_rank(A::TLRMatrix) = maximum_storage_rank(A.offdiag)
 
 @inline ndiag_tiles(A::TLRMatrix) = min(grid_size(A)...)
+@inline ndiag_tiles(A::TransposeTLRMatrix{<:Any,<:TLRMatrix}) =
+    ndiag_tiles(parent(A))
 @inline dense_diag(A::TLRMatrix) = A.D
 @inline dense_diag_corner(A::TLRMatrix) = A.D_corner
+@inline dense_diag(A::TransposeTLRMatrix{<:Any,<:TLRMatrix}) =
+    PermutedDimsArray(dense_diag(parent(A)), (2, 1, 3))
+@inline dense_diag_corner(A::TransposeTLRMatrix{<:Any,<:TLRMatrix}) =
+    PermutedDimsArray(dense_diag_corner(parent(A)), (2, 1, 3))
 
 @inline function _diag_tile_view(A::TLRMatrix, tile_k::Int)
     1 <= tile_k <= ndiag_tiles(A) || throw(BoundsError(1:ndiag_tiles(A), tile_k))
@@ -38,11 +46,16 @@ Base.size(A::TLRMatrix) = size(A.offdiag)
     return view(A.D_corner, :, :, 1)
 end
 
+@inline _diag_tile_view(A::TransposeTLRMatrix{<:Any,<:TLRMatrix}, tile_k::Int) =
+    transpose(_diag_tile_view(parent(A), tile_k))
+
 """Return an exact-rank factor pair for an off-diagonal tile."""
 @inline function get_factors(A::TLRMatrix, i::Int, j::Int)
     i == j && throw(ArgumentError("tile ($i, $j) is diagonal and stored densely"))
     return get_factors(A.offdiag, i, j)
 end
+@inline get_factors(A::TransposeTLRMatrix{<:Any,<:TLRMatrix}, i::Int, j::Int) =
+    get_factors(offdiagonal(A), i, j)
 
 function _validate_zero_compressed_diagonal(offdiag::CompressedFTLRMatrix)
     compressed_ftlr_outer_order(offdiag) isa TileRowMajor || throw(ArgumentError(

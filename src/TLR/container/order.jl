@@ -10,6 +10,9 @@ struct TileColMajor <: TileOrderStyle end
 """Row-major traversal of the logical tile grid."""
 struct TileRowMajor <: TileOrderStyle end
 
+Base.transpose(::TileColMajor) = TileRowMajor()
+Base.transpose(::TileRowMajor) = TileColMajor()
+
 @inline _order_instance(::Type{O}) where {O<:TileOrderStyle} = O()
 @inline _order_instance(order::O) where {O<:TileOrderStyle} = order
 

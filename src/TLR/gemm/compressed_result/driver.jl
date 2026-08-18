@@ -28,7 +28,7 @@ end
 The compressed-output zero-copy paths need `X`'s *logical* outer order to be
 `TileRowMajor` and inner order `TileColMajor` — the default complementary
 packing every `CompressedFTLRMatrix` here is constructed with. Under that
-packing this holds for both `'N'` and `'T'` (composing `_transpose_order`
+packing this holds for both `'N'` and `'T'` (transposing the tile order
 with itself returns the original order), which is what lets one code path
 serve all four transpose combinations instead of gating on which side is
 zero-copy for a given transpose flag.
@@ -51,8 +51,8 @@ zero-copy right sampling stack (from `A`) and a zero-copy left sampling stack
 pure cost comparison: the peak retained core workspace of one fixed-column
 right run vs. one fixed-row left run.
 """
-function choose_tlr_sampling_side(LA::LogicalTLROperand,
-                                  LB::LogicalTLROperand,
+function choose_tlr_sampling_side(LA::AbstractTLRMatrix,
+                                  LB::AbstractTLRMatrix,
                                   rmaxC::Int, block::Int,
                                   rA::Int, rB::Int)
     _require_complementary_packing(LA, "A")
@@ -127,8 +127,8 @@ end
 function _validate_canonical_tlr_gemm(C::CompressedFTLRMatrix,
                                       A::CompressedFTLRMatrix,
                                       B::CompressedFTLRMatrix,
-                                      LA::LogicalTLROperand,
-                                      LB::LogicalTLROperand)
+                                      LA::AbstractTLRMatrix,
+                                      LB::AbstractTLRMatrix)
     _require_complementary_packing(C, "C")
     _require_complementary_packing(LA, "A")
     _require_complementary_packing(LB, "B")
@@ -235,8 +235,8 @@ function _gemm_tlr!(C::CompressedFTLRMatrix{BackendT,T},
 
     ws_owner, workspace_spec = _prepare_tlr_gemm_workspace(
         C, A, B, workspace; transA, transB, block)
-    ops = logical_operands(LA, LB)
-    LC = logical_operand(C)
+    ops = compressed_product_operands(LA, LB)
+    LC = C
     qm, qk = grid_size(LA)
     _, qn = grid_size(LB)
     rA, rB = _active_rank_cap(A), _active_rank_cap(B)

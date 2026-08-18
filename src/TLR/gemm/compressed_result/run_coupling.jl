@@ -101,7 +101,7 @@ end
 
 Fixed-column constructor: the run covers output tiles `(rows, j)`.
 """
-function RunCoupling(::Val{:column}, ops::LogicalTLROperands, rows, j::Integer;
+function RunCoupling(::Val{:column}, ops::CompressedProductOperands, rows, j::Integer;
                      alpha, beta=false, C=nothing,
                      block::Int, maxrank::Int,
                      rA::Int=rankdim(ops.au),
@@ -182,7 +182,7 @@ end
 
 Fixed-row constructor: the run covers output tiles `(i, cols)`.
 """
-function RunCoupling(::Val{:row}, ops::LogicalTLROperands, i::Integer, cols;
+function RunCoupling(::Val{:row}, ops::CompressedProductOperands, i::Integer, cols;
                      alpha, beta=false, C=nothing,
                      block::Int, maxrank::Int,
                      rA::Int=rankdim(ops.au),

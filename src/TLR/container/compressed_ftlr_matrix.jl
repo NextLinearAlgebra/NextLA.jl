@@ -36,13 +36,21 @@ end
     slot = tile_linear_index(A.outer.order, A.outer.qm, A.outer.qn, i, j)
     return Int(A.ranks[slot])
 end
+@inline _compressed_ftlr_rank(
+    A::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) =
+    _compressed_ftlr_rank(parent(A), j, i)
 @inline _rank_storage_width(r::Integer, multiple::Integer) =
     iszero(r) ? 0 : iszero(multiple) ? Int(r) : cld(Int(r), Int(multiple)) * Int(multiple)
 
 @inline function _compressed_ftlr_storage_rank(A::CompressedFTLRMatrix, i::Int, j::Int)
     return _rank_storage_width(_compressed_ftlr_rank(A, i, j), A.rank_multiple)
 end
+@inline _compressed_ftlr_storage_rank(
+    A::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) =
+    _compressed_ftlr_storage_rank(parent(A), j, i)
 @inline _compressed_ftlr_logical_coords(::CompressedFTLRMatrix, i::Int, j::Int) = (i, j)
+@inline _compressed_ftlr_logical_coords(
+    ::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) = (j, i)
 
 @inline function _compressed_ftlr_factor_view(f::CompressedFTLRPackedFactors, stored_r::Int,
                                                visible_r::Int, i::Int, j::Int)
@@ -63,18 +71,45 @@ end
 @inline compressed_ftlr_inner(A::CompressedFTLRMatrix, i::Int, j::Int) =
     _compressed_ftlr_factor_view(A.inner, _compressed_ftlr_storage_rank(A, i, j),
                                  _compressed_ftlr_rank(A, i, j), i, j)
+@inline compressed_ftlr_outer(
+    A::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) =
+    compressed_ftlr_inner(parent(A), j, i)
+@inline compressed_ftlr_inner(
+    A::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) =
+    compressed_ftlr_outer(parent(A), j, i)
 @inline compressed_ftlr_storage_outer(A::CompressedFTLRMatrix, i::Int, j::Int) =
     _compressed_ftlr_factor_view(A.outer, _compressed_ftlr_storage_rank(A, i, j),
                                  _compressed_ftlr_storage_rank(A, i, j), i, j)
 @inline compressed_ftlr_storage_inner(A::CompressedFTLRMatrix, i::Int, j::Int) =
     _compressed_ftlr_factor_view(A.inner, _compressed_ftlr_storage_rank(A, i, j),
                                  _compressed_ftlr_storage_rank(A, i, j), i, j)
+@inline compressed_ftlr_storage_outer(
+    A::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) =
+    compressed_ftlr_storage_inner(parent(A), j, i)
+@inline compressed_ftlr_storage_inner(
+    A::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) =
+    compressed_ftlr_storage_outer(parent(A), j, i)
 @inline compressed_ftlr_outer_order(A::CompressedFTLRMatrix) = A.outer.order
 @inline compressed_ftlr_inner_order(A::CompressedFTLRMatrix) = A.inner.order
+@inline compressed_ftlr_outer_order(
+    A::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}) =
+    transpose(parent(A).inner.order)
+@inline compressed_ftlr_inner_order(
+    A::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}) =
+    transpose(parent(A).outer.order)
 @inline tile_order(A::CompressedFTLRMatrix) = A.outer.order
 @inline rank_multiple(A::CompressedFTLRMatrix) = A.rank_multiple
+@inline rank_multiple(A::TransposeTLRMatrix) = rank_multiple(parent(A))
 @inline maximum_storage_rank(A::CompressedFTLRMatrix) =
     _rank_storage_width(maxrank(A), rank_multiple(A))
+@inline maximum_storage_rank(A::TransposeTLRMatrix) = maximum_storage_rank(parent(A))
+
+@inline _compressed_ftlr_outer_storage(A::CompressedFTLRMatrix) = A.outer
+@inline _compressed_ftlr_inner_storage(A::CompressedFTLRMatrix) = A.inner
+@inline _compressed_ftlr_outer_storage(
+    A::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}) = parent(A).inner
+@inline _compressed_ftlr_inner_storage(
+    A::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}) = parent(A).outer
 
 """
     _compressed_ftlr_uniform_view(f::CompressedFTLRPackedFactors)
@@ -188,3 +223,6 @@ end
 @inline function get_factors(A::CompressedFTLRMatrix, i::Int, j::Int)
     return compressed_ftlr_outer(A, i, j), compressed_ftlr_inner(A, i, j)
 end
+@inline get_factors(
+    A::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) =
+    (compressed_ftlr_outer(A, i, j), compressed_ftlr_inner(A, i, j))

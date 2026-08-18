@@ -5,13 +5,8 @@ tile shapes." `_compressed_ftlr_fold_cost` (`costs.jl`) turns these facts into
 FoldRight/FoldLeft cost estimates; nothing here depends on which fold is used.
 """
 
-@inline _compressed_ftlr_axis_range(A::LogicalTLROperand, tile::Int, axis::Int) =
+@inline _compressed_ftlr_axis_range(A::AbstractTLRMatrix, tile::Int, axis::Int) =
     _tile_axis_range(A, tile, axis)
-@inline function _compressed_ftlr_axis_range(A::CompressedFTLRMatrix, tile::Int, axis::Int)
-    width = axis == 1 ? tile_size(A, tile, 1)[1] : tile_size(A, 1, tile)[2]
-    first = (tile - 1) * nominal_tile_size(A, axis) + 1
-    return first:(first + width - 1)
-end
 
 @inline _compressed_ftlr_right_valid(A, B) =
     compressed_ftlr_outer_order(A) isa TileRowMajor && compressed_ftlr_outer_order(B) isa TileRowMajor

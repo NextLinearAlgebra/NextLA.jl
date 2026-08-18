@@ -42,7 +42,7 @@ function _validate_compressed_ftlr_tile_alignment_cuda(
 end
 
 function validate_tlr_gemm_storage(A, mode; name::AbstractString="operand")
-    X = A isa LogicalTLROperand ? physical(A) : A
+    X = A isa TransposeTLRMatrix ? parent(A) : A
     X = X isa TLRMatrix ? offdiagonal(X) : X
     backend = get_backend(X)
     T = eltype(X)

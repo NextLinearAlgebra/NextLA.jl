@@ -7,7 +7,7 @@ Uniform-width factors of logical tile `(i,j)` in private output staging. The
 stored-width view is required by batched run coupling; finalized user matrices
 remain ragged and never use this accessor as a destination.
 """
-@inline _beta_tile_factors(A::LogicalTLROperand{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) =
+@inline _beta_tile_factors(A::AbstractTLRMatrix, i::Int, j::Int) =
     (compressed_ftlr_storage_outer(A, i, j), compressed_ftlr_storage_inner(A, i, j))
 
 """Zero-copy view over flat interior factor storage and its tile grid."""
@@ -44,7 +44,7 @@ end
 end
 
 """Interior factor panels for the implicit compressed product operator."""
-struct LogicalTLROperands{AV,BU,BV,AU}
+struct CompressedProductOperands{AV,BU,BV,AU}
     av::AV
     bu::BU
     bv::BV
@@ -64,21 +64,21 @@ operand, not the packed factor's own physical `.order` field: composing the
 logical order (transpose-aware) with the physical slot addressing that
 `_compressed_ftlr_outer_storage`/`_compressed_ftlr_inner_storage` already
 selected (swapping to the `.inner`/
-`.outer` field under a logical `:T` view) is what makes `tile_linear_index`
+`.outer` field under a transposed container view) is what makes `tile_linear_index`
 land on the correct physical slot for a *logical* `(i,j)` — the same identity
-the rest of the `LogicalTLROperand` machinery relies on throughout. Under the
+the container transpose view relies on throughout. Under the
 default complementary packing this GEMM requires, both orders are in fact
 transpose-invariant (`compressed_ftlr_outer_order` is always `TileRowMajor`,
 `compressed_ftlr_inner_order` always `TileColMajor`, for either `'N'` or
 `'T'`) — this is exactly what lets a single code path serve all four
 transpose combinations without a zero-copy-availability branch.
 """
-function logical_operands(
-    A::LogicalTLROperand{<:Any,<:CompressedFTLRMatrix},
-    B::LogicalTLROperand{<:Any,<:CompressedFTLRMatrix})
+function compressed_product_operands(
+    A::AbstractTLRMatrix,
+    B::AbstractTLRMatrix)
     qmA, qnA = regular_grid_size(A)
     qmB, qnB = regular_grid_size(B)
-    return LogicalTLROperands(
+    return CompressedProductOperands(
         interior_operand(_compressed_ftlr_uniform_view(_compressed_ftlr_inner_storage(A)),
                          compressed_ftlr_inner_order(A), qmA, qnA),
         interior_operand(_compressed_ftlr_uniform_view(_compressed_ftlr_outer_storage(B)),

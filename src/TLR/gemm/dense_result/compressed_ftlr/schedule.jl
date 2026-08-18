@@ -207,7 +207,7 @@ function _prepare_compressed_ftlr_workspace(A, B, plan::CompressedFTLRRankPlan, 
     profile = plan.profile
     T = eltype(A)
     ws = if workspace isa Integer
-        DenseGemmWorkspace(_compressed_ftlr_parent(A), Int(workspace))
+        DenseGemmWorkspace(A, Int(workspace))
     elseif workspace isa DenseGemmWorkspace
         eltype(workspace) === T || throw(ArgumentError(
             "workspace element type $(eltype(workspace)) does not match operand type $T"))

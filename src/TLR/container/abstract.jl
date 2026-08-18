@@ -7,16 +7,31 @@ storage.
 """
 abstract type AbstractTLRMatrix{T} end
 
+"""Zero-copy container view representing the transpose of a TLR matrix."""
+struct TransposeTLRMatrix{T,A<:AbstractTLRMatrix{T}} <: AbstractTLRMatrix{T}
+    parent::A
+end
+
+TransposeTLRMatrix(A::AbstractTLRMatrix{T}) where {T} =
+    TransposeTLRMatrix{T,typeof(A)}(A)
+
+Base.parent(A::TransposeTLRMatrix) = getfield(A, :parent)
+Base.transpose(A::AbstractTLRMatrix) = TransposeTLRMatrix(A)
+Base.transpose(A::TransposeTLRMatrix) = parent(A)
+
 Base.eltype(::Type{<:AbstractTLRMatrix{T}}) where {T} = T
 Base.eltype(::AbstractTLRMatrix{T}) where {T} = T
 Base.size(A::AbstractTLRMatrix) = (A.m, A.n)
 Base.size(A::AbstractTLRMatrix, d::Int) = size(A)[d]
+Base.size(A::TransposeTLRMatrix) = reverse(size(parent(A)))
 
 @inline nominal_tile_size(A::AbstractTLRMatrix) = A.nominal_tile_size
+@inline nominal_tile_size(A::TransposeTLRMatrix) = reverse(nominal_tile_size(parent(A)))
 @inline nominal_tile_size(A::AbstractTLRMatrix, axis::Integer) =
     nominal_tile_size(A)[Int(axis)]
 
 @inline tail_tile_size(A::AbstractTLRMatrix) = A.tail_tile_size
+@inline tail_tile_size(A::TransposeTLRMatrix) = reverse(tail_tile_size(parent(A)))
 @inline tail_tile_size(A::AbstractTLRMatrix, axis::Integer) =
     tail_tile_size(A)[Int(axis)]
 
@@ -46,10 +61,15 @@ evenly. This is the interior grid the gemm hard term operates over.
 end
 
 @inline maxrank(A::AbstractTLRMatrix) = A.maxrank
+@inline maxrank(A::TransposeTLRMatrix) = maxrank(parent(A))
 @inline ranks(A::AbstractTLRMatrix) = A.ranks
+@inline ranks(A::TransposeTLRMatrix) = ranks(parent(A))
 @inline residuals(A::AbstractTLRMatrix) = A.resid
+@inline residuals(A::TransposeTLRMatrix) = residuals(parent(A))
 @inline KernelAbstractions.get_backend(A::AbstractTLRMatrix) = A.backend
+@inline KernelAbstractions.get_backend(A::TransposeTLRMatrix) = get_backend(parent(A))
 @inline tile_order(A::AbstractTLRMatrix) = A.order
+@inline tile_order(A::TransposeTLRMatrix) = transpose(tile_order(parent(A)))
 
 @inline function tile_origin_coords(A, tile_i::Int, tile_j::Int)
     return ((tile_i - 1) * nominal_tile_size(A, 1) + 1,

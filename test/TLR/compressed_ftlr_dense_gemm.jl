@@ -104,8 +104,8 @@ end
         end
     end
 
-    left_plan = _TLRM._two_stage_rank_plan(_TLRM.logical_operand(G), :left)
-    right_plan = _TLRM._two_stage_rank_plan(_TLRM.logical_operand(G), :right)
+    left_plan = _TLRM._two_stage_rank_plan(G, :left)
+    right_plan = _TLRM._two_stage_rank_plan(G, :right)
     @test all(run.fold === :left for run in
               _TLRM._two_stage_schedule(zeros(9, 9), left_plan, 4096, Float64))
     @test all(run.fold === :right for run in

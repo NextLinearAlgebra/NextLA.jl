@@ -190,7 +190,7 @@ function _rolling_lane_loop!(Cout, run, ara_ws, allmembers::AbstractVector{Int},
             _arena_reset_phase!(arena)
             admit_wave!(
                 run, ops, ids, slots, fixed, arena;
-                C=iszero(beta) ? nothing : logical_operand(Cout), compute)
+                C=iszero(beta) ? nothing : Cout, compute)
             ara_reset_slots!(ara_ws, 1, nnew)
             fill!(view(progress, slots), 0)
             pending += nnew
@@ -237,7 +237,7 @@ function _rolling_lane_loop!(Cout, run, ara_ws, allmembers::AbstractVector{Int},
             _arena_reset_phase!(arena)
             admit_wave!(
                 run, ops, ids, slots, fixed, arena;
-                C=iszero(beta) ? nothing : logical_operand(Cout), compute)
+                C=iszero(beta) ? nothing : Cout, compute)
             ara_reset_slots!(ara_ws, first(slots), nnew)
             fill!(view(progress, slots), 0)
             pending += nnew

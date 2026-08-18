@@ -41,7 +41,7 @@ end
 # A fused run needs the sum of every active rank stack. Workspaces below that
 # floor retain the API contract through a compressed-only tilewise fallback.
 function _compressed_dense_gemm_sequential!(
-    C, A::LogicalTLROperand{<:Any,<:CompressedFTLRMatrix{<:Any,T}},
+    C, A::AbstractTLRMatrix{T},
     B::LogicalDenseOperand, alpha, beta, budget::Int,
     compute, arena=nothing) where {T}
     _scale_output!(C, beta)
@@ -58,7 +58,7 @@ function _compressed_dense_gemm_sequential!(
         Cview = view(C, rows, cols)
         for k in 1:kt
             inner = _tile_axis_range(A, k, 2)
-            U, V = logical_tile_factors(A, i, k)
+            U, V = get_factors(A, i, k)
             rk = size(V, 2)
             rk == 0 && continue
             Tview = view(work, 1:rk, 1:length(cols))
@@ -72,7 +72,7 @@ end
 
 function _dense_compressed_gemm_sequential!(
     C, A::LogicalDenseOperand,
-    B::LogicalTLROperand{<:Any,<:CompressedFTLRMatrix{<:Any,T}},
+    B::AbstractTLRMatrix{T},
     alpha, beta, budget::Int, compute, arena=nothing) where {T}
     _scale_output!(C, beta)
     r = maxrank(B)
@@ -89,7 +89,7 @@ function _dense_compressed_gemm_sequential!(
         for k in 1:kt
             inner = _tile_axis_range(B, k, 1)
             Ad, opA = _dense_block(A, rows, inner)
-            U, V = logical_tile_factors(B, k, j)
+            U, V = get_factors(B, k, j)
             rk = size(U, 2)
             rk == 0 && continue
             Tview = view(work, 1:length(rows), 1:rk)
