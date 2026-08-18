@@ -7,20 +7,18 @@ tiles are stored separately in `D`, with an optional ragged final tile in
 `D_corner`.
 """
 struct TLRMatrix{BackendT<:Backend,T,Arr3T<:AbstractArray{T,3},
-                 RankT<:Integer,OrderT<:TileOrderStyle,OffdiagT} <:
-       AbstractTLRMatrix{BackendT,T,OrderT}
-    backend::BackendT
-    order::OrderT
-    m::Int
-    n::Int
-    nominal_tile_size::NTuple{2,Int}
-    tail_tile_size::NTuple{2,Int}
+                 OffdiagT<:CompressedFTLRMatrix{BackendT,T}} <: AbstractTLRMatrix{T}
     offdiag::OffdiagT
     D::Arr3T
     D_corner::Arr3T
 end
 
 @inline offdiagonal(A::TLRMatrix) = A.offdiag
+Base.size(A::TLRMatrix) = size(A.offdiag)
+@inline nominal_tile_size(A::TLRMatrix) = nominal_tile_size(A.offdiag)
+@inline tail_tile_size(A::TLRMatrix) = tail_tile_size(A.offdiag)
+@inline KernelAbstractions.get_backend(A::TLRMatrix) = get_backend(A.offdiag)
+@inline tile_order(A::TLRMatrix) = tile_order(A.offdiag)
 @inline ranks(A::TLRMatrix) = ranks(A.offdiag)
 @inline residuals(A::TLRMatrix) = residuals(A.offdiag)
 @inline maxrank(A::TLRMatrix) = maxrank(A.offdiag)
@@ -30,24 +28,14 @@ end
 @inline ndiag_tiles(A::TLRMatrix) = min(grid_size(A)...)
 @inline dense_diag(A::TLRMatrix) = A.D
 @inline dense_diag_corner(A::TLRMatrix) = A.D_corner
-@inline _nfull_diag_tiles(A::TLRMatrix) = size(A.D, 3)
 
 @inline function _diag_tile_view(A::TLRMatrix, tile_k::Int)
     1 <= tile_k <= ndiag_tiles(A) || throw(BoundsError(1:ndiag_tiles(A), tile_k))
-    if tile_k <= _nfull_diag_tiles(A)
+    if tile_k <= size(A.D, 3)
         return view(A.D, :, :, tile_k)
     end
-    size(A.D_corner, 3) != 0 || throw(BoundsError(1:_nfull_diag_tiles(A), tile_k))
+    size(A.D_corner, 3) != 0 || throw(BoundsError(1:size(A.D, 3), tile_k))
     return view(A.D_corner, :, :, 1)
-end
-
-function _set_dense_diagonal_diagnostics!(A::TLRMatrix)
-    @inbounds for k in 1:ndiag_tiles(A)
-        idx = _rank_index(A, k, k)
-        ranks(A)[idx] = 0
-        residuals(A)[idx] = 0.0
-    end
-    return A
 end
 
 """Return an exact-rank factor pair for an off-diagonal tile."""
@@ -73,8 +61,9 @@ function _allocate_tlr_diagonal(backend, ::Type{T}, m::Int, n::Int,
     bm, bn = tile_size
     mt, nt = cld(m, bm), cld(n, bn)
     n_diag = min(mt, nt)
-    corner_tm = n_diag == mt ? _last_dim(m, bm) : bm
-    corner_tn = n_diag == nt ? _last_dim(n, bn) : bn
+    tail_m, tail_n = m % bm, n % bn
+    corner_tm = n_diag == mt && !iszero(tail_m) ? tail_m : bm
+    corner_tn = n_diag == nt && !iszero(tail_n) ? tail_n : bn
     has_corner = n_diag > 0 && (corner_tm != bm || corner_tn != bn)
     D = zeros(backend, T, bm, bn, n_diag - Int(has_corner))
     D_corner = zeros(
@@ -92,10 +81,7 @@ function TLRMatrix(offdiag::CompressedFTLRMatrix{BackendT,T}) where {BackendT,T}
     _validate_zero_compressed_diagonal(offdiag)
     D, D_corner = _allocate_tlr_diagonal(
         get_backend(offdiag), T, size(offdiag)..., nominal_tile_size(offdiag))
-    RankT = eltype(ranks(offdiag))
-    return TLRMatrix{BackendT,T,typeof(D),RankT,typeof(tile_order(offdiag)),typeof(offdiag)}(
-        get_backend(offdiag), tile_order(offdiag), size(offdiag)...,
-        nominal_tile_size(offdiag), tail_tile_size(offdiag), offdiag, D, D_corner)
+    return TLRMatrix{BackendT,T,typeof(D),typeof(offdiag)}(offdiag, D, D_corner)
 end
 
 """

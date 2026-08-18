@@ -7,14 +7,14 @@ Base.eltype(::DenseGemmWorkspace{T}) where {T} = T
 Base.length(ws::DenseGemmWorkspace) = length(ws.storage)
 Base.sizeof(ws::DenseGemmWorkspace) = length(ws) * sizeof(eltype(ws))
 
-function DenseGemmWorkspace(A::AbstractTLRMatrix{<:Any,T}, bytes::Integer) where {T}
+function DenseGemmWorkspace(A::AbstractTLRMatrix{T}, bytes::Integer) where {T}
     bytes >= 0 || throw(ArgumentError("workspace bytes must be nonnegative"))
     storage = allocate(get_backend(A), T, fld(Int(bytes), sizeof(T)))
     return DenseGemmWorkspace(storage)
 end
 
-function DenseGemmWorkspace(A::AbstractTLRMatrix{<:Any,T},
-                            B::AbstractTLRMatrix{<:Any,T};
+function DenseGemmWorkspace(A::AbstractTLRMatrix{T},
+                            B::AbstractTLRMatrix{T};
                             bytes::Integer,
                             transA::Char='N', transB::Char='N') where {T}
     required = gemm_minimum_workspace_bytes(A, B; transA, transB)
@@ -27,7 +27,7 @@ function DenseGemmWorkspace(A::AbstractTLRMatrix{<:Any,T},
 end
 
 function _prepare_dense_result_workspace(
-    A::AbstractTLRMatrix{<:Any,T}, workspace) where {T}
+    A::AbstractTLRMatrix{T}, workspace) where {T}
     ws = if workspace isa Integer
         DenseGemmWorkspace(A, Int(workspace))
     elseif workspace isa DenseGemmWorkspace

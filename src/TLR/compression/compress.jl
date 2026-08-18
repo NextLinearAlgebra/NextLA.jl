@@ -14,10 +14,10 @@ end
 
 function _copy_diagonal_from_dense!(A_tlr::TLRMatrix{<:Any,T},
                                     A::AbstractMatrix{T}) where {T}
-    n_full_diag = _nfull_diag_tiles(A_tlr)
+    n_full_diag = size(A_tlr.D, 3)
     bm, bn = nominal_tile_size(A_tlr)
     if n_full_diag > 0
-        _copy_diag_from_dense_kernel!(A_tlr.backend)(
+        _copy_diag_from_dense_kernel!(get_backend(A_tlr))(
             A_tlr.D, A, bm, bn; ndrange=(bm, bn, n_full_diag))
     end
     if size(A_tlr.D_corner, 3) != 0
@@ -26,7 +26,14 @@ function _copy_diagonal_from_dense!(A_tlr::TLRMatrix{<:Any,T},
         copyto!(view(A_tlr.D_corner, 1:tm, 1:tn, 1),
                 _dense_tile_view(A, A_tlr, tile_k, tile_k))
     end
-    return _set_dense_diagonal_diagnostics!(A_tlr)
+
+    qm, qn = grid_size(A_tlr)
+    @inbounds for k in 1:ndiag_tiles(A_tlr)
+        slot = tile_linear_index(tile_order(A_tlr), qm, qn, k, k)
+        ranks(A_tlr)[slot] = 0
+        residuals(A_tlr)[slot] = 0.0
+    end
+    return A_tlr
 end
 
 # Tile-batch compression core --------------------------------------------------
@@ -197,7 +204,8 @@ function _factor_offsets_for_batch(C::CompressedFTLRMatrix,
     factors = side === :outer ? C.outer : C.inner
     offsets = Vector{Int}(undef, length(f.tile_ids))
     @inbounds for (k, (i, j)) in enumerate(f.tile_ids)
-        offsets[k] = factors.offsets[_compressed_ftlr_slot(factors, i, j)]
+        slot = tile_linear_index(factors.order, factors.qm, factors.qn, i, j)
+        offsets[k] = factors.offsets[slot]
     end
     return offsets
 end
@@ -230,7 +238,8 @@ function _finalize_compressed_ftlr(ws::FTLRCompressionWorkspace;
         backend, key.T, key.m, key.n, key.tile_size, rank_grid;
         outer_order, inner_order, rank_multiple, rank_type=key.rank_type)
     @inbounds for j in axes(rank_grid, 2), i in axes(rank_grid, 1)
-        C.resid[_rank_index(C, i, j)] = residual_grid[i, j]
+        slot = tile_linear_index(C.outer.order, C.outer.qm, C.outer.qn, i, j)
+        C.resid[slot] = residual_grid[i, j]
     end
     for cat in ws.cats
         _scatter_factor_batch!(C, cat.factors, :outer)
@@ -258,10 +267,10 @@ function CompressedFTLRMatrix(A::AbstractMatrix{T},
                               rank_multiple::Integer=0,
                               workspace::Union{Nothing,FTLRCompressionWorkspace}=nothing,
                               outer_order=TileRowMajor,
-                              inner_order=TileColMajor,
-                              rank_type::Type{<:Integer}=Int32) where {T}
+    inner_order=TileColMajor,
+    rank_type::Type{<:Integer}=Int32) where {T}
     tol >= 0 || throw(ArgumentError("tol must be nonnegative"))
-    _validate_rank_multiple(rank_multiple)
+    rank_multiple >= 0 || throw(ArgumentError("rank_multiple must be nonnegative"))
     ws = workspace === nothing ? FTLRCompressionWorkspace(
         A, tile_size; maxrank, diagonal=:compressed, rank_type) : workspace
     _validate_compression_workspace(
@@ -289,7 +298,7 @@ function TLRMatrix(A::AbstractMatrix{T}, tile_size::NTuple{2,Int};
                    workspace::Union{Nothing,FTLRCompressionWorkspace}=nothing,
                    rank_type::Type{<:Integer}=Int32) where {T}
     tol >= 0 || throw(ArgumentError("tol must be nonnegative"))
-    _validate_rank_multiple(rank_multiple)
+    rank_multiple >= 0 || throw(ArgumentError("rank_multiple must be nonnegative"))
     ws = workspace === nothing ? FTLRCompressionWorkspace(
         A, tile_size; maxrank, diagonal=:dense, rank_type) : workspace
     _validate_compression_workspace(ws, A, tile_size, maxrank, :dense, rank_type)

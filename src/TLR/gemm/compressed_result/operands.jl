@@ -51,9 +51,6 @@ struct LogicalTLROperands{AV,BU,BV,AU}
     au::AU
 end
 
-logical_operands(A::AbstractTLRMatrix, B::AbstractTLRMatrix) =
-    logical_operands(logical_operand(A), logical_operand(B))
-
 """
 Build the implicit factor-list product operator over `A`, `B`'s packed
 storage. `au`/`av` (`bu`/`bv`) are `A`'s (`B`'s) outer/inner factors reshaped
@@ -65,7 +62,8 @@ Each panel's `InteriorOperand.order` is set from
 `compressed_ftlr_outer_order`/`compressed_ftlr_inner_order` on the *logical*
 operand, not the packed factor's own physical `.order` field: composing the
 logical order (transpose-aware) with the physical slot addressing that
-`outer_factors`/`inner_factors` already selected (swapping to the `.inner`/
+`_compressed_ftlr_outer_storage`/`_compressed_ftlr_inner_storage` already
+selected (swapping to the `.inner`/
 `.outer` field under a logical `:T` view) is what makes `tile_linear_index`
 land on the correct physical slot for a *logical* `(i,j)` — the same identity
 the rest of the `LogicalTLROperand` machinery relies on throughout. Under the
@@ -81,13 +79,13 @@ function logical_operands(
     qmA, qnA = regular_grid_size(A)
     qmB, qnB = regular_grid_size(B)
     return LogicalTLROperands(
-        interior_operand(_compressed_ftlr_uniform_view(inner_factors(A, _INTERIOR)),
+        interior_operand(_compressed_ftlr_uniform_view(_compressed_ftlr_inner_storage(A)),
                          compressed_ftlr_inner_order(A), qmA, qnA),
-        interior_operand(_compressed_ftlr_uniform_view(outer_factors(B, _INTERIOR)),
+        interior_operand(_compressed_ftlr_uniform_view(_compressed_ftlr_outer_storage(B)),
                          compressed_ftlr_outer_order(B), qmB, qnB),
-        interior_operand(_compressed_ftlr_uniform_view(inner_factors(B, _INTERIOR)),
+        interior_operand(_compressed_ftlr_uniform_view(_compressed_ftlr_inner_storage(B)),
                          compressed_ftlr_inner_order(B), qmB, qnB),
-        interior_operand(_compressed_ftlr_uniform_view(outer_factors(A, _INTERIOR)),
+        interior_operand(_compressed_ftlr_uniform_view(_compressed_ftlr_outer_storage(A)),
                          compressed_ftlr_outer_order(A), qmA, qnA),
     )
 end

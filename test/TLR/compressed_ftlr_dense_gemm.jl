@@ -3,7 +3,8 @@ using KernelAbstractions
 
 function _compressed_ftlr_to_backend(A::NextLA.CompressedFTLRMatrix, AT)
     qm, qn = NextLA.grid_size(A)
-    rank_grid = [Int(NextLA.ranks(A)[_TLRM._rank_index(A, i, j)]) for i in 1:qm, j in 1:qn]
+    rank_grid = [Int(NextLA.ranks(A)[expected_storage_slot(A, i, j)])
+                 for i in 1:qm, j in 1:qn]
     B = NextLA.CompressedFTLRMatrix(KernelAbstractions.get_backend(AT(zeros(eltype(A), 1))),
                            eltype(A), size(A, 1), size(A, 2),
                            NextLA.nominal_tile_size(A),

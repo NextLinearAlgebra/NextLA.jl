@@ -9,9 +9,9 @@ export uncompress!
 end
 
 function _copy_diagonal_to_dense!(A::AbstractMatrix{T}, A_tlr::TLRMatrix{<:Any,T}) where {T}
-    n_full_diag = _nfull_diag_tiles(A_tlr)
+    n_full_diag = size(A_tlr.D, 3)
     bm, bn = nominal_tile_size(A_tlr)
-    _copy_diag_kernel!(A_tlr.backend)(
+    _copy_diag_kernel!(get_backend(A_tlr))(
         A, A_tlr.D, bm, bn;
         ndrange=(bm, bn, n_full_diag),
     )
@@ -32,7 +32,7 @@ The full-grid compressed off-diagonal part is reconstructed first; its rank-zero
 diagonal slots leave zeros that are then overwritten from dense diagonal storage.
 """
 function uncompress!(A::AbstractMatrix{T}, A_tlr::TLRMatrix{<:Any,T}) where {T}
-    size(A, 1) == A_tlr.m && size(A, 2) == A_tlr.n ||
+    size(A) == size(A_tlr) ||
         throw(DimensionMismatch("A dimensions must match A_tlr"))
     uncompress!(A, offdiagonal(A_tlr))
     _copy_diagonal_to_dense!(A, A_tlr)

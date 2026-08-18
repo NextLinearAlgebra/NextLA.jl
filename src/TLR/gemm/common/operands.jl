@@ -29,14 +29,32 @@ end
 @inline _transpose_order(::TileColMajor) = TileRowMajor()
 @inline _transpose_order(::TileRowMajor) = TileColMajor()
 
-@inline outer_factors(A::LogicalTLROperand{:N}, region::TLRRegion) =
-    outer_factors(physical(A), region)
-@inline inner_factors(A::LogicalTLROperand{:N}, region::TLRRegion) =
-    inner_factors(physical(A), region)
-@inline outer_factors(A::LogicalTLROperand{:T}, region::TLRRegion) =
-    inner_factors(physical(A), transpose_region(region))
-@inline inner_factors(A::LogicalTLROperand{:T}, region::TLRRegion) =
-    outer_factors(physical(A), transpose_region(region))
+@inline compressed_ftlr_outer_order(
+    A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}) =
+    compressed_ftlr_outer_order(physical(A))
+@inline compressed_ftlr_outer_order(
+    A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}) =
+    _transpose_order(compressed_ftlr_inner_order(physical(A)))
+@inline compressed_ftlr_inner_order(
+    A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}) =
+    compressed_ftlr_inner_order(physical(A))
+@inline compressed_ftlr_inner_order(
+    A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}) =
+    _transpose_order(compressed_ftlr_outer_order(physical(A)))
+
+@inline _compressed_ftlr_outer_storage(A::CompressedFTLRMatrix) = A.outer
+@inline _compressed_ftlr_inner_storage(A::CompressedFTLRMatrix) = A.inner
+@inline _compressed_ftlr_parent(A::CompressedFTLRMatrix) = A
+@inline _compressed_ftlr_outer_storage(
+    A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}) = physical(A).outer
+@inline _compressed_ftlr_outer_storage(
+    A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}) = physical(A).inner
+@inline _compressed_ftlr_inner_storage(
+    A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}) = physical(A).inner
+@inline _compressed_ftlr_inner_storage(
+    A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}) = physical(A).outer
+@inline _compressed_ftlr_parent(
+    A::LogicalTLROperand{<:Any,<:CompressedFTLRMatrix}) = physical(A)
 
 Base.eltype(::Type{<:LogicalTLROperand{<:Any,A}}) where {A} = eltype(A)
 Base.eltype(A::LogicalTLROperand) = eltype(physical(A))

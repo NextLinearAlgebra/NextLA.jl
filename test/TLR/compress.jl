@@ -23,7 +23,7 @@ end
         boundary.A, 4; maxrank=3, tol=1e-7, workspace=ws,
         rank_multiple=8)
     @test NextLA.rank_multiple(A) == 8
-    @test all(k -> NextLA.ranks(A)[_TLRM._rank_index(A, k, k)] == 0,
+    @test all(k -> NextLA.ranks(A)[expected_storage_slot(A, k, k)] == 0,
               1:NextLA.ndiag_tiles(A))
     @test norm(reconstruct_tlr(A) - boundary.A) / norm(boundary.A) <= 1e-7
     assert_tile_rank_and_error(A, 1, 2, 2, boundary.a12; atol_rank=1, rtol_error=1e-7)
@@ -64,8 +64,8 @@ end
         make_dense_tile(Float64, b; seed=1), hard,
         easy, make_dense_tile(Float64, b; seed=3))
     A = NextLA.TLRMatrix(dense, b; maxrank=maxr, tol=1e-3)
-    hard_idx = _TLRM._rank_index(A, 1, 2)
-    easy_idx = _TLRM._rank_index(A, 2, 1)
+    hard_idx = expected_storage_slot(A, 1, 2)
+    easy_idx = expected_storage_slot(A, 2, 1)
     @test Int(NextLA.ranks(A)[hard_idx]) == maxr
     @test NextLA.residuals(A)[hard_idx] > 1e-3
     @test Int(NextLA.ranks(A)[easy_idx]) == 4
@@ -75,7 +75,7 @@ end
         make_dense_tile(Float64, b; seed=9), zeros(Float64, b, b),
         easy, make_dense_tile(Float64, b; seed=11))
     Z = NextLA.TLRMatrix(zero_dense, b; maxrank=maxr, tol=0)
-    zero_idx = _TLRM._rank_index(Z, 1, 2)
+    zero_idx = expected_storage_slot(Z, 1, 2)
     @test NextLA.ranks(Z)[zero_idx] == 0
     @test NextLA.residuals(Z)[zero_idx] == 0
 end

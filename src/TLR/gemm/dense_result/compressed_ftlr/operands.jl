@@ -46,30 +46,3 @@
 @inline logical_tile_factors(
     A::LogicalTLROperand{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) =
     (compressed_ftlr_outer(A, i, j), compressed_ftlr_inner(A, i, j))
-
-@inline compressed_ftlr_outer_order(
-    A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}) =
-    compressed_ftlr_outer_order(physical(A))
-@inline compressed_ftlr_outer_order(
-    A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}) =
-    _transpose_order(compressed_ftlr_inner_order(physical(A)))
-@inline compressed_ftlr_inner_order(
-    A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}) =
-    compressed_ftlr_inner_order(physical(A))
-@inline compressed_ftlr_inner_order(
-    A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}) =
-    _transpose_order(compressed_ftlr_outer_order(physical(A)))
-
-@inline _compressed_ftlr_outer_storage(A::CompressedFTLRMatrix) = A.outer
-@inline _compressed_ftlr_inner_storage(A::CompressedFTLRMatrix) = A.inner
-@inline _compressed_ftlr_parent(A::CompressedFTLRMatrix) = A
-@inline _compressed_ftlr_outer_storage(
-    A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}) = physical(A).outer
-@inline _compressed_ftlr_outer_storage(
-    A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}) = physical(A).inner
-@inline _compressed_ftlr_inner_storage(
-    A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}) = physical(A).inner
-@inline _compressed_ftlr_inner_storage(
-    A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}) = physical(A).outer
-@inline _compressed_ftlr_parent(
-    A::LogicalTLROperand{<:Any,<:CompressedFTLRMatrix}) = physical(A)

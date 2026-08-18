@@ -4,8 +4,8 @@
     f = _compressed_ftlr_outer_storage(A)
     fi, fj = _compressed_ftlr_logical_coords(A, i, 1)
     li, lj = _compressed_ftlr_logical_coords(A, i, qk)
-    first_slot = _compressed_ftlr_slot(f, fi, fj)
-    last_slot = _compressed_ftlr_slot(f, li, lj)
+    first_slot = tile_linear_index(f.order, f.qm, f.qn, fi, fj)
+    last_slot = tile_linear_index(f.order, f.qm, f.qn, li, lj)
     first = f.offsets[first_slot]
     last = f.offsets[last_slot + 1] - 1
     rows = length(_compressed_ftlr_axis_range(A, i, 1))
@@ -29,8 +29,8 @@ column-restricted run keep Stage 1 fused rather than falling back to a gather.
     f = _compressed_ftlr_outer_storage(B)
     fi, fj = _compressed_ftlr_logical_coords(B, k, j0)
     li, lj = _compressed_ftlr_logical_coords(B, k, j1)
-    first_slot = _compressed_ftlr_slot(f, fi, fj)
-    last_slot = _compressed_ftlr_slot(f, li, lj)
+    first_slot = tile_linear_index(f.order, f.qm, f.qn, fi, fj)
+    last_slot = tile_linear_index(f.order, f.qm, f.qn, li, lj)
     first = f.offsets[first_slot]
     last = f.offsets[last_slot + 1] - 1
     rows = length(_compressed_ftlr_axis_range(B, k, 1))
@@ -60,8 +60,8 @@ special-casing needed, matching the existing stacking helpers' behavior.
     f = _compressed_ftlr_inner_storage(A)
     fi0, fk0 = _compressed_ftlr_logical_coords(A, i0, k)
     fi1, fk1 = _compressed_ftlr_logical_coords(A, i1, k)
-    first_slot = _compressed_ftlr_slot(f, fi0, fk0)
-    last_slot = _compressed_ftlr_slot(f, fi1, fk1)
+    first_slot = tile_linear_index(f.order, f.qm, f.qn, fi0, fk0)
+    last_slot = tile_linear_index(f.order, f.qm, f.qn, fi1, fk1)
     first = f.offsets[first_slot]
     last = f.offsets[last_slot + 1] - 1
     rows = length(_compressed_ftlr_axis_range(A, k, 2))
@@ -77,8 +77,8 @@ end
     f = _compressed_ftlr_inner_storage(B)
     fi, fj = _compressed_ftlr_logical_coords(B, 1, j)
     li, lj = _compressed_ftlr_logical_coords(B, qk, j)
-    first_slot = _compressed_ftlr_slot(f, fi, fj)
-    last_slot = _compressed_ftlr_slot(f, li, lj)
+    first_slot = tile_linear_index(f.order, f.qm, f.qn, fi, fj)
+    last_slot = tile_linear_index(f.order, f.qm, f.qn, li, lj)
     first = f.offsets[first_slot]
     last = f.offsets[last_slot + 1] - 1
     rows = length(_compressed_ftlr_axis_range(B, j, 2))

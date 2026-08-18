@@ -66,7 +66,8 @@ function reconstruct_tlr(A_tlr::NextLA.TLRMatrix)
     D_corner = Array(NextLA.dense_diag_corner(A_tlr))
 
     for linear in 1:prod(NextLA.grid_size(A_tlr))
-        tile_i, tile_j = NextLA.TLRmodule.inverse_tile_index(A_tlr.order, NextLA.grid_size(A_tlr)..., linear)
+        tile_i, tile_j = NextLA.TLRmodule.inverse_tile_index(
+            NextLA.TLRmodule.tile_order(A_tlr), NextLA.grid_size(A_tlr)..., linear)
         p0, q0 = NextLA.tile_origin_coords(A_tlr, tile_i, tile_j)
         tile_m, tile_n = NextLA.tile_size(A_tlr, tile_i, tile_j)
         rows = p0:(p0 + tile_m - 1)
@@ -79,7 +80,8 @@ function reconstruct_tlr(A_tlr::NextLA.TLRMatrix)
                 @view D_corner[1:tile_m, 1:tile_n, 1]
             end
         else
-            r = Int(NextLA.ranks(A_tlr)[NextLA.TLRmodule._rank_index(A_tlr, tile_i, tile_j)])
+            r = Int(NextLA.ranks(A_tlr)[
+                expected_storage_slot(A_tlr, tile_i, tile_j)])
             U, V = NextLA.get_factors(A_tlr, tile_i, tile_j)
             r == 0 ? zeros(T, tile_m, tile_n) : Array(U) * Array(V)'
         end
@@ -99,7 +101,8 @@ function reconstruct_tlr(A_tlr::NextLA.CompressedFTLRMatrix)
 end
 
 expected_storage_slot(A_tlr::NextLA.AbstractTLRMatrix, i::Int, j::Int) =
-    NextLA.TLRmodule._rank_index(A_tlr, i, j)
+    NextLA.TLRmodule.tile_linear_index(
+        NextLA.TLRmodule.tile_order(A_tlr), NextLA.grid_size(A_tlr)..., i, j)
 
 function assert_tile_rank_and_error(
     A_tlr::NextLA.AbstractTLRMatrix,
@@ -145,7 +148,7 @@ function fill_random_tlr!(A_tlr::NextLA.CompressedFTLRMatrix, ArrayType::Type; s
     T = eltype(A_tlr)
     qm, qn = NextLA.grid_size(A_tlr)
     for j in 1:qn, i in 1:qm
-        r = Int(NextLA.ranks(A_tlr)[NextLA.TLRmodule._rank_index(A_tlr, i, j)])
+        r = Int(NextLA.ranks(A_tlr)[expected_storage_slot(A_tlr, i, j)])
         r == 0 && continue
         U, V = NextLA.get_factors(A_tlr, i, j)
         U .= ArrayType(randn(rng, T, size(U)))

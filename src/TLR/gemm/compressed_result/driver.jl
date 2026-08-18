@@ -327,7 +327,8 @@ end
 function _pack_ara_output(staging::CompressedFTLRMatrix;
                           rank_multiple::Integer=0)
     qm, qn = grid_size(staging)
-    rank_grid = [Int(ranks(staging)[_rank_index(staging, i, j)])
+    rank_grid = [Int(ranks(staging)[
+                     tile_linear_index(staging.outer.order, qm, qn, i, j)])
                  for i in 1:qm, j in 1:qn]
     C = CompressedFTLRMatrix(
         get_backend(staging), eltype(staging), size(staging)...,
@@ -335,8 +336,9 @@ function _pack_ara_output(staging::CompressedFTLRMatrix;
         outer_order=TileRowMajor, inner_order=TileColMajor,
         rank_multiple, rank_type=eltype(ranks(staging)))
     @inbounds for j in 1:qn, i in 1:qm
-        idx = _rank_index(C, i, j)
-        C.resid[idx] = residuals(staging)[_rank_index(staging, i, j)]
+        slot = tile_linear_index(C.outer.order, qm, qn, i, j)
+        C.resid[slot] = residuals(staging)[
+            tile_linear_index(staging.outer.order, qm, qn, i, j)]
         r = rank_grid[i, j]
         r == 0 && continue
         # `staging` retains one fixed physical width even after its diagnostic
@@ -376,7 +378,7 @@ function gemm(A::CompressedFTLRMatrix{BackendT,T},
               eps_rel=nothing, r_required::Int=10, block::Int=32,
               compute=nothing, workspace=nothing) where {BackendT,T}
     maxrank >= 0 || throw(ArgumentError("maxrank must be nonnegative"))
-    _validate_rank_multiple(rank_multiple)
+    rank_multiple >= 0 || throw(ArgumentError("rank_multiple must be nonnegative"))
     workspace isa TLRGemmWorkspace && throw(ArgumentError(
         "allocation-returning gemm accepts workspace=nothing or a byte count; " *
         "a TLRGemmWorkspace is bound to private output staging"))
