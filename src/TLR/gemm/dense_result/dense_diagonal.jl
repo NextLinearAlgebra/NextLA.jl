@@ -6,7 +6,7 @@ function _tlr_right_cross_items(OA, DB)
     qm, qk = grid_size(OA)
     items = Tuple{Int,Int,Int}[]
     @inbounds for k in 1:min(qk, ndiag_tiles(DB)), i in 1:qm
-        r = _compressed_ftlr_execution_rank(OA, i, k)
+        r = _compressed_ftlr_storage_rank(OA, i, k)
         r == 0 || push!(items, (i, k, r))
     end
     sizes = [r * length(_tile_axis_range(DB, k, 2)) for (_, k, r) in items]
@@ -20,7 +20,7 @@ function _tlr_left_cross_items(OB, DA)
     qk, qn = grid_size(OB)
     items = Tuple{Int,Int,Int}[]
     @inbounds for k in 1:min(qk, ndiag_tiles(DA)), j in 1:qn
-        r = _compressed_ftlr_execution_rank(OB, k, j)
+        r = _compressed_ftlr_storage_rank(OB, k, j)
         r == 0 || push!(items, (k, j, r))
     end
     sizes = [length(_tile_axis_range(DA, k, 1)) * r for (k, _, r) in items]
@@ -128,11 +128,11 @@ function _tlr_offdiag_times_diag!(C, OA, DB, alpha, mode, arena, capacity::Int)
             i, k, r = items[idx]
             cols = _tile_axis_range(DB, k, 2)
             S = _workspace_array!(arena, backend, T, r, length(cols))
-            V = compressed_ftlr_execution_inner(OA, i, k)
+            V = compressed_ftlr_storage_inner(OA, i, k)
             D = _diag_tile_ref(DB, k)
             push!(stage1, GroupedGemmTask(
                 'T', _dense_op(D), one(T), V, _dense_data(D), zero(T), S))
-            U = compressed_ftlr_execution_outer(OA, i, k)
+            U = compressed_ftlr_storage_outer(OA, i, k)
             rows = _tile_axis_range(OA, i, 1)
             push!(stage2, GroupedGemmTask(
                 'N', 'N', alpha, U, S, one(alpha), view(C, rows, cols)))
@@ -150,11 +150,11 @@ function _tlr_diag_times_offdiag!(C, DA, OB, alpha, mode, arena, capacity::Int)
             k, j, r = items[idx]
             rows = _tile_axis_range(DA, k, 1)
             W = _workspace_array!(arena, backend, T, length(rows), r)
-            U = compressed_ftlr_execution_outer(OB, k, j)
+            U = compressed_ftlr_storage_outer(OB, k, j)
             D = _diag_tile_ref(DA, k)
             push!(stage1, GroupedGemmTask(
                 _dense_op(D), 'N', one(T), _dense_data(D), U, zero(T), W))
-            V = compressed_ftlr_execution_inner(OB, k, j)
+            V = compressed_ftlr_storage_inner(OB, k, j)
             cols = _tile_axis_range(OB, j, 2)
             push!(stage2, GroupedGemmTask(
                 'N', 'T', alpha, W, V, one(alpha), view(C, rows, cols)))

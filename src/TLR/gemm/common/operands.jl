@@ -5,7 +5,7 @@
 
 Zero-copy logical view of `op(parent)`, where `Op` is `:N` or `:T`. A transpose
 swaps matrix geometry, tile order, and low-rank factor roles; result-specific
-operand adapters are defined inside `dense_result/` and `padded_result/`.
+operand adapters are defined inside `dense_result/` and `compressed_result/`.
 """
 struct LogicalTLROperand{Op,A<:AbstractTLRMatrix}
     parent::A

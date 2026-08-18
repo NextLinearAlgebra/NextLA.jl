@@ -11,12 +11,12 @@
 @inline _compressed_ftlr_rank(
     A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}, i::Int, j::Int) =
     _compressed_ftlr_rank(physical(A), j, i)
-@inline _compressed_ftlr_execution_rank(
+@inline _compressed_ftlr_storage_rank(
     A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}, i::Int, j::Int) =
-    _compressed_ftlr_execution_rank(physical(A), i, j)
-@inline _compressed_ftlr_execution_rank(
+    _compressed_ftlr_storage_rank(physical(A), i, j)
+@inline _compressed_ftlr_storage_rank(
     A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}, i::Int, j::Int) =
-    _compressed_ftlr_execution_rank(physical(A), j, i)
+    _compressed_ftlr_storage_rank(physical(A), j, i)
 
 @inline compressed_ftlr_outer(
     A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}, i::Int, j::Int) =
@@ -30,18 +30,18 @@
 @inline compressed_ftlr_inner(
     A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}, i::Int, j::Int) =
     compressed_ftlr_outer(physical(A), j, i)
-@inline compressed_ftlr_execution_outer(
+@inline compressed_ftlr_storage_outer(
     A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}, i::Int, j::Int) =
-    compressed_ftlr_execution_outer(physical(A), i, j)
-@inline compressed_ftlr_execution_outer(
+    compressed_ftlr_storage_outer(physical(A), i, j)
+@inline compressed_ftlr_storage_outer(
     A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}, i::Int, j::Int) =
-    compressed_ftlr_execution_inner(physical(A), j, i)
-@inline compressed_ftlr_execution_inner(
+    compressed_ftlr_storage_inner(physical(A), j, i)
+@inline compressed_ftlr_storage_inner(
     A::LogicalTLROperand{:N,<:CompressedFTLRMatrix}, i::Int, j::Int) =
-    compressed_ftlr_execution_inner(physical(A), i, j)
-@inline compressed_ftlr_execution_inner(
+    compressed_ftlr_storage_inner(physical(A), i, j)
+@inline compressed_ftlr_storage_inner(
     A::LogicalTLROperand{:T,<:CompressedFTLRMatrix}, i::Int, j::Int) =
-    compressed_ftlr_execution_outer(physical(A), j, i)
+    compressed_ftlr_storage_outer(physical(A), j, i)
 
 @inline logical_tile_factors(
     A::LogicalTLROperand{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) =

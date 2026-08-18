@@ -24,8 +24,6 @@ mutable struct CompressedGemmAnalysis{CT,AT,BT,WT,LAT,LBT,ModeT,PlanT,RAT,RBT}
     # the operands' live vectors would make the comparison vacuous.
     A_ranks::RAT
     B_ranks::RBT
-    A_execution_ranks::RAT
-    B_execution_ranks::RBT
     workspace_bytes::Int
     has_fallback::Bool
     closed::Bool
@@ -84,7 +82,6 @@ function analyze_compressed_gemm(
     analysis = CompressedGemmAnalysis(
         C, A, B, workspace, LA, LB, opA, opB, mode, plan, prepared_runs,
         copy(ranks(A)), copy(ranks(B)),
-        copy(execution_ranks(A)), copy(execution_ranks(B)),
         sizeof(workspace),
         _dense_result_runs_have_fallback(prepared_runs),
         false)
@@ -107,10 +104,6 @@ function _validate_compressed_gemm_analysis(
         throw(ArgumentError("left operand exact ranks changed after symbolic analysis"))
     ranks(B) == analysis.B_ranks ||
         throw(ArgumentError("right operand exact ranks changed after symbolic analysis"))
-    execution_ranks(A) == analysis.A_execution_ranks ||
-        throw(ArgumentError("left operand execution ranks changed after symbolic analysis"))
-    execution_ranks(B) == analysis.B_execution_ranks ||
-        throw(ArgumentError("right operand execution ranks changed after symbolic analysis"))
     return nothing
 end
 

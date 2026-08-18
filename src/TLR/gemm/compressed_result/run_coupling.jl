@@ -17,7 +17,7 @@ index is fixed vs. swept) and the same 3-stage hot-sampler shape:
     sketch = (Fixed === :column ? S : S') * proj # T (:column) or W (:row)
     Y      = member[p] * sketch[p]               # same reduction either way
 
-Under the complementary packing `padded_result` requires (see
+Under the complementary packing `compressed_result` requires (see
 `_require_complementary_packing`), fixing a column always makes B's inner
 factor zero-copy for the whole run (`shared`) while A's outer factor must be
 swept per member (`member`, swap-tracked); fixing a row always makes A's
@@ -468,12 +468,13 @@ function apply_corange!(Z::AbstractArray{T,3}, run::RunCoupling{:column},
                 for p in 1:nmember for kidx in 1:qk]
         precision_gemm_batched!(adj, 'N', run.alpha, coupling_views, proj_views,
                                 zero(T), sketch_views, mode)
-        shared_stacks = [reshape(run.shared, bn, rB * qk) for _ in 1:nmember]
-        sketch_stacks = [reshape(view(sketch, :, :, 1:sketch_width, p), rB * qk, sketch_width)
-                  for p in 1:nmember]
-        out_views = [view(Z, :, 1:sketch_width, p) for p in 1:nmember]
-        precision_gemm_batched!('N', 'N', one(T), shared_stacks, sketch_stacks,
-                                zero(T), out_views, mode)
+        shared_stack = reshape(run.shared, bn, rB * qk)
+        tasks = [GroupedGemmTask(
+            'N', 'N', one(T), shared_stack,
+            reshape(view(sketch, :, :, 1:sketch_width, p),
+                    rB * qk, sketch_width),
+            zero(T), view(Z, :, 1:sketch_width, p)) for p in 1:nmember]
+        precision_gemm_grouped!(tasks, mode)
     else
         fill!(Z, zero(T))
     end
@@ -515,14 +516,15 @@ function apply_corange!(Z::AbstractArray{T,3}, run::RunCoupling{:row},
                 for p in 1:nmember for kidx in 1:qk]
         precision_gemm_batched!('N', 'N', run.alpha, coupling_views, proj_views,
                                 zero(T), sketch_views, mode)
-        # See apply_run!(::RunCoupling{:row}) for the identical
-        # broadcast-batch-1 reshape used here.
-        shared3 = reshape(run.shared, bm, rA * qk, 1)
-        sketch2 = reshape(sketch, rA * qk, size(sketch, 3), size(sketch, 4))
-        sketch_stacks = view(sketch2, :, 1:sketch_width, 1:nmember)
-        out_view = view(Z, :, 1:sketch_width, 1:nmember)
-        precision_gemm_batched!('N', 'N', one(T), shared3, sketch_stacks,
-                                zero(T), out_view, mode)
+        # Use the grouped path for reshaped arena subviews: they are valid
+        # strided matrices but not a `StridedCuArray{3}` batch.
+        shared_stack = reshape(run.shared, bm, rA * qk)
+        tasks = [GroupedGemmTask(
+            'N', 'N', one(T), shared_stack,
+            reshape(view(sketch, :, :, 1:sketch_width, p),
+                    rA * qk, sketch_width),
+            zero(T), view(Z, :, 1:sketch_width, p)) for p in 1:nmember]
+        precision_gemm_grouped!(tasks, mode)
     else
         fill!(Z, zero(T))
     end

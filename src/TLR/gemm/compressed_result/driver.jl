@@ -1,5 +1,5 @@
-# gemm! entry point for the canonical TLR-output GEMM: produces a
-# compressed TLR C via ARA sampling (run_coupling.jl/rolling_schedule.jl).
+# Allocation-returning compressed-output GEMM via ARA sampling
+# (run_coupling.jl/rolling_schedule.jl).
 # Sampling-side selection, run
 # scatter, and the reusable-workspace-driven traversal loop live here.
 
@@ -25,7 +25,7 @@ end
 """
     _require_complementary_packing(X, name)
 
-`padded_result`'s zero-copy paths need `X`'s *logical* outer order to be
+The compressed-output zero-copy paths need `X`'s *logical* outer order to be
 `TileRowMajor` and inner order `TileColMajor` — the default complementary
 packing every `CompressedFTLRMatrix` here is constructed with. Under that
 packing this holds for both `'N'` and `'T'` (composing `_transpose_order`
@@ -158,7 +158,7 @@ function _tlr_gemm_workspace_spec(C::CompressedFTLRMatrix{BackendT,T},
     qm, qk = grid_size(LA)
     _, qn = grid_size(LB)
     rA, rB = _active_rank_cap(A), _active_rank_cap(B)
-    cap = execution_maxrank(C)
+    cap = maximum_storage_rank(C)
     blk = min(block, max(cap, 1))
     side = choose_tlr_sampling_side(LA, LB, cap, blk, rA, rB)
     # Complementary packing makes compressed_ftlr_inner_order(LB) isa
@@ -205,30 +205,7 @@ function _prepare_tlr_gemm_workspace(C, A, B, workspace;
         "workspace must be nothing, an integer byte count, or TLRGemmWorkspace"))
 end
 
-"""
-    gemm!(C::CompressedFTLRMatrix, A::CompressedFTLRMatrix, B::CompressedFTLRMatrix;
-          alpha=true, beta=false, transA='N', transB='N',
-          tol=0, rel=false, eps_rel=nothing, r_required=10, block=32,
-          compute=nothing, workspace=nothing) -> C
-
-Canonical TLR-output GEMM:
-
-    C := alpha * op(A) * op(B) + beta * C
-
-`C`, `A`, and `B` must all use the default complementary packing (`outer`
-row-major, `inner` column-major) — `C` is normally built via the
-reserved-capacity `CompressedFTLRMatrix` constructor (`ranks_in` all zero,
-`execution_ranks` set to the desired capacity). Because that packing's
-logical outer/inner order is transpose-invariant, all four transpose
-combinations (`NN`, `NT`, `TN`, `TT`) are supported and use the same cost-based
-choice between a zero-copy right-sampling stack (from `A`) and a zero-copy
-left-sampling stack (from `B`); `choose_tlr_sampling_side` reports which.
-
-`tol` controls final Frobenius truncation. `eps_rel` controls adaptive range
-capture and defaults to `max(tol, ara_stopping_floor(promoted_type))`.
-`workspace` accepts a byte count or a reusable `TLRGemmWorkspace`; omitting
-it constructs one temporary workspace for convenience.
-"""
+"""Internal fixed-width ARA driver used by allocation-returning [`gemm`](@ref)."""
 function _gemm_tlr!(C::CompressedFTLRMatrix{BackendT,T},
                     A::CompressedFTLRMatrix{BackendT,T},
                     B::CompressedFTLRMatrix{BackendT,T};
@@ -263,7 +240,7 @@ function _gemm_tlr!(C::CompressedFTLRMatrix{BackendT,T},
     qm, qk = grid_size(LA)
     _, qn = grid_size(LB)
     rA, rB = _active_rank_cap(A), _active_rank_cap(B)
-    cap_C = execution_maxrank(C)
+    cap_C = maximum_storage_rank(C)
     blk = min(block, max(cap_C, 1))
     backend = get_backend(C)
     ranks_dev = ws_owner.ranks_global
@@ -328,17 +305,131 @@ function _gemm_tlr!(C::CompressedFTLRMatrix{BackendT,T},
     return C
 end
 
-function gemm!(C::CompressedFTLRMatrix{BackendT,T},
-               A::CompressedFTLRMatrix{BackendT,T},
-               B::CompressedFTLRMatrix{BackendT,T};
-               alpha=true, beta=false,
-               transA::Char='N', transB::Char='N',
-               tol::Real=0.0, rel::Bool=false,
-               eps_rel=nothing, r_required::Int=10, block::Int=32,
-               compute=nothing, workspace=nothing) where {BackendT,T}
-    return _gemm_tlr!(
-        C, A, B; alpha, beta, transA, transB, tol, rel, eps_rel,
-        r_required, block, compute, workspace)
+function _uniform_ara_operand(A::CompressedFTLRMatrix{BackendT,T}) where {BackendT,T}
+    qm, qn = grid_size(A)
+    cap = maxrank(A)
+    uniform = CompressedFTLRMatrix(
+        get_backend(A), T, size(A)..., nominal_tile_size(A), fill(cap, qm, qn);
+        outer_order=TileRowMajor, inner_order=TileColMajor,
+        rank_type=eltype(ranks(A)))
+    @inbounds for j in 1:qn, i in 1:qm
+        r = _compressed_ftlr_rank(A, i, j)
+        r == 0 && continue
+        U, V = get_factors(A, i, j)
+        Ud = compressed_ftlr_storage_outer(uniform, i, j)
+        Vd = compressed_ftlr_storage_inner(uniform, i, j)
+        copyto!(view(Ud, :, 1:r), U)
+        copyto!(view(Vd, :, 1:r), V)
+    end
+    return uniform
+end
+
+function _pack_ara_output(staging::CompressedFTLRMatrix;
+                          rank_multiple::Integer=0)
+    qm, qn = grid_size(staging)
+    rank_grid = [Int(ranks(staging)[_rank_index(staging, i, j)])
+                 for i in 1:qm, j in 1:qn]
+    C = CompressedFTLRMatrix(
+        get_backend(staging), eltype(staging), size(staging)...,
+        nominal_tile_size(staging), rank_grid;
+        outer_order=TileRowMajor, inner_order=TileColMajor,
+        rank_multiple, rank_type=eltype(ranks(staging)))
+    @inbounds for j in 1:qn, i in 1:qm
+        idx = _rank_index(C, i, j)
+        C.resid[idx] = residuals(staging)[_rank_index(staging, i, j)]
+        r = rank_grid[i, j]
+        r == 0 && continue
+        # `staging` retains one fixed physical width even after its diagnostic
+        # rank vector is overwritten with the discovered ranks.
+        Us = _compressed_ftlr_factor_view(
+            staging.outer, maxrank(staging), r, i, j)
+        Vs = _compressed_ftlr_factor_view(
+            staging.inner, maxrank(staging), r, i, j)
+        copyto!(compressed_ftlr_outer(C, i, j), Us)
+        copyto!(compressed_ftlr_inner(C, i, j), Vs)
+    end
+    return C
+end
+
+"""
+    gemm(A::CompressedFTLRMatrix, B::CompressedFTLRMatrix;
+         maxrank, rank_multiple=0, ...)
+
+Return a newly allocated compressed approximation to
+`alpha * op(A) * op(B)`. Output ranks are discovered by ARA, so this operation
+cannot be an in-place `gemm!` on finalized packed storage. Fixed-width factors
+exist only as private numerical staging and are compacted before return.
+
+The compressed-output algorithm currently requires regular-grid operands.
+Containers, dense compression, and dense-output `gemm!` continue to support a
+ragged final tile row or column. Tensor-core compute modes additionally require
+input stored widths, `maxrank`, and the returned `rank_multiple` to use their
+backend rank quantum; incompatible calls throw before scheduling.
+"""
+function gemm(A::CompressedFTLRMatrix{BackendT,T},
+              B::CompressedFTLRMatrix{BackendT,T};
+              maxrank::Int,
+              rank_multiple::Integer=0,
+              alpha=true,
+              transA::Char='N', transB::Char='N',
+              tol::Real=0.0, rel::Bool=false,
+              eps_rel=nothing, r_required::Int=10, block::Int=32,
+              compute=nothing, workspace=nothing) where {BackendT,T}
+    maxrank >= 0 || throw(ArgumentError("maxrank must be nonnegative"))
+    _validate_rank_multiple(rank_multiple)
+    workspace isa TLRGemmWorkspace && throw(ArgumentError(
+        "allocation-returning gemm accepts workspace=nothing or a byte count; " *
+        "a TLRGemmWorkspace is bound to private output staging"))
+    LA = logical_operand(A, transA)
+    LB = logical_operand(B, transB)
+    size(LA, 2) == size(LB, 1) ||
+        throw(DimensionMismatch("inner dimensions must match"))
+    nominal_tile_size(LA, 2) == nominal_tile_size(LB, 1) ||
+        throw(DimensionMismatch("logical contraction tile sizes must agree"))
+    any(!iszero, tail_tile_size(X, d) for X in (LA, LB) for d in 1:2) &&
+        throw(ArgumentError(
+            "compressed-output gemm currently requires regular-grid tiling"))
+    typeof(get_backend(A)) === typeof(get_backend(B)) || throw(ArgumentError(
+        "compressed operands must use the same backend"))
+
+    mode = compute === nothing ? default_gemm_compute_mode(T) :
+           gemm_compute_mode(compute)
+    validate_tlr_gemm_storage(LA, mode; name="left operand")
+    validate_tlr_gemm_storage(LB, mode; name="right operand")
+    required_multiple = required_tlr_gemm_rank_multiple(get_backend(A), T, mode)
+    if required_multiple > 1
+        iszero(maxrank % required_multiple) || throw(ArgumentError(
+            "maxrank=$maxrank is incompatible with this GEMM precision; " *
+            "use a multiple of $required_multiple"))
+        rank_multiple > 0 && iszero(rank_multiple % required_multiple) ||
+            throw(ArgumentError(
+                "compressed-output GEMM with this precision requires " *
+                "rank_multiple=$required_multiple (or a multiple of it)"))
+    end
+
+    out_tile = (nominal_tile_size(LA, 1), nominal_tile_size(LB, 2))
+    maxrank <= min(out_tile...) || throw(ArgumentError(
+        "maxrank=$maxrank exceeds output tile extent $(min(out_tile...))"))
+    qm, qn = grid_size(LA)[1], grid_size(LB)[2]
+    if maxrank == 0
+        return CompressedFTLRMatrix(
+            get_backend(A), T, size(LA, 1), size(LB, 2), out_tile,
+            Base.zeros(Int, qm, qn); rank_multiple,
+            outer_order=TileRowMajor, inner_order=TileColMajor,
+            rank_type=promote_type(eltype(ranks(A)), eltype(ranks(B))))
+    end
+
+    UA = _uniform_ara_operand(A)
+    UB = _uniform_ara_operand(B)
+    staging = CompressedFTLRMatrix(
+        get_backend(A), T, size(LA, 1), size(LB, 2), out_tile,
+        fill(maxrank, qm, qn);
+        outer_order=TileRowMajor, inner_order=TileColMajor,
+        rank_type=promote_type(eltype(ranks(A)), eltype(ranks(B))))
+    _gemm_tlr!(
+        staging, UA, UB; alpha, beta=false, transA, transB, tol, rel, eps_rel,
+        r_required, block, compute=mode, workspace)
+    return _pack_ara_output(staging; rank_multiple)
 end
 
 """

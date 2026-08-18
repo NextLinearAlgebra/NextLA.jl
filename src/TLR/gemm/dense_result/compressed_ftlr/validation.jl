@@ -28,6 +28,8 @@ function _validate_compressed_ftlr_gemm(C::AbstractMatrix, A, B, compute)
         throw(DimensionMismatch("C must be size(A,1) × size(B,2)"))
     _validate_compressed_ftlr_layout(A, B)
     validate_tlr_gemm_precision(get_backend(A), T, eltype(C), compute)
+    validate_tlr_gemm_storage(A, compute; name="left operand")
+    validate_tlr_gemm_storage(B, compute; name="right operand")
     # cuBLAS grouped GEMMEx accepts the FP16/FP32-compute case, but (unlike
     # ordinary GEMMEx) the grouped entry point rejects an FP16 -> FP32 output
     # signature on current CUDA. Every CompressedFTLR stage must stay grouped, so keep

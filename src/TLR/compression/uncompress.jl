@@ -23,23 +23,6 @@ function _copy_diagonal_to_dense!(A::AbstractMatrix{T}, A_tlr::TLRMatrix{<:Any,T
     return A
 end
 
-function _uncompress_region!(
-    A::AbstractMatrix{T},
-    A_tlr::AbstractTLRMatrix{<:Any,T},
-    region::TLRRegion,
-) where {T}
-    U = outer_factors(A_tlr, region)
-    V = inner_factors(A_tlr, region)
-    n = size(U, 3)
-    n == 0 && return A
-
-    U_tiles = _batch_views(U)
-    V_tiles = _batch_views(V)
-    A_tiles = [_dense_tile_view(A, A_tlr, region_tile_coords(A_tlr, region, k)...) for k in 1:n]
-    gemm_batched!('N', _adjoint_blas_char(T), one(T), U_tiles, V_tiles, zero(T), A_tiles)
-    return A
-end
-
 """
     uncompress!(A, A_tlr)
 
@@ -53,24 +36,6 @@ function uncompress!(A::AbstractMatrix{T}, A_tlr::TLRMatrix{<:Any,T}) where {T}
         throw(DimensionMismatch("A dimensions must match A_tlr"))
     uncompress!(A, offdiagonal(A_tlr))
     _copy_diagonal_to_dense!(A, A_tlr)
-    return A
-end
-
-"""
-    uncompress!(A, A_tlr::PaddedFTLRMatrix)
-
-Write a fully tile-low-rank matrix into the dense matrix `A` in-place. Unlike
-`TLRMatrix`, every tile, including diagonal and boundary tiles, is
-reconstructed from its factor pair.
-"""
-function uncompress!(A::AbstractMatrix{T}, A_tlr::PaddedFTLRMatrix{<:Any,T}) where {T}
-    size(A, 1) == A_tlr.m && size(A, 2) == A_tlr.n ||
-        throw(DimensionMismatch("A dimensions must match A_tlr"))
-
-    @inbounds foreach(lowrank_regions(A_tlr)) do region
-        _uncompress_region!(A, A_tlr, region)
-    end
-
     return A
 end
 

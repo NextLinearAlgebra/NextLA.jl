@@ -57,7 +57,7 @@ function _compressed_ftlr_fold_cost(meta, A, B,
     else
         p = Base.zeros(Int, qm)
         @inbounds for i in 1:qm, k in 1:qk
-            p[i] += _compressed_ftlr_execution_rank(A, i, k) *
+            p[i] += _compressed_ftlr_storage_rank(A, i, k) *
                     _compressed_ftlr_row_rank(meta, k, jrange)
         end
         p
@@ -78,7 +78,7 @@ function _compressed_ftlr_fold_cost(meta, A, B,
     # Both sums run over `jrange` only.
     omega = Base.zeros(Int, qk)
     @inbounds for k in 1:qk, j in jrange
-        omega[k] += meta.output_col_widths[j] * _compressed_ftlr_execution_rank(B, k, j)
+        omega[k] += meta.output_col_widths[j] * _compressed_ftlr_storage_rank(B, k, j)
     end
     weighted_col_rank = 0
     @inbounds for j in jrange
@@ -86,7 +86,7 @@ function _compressed_ftlr_fold_cost(meta, A, B,
     end
 
     right_flops = right === nothing ? nothing :
-        [sum((_compressed_ftlr_execution_rank(A, i, k) * omega[k] for k in 1:qk); init=0) +
+        [sum((_compressed_ftlr_storage_rank(A, i, k) * omega[k] for k in 1:qk); init=0) +
          meta.output_row_heights[i] * width * meta.a_k_prefix[i, end]
          for i in 1:qm]
     left_flops = left === nothing ? nothing :

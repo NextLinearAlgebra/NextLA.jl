@@ -23,6 +23,44 @@ function validate_tlr_gemm_precision(backend, ::Type{Tin}, ::Type{Tout}, mode) w
     return nothing
 end
 
+# Backends opt in when a compute mode requires rank-aligned tensor-core panels.
+@inline required_tlr_gemm_rank_multiple(backend, ::Type, mode) = 1
+
+# Backends also opt in when grouped tensor-core kernels require aligned tile
+# start addresses. Construction stays backend-agnostic; GEMM owns this error.
+@inline _validate_compressed_ftlr_tile_alignment(
+    backend, ::Type, bm::Int, bn::Int) = nothing
+
+function _validate_compressed_ftlr_tile_alignment_cuda(
+    ::Type{T}, bm::Int, bn::Int) where {T}
+    q = gemm_alignment_quantum(T)
+    (bm % q == 0 && bn % q == 0) || throw(ArgumentError(
+        "CompressedFTLR nominal tile size ($bm, $bn) is not 16-byte aligned for $T: " *
+        "both extents must be multiples of $q; use " *
+        "($(cld(bm, q) * q), $(cld(bn, q) * q)) instead"))
+    return nothing
+end
+
+function validate_tlr_gemm_storage(A, mode; name::AbstractString="operand")
+    X = A isa LogicalTLROperand ? physical(A) : A
+    X = X isa TLRMatrix ? offdiagonal(X) : X
+    backend = get_backend(X)
+    T = eltype(X)
+    bm, bn = nominal_tile_size(X)
+    _validate_compressed_ftlr_tile_alignment(backend, T, bm, bn)
+    q = required_tlr_gemm_rank_multiple(backend, T, mode)
+    q <= 1 && return nothing
+    qm, qn = grid_size(X)
+    @inbounds for j in 1:qn, i in 1:qm
+        width = _compressed_ftlr_storage_rank(X, i, j)
+        (iszero(width) || iszero(width % q)) || throw(ArgumentError(
+            "$name stores tile ($i, $j) at rank width $width, but this GEMM " *
+            "precision requires widths divisible by $q; construct it with " *
+            "rank_multiple=$q (or a multiple of it)"))
+    end
+    return nothing
+end
+
 """Scale a dense destination once before product terms are accumulated."""
 @inline function _scale_output!(C, beta)
     T = eltype(C)

@@ -97,7 +97,7 @@ end
 end
 
 # Dense black-box sampler: Y .= X[b] * randn. This is the shape A3 needs for
-# `compress!`, and it keeps the loop tests independent of the factor-list apply.
+# dense compression, and it keeps the loop tests independent of factor-list apply.
 function dense_sampler(X::AbstractArray{T,3}, rng, ArrayType=Array) where {T}
     return function (Y, width)
         n, count = size(X, 2), size(X, 3)

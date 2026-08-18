@@ -81,31 +81,10 @@ function reconstruct_tlr(A_tlr::NextLA.TLRMatrix)
         else
             r = Int(NextLA.ranks(A_tlr)[NextLA.TLRmodule._rank_index(A_tlr, tile_i, tile_j)])
             U, V = NextLA.get_factors(A_tlr, tile_i, tile_j)
-            r == 0 ? zeros(T, tile_m, tile_n) :
-                Matrix(U) * Matrix(adjoint(V))
+            r == 0 ? zeros(T, tile_m, tile_n) : Array(U) * Array(V)'
         end
 
         A[rows, cols] .= tile
-    end
-
-    return A
-end
-
-function reconstruct_tlr(A_tlr::NextLA.PaddedFTLRMatrix)
-    T = eltype(A_tlr)
-    A = zeros(T, size(A_tlr))
-
-    for linear in 1:prod(NextLA.grid_size(A_tlr))
-        tile_i, tile_j = NextLA.TLRmodule.inverse_tile_index(A_tlr.order, NextLA.grid_size(A_tlr)..., linear)
-        p0, q0 = NextLA.tile_origin_coords(A_tlr, tile_i, tile_j)
-        tile_m, tile_n = NextLA.tile_size(A_tlr, tile_i, tile_j)
-        rows = p0:(p0 + tile_m - 1)
-        cols = q0:(q0 + tile_n - 1)
-
-        r = Int(NextLA.ranks(A_tlr)[NextLA.TLRmodule._rank_index(A_tlr, tile_i, tile_j)])
-        U, V = NextLA.get_factors(A_tlr, tile_i, tile_j)
-        A[rows, cols] .= r == 0 ? zeros(T, tile_m, tile_n) :
-            Matrix(U) * Matrix(adjoint(V))
     end
 
     return A
@@ -138,7 +117,7 @@ function assert_tile_rank_and_error(
     tile_m, tile_n = size(tile_ref)
     U, V = NextLA.get_factors(A_tlr, tile_i, tile_j)
     approx = rank == 0 ? zeros(eltype(tile_ref), tile_m, tile_n) :
-        Matrix(U) * Matrix(adjoint(V))
+        Array(U) * Array(V)'
     relerr = norm(tile_ref - approx) / max(norm(tile_ref), eps(real(eltype(tile_ref))))
     @test relerr <= rtol_error
 end
@@ -151,61 +130,38 @@ function fill_random_tlr!(A_tlr::NextLA.TLRMatrix, ArrayType::Type; seed::Intege
     A_tlr.D .= ArrayType(randn(rng, T, size(A_tlr.D)))
     A_tlr.D_corner .= ArrayType(randn(rng, T, size(A_tlr.D_corner)))
     qm, qn = NextLA.grid_size(A_tlr)
-    rank_grid = [i == j ? 0 : min(A_tlr.maxrank, NextLA.tile_size(A_tlr, i, j)...)
-                 for i in 1:qm, j in 1:qn]
-    packed = NextLA.CompressedFTLRMatrix(
-        KernelAbstractions.get_backend(A_tlr), T, size(A_tlr)...,
-        NextLA.nominal_tile_size(A_tlr), rank_grid;
-        outer_order=NextLA.TileRowMajor, inner_order=NextLA.TileColMajor,
-        execution_rank_policy=:exact,
-        rank_type=eltype(NextLA.ranks(A_tlr)))
     for j in 1:qn, i in 1:qm
         i == j && continue
-        U, V = NextLA.get_factors(packed, i, j)
+        U, V = NextLA.get_factors(A_tlr, i, j)
         U .= ArrayType(randn(rng, T, size(U)))
         V .= ArrayType(randn(rng, T, size(V)))
     end
-    A_tlr.offdiag = packed
     return A_tlr
 end
 
-function fill_random_tlr!(A_tlr::NextLA.PaddedFTLRMatrix, ArrayType::Type; seed::Integer)
-    rng = MersenneTwister(seed)
-    T = eltype(A_tlr)
-    for f in (A_tlr.int_U, A_tlr.int_V, A_tlr.right_U, A_tlr.right_V,
-              A_tlr.bottom_U, A_tlr.bottom_V, A_tlr.corner_U, A_tlr.corner_V)
-        length(f) == 0 && continue
-        f .= ArrayType(randn(rng, T, size(f)))
-    end
-    A_tlr.ranks .= A_tlr.maxrank
-    return A_tlr
-end
-
-"""
-Fill every tile up to `A_tlr`'s reserved capacity (`execution_ranks`) with
-random factor content and mark that whole width as real rank
-(`A_tlr.ranks[idx] = execution_ranks[idx]`) -- the `CompressedFTLRMatrix`
-analog of `PaddedFTLRMatrix`'s `A_tlr.ranks .= A_tlr.maxrank`. Works
-uniformly whether `A_tlr` was built with real ranks already (a GEMM input)
-or via the zero-`ranks_in`/explicit-`execution_ranks` reserve-capacity
-pattern (a GEMM output `C` being given prior content for a `beta != 0`
-test) -- both cases just mean "claim the full physically-reserved width."
-"""
+"""Fill the finalized logical factors of a compressed matrix."""
 function fill_random_tlr!(A_tlr::NextLA.CompressedFTLRMatrix, ArrayType::Type; seed::Integer)
     rng = MersenneTwister(seed)
     T = eltype(A_tlr)
     qm, qn = NextLA.grid_size(A_tlr)
     for j in 1:qn, i in 1:qm
-        idx = NextLA.TLRmodule._rank_index(A_tlr, i, j)
-        r = Int(NextLA.execution_ranks(A_tlr)[idx])
+        r = Int(NextLA.ranks(A_tlr)[NextLA.TLRmodule._rank_index(A_tlr, i, j)])
         r == 0 && continue
-        U = NextLA.TLRmodule.compressed_ftlr_execution_outer(A_tlr, i, j)
-        V = NextLA.TLRmodule.compressed_ftlr_execution_inner(A_tlr, i, j)
+        U, V = NextLA.get_factors(A_tlr, i, j)
         U .= ArrayType(randn(rng, T, size(U)))
         V .= ArrayType(randn(rng, T, size(V)))
-        A_tlr.ranks[idx] = r
     end
     return A_tlr
+end
+
+function random_tlr_matrix(ArrayType::Type, ::Type{T}, n::Int, b::Int, r::Int;
+                           seed::Integer) where {T}
+    backend = KernelAbstractions.get_backend(ArrayType(zeros(T, 1)))
+    q = cld(n, b)
+    rank_grid = [i == j ? 0 : min(r, min(b, n-(i-1)*b), min(b, n-(j-1)*b))
+                 for i in 1:q, j in 1:q]
+    A = NextLA.TLRMatrix(backend, T, n, n, b, rank_grid)
+    return fill_random_tlr!(A, ArrayType; seed)
 end
 
 # ── Dense-reference GEMM drivers ──────────────────────────────────────────────
@@ -230,8 +186,12 @@ end
 function assert_tlr_gemm_matches_dense(ArrayType::Type, T::Type, n::Int, b::Int, r::Int,
                                        orderA, orderB, synchronize; budget::Int,
                                        alpha=T(1.3), beta=T(-0.4), atol=1e-10, rtol=1e-10)
-    A_tlr = NextLA.TLRMatrix(ArrayType(zeros(T, n, n)), b, r)
-    B_tlr = NextLA.TLRMatrix(ArrayType(zeros(T, n, n)), b, r)
+    backend = KernelAbstractions.get_backend(ArrayType(zeros(T, 1)))
+    q = cld(n, b)
+    rank_grid = [i == j ? 0 : min(r, min(b, n-(i-1)*b), min(b, n-(j-1)*b))
+                 for i in 1:q, j in 1:q]
+    A_tlr = NextLA.TLRMatrix(backend, T, n, n, b, rank_grid)
+    B_tlr = NextLA.TLRMatrix(backend, T, n, n, b, rank_grid)
     fill_random_tlr!(A_tlr, ArrayType; seed=101)
     fill_random_tlr!(B_tlr, ArrayType; seed=202)
     assert_gemm_matches_dense(ArrayType, A_tlr, B_tlr, synchronize;
@@ -242,8 +202,12 @@ function assert_dense_diag_transpose_matches(n, b, r, oA, oB, transA, transB;
                                              budget, alpha=1.3, beta=-0.4,
                                              ArrayType=Array, synchronize=_ -> nothing,
                                              atol=1e-9, rtol=1e-9)
-    A = NextLA.TLRMatrix(ArrayType(zeros(Float64, n, n)), b, r)
-    B = NextLA.TLRMatrix(ArrayType(zeros(Float64, n, n)), b, r)
+    backend = KernelAbstractions.get_backend(ArrayType(zeros(Float64, 1)))
+    q = cld(n, b)
+    rank_grid = [i == j ? 0 : min(r, min(b, n-(i-1)*b), min(b, n-(j-1)*b))
+                 for i in 1:q, j in 1:q]
+    A = NextLA.TLRMatrix(backend, Float64, n, n, b, rank_grid)
+    B = NextLA.TLRMatrix(backend, Float64, n, n, b, rank_grid)
     fill_random_tlr!(A, ArrayType; seed=11)
     fill_random_tlr!(B, ArrayType; seed=22)
     C0 = randn(MersenneTwister(33), Float64, n, n)

@@ -28,10 +28,8 @@
 end
 
 @testset "TLR compressed workspace bounds" begin
-    A = NextLA.TLRMatrix(zeros(Float64, 35, 35), 8, 3)
-    B = NextLA.TLRMatrix(zeros(Float64, 35, 35), 8, 3)
-    fill_random_tlr!(A, Array; seed=71)
-    fill_random_tlr!(B, Array; seed=72)
+    A = random_tlr_matrix(Array, Float64, 35, 8, 3; seed=71)
+    B = random_tlr_matrix(Array, Float64, 35, 8, 3; seed=72)
     reference = reconstruct_tlr(A) * reconstruct_tlr(B)
     for (transA, transB) in (('N', 'N'), ('N', 'T'), ('T', 'N'), ('T', 'T'))
         lo = NextLA.gemm_minimum_workspace_bytes(A, B; transA, transB)
@@ -49,11 +47,9 @@ end
         zeros(Float64, size(A, 1), size(B, 2)), A, B; workspace=lo - 1)
 end
 
-@testset "reserved-capacity TLR remains in-place populatable" begin
-    A = NextLA.TLRMatrix(zeros(Float64, 8, 8), 4, 2)
-    B = NextLA.TLRMatrix(zeros(Float64, 8, 8), 4, 2)
-    NextLA.ranks(A)[NextLA.TLRmodule._rank_index(A, 1, 2)] = 1
-    NextLA.ranks(B)[NextLA.TLRmodule._rank_index(B, 2, 1)] = 1
+@testset "finalized TLR factors remain value-mutable" begin
+    A = NextLA.TLRMatrix(KernelAbstractions.CPU(), Float64, 8, 8, 4, Int[0 1; 0 0])
+    B = NextLA.TLRMatrix(KernelAbstractions.CPU(), Float64, 8, 8, 4, Int[0 0; 1 0])
     UA, VA = NextLA.get_factors(A, 1, 2)
     UB, VB = NextLA.get_factors(B, 2, 1)
     UA .= 1; VA .= 2; UB .= 3; VB .= 4
@@ -68,27 +64,18 @@ end
 # effective-order axis inference — the executors are unchanged.
 @testset "whole-matrix logical N/T operands" begin
     RM = NextLA.TileRowMajor(); CM = NextLA.TileColMajor()
-    A = NextLA.PaddedFTLRMatrix(zeros(Float64, 11, 14), (4, 3), 2; tile_order=RM)
+    A = NextLA.CompressedFTLRMatrix(
+        KernelAbstractions.CPU(), Float64, 11, 14, (4, 3), fill(2, 3, 5))
     At = NextLA.TLRmodule.logical_operand(A, 'T')
     @test size(At) == (14, 11)
     @test NextLA.TLRmodule.nominal_tile_size(At) == (3, 4)
     @test NextLA.TLRmodule.tail_tile_size(At) == (2, 3)
     @test NextLA.TLRmodule.grid_size(At) == reverse(NextLA.grid_size(A))
     @test NextLA.TLRmodule.tile_order(At) isa typeof(CM)
-    interior = NextLA.TLRmodule.InteriorRegion()
-    right = NextLA.TLRmodule.RightRegion()
-    bottom = NextLA.TLRmodule.BottomRegion()
-    corner = NextLA.TLRmodule.CornerRegion()
-    @test NextLA.TLRmodule.outer_factors(At, interior) === A.int_V
-    @test NextLA.TLRmodule.inner_factors(At, interior) === A.int_U
-    @test NextLA.TLRmodule.outer_factors(At, right) === A.bottom_V
-    @test NextLA.TLRmodule.inner_factors(At, right) === A.bottom_U
-    @test NextLA.TLRmodule.outer_factors(At, bottom) === A.right_V
-    @test NextLA.TLRmodule.inner_factors(At, bottom) === A.right_U
-    @test NextLA.TLRmodule.outer_factors(At, corner) === A.corner_V
-    @test NextLA.TLRmodule.inner_factors(At, corner) === A.corner_U
+    @test NextLA.TLRmodule.compressed_ftlr_outer_order(At) isa NextLA.TileRowMajor
+    @test NextLA.TLRmodule.compressed_ftlr_inner_order(At) isa NextLA.TileColMajor
 
-    D = NextLA.TLRMatrix(zeros(Float64, 14, 14), 4, 2)
+    D = random_tlr_matrix(Array, Float64, 14, 4, 2; seed=91)
     Dt = NextLA.TLRmodule.logical_operand(D, 't')
     dref = NextLA.TLRmodule._diag_tile_ref(Dt, 1)
     @test parent(NextLA.TLRmodule._dense_data(dref)) === D.D
@@ -115,8 +102,7 @@ end
 
 @testset "dense-diagonal TLR mixed dense GEMM on CPU" begin
     rng = MersenneTwister(404)
-    G = NextLA.TLRMatrix(zeros(Float64, 9, 9), 4, 2)
-    fill_random_tlr!(G, Array; seed=405)
+    G = random_tlr_matrix(Array, Float64, 9, 4, 2; seed=405)
     Gdense = reconstruct_tlr(G)
     alpha = 1.25
     beta = -0.5
@@ -151,8 +137,7 @@ end
 
     # A zero-rank off-diagonal still carries a nonzero dense diagonal. This
     # also verifies that the diagonal updates work with a zero-byte workspace.
-    D = NextLA.TLRMatrix(zeros(Float64, 9, 9), 4, 0)
-    fill_random_tlr!(D, Array; seed=406)
+    D = random_tlr_matrix(Array, Float64, 9, 4, 0; seed=406)
     Ddense = reconstruct_tlr(D)
     Xright = randn(rng, Float64, 9, 5)
     Cright = randn(rng, Float64, 9, 5)
@@ -182,8 +167,8 @@ end
 @testset "TF32 backend capability" begin
     for (backend_name, ArrayType, _) in available_backends()
         backend_name == "AMDGPU" || continue
-        A = NextLA.TLRMatrix(ArrayType(zeros(Float32, 8, 8)), 4, 2)
-        B = NextLA.TLRMatrix(ArrayType(zeros(Float32, 8, 8)), 4, 2)
+        A = random_tlr_matrix(ArrayType, Float32, 8, 4, 2; seed=501)
+        B = random_tlr_matrix(ArrayType, Float32, 8, 4, 2; seed=502)
         C = ArrayType(zeros(Float32, 8, 8))
         @test_throws ArgumentError NextLA.gemm!(
             C, A, B; compute=NextLA.TF32(), workspace=1)

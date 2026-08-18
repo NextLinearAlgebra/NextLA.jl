@@ -1,4 +1,4 @@
-# Result-independent bump arena shared by dense-output GEMM and PaddedFTLR ARA.
+# Result-independent bump arena shared by dense-output and compressed-output ARA GEMM.
 
 mutable struct GemmArena{A}
     storage::A

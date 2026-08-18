@@ -3,20 +3,12 @@
 """
     _beta_tile_factors(C, i, j)
 
-Canonical, uniform-width factors of logical tile `(i,j)`, read from an
-already-populated *reserved-capacity* `CompressedFTLRMatrix` (the `C` this
-GEMM writes into). Deliberately reads the *execution-rank*-width view, not
-[`logical_tile_factors`](@ref)'s real-rank width — `C` is constructed with
-uniform `execution_ranks` (its reserved capacity) that never change after
-construction, so this stays uniformly capacity-wide across every tile for
-`C`'s whole lifetime; that uniformity is required by the pointer/strided
--batched beta-accumulation GEMMs in `run_coupling.jl`, which batch multiple
-tiles' factors together and therefore need identical widths across the batch.
-The real per-tile rank width `logical_tile_factors` returns is, in general,
-ragged and would break that assumption.
+Uniform-width factors of logical tile `(i,j)` in private output staging. The
+stored-width view is required by batched run coupling; finalized user matrices
+remain ragged and never use this accessor as a destination.
 """
 @inline _beta_tile_factors(A::LogicalTLROperand{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) =
-    (compressed_ftlr_execution_outer(A, i, j), compressed_ftlr_execution_inner(A, i, j))
+    (compressed_ftlr_storage_outer(A, i, j), compressed_ftlr_storage_inner(A, i, j))
 
 """Zero-copy view over flat interior factor storage and its tile grid."""
 struct InteriorOperand{OrderT<:TileOrderStyle,A3<:AbstractArray}
@@ -51,7 +43,7 @@ end
     return InteriorOperand{typeof(order),typeof(data)}(data, order, qm, qn)
 end
 
-"""Interior factor panels for the implicit PaddedFTLR product operator."""
+"""Interior factor panels for the implicit compressed product operator."""
 struct LogicalTLROperands{AV,BU,BV,AU}
     av::AV
     bu::BU
@@ -66,9 +58,8 @@ logical_operands(A::AbstractTLRMatrix, B::AbstractTLRMatrix) =
 Build the implicit factor-list product operator over `A`, `B`'s packed
 storage. `au`/`av` (`bu`/`bv`) are `A`'s (`B`'s) outer/inner factors reshaped
 into dense per-tile-grid arrays via
-[`_compressed_ftlr_uniform_view`](@ref) — valid because `padded_result`
-requires a regular grid (`_validate_canonical_tlr_gemm`), so every tile's
-stored rank is uniformly `A`'s (`B`'s) `execution_maxrank`.
+[`_compressed_ftlr_uniform_view`](@ref). The allocation-returning driver first
+packs finalized ragged inputs into these regular, uniform run-local panels.
 
 Each panel's `InteriorOperand.order` is set from
 `compressed_ftlr_outer_order`/`compressed_ftlr_inner_order` on the *logical*

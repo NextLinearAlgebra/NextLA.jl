@@ -16,9 +16,8 @@ mutable struct CompressedMixedGemmAnalysis{CT,AT,BT,WT,ModeT,PlanT,RT}
     compute::ModeT
     fold::Symbol
     plan::PlanT
-    # Copies in the compressed operand's own rank type.
+    # Copy in the compressed operand's own rank type.
     ranks::RT
-    execution_ranks::RT
     workspace_bytes::Int
     runs::Vector{PreparedDenseResultRun}
     has_fallback::Bool
@@ -118,8 +117,8 @@ function _two_stage_rank_plan(A, fold::Symbol)
     prefix = Base.zeros(Int, outputs, contraction + 1)
     @inbounds for output in 1:outputs, k in 1:contraction
         rank = fold === :left ?
-            _compressed_ftlr_execution_rank(A, k, output) :
-            _compressed_ftlr_execution_rank(A, output, k)
+            _compressed_ftlr_storage_rank(A, k, output) :
+            _compressed_ftlr_storage_rank(A, output, k)
         prefix[output, k + 1] = prefix[output, k] + rank
     end
     totals = [prefix[output, end] for output in 1:outputs]
@@ -178,14 +177,14 @@ function _build_dense_compressed_run(C, A, B, plan, run, work)
         end
         Tj = view(work, 1:h, (plan.bases[j] + 1):plan.bases[j + 1])
         for k in 1:qk
-            rk = _compressed_ftlr_execution_rank(B, k, j)
+            rk = _compressed_ftlr_storage_rank(B, k, j)
             rk == 0 && continue
             inner = _tile_axis_range(B, k, 1)
             Ad, opA = _dense_block(A, rows, inner)
             Tk = view(Tj, :, (plan.prefix[j, k] + 1):plan.prefix[j, k + 1])
             stage1 = _grouped_tasks_push(stage1, GroupedGemmTask(
                 opA, 'N', one(T), Ad,
-                compressed_ftlr_execution_outer(B, k, j), zero(T), Tk))
+                compressed_ftlr_storage_outer(B, k, j), zero(T), Tk))
         end
         stage2 = _grouped_tasks_push(stage2, GroupedGemmTask(
             'N', 'T', one(T), Tj,
@@ -213,14 +212,14 @@ function _build_compressed_dense_run(C, A, B, plan, run, work)
         end
         Ti = view(work, (plan.bases[i] + 1):plan.bases[i + 1], 1:w)
         for k in 1:qk
-            rk = _compressed_ftlr_execution_rank(A, i, k)
+            rk = _compressed_ftlr_storage_rank(A, i, k)
             rk == 0 && continue
             inner = _tile_axis_range(A, k, 2)
             Bd, opB = _dense_block(B, inner, cols)
             Tk = view(Ti, (plan.prefix[i, k] + 1):plan.prefix[i, k + 1], :)
             stage1 = _grouped_tasks_push(stage1, GroupedGemmTask(
                 'T', opB, one(T),
-                compressed_ftlr_execution_inner(A, i, k), Bd, zero(T), Tk))
+                compressed_ftlr_storage_inner(A, i, k), Bd, zero(T), Tk))
         end
         stage2 = _grouped_tasks_push(stage2, GroupedGemmTask(
             'N', 'N', one(T),
@@ -267,7 +266,7 @@ function _new_compressed_mixed_analysis(
     C, A, B, workspace, transA, transB, mode, fold, plan, compressed, runs)
     analysis = CompressedMixedGemmAnalysis(
         C, A, B, workspace, transA, transB, mode, fold, plan,
-        copy(ranks(compressed)), copy(execution_ranks(compressed)),
+        copy(ranks(compressed)),
         sizeof(workspace), runs, _dense_result_runs_have_fallback(runs), false)
     finalizer(analysis) do object
         try
@@ -333,8 +332,7 @@ function _execute_compressed_mixed_analysis!(
     _validate_dense_result_analysis_binding(
         analysis, C, A, B, workspace, transA, transB, mode)
     compressed = analysis.fold === :right ? A : B
-    ranks(compressed) == analysis.ranks &&
-        execution_ranks(compressed) == analysis.execution_ranks ||
+    ranks(compressed) == analysis.ranks ||
         throw(ArgumentError("compressed operand ranks changed after analysis"))
     return _execute_prepared_dense_result_runs!(
         analysis.runs, C, get_backend(compressed), eltype(compressed), alpha, beta,

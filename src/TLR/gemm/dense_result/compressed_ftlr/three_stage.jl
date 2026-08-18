@@ -121,7 +121,7 @@ with no operand access at all.
 @inline _compressed_ftlr_foldleft_needs_zero(A, plan, irange, jrange) =
     any(eachindex(plan.b_row_ranks)) do k
         _compressed_ftlr_row_rank(plan, k, jrange) > 0 &&
-            any(i -> _compressed_ftlr_execution_rank(A, i, k) == 0, irange)
+            any(i -> _compressed_ftlr_storage_rank(A, i, k) == 0, irange)
     end
 
 """
@@ -143,7 +143,7 @@ function _compressed_ftlr_stage1_layout(A, irange, jrange, plan::CompressedFTLRR
         acc = 0
         for (ii, i) in enumerate(irange)
             row_off[ii, k] = acc
-            acc += _compressed_ftlr_execution_rank(A, i, k)
+            acc += _compressed_ftlr_storage_rank(A, i, k)
         end
         rho_k[k] = acc
         koff[k + 1] = koff[k] + acc * _compressed_ftlr_row_rank(plan, k, jrange)
@@ -238,20 +238,20 @@ function _build_compressed_ftlr_foldright_run(C, A, B, plan::CompressedFTLRRankP
         rho == 0 && continue
         tstack = _ragged_view(tdata, tbase[ii], rho, width)
         for k in 1:qk
-            rA = _compressed_ftlr_execution_rank(A, i, k)
+            rA = _compressed_ftlr_storage_rank(A, i, k)
             rA == 0 && continue
             rho_before_k = plan.a_k_prefix[i, k]
             Sblock = _compressed_ftlr_sblock(sdata, koff, rho_k, plan, k, jrange)
             Srows = (row_off[ii, k] + 1):(row_off[ii, k] + rA)
             for j in jrange
-                rB = _compressed_ftlr_execution_rank(B, k, j)
+                rB = _compressed_ftlr_storage_rank(B, k, j)
                 rB == 0 && continue
                 scol = _compressed_ftlr_row_rank_offset(plan, k, j, jrange)
                 tcol = _compressed_ftlr_width_offset(plan, j, jrange)
                 Sview = view(Sblock, Srows, (scol + 1):(scol + rB))
                 task = GroupedGemmTask('N', 'T', one(T),
                                        Sview,
-                                       compressed_ftlr_execution_inner(B, k, j), zero(T),
+                                       compressed_ftlr_storage_inner(B, k, j), zero(T),
                                        view(tstack, (rho_before_k + 1):(rho_before_k + rA),
                                             (tcol + 1):(tcol + plan.output_col_widths[j])))
                 if s2 === nothing; s2 = GroupedGemmTask[task]; else; push!(s2, task); end
@@ -334,13 +334,13 @@ function _build_compressed_ftlr_foldleft_run(C, A, B, plan::CompressedFTLRRankPl
     @inbounds for (ii, i) in enumerate(irange)
         Trows = (run_row_prefix[ii] + 1):run_row_prefix[ii + 1]
         for k in 1:qk
-            rA = _compressed_ftlr_execution_rank(A, i, k)
+            rA = _compressed_ftlr_storage_rank(A, i, k)
             rA == 0 && continue
             Sblock = _compressed_ftlr_sblock(sdata, koff, rho_k, plan, k, jrange)
             Srows = (row_off[ii, k] + 1):(row_off[ii, k] + rA)
-            Uik = compressed_ftlr_execution_outer(A, i, k)
+            Uik = compressed_ftlr_storage_outer(A, i, k)
             for j in jrange
-                rB = _compressed_ftlr_execution_rank(B, k, j)
+                rB = _compressed_ftlr_storage_rank(B, k, j)
                 rB == 0 && continue
                 scol = _compressed_ftlr_row_rank_offset(plan, k, j, jrange)
                 Sview = view(Sblock, Srows, (scol + 1):(scol + rB))

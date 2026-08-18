@@ -5,6 +5,13 @@
     return NextLA.TLRmodule._validate_compressed_ftlr_tile_alignment_cuda(T, bm, bn)
 end
 
+@inline NextLA.TLRmodule.required_tlr_gemm_rank_multiple(
+    ::CUDA.CUDABackend, ::Type{Float16}, mode) = 8
+@inline NextLA.TLRmodule.required_tlr_gemm_rank_multiple(
+    ::CUDA.CUDABackend, ::Type{Core.BFloat16}, mode) = 8
+@inline NextLA.TLRmodule.required_tlr_gemm_rank_multiple(
+    ::CUDA.CUDABackend, ::Type{Float32}, ::NextLA.TF32) = 4
+
 @inline _grouped_cuptr(A::CUDA.StridedCuArray{T}) where {T} = pointer(A)
 @inline _grouped_cuptr(A::Base.ReshapedArray) = _grouped_cuptr(parent(A))
 @inline _grouped_cuptr(A::SubArray{T}) where {T} = Base.unsafe_convert(CUDA.CuPtr{T}, A)

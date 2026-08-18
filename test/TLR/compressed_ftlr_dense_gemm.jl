@@ -8,7 +8,8 @@ function _compressed_ftlr_to_backend(A::NextLA.CompressedFTLRMatrix, AT)
                            eltype(A), size(A, 1), size(A, 2),
                            NextLA.nominal_tile_size(A),
                            rank_grid;
-                           outer_order=typeof(A.outer.order), inner_order=typeof(A.inner.order))
+                           outer_order=typeof(A.outer.order), inner_order=typeof(A.inner.order),
+                           rank_multiple=NextLA.rank_multiple(A))
     copyto!(B.outer.data, AT(Array(A.outer.data)))
     copyto!(B.inner.data, AT(Array(A.inner.data)))
     return B
@@ -90,7 +91,7 @@ end
     end
 
     # Below one fused rank stack, the compressed-only tilewise fallback keeps
-    # the low-workspace contract without reintroducing PaddedFTLR machinery.
+    # the low-workspace contract without any matrix-shaped staging container.
     for side in (:compressed_dense, :dense_compressed)
         C = zeros(Float64, 9, 9)
         if side === :compressed_dense
@@ -113,8 +114,7 @@ end
 @testset "CompressedFTLR clears T only for uncovered rank holes" begin
     function make_operand(ranks)
         return NextLA.CompressedFTLRMatrix(
-            KernelAbstractions.CPU(), Float32, 8, 8, 4, ranks;
-            execution_rank_policy=:exact)
+            KernelAbstractions.CPU(), Float32, 8, 8, 4, ranks)
     end
 
     positive = make_operand(ones(Int, 2, 2))
@@ -330,13 +330,20 @@ end
         (Float16, Float32, 2f-2),
         (Float32, NextLA.TF32(), 5f-3),
     )
-        Ahost = _compressed_ftlr_fixture(T, rank_grid)
-        Bhost = _compressed_ftlr_fixture(T, reverse(rank_grid; dims=1))
+        q = T === Float16 ? 8 : compute isa NextLA.TF32 ? 4 : 0
+        Ahost = _compressed_ftlr_fixture(T, rank_grid; rank_multiple=q)
+        Bhost = _compressed_ftlr_fixture(
+            T, reverse(rank_grid; dims=1); rank_multiple=q)
         reference = _compressed_dense32(Ahost) * _compressed_dense32(Bhost)
         for (name, AT, sync) in backends
             name == "CUDA" || continue
             A = _compressed_ftlr_to_backend(Ahost, AT)
             B = _compressed_ftlr_to_backend(Bhost, AT)
+            exact_host = _compressed_ftlr_fixture(T, rank_grid)
+            exact = _compressed_ftlr_to_backend(exact_host, AT)
+            @test_throws ArgumentError NextLA.gemm!(
+                AT(zeros(T, size(exact, 1), size(exact, 2))), exact, exact;
+                workspace=4096, compute)
             workspace = NextLA.DenseGemmWorkspace(
                 A, B; bytes=NextLA.gemm_maximum_workspace_bytes(A, B))
             C = AT(zeros(T, size(A, 1), size(B, 2)))

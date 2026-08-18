@@ -33,6 +33,7 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backend
     mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
     backend = get_backend(A)
     validate_tlr_gemm_precision(backend, T, eltype(C), mode)
+    validate_tlr_gemm_storage(LA, mode; name="compressed left operand")
     nominal_tile_size(LA, 2) == nominal_tile_size(LB, 1) ||
         throw(DimensionMismatch("TLR contraction tile dimensions must match"))
 
@@ -183,6 +184,7 @@ function gemm!(C::AbstractMatrix, A::CompressedFTLRMatrix{BackendT,T},
     backend = _validate_dense_backend(C, A, B)
     mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
     validate_tlr_gemm_precision(backend, T, eltype(C), mode)
+    validate_tlr_gemm_storage(LA, mode; name="compressed left operand")
     ScalarT = gemm_compute_type(mode)
     if analysis !== nothing
         analysis isa CompressedMixedGemmAnalysis || throw(ArgumentError(
@@ -220,6 +222,7 @@ function gemm!(C::AbstractMatrix, A::AbstractMatrix{T},
     backend = _validate_dense_backend(C, B, A)
     mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
     validate_tlr_gemm_precision(backend, T, eltype(C), mode)
+    validate_tlr_gemm_storage(LB, mode; name="compressed right operand")
     ScalarT = gemm_compute_type(mode)
     if analysis !== nothing
         analysis isa CompressedMixedGemmAnalysis || throw(ArgumentError(

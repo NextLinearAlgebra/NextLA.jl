@@ -102,20 +102,20 @@ function _compressed_ftlr_rank_metadata(A, B)
     # for an arbitrary column range, which the column-block scheduler needs.
     b_row_nonzero_prefix = Base.zeros(Int, qk, qn + 1)
     @inbounds for k in 1:qk, j in 1:qn
-        r = _compressed_ftlr_execution_rank(B, k, j)
+        r = _compressed_ftlr_storage_rank(B, k, j)
         b_row_ranks[k] += r
         b_col_ranks[j] += r
         b_row_nonzero_prefix[k, j + 1] = b_row_nonzero_prefix[k, j] + (r != 0)
     end
     @inbounds for j in 1:qn, k in 1:qk
-        b_col_k_prefix[j, k + 1] = b_col_k_prefix[j, k] + _compressed_ftlr_execution_rank(B, k, j)
+        b_col_k_prefix[j, k + 1] = b_col_k_prefix[j, k] + _compressed_ftlr_storage_rank(B, k, j)
     end
     @inbounds for k in 1:qk, j in 1:qn
-        b_row_k_prefix[k, j + 1] = b_row_k_prefix[k, j] + _compressed_ftlr_execution_rank(B, k, j)
+        b_row_k_prefix[k, j + 1] = b_row_k_prefix[k, j] + _compressed_ftlr_storage_rank(B, k, j)
     end
     pair_ranks = Base.zeros(Int, qm)
     @inbounds for i in 1:qm, k in 1:qk
-        r = _compressed_ftlr_execution_rank(A, i, k)
+        r = _compressed_ftlr_storage_rank(A, i, k)
         a_k_prefix[i, k + 1] = a_k_prefix[i, k] + r
         pair_ranks[i] += r * b_row_ranks[k]
     end

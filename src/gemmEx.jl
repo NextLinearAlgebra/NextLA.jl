@@ -1,4 +1,12 @@
-export gemm!
+export gemm, gemm!
+
+"""
+    gemm(A, B; kwargs...)
+
+Allocation-returning matrix product. Structured matrix formats specialize this
+generic when the result's storage layout depends on ranks discovered at runtime.
+"""
+function gemm end
 
 """
     gemm!(C, A, B; alpha=true, beta=false, kwargs...)

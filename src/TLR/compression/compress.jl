@@ -1,43 +1,30 @@
-export compress!
-
 include("workspace.jl")
 
 # Dense-diagonal copy ----------------------------------------------------------
 
-# Kernels specific to dense-to-TLR compression. Shared orthogonalization, norm,
-# and factor-pruning kernels live in `src/TLR/numerics/`.
-@kernel function _copy_diag_kernel!(D::AbstractArray{T,3},
-                                    A::AbstractMatrix{T},
-                                    tile_m::Int,
-                                    tile_n::Int,
-) where {T}
+@kernel function _copy_diag_from_dense_kernel!(D::AbstractArray{T,3},
+                                                A::AbstractMatrix{T},
+                                                tile_m::Int,
+                                                tile_n::Int) where {T}
     row, col, batch = @index(Global, NTuple)
     p0 = (batch - 1) * tile_m + 1
     q0 = (batch - 1) * tile_n + 1
     @inbounds D[row, col, batch] = A[p0+row-1, q0+col-1]
 end
 
-"""
-    _copy_diagonal_from_dense!(A_tlr, A) -> A_tlr
-
-Populate `A_tlr`'s dense diagonal storage from the corresponding tiles of the
-dense matrix `A`.
-"""
 function _copy_diagonal_from_dense!(A_tlr::TLRMatrix{<:Any,T},
-                                    A::AbstractMatrix{T},
-) where {T}
+                                    A::AbstractMatrix{T}) where {T}
     n_full_diag = _nfull_diag_tiles(A_tlr)
     bm, bn = nominal_tile_size(A_tlr)
-    _copy_diag_kernel!(A_tlr.backend)(
-        A_tlr.D, A, bm, bn;
-        ndrange=(bm, bn, n_full_diag),
-    )
+    if n_full_diag > 0
+        _copy_diag_from_dense_kernel!(A_tlr.backend)(
+            A_tlr.D, A, bm, bn; ndrange=(bm, bn, n_full_diag))
+    end
     if size(A_tlr.D_corner, 3) != 0
         tile_k = ndiag_tiles(A_tlr)
         tm, tn = tile_size(A_tlr, tile_k, tile_k)
         copyto!(view(A_tlr.D_corner, 1:tm, 1:tn, 1),
-                _dense_tile_view(A, A_tlr, tile_k, tile_k),
-        )
+                _dense_tile_view(A, A_tlr, tile_k, tile_k))
     end
     return _set_dense_diagonal_diagnostics!(A_tlr)
 end
@@ -48,49 +35,40 @@ abstract type TileSource{T} end
 
 @inline _ntiles(src::TileSource) = length(src.tiles)
 
-# Off-diagonal tiles carved from a dense matrix (today's `compress!` path).
 struct DenseTiles{T,AT<:AbstractMatrix{T},TV<:AbstractVector,CV} <: TileSource{T}
-    A::AT           # dense source matrix
-    tiles::TV       # per-tile views into A (gemm operands)
-    p0s::CV         # per-tile row origin (device Int32) — for the norm kernel
-    q0s::CV         # per-tile col origin (device Int32)
-    tm::Int         # tile rows
-    tn::Int         # tile cols
+    A::AT
+    tiles::TV
+    p0s::CV
+    q0s::CV
+    tm::Int
+    tn::Int
 end
 
-# out[k] = ‖A_tile_k‖²_F.
 function _tile_norms_sq!(out, src::DenseTiles)
     n = _ntiles(src)
     n == 0 && return out
     backend = get_backend(src.A)
     W, _, NT = _norm_launch(backend, src.tn)
-    _tile_norm_sq_kernel!(backend, NT)(out, src.A, src.p0s, src.q0s, src.tm, src.tn,
-        Val{W}(), Val{NT}(); ndrange=(NT * n,), workgroupsize=NT)
+    _tile_norm_sq_kernel!(backend, NT)(
+        out, src.A, src.p0s, src.q0s, src.tm, src.tn, Val{W}(), Val{NT}();
+        ndrange=(NT * n,), workgroupsize=NT)
     return out
 end
 
-# A packed [tm, tn, ntiles] batch of dense tiles (e.g. gemm intermediates).
+"""A homogeneous `[tile_rows, tile_cols, tile_count]` dense tile batch."""
 struct PackedTiles{T,PT<:AbstractArray{T,3},TV<:AbstractVector} <: TileSource{T}
-    data::PT        # [tm, tn, ntiles]
-    tiles::TV       # per-slab views (gemm operands)
+    data::PT
+    tiles::TV
 end
 PackedTiles(data::AbstractArray{<:Any,3}) =
-    PackedTiles(data, [view(data,:,:,k) for k in axes(data, 3)])
+    PackedTiles(data, [view(data, :, :, k) for k in axes(data, 3)])
 
-function _tile_norms_sq!(out, src::PackedTiles)
-    return batch_frobenius_norms_sq!(out, src.data)
-end
+_tile_norms_sq!(out, src::PackedTiles) = batch_frobenius_norms_sq!(out, src.data)
 
-# Q = A·Ω and V = Aᴴ·Q, batched over tiles
-@inline _sketch!(Q_tiles, src::TileSource{T}, Ω_tiles) where {T} =
-    gemm_batched!('N', 'N', one(T), src.tiles, Ω_tiles, zero(T), Q_tiles)
 @inline _cosketch!(V_tiles, src::TileSource{T}, Q_tiles) where {T} =
-    gemm_batched!(_adjoint_blas_char(T), 'N', one(T), src.tiles, Q_tiles, zero(T), V_tiles)
+    gemm_batched!(_adjoint_blas_char(T), 'N', one(T),
+                  src.tiles, Q_tiles, zero(T), V_tiles)
 
-# The black box the ARA loop samples through: draw a fresh Gaussian block and
-# apply the tiles to it. Freshness per pass is required -- the stopping rule is
-# the Halko-Martinsson-Tropp a posteriori bound, whose failure probability
-# decays only for independent samples.
 struct ARATileSampler{S,C}
     src::S
     cat::C
@@ -99,10 +77,6 @@ end
 function (sampler::ARATileSampler)(Y, width)
     src, cat = sampler.src, sampler.cat
     T = eltype(cat.omega)
-    # Always draw/apply the allocated block. On the final partial pass the ARA
-    # driver zeroes columns `width+1:block` before orthogonalization. Keeping
-    # one fixed batch shape lets the operand vectors be built once with the
-    # workspace instead of allocated on every pass.
     Random.randn!(cat.omega)
     gemm_batched!('N', 'N', one(T), src.tiles,
                   cat.omega_tiles, zero(T), cat.Y_tiles)
@@ -111,289 +85,220 @@ end
 
 @inline _ara_tile_sampler(src, cat) = ARATileSampler(src, cat)
 
+# Consecutive negligible columns required before a tile is declared converged.
+const _ARA_CONSECUTIVE = 10
+
 """
-    compress_tiles!(src, cat; eps_sq, rel) -> cat
+    compress_tiles!(src, workspace; eps_sq, rel)
 
-Blocked adaptive randomized approximation (ARA) of the tile batch described by
-`src` into the workspace `cat`: writes the retained factors into `cat.U`/`cat.V`
-and the per-tile rank / squared error into `cat.ranks_local` / `cat.norm_err_sq`.
-Input-agnostic — see [`TileSource`](@ref). Degenerates to rank 0 when
-`cat.R_keep == 0`.
-
-Sampling is adaptive: each tile stops once its own range is captured, rather
-than every tile paying a single sketch at the full `maxrank` width. That earlier
-scheme produced a panel that was rank deficient by construction on any tile of
-true rank below capacity, which is precisely where a one-shot wide sketch stops
-revealing rank; the prune then decided on a basis that `κ(R₁)` had already
-destroyed.
-
-The reported error is exact rather than indicative. With `Q` orthonormal,
-`‖A − QQᵀA‖² = ‖A‖² − ‖Z‖²` by Pythagoras, and the truncation adds
-`Σ_{k>r} σ_k²`, so the total is `‖A‖² − Σ_{k≤r} σ_k²`.
+Run blocked ARA on one homogeneous tile batch. Results are left in the
+workspace's [`LowRankFactorBatch`](@ref); no matrix container is constructed.
 """
-function compress_tiles!(src::TileSource{T}, cat::CompressCategoryWorkspace; eps_sq::Float64, rel::Bool) where {T}
+function compress_tiles!(src::TileSource{T}, cat::CompressCategoryWorkspace;
+                         eps_sq::Float64, rel::Bool) where {T}
     _ntiles(src) == 0 && return cat
+    f = cat.factors
 
-    if cat.R_keep == 0   # maxrank == 0: every tile degenerates to rank 0
-        _tile_norms_sq!(cat.norm_err_sq, src)
-        fill!(cat.ranks_local, zero(eltype(cat.ranks_local)))
+    if cat.R_keep == 0
+        _tile_norms_sq!(f.errors_sq, src)
+        fill!(f.ranks, zero(eltype(f.ranks)))
         return cat
     end
 
-    # ‖A_tile‖², captured before the Gram-bearing buffers are reused. It is both
-    # the tolerance reference and the range-capture accounting below.
-    _tile_norms_sq!(cat.norm_err_sq, src)
-
-    # Step 1: grow the basis adaptively. `eps_rel` steers the sampling only; the
-    # binding accuracy decision is the truncation in step 3.
+    _tile_norms_sq!(f.errors_sq, src)
     eps_rel = max(sqrt(eps_sq), ara_stopping_floor(tlr_orthogonalization_type(T)))
     ara_build_basis!(cat.ara, _ara_tile_sampler(src, cat);
                      eps_rel, r_required=_ARA_CONSECUTIVE)
-
-    # Step 2: co-range Z = Aᴴ·Q, into the output V panel's sketch-width view.
     _cosketch!(cat.V_tiles, src, cat.Q_tiles)
-
-    # Step 3: optimal (Eckart-Young) truncation, charging the range-capture
-    # error against the same budget.
-    ara_truncate!(view(cat.U, :, 1:cat.R_keep, :), view(cat.V, :, 1:cat.R_keep, :),
-                  cat.ranks_local, cat.norm_err_sq, cat.ara.Q, cat.Z;
+    ara_truncate!(view(f.U, :, 1:cat.R_keep, :),
+                  view(f.V, :, 1:cat.R_keep, :),
+                  f.ranks, f.errors_sq, cat.ara.Q, cat.Z;
                   tol=sqrt(eps_sq), relative=rel, maxrank=cat.R_keep,
-                  energy=cat.norm_err_sq)
+                  energy=f.errors_sq)
     return cat
 end
 
-# Consecutive negligible columns required before a tile is declared converged.
-# The Halko-Martinsson-Tropp bound makes the false-stop probability decay like
-# 10^-p in this count, so it is a confidence level, not a fitted constant. The
-# reference (Boukaram, Turkiyyah & Keyes) uses 10.
-const _ARA_CONSECUTIVE = 10
-
-# Compress one off-diagonal tile category from the dense matrix `A`: wrap its tiles
-# as a `DenseTiles` source and run the input-agnostic core.
-function _compress_category!(
-    A_tlr::PaddedFTLRMatrix,
-    A::AbstractMatrix,
-    cat::CompressCategoryWorkspace,
-    eps_sq::Float64,
-    rel::Bool,
-)
-    n = size(cat.U, 3)
-    n == 0 && return cat
-    tiles = [_dense_tile_view(A, A_tlr, region_tile_coords(A_tlr, cat.region, k)...) for k in 1:n]
-    src = DenseTiles(A, tiles, cat.p0s, cat.q0s,
-                     size(cat.U, 1), size(cat.V, 1))
-    return compress_tiles!(src, cat; eps_sq, rel)
+function _compress_category!(A::AbstractMatrix, cat::CompressCategoryWorkspace,
+                             tile_size::NTuple{2,Int},
+                             eps_sq::Float64, rel::Bool)
+    f = cat.factors
+    isempty(f.tile_ids) && return cat
+    bm, bn = tile_size
+    tm, tn = f.tile_shape
+    tiles = [view(A,
+                  (i-1)*bm+1:(i-1)*bm+tm,
+                  (j-1)*bn+1:(j-1)*bn+tn) for (i, j) in f.tile_ids]
+    return compress_tiles!(DenseTiles(A, tiles, cat.p0s, cat.q0s, tm, tn), cat;
+                           eps_sq, rel)
 end
 
-# ─── Storage helpers ──────────────────────────────────────────────────────────
-
-# Scatter one category's local ranks / squared errors back into the global
-# A_tlr.ranks / A_tlr.resid (converting squared error to a Frobenius residual).
-function _store_category_results!(A_tlr::PaddedFTLRMatrix, cat::CompressCategoryWorkspace)
-    n = size(cat.U, 3)
-    n == 0 && return
-    rk_host = cat.ranks_local isa Vector ? cat.ranks_local : Array(cat.ranks_local)
-    err_host = cat.norm_err_sq isa Vector ? cat.norm_err_sq : Array(cat.norm_err_sq)
-    @inbounds for (k, rank_idx) in enumerate(cat.rank_indices)
-        A_tlr.ranks[rank_idx] = rk_host[k]
-        A_tlr.resid[rank_idx] = sqrt(max(Float64(real(err_host[k])), 0.0))
-    end
-end
-
-# ─── Orchestration ────────────────────────────────────────────────────────────
-
-# Compress all tile categories and scatter their results into A_tlr. On GPU
-# each category runs on its own stream (overlap) and is synced before storing; on
-# CPU they run sequentially.
-function _compress_all_categories!(
-    A_tlr::PaddedFTLRMatrix{<:Any,T},
-    A::AbstractMatrix{T},
-    ws::CompressWorkspace,
-    eps_sq::Float64,
-    rel::Bool,
-) where {T}
+function _compress_all_categories!(A::AbstractMatrix{T},
+                                   ws::FTLRCompressionWorkspace,
+                                   eps_sq::Float64, rel::Bool) where {T}
     cats = ws.cats
-    backend = get_backend(A_tlr)
+    backend = get_backend(A)
+    tile_size = ws.key.tile_size
     if backend isa KernelAbstractions.CPU
         for cat in cats
-            _compress_category!(A_tlr, A, cat, eps_sq, rel)
+            _compress_category!(A, cat, tile_size, eps_sq, rel)
         end
     else
         for (cat, stream) in zip(cats, ws.streams)
             with_stream(backend, stream) do
-                _compress_category!(A_tlr, A, cat, eps_sq, rel)
+                _compress_category!(A, cat, tile_size, eps_sq, rel)
             end
         end
         for stream in ws.streams
             sync_stream(backend, stream)
         end
     end
-    for cat in cats
-        _store_category_results!(A_tlr, cat)
-    end
-    A_tlr
+    return ws
 end
 
-"""
-    compress!(A_tlr, A [, ws]; tol=0.0, rel=false)
+# Final packed-factor construction --------------------------------------------
 
-Compress dense matrix `A` into the TLR container `A_tlr` in-place.
-
-Per-tile effective ranks are detected via greedy V-column-norm thresholding
-against an error-indicator-corrected budget and stored in `ranks(A_tlr)`; the
-estimated per-tile Frobenius error lands in `residuals(A_tlr)`.  The indicator
-(`‖A_tile‖²_F − ‖V‖²_F`, à la randQB_EI) accounts for the range-capture error
-of the sketch, so a tile whose spectrum does not fit within `maxrank` keeps
-full rank and reports a residual above `tol` instead of silently claiming
-convergence — check `residuals` to route such tiles to dense storage or a
-higher-rank second pass.
-
-Call `alloc_workspace` once to amortise the ARA sampling scratch's device
-allocations across repeated calls:
-
-    ws = alloc_workspace(A_tlr)
-    for A in matrices
-        compress!(A_tlr, A, ws; tol=1f-3)
+@kernel function _scatter_lowrank_factor_kernel!(destination, source,
+                                                 offsets, ranks, ld::Int)
+    factor = @index(Group, Linear)
+    lane = @index(Local, Linear)
+    logical_rows = size(source, 1)
+    active = logical_rows * Int(@inbounds ranks[factor])
+    k = lane
+    while k <= active
+        row = (k - 1) % logical_rows + 1
+        col = (k - 1) ÷ logical_rows + 1
+        @inbounds destination[Int(offsets[factor]) + (col-1)*ld + row-1] =
+            source[row, col, factor]
+        k += @groupsize()[1]
     end
-
-For `PaddedFTLRMatrix`, `A_tlr`'s fixed-`maxrank` factor arrays are also
-updated in-place — no allocation beyond `ws`. For `TLRMatrix`, `A_tlr.offdiag`
-cannot be: exact-rank packed storage's offsets depend on the ranks discovered
-by *this* compression, so each call replaces `A_tlr.offdiag` with a freshly
-sized `CompressedFTLRMatrix`. Reusing `ws` still avoids reallocating the
-padded sampling scratch that discovers those ranks; only the final tight-packed
-factor storage is unavoidably new per call.
-
-## Keywords
-
-`tol` — per-tile Frobenius error budget (default `0.0`). The squared budget is
-floored at the orthogonality limit of the promoted Cholesky-QR basis.
-
-`rel` — when `true`, the budget for each tile is `tol * ‖A_tile‖_F` instead of
-the absolute `tol`.
-
-`maxrank` is both the output capacity and the sketch capacity. Reserve any
-desired randomized-range buffer in `maxrank` itself.
-
-The sketch basis is orthogonalised with two shifted Cholesky-QR passes in
-higher precision.
-"""
-compress!(A_tlr::AbstractTLRMatrix{<:Any,T}, A::AbstractMatrix{T}; kwargs...) where {T} =
-    compress!(A_tlr, A, alloc_workspace(A_tlr); kwargs...)
-
-function compress!(A_tlr::TLRMatrix{<:Any,T}, A::AbstractMatrix{T},
-    ws::TLRCompressWorkspace;
-    tol::Real=0.0, rel::Bool=false) where {T}
-
-    size(A) == (A_tlr.m, A_tlr.n) ||
-        throw(DimensionMismatch("A dimensions must match A_tlr"))
-    A_tlr.m == A_tlr.n ||
-        throw(ArgumentError("compress! currently requires square matrices"))
-    tol >= 0 || throw(ArgumentError("tol must be >= 0"))
-
-    _copy_diagonal_from_dense!(A_tlr, A)
-
-    # Rank discovery still uses the established homogeneous ARA batches. The
-    # padded object is workspace-only: after sampling, only off-diagonal tiles
-    # are packed into the public exact-rank representation.
-    compress!(ws.scratch, A, ws.workspace; tol, rel)
-    qm, qn = grid_size(A_tlr)
-    rank_grid = Matrix{Int}(undef, qm, qn)
-    @inbounds for j in 1:qn, i in 1:qm
-        rank_grid[i, j] = i == j ? 0 :
-            Int(ranks(ws.scratch)[_rank_index(ws.scratch, i, j)])
-    end
-    packed = CompressedFTLRMatrix(
-        get_backend(A_tlr), T, size(A_tlr)..., nominal_tile_size(A_tlr), rank_grid;
-        outer_order=compressed_ftlr_outer_order(offdiagonal(A_tlr)),
-        inner_order=compressed_ftlr_inner_order(offdiagonal(A_tlr)),
-        execution_rank_policy=:exact,
-        rank_type=eltype(ranks(A_tlr)))
-    @inbounds for j in 1:qn, i in 1:qm
-        i == j && continue
-        rank_grid[i, j] == 0 && continue
-        U, V = get_factors(ws.scratch, i, j)
-        copyto!(compressed_ftlr_outer(packed, i, j), U)
-        copyto!(compressed_ftlr_inner(packed, i, j), V)
-    end
-    @inbounds for j in 1:qn, i in 1:qm
-        idx = _rank_index(packed, i, j)
-        packed.resid[idx] = i == j ? 0.0 : residuals(ws.scratch)[idx]
-    end
-    A_tlr.offdiag = packed
-
-    A_tlr
 end
 
-function compress!(A_tlr::PaddedFTLRMatrix{<:Any,T}, A::AbstractMatrix{T},
-    ws::CompressWorkspace;
-    tol::Real=0.0, rel::Bool=false) where {T}
+@inline _scatter_workgroupsize(backend) =
+    backend isa KernelAbstractions.CPU ? 1 : 128
 
-    size(A) == (A_tlr.m, A_tlr.n) ||
-        throw(DimensionMismatch("A dimensions must match A_tlr"))
-    tol >= 0 || throw(ArgumentError("tol must be >= 0"))
-
-    eps_sq = Float64(tol)^2
-    _compress_all_categories!(A_tlr, A, ws, eps_sq, rel)
-
-    A_tlr
-end
-
-"""
-    compress!(A_tlr::CompressedFTLRMatrix, A::AbstractMatrix; tol=0.0, rel=false)
-
-Populate `A_tlr`'s reserved factor storage in place from the dense matrix `A`.
-`A_tlr` must already have enough reserved capacity (`execution_ranks`) for the
-ranks ARA discovers — construct it with `execution_ranks` set to the desired
-capacity ceiling; throws if a discovered rank exceeds what was reserved at a
-given tile. Only `A_tlr`'s own `outer`/`inner` storage, `ranks`, and `resid`
-are written; `execution_ranks`/`maxrank`/`execution_maxrank` reflect the
-reserved capacity and are unchanged.
-
-**`maxrank(A_tlr)` stays frozen at whatever it was built with (`0`, if built
-via the zero-`ranks_in`/explicit-`execution_ranks` reserve-capacity pattern),
-never the real ranks this call discovers** — `CompressedFTLRMatrix` is
-immutable, so a scalar field set at construction cannot be updated later, only
-the array fields it owns. Code that reads `maxrank(A_tlr)` expecting it to
-reflect real content (e.g. `padded_result`'s `_active_rank_cap`, used for
-*input* operands to the canonical TLR-output GEMM) will silently see `0` for a
-container populated this way. This method is meant for containers, like a
-canonical GEMM's *output* `C`, where downstream code reads
-`execution_maxrank` instead and never reads `maxrank`. To build a container
-usable as a canonical-GEMM *input* — where `maxrank` must reflect real
-content — construct fresh with `ranks_in` set to the true per-tile ranks
-(mirroring `pack_compressed_ftlr`'s pattern), not this reserve-then-populate
-one.
-
-Rank discovery reuses the same ARA sampling core as `PaddedFTLRMatrix`'s
-compression, via a private scratch sized to `A_tlr`'s reserved capacity — this
-is a plain, unamortised populate-from-dense path (no reusable workspace),
-intended for building fixtures and tests rather than a hot loop.
-"""
-function compress!(A_tlr::CompressedFTLRMatrix{<:Any,T}, A::AbstractMatrix{T};
-    tol::Real=0.0, rel::Bool=false) where {T}
-
-    size(A) == size(A_tlr) || throw(DimensionMismatch("A dimensions must match A_tlr"))
-    tol >= 0 || throw(ArgumentError("tol must be >= 0"))
-
-    qm, qn = grid_size(A_tlr)
-    capacity = execution_maxrank(A_tlr)
-    scratch = PaddedFTLRMatrix(get_backend(A_tlr), T, A_tlr.m, A_tlr.n,
-                               nominal_tile_size(A_tlr), capacity)
-    compress!(scratch, A; tol, rel)
-
-    @inbounds for j in 1:qn, i in 1:qm
-        r = Int(ranks(scratch)[_rank_index(scratch, i, j)])
-        cap_ij = _compressed_ftlr_execution_rank(A_tlr, i, j)
-        r <= cap_ij || throw(ArgumentError(
-            "discovered rank $r at ($i, $j) exceeds A_tlr's reserved capacity $cap_ij"))
-        idx = _rank_index(A_tlr, i, j)
-        A_tlr.ranks[idx] = r
-        A_tlr.resid[idx] = residuals(scratch)[_rank_index(scratch, i, j)]
-        r == 0 && continue
-        U, V = get_factors(scratch, i, j)
-        copyto!(compressed_ftlr_outer(A_tlr, i, j), U)
-        copyto!(compressed_ftlr_inner(A_tlr, i, j), V)
+function _compression_diagnostics(ws::FTLRCompressionWorkspace)
+    qm, qn = cld(ws.key.m, ws.key.tile_size[1]), cld(ws.key.n, ws.key.tile_size[2])
+    rank_grid = Base.zeros(Int, qm, qn)
+    residual_grid = Base.zeros(Float64, qm, qn)
+    for cat in ws.cats
+        f = cat.factors
+        rk = f.ranks isa Vector ? f.ranks : Array(f.ranks)
+        err = f.errors_sq isa Vector ? f.errors_sq : Array(f.errors_sq)
+        @inbounds for (k, (i, j)) in enumerate(f.tile_ids)
+            rank_grid[i, j] = Int(rk[k])
+            residual_grid[i, j] = sqrt(max(Float64(real(err[k])), 0.0))
+        end
     end
-    A_tlr
+    return rank_grid, residual_grid
 end
+
+function _factor_offsets_for_batch(C::CompressedFTLRMatrix,
+                                   f::LowRankFactorBatch, side::Symbol)
+    factors = side === :outer ? C.outer : C.inner
+    offsets = Vector{Int}(undef, length(f.tile_ids))
+    @inbounds for (k, (i, j)) in enumerate(f.tile_ids)
+        offsets[k] = factors.offsets[_compressed_ftlr_slot(factors, i, j)]
+    end
+    return offsets
+end
+
+function _scatter_factor_batch!(C::CompressedFTLRMatrix,
+                                f::LowRankFactorBatch, side::Symbol)
+    isempty(f.tile_ids) && return C
+    backend = get_backend(C)
+    factors = side === :outer ? C.outer : C.inner
+    source = side === :outer ? f.U : f.V
+    tile_axis = side === :outer ? first(f.tile_ids[1]) : last(f.tile_ids[1])
+    ld = factors.leading_dimensions[tile_axis]
+    offsets_host = _factor_offsets_for_batch(C, f, side)
+    offsets = copyto!(allocate(backend, Int, length(offsets_host)), offsets_host)
+    wg = _scatter_workgroupsize(backend)
+    _scatter_lowrank_factor_kernel!(backend, wg)(
+        factors.data, source, offsets, f.ranks, ld;
+        ndrange=(wg * length(f.tile_ids),), workgroupsize=wg)
+    return C
+end
+
+function _finalize_compressed_ftlr(ws::FTLRCompressionWorkspace;
+                                   rank_multiple::Integer=0,
+                                   outer_order=TileRowMajor,
+                                   inner_order=TileColMajor)
+    rank_grid, residual_grid = _compression_diagnostics(ws)
+    key = ws.key
+    backend = key.device
+    C = CompressedFTLRMatrix(
+        backend, key.T, key.m, key.n, key.tile_size, rank_grid;
+        outer_order, inner_order, rank_multiple, rank_type=key.rank_type)
+    @inbounds for j in axes(rank_grid, 2), i in axes(rank_grid, 1)
+        C.resid[_rank_index(C, i, j)] = residual_grid[i, j]
+    end
+    for cat in ws.cats
+        _scatter_factor_batch!(C, cat.factors, :outer)
+        _scatter_factor_batch!(C, cat.factors, :inner)
+    end
+    KernelAbstractions.synchronize(backend)
+    return C
+end
+
+# Public dense constructors ----------------------------------------------------
+
+"""
+    CompressedFTLRMatrix(A, tile_size; maxrank, tol=0, rel=false,
+                         rank_multiple=0, workspace=nothing)
+
+Compress dense `A` in one adaptive pass and return finalized packed factors.
+`rank_multiple == 0` stores exact widths; a positive value rounds each nonzero
+tile rank up to that multiple without changing its logical rank.
+"""
+function CompressedFTLRMatrix(A::AbstractMatrix{T},
+                              tile_size::NTuple{2,Int};
+                              maxrank::Int,
+                              tol::Real=0.0,
+                              rel::Bool=false,
+                              rank_multiple::Integer=0,
+                              workspace::Union{Nothing,FTLRCompressionWorkspace}=nothing,
+                              outer_order=TileRowMajor,
+                              inner_order=TileColMajor,
+                              rank_type::Type{<:Integer}=Int32) where {T}
+    tol >= 0 || throw(ArgumentError("tol must be nonnegative"))
+    _validate_rank_multiple(rank_multiple)
+    ws = workspace === nothing ? FTLRCompressionWorkspace(
+        A, tile_size; maxrank, diagonal=:compressed, rank_type) : workspace
+    _validate_compression_workspace(
+        ws, A, tile_size, maxrank, :compressed, rank_type)
+    _compress_all_categories!(A, ws, Float64(tol)^2, rel)
+    return _finalize_compressed_ftlr(
+        ws; rank_multiple, outer_order, inner_order)
+end
+
+CompressedFTLRMatrix(A::AbstractMatrix, b::Int; kwargs...) =
+    CompressedFTLRMatrix(A, (b, b); kwargs...)
+
+"""
+    TLRMatrix(A, tile_size; maxrank, tol=0, rel=false,
+              rank_multiple=0, workspace=nothing)
+
+Compress only the off-diagonal tiles of dense `A`, keep the diagonal dense,
+and return a finalized `TLRMatrix`.
+"""
+function TLRMatrix(A::AbstractMatrix{T}, tile_size::NTuple{2,Int};
+                   maxrank::Int,
+                   tol::Real=0.0,
+                   rel::Bool=false,
+                   rank_multiple::Integer=0,
+                   workspace::Union{Nothing,FTLRCompressionWorkspace}=nothing,
+                   rank_type::Type{<:Integer}=Int32) where {T}
+    tol >= 0 || throw(ArgumentError("tol must be nonnegative"))
+    _validate_rank_multiple(rank_multiple)
+    ws = workspace === nothing ? FTLRCompressionWorkspace(
+        A, tile_size; maxrank, diagonal=:dense, rank_type) : workspace
+    _validate_compression_workspace(ws, A, tile_size, maxrank, :dense, rank_type)
+    _compress_all_categories!(A, ws, Float64(tol)^2, rel)
+    offdiag = _finalize_compressed_ftlr(ws; rank_multiple)
+    C = TLRMatrix(offdiag)
+    _copy_diagonal_from_dense!(C, A)
+    KernelAbstractions.synchronize(get_backend(C))
+    return C
+end
+
+TLRMatrix(A::AbstractMatrix, b::Int; kwargs...) = TLRMatrix(A, (b, b); kwargs...)
