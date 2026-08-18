@@ -5,10 +5,6 @@
 @inline tlr_orthogonalization_type(::Type{ComplexF64}) = ComplexF64
 @inline tlr_orthogonalization_type(::Type{T}) where {T} = T
 
-# Compatibility name for the compression workspace policy. Keeping this alias
-# avoids coupling callers to a second, nominally different precision policy.
-@inline _compress_accum_type(::Type{T}) where {T} = tlr_orthogonalization_type(T)
-
 @inline _adjoint_blas_char(::Type{<:Complex}) = 'C'
 @inline _adjoint_blas_char(::Type) = 'T'
 

@@ -1,3 +1,7 @@
+@inline _diag_tile_ref(A::TLRMatrix, k::Int) = (_diag_tile_view(A, k), 'N')
+@inline _diag_tile_ref(A::TransposeTLRMatrix{<:Any,<:TLRMatrix}, k::Int) =
+    (_diag_tile_view(parent(A), k), 'T')
+
 """Nonzero-execution-rank `(i,k,r)` tiles between `OA`'s off-diagonal factors
 and `DB`'s diagonal, paired with each tile's intermediate (`S = V'D`) element
 count. Shared by the workspace-bound queries and `_tlr_offdiag_times_diag!`'s
@@ -72,14 +76,6 @@ function gemm_maximum_workspace_bytes(A::TLRMatrix, B::TLRMatrix;
     return max(compressed, all_cross)
 end
 
-function _tlr_check_cross_workspace(sizes, capacity::Int, ::Type{T}) where {T}
-    isempty(sizes) && return nothing
-    needed = maximum(sizes) * sizeof(T)
-    capacity >= needed || throw(ArgumentError(
-        "workspace has $capacity bytes; a dense-diagonal update requires at least $needed bytes"))
-    return nothing
-end
-
 """
     _tlr_pack_cross_items!(mode, arena, capacity, T, items, sizes, push_item!)
 
@@ -94,7 +90,11 @@ that item's aligned offset when `push_item!` is called).
 """
 function _tlr_pack_cross_items!(mode, arena, capacity::Int, ::Type{T}, items, sizes,
                                 push_item!) where {T}
-    _tlr_check_cross_workspace(sizes, capacity, T)
+    if !isempty(sizes)
+        needed = maximum(sizes) * sizeof(T)
+        capacity >= needed || throw(ArgumentError(
+            "workspace has $capacity bytes; a dense-diagonal update requires at least $needed bytes"))
+    end
     first_item = 1
     while first_item <= length(items)
         _arena_reset!(arena)
@@ -129,9 +129,9 @@ function _tlr_offdiag_times_diag!(C, OA, DB, alpha, mode, arena, capacity::Int)
             cols = _tile_axis_range(DB, k, 2)
             S = _workspace_array!(arena, backend, T, r, length(cols))
             V = compressed_ftlr_storage_inner(OA, i, k)
-            D = _diag_tile_ref(DB, k)
+            D, opD = _diag_tile_ref(DB, k)
             push!(stage1, GroupedGemmTask(
-                'T', _dense_op(D), one(T), V, _dense_data(D), zero(T), S))
+                'T', opD, one(T), V, D, zero(T), S))
             U = compressed_ftlr_storage_outer(OA, i, k)
             rows = _tile_axis_range(OA, i, 1)
             push!(stage2, GroupedGemmTask(
@@ -151,9 +151,9 @@ function _tlr_diag_times_offdiag!(C, DA, OB, alpha, mode, arena, capacity::Int)
             rows = _tile_axis_range(DA, k, 1)
             W = _workspace_array!(arena, backend, T, length(rows), r)
             U = compressed_ftlr_storage_outer(OB, k, j)
-            D = _diag_tile_ref(DA, k)
+            D, opD = _diag_tile_ref(DA, k)
             push!(stage1, GroupedGemmTask(
-                _dense_op(D), 'N', one(T), _dense_data(D), U, zero(T), W))
+                opD, 'N', one(T), D, U, zero(T), W))
             V = compressed_ftlr_storage_inner(OB, k, j)
             cols = _tile_axis_range(OB, j, 2)
             push!(stage2, GroupedGemmTask(
@@ -167,13 +167,12 @@ function _tlr_diag_times_diag!(C, DA, DB, alpha, mode)
     tasks = GroupedGemmTask[]
     sizehint!(tasks, n)
     @inbounds for k in 1:n
-        Aref = _diag_tile_ref(DA, k)
-        Bref = _diag_tile_ref(DB, k)
+        Atile, opA = _diag_tile_ref(DA, k)
+        Btile, opB = _diag_tile_ref(DB, k)
         rows = _tile_axis_range(DA, k, 1)
         cols = _tile_axis_range(DB, k, 2)
         push!(tasks, GroupedGemmTask(
-            _dense_op(Aref), _dense_op(Bref), alpha,
-            _dense_data(Aref), _dense_data(Bref), one(alpha),
+            opA, opB, alpha, Atile, Btile, one(alpha),
             view(C, rows, cols)))
     end
     isempty(tasks) || precision_gemm_grouped!(tasks, mode)
@@ -191,12 +190,12 @@ function _tlr_diag_times_dense!(C, DA, B, alpha, mode)
     sizehint!(tasks, ndiag_tiles(DA))
     output_cols = 1:size(C, 2)
     @inbounds for k in 1:ndiag_tiles(DA)
-        D = _diag_tile_ref(DA, k)
+        D, opD = _diag_tile_ref(DA, k)
         rows = _tile_axis_range(DA, k, 1)
         inner = _tile_axis_range(DA, k, 2)
         Bdense, opB = _dense_block(B, inner, output_cols)
         push!(tasks, GroupedGemmTask(
-            _dense_op(D), opB, alpha, _dense_data(D), Bdense, one(alpha),
+            opD, opB, alpha, D, Bdense, one(alpha),
             view(C, rows, output_cols)))
     end
     isempty(tasks) || precision_gemm_grouped!(tasks, mode)
@@ -213,27 +212,14 @@ function _dense_times_tlr_diag!(C, A, DB, alpha, mode)
     sizehint!(tasks, ndiag_tiles(DB))
     output_rows = 1:size(C, 1)
     @inbounds for k in 1:ndiag_tiles(DB)
-        D = _diag_tile_ref(DB, k)
+        D, opD = _diag_tile_ref(DB, k)
         inner = _tile_axis_range(DB, k, 1)
         cols = _tile_axis_range(DB, k, 2)
         Adense, opA = _dense_block(A, output_rows, inner)
         push!(tasks, GroupedGemmTask(
-            opA, _dense_op(D), alpha, Adense, _dense_data(D), one(alpha),
+            opA, opD, alpha, Adense, D, one(alpha),
             view(C, output_rows, cols)))
     end
     isempty(tasks) || precision_gemm_grouped!(tasks, mode)
-    return C
-end
-
-function _tlr_add_diagonal_terms!(C, A::TLRMatrix, B::TLRMatrix, workspace,
-                                  alpha, transA::Char, transB::Char, mode)
-    _, arena, capacity = _prepare_dense_result_workspace(A, workspace)
-    DA = transA == 'T' ? transpose(A) : A
-    DB = transB == 'T' ? transpose(B) : B
-    OA = offdiagonal(DA)
-    OB = offdiagonal(DB)
-    _tlr_offdiag_times_diag!(C, OA, DB, alpha, mode, arena, capacity)
-    _tlr_diag_times_offdiag!(C, DA, OB, alpha, mode, arena, capacity)
-    _tlr_diag_times_diag!(C, DA, DB, alpha, mode)
     return C
 end

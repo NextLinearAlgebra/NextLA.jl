@@ -6,22 +6,6 @@
 @inline _active_rank_cap(A::CompressedFTLRMatrix) =
     isempty(A.ranks) ? 0 : min(maxrank(A), maximum(Int, A.ranks))
 
-@inline function _right_sampling_workspace_elems(qm::Int, qk::Int,
-                                                 rA::Int, rB::Int,
-                                                 block::Int, rmaxC::Int)
-    qk * (block * (rB + qm * rA) +
-          rmaxC * qm * (rA + rB) +
-          qm * rA * rB)
-end
-
-@inline function _left_sampling_workspace_elems(qn::Int, qk::Int,
-                                                rA::Int, rB::Int,
-                                                block::Int, rmaxC::Int)
-    qk * (block * (rA + qn * rB) +
-          rmaxC * qn * (rA + rB) +
-          qn * rA * rB)
-end
-
 """
     _require_complementary_packing(X, name)
 
@@ -60,10 +44,10 @@ function choose_tlr_sampling_side(LA::AbstractTLRMatrix,
 
     qm, qk = grid_size(LA)
     _, qn = grid_size(LB)
-    right = _right_sampling_workspace_elems(
-        qm, qk, rA, rB, block, rmaxC)
-    left = _left_sampling_workspace_elems(
-        qn, qk, rA, rB, block, rmaxC)
+    right = qk * (block * (rB + qm * rA) +
+                    rmaxC * qm * (rA + rB) + qm * rA * rB)
+    left = qk * (block * (rA + qn * rB) +
+                   rmaxC * qn * (rA + rB) + qn * rA * rB)
     return right < left ? :right : :left
 end
 
@@ -171,30 +155,26 @@ function _tlr_gemm_workspace_spec(C::CompressedFTLRMatrix{BackendT,T},
     bm = nominal_tile_size(C, 1)
     bn = nominal_tile_size(C, 2)
     Thi = tlr_orthogonalization_type(T)
-    arena_bytes = ara_run_workspace_bytes(
-        family, rA, rB, qk, nmember, blk, cap, bm, bn, T, Thi)
     key = (
         backend=typeof(get_backend(C)), T=T, rankT=eltype(C.ranks),
         family=family, qm=qm, qk=qk, qn=qn, nmember=nmember,
         rA=rA, rB=rB, block=blk, maxrank=cap, bm=bm, bn=bn,
     )
-    return (; LA, LB, side, family, nmember, arena_bytes, key, Thi)
+    return (; key, Thi)
 end
 
 function _prepare_tlr_gemm_workspace(C, A, B, workspace;
                                      transA::Char, transB::Char, block::Int)
     spec = _tlr_gemm_workspace_spec(C, A, B; transA, transB, block)
     if workspace === nothing
-        return TLRGemmWorkspace(C, A, B; transA, transB, block), spec
+        return TLRGemmWorkspace(C, spec), spec
     elseif workspace isa Integer
         workspace >= 0 ||
             throw(ArgumentError("workspace bytes must be nonnegative"))
-        required = tlr_gemm_minimum_workspace_bytes(
-            C, A, B; transA, transB, block)
+        required = _tlr_gemm_workspace_bytes(spec, 1)
         workspace >= required || throw(ArgumentError(
             "workspace has $workspace bytes; at least $required bytes are required"))
-        ws = TLRGemmWorkspace(
-            C, A, B; bytes=Int(workspace), transA, transB, block)
+        ws = TLRGemmWorkspace(C, spec; bytes=Int(workspace))
         return ws, spec
     elseif workspace isa TLRGemmWorkspace
         workspace.key.operation == spec.key || throw(ArgumentError(
@@ -213,8 +193,7 @@ function _gemm_tlr!(C::CompressedFTLRMatrix{BackendT,T},
                transA::Char='N', transB::Char='N',
                tol::Real=0.0, rel::Bool=false,
                eps_rel=nothing, r_required::Int=10, block::Int=32,
-               compute=nothing, workspace=nothing,
-               stats=nothing) where {BackendT,T}
+               compute=nothing, workspace=nothing) where {BackendT,T}
     LA = transA == 'T' ? transpose(A) : A
     LB = transB == 'T' ? transpose(B) : B
     _validate_canonical_tlr_gemm(C, A, B, LA, LB)
@@ -259,7 +238,7 @@ function _gemm_tlr!(C::CompressedFTLRMatrix{BackendT,T},
     bm_tile = nominal_tile_size(C, 1)
     bn_tile = nominal_tile_size(C, 2)
 
-    if workspace_spec.family === :column
+    if workspace_spec.key.family === :column
         # NT, right choice: fixed columns share H. `arena` and `ws_owner`'s
         # traversal/diagnostic buffers are sized once for this family/shape
         # and reused (reset) across every column below; each iteration
@@ -281,7 +260,7 @@ function _gemm_tlr!(C::CompressedFTLRMatrix{BackendT,T},
             _rolling_lane_loop!(
                 C, run, ara_ws, 1:qm, j, ops, arena, ws_owner;
                 beta=β, eps_rel=sample_tol, r_required, tol, rel,
-                compute=mode, stats,
+                compute=mode,
             )
         end
     else
@@ -302,7 +281,7 @@ function _gemm_tlr!(C::CompressedFTLRMatrix{BackendT,T},
             _rolling_lane_loop!(
                 C, run, ara_ws, 1:qn, i, ops, arena, ws_owner;
                 beta=β, eps_rel=sample_tol, r_required, tol, rel,
-                compute=mode, stats,
+                compute=mode,
             )
         end
     end
@@ -443,17 +422,4 @@ function gemm(A::CompressedFTLRMatrix{BackendT,T},
         staging, UA, UB; alpha, beta=false, transA, transB, tol, rel, eps_rel,
         r_required, block, compute=mode, workspace)
     return _pack_ara_output(staging; rank_multiple)
-end
-
-"""
-    _tlr_gemm_schedule_stats!(C, A, B; kwargs...) -> TLRGemmScheduleStats
-
-Internal profiling entry point for the R4a scheduler. It intentionally keeps
-instrumentation out of the public `gemm!` keyword contract.
-"""
-function _tlr_gemm_schedule_stats!(C::CompressedFTLRMatrix, A::CompressedFTLRMatrix,
-                                   B::CompressedFTLRMatrix; kwargs...)
-    stats = TLRGemmScheduleStats()
-    _gemm_tlr!(C, A, B; kwargs..., stats)
-    return stats
 end

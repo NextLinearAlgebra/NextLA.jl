@@ -5,9 +5,6 @@ tile shapes." `_compressed_ftlr_fold_cost` (`costs.jl`) turns these facts into
 FoldRight/FoldLeft cost estimates; nothing here depends on which fold is used.
 """
 
-@inline _compressed_ftlr_axis_range(A::AbstractTLRMatrix, tile::Int, axis::Int) =
-    _tile_axis_range(A, tile, axis)
-
 @inline _compressed_ftlr_right_valid(A, B) =
     compressed_ftlr_outer_order(A) isa TileRowMajor && compressed_ftlr_outer_order(B) isa TileRowMajor
 @inline _compressed_ftlr_left_valid(A, B) =
@@ -32,10 +29,8 @@ end
 # over `j` must therefore be queried on the range rather than read whole, and
 # every offset into a `j`-indexed arena rebased to the range start.
 #
-# These are deliberately untyped in their first argument: they read only field
-# names shared by the rank-metadata NamedTuple and `CompressedFTLRRankPlan`, so
-# both `costs.jl` (which has the former) and `three_stage.jl` (the latter) use
-# the same accessors.
+# These read field names shared by the rank metadata and the same metadata with
+# its attached cost profile, so `costs.jl` and `three_stage.jl` share them.
 
 """`σ_k` restricted to `jrange`: `Σ_{j ∈ jrange} rB_kj`."""
 @inline _compressed_ftlr_row_rank(meta, k::Int, jrange) =
@@ -49,18 +44,10 @@ end
 @inline _compressed_ftlr_width(meta, jrange) =
     meta.output_col_prefix[last(jrange) + 1] - meta.output_col_prefix[first(jrange)]
 
-"""Column offset of tile `j` inside a `jrange`-local dense block."""
-@inline _compressed_ftlr_width_offset(meta, j::Int, jrange) =
-    meta.output_col_prefix[j] - meta.output_col_prefix[first(jrange)]
-
-"""`Γ` restricted to `jrange`: `Σ_{j ∈ jrange} γ_j`."""
-@inline _compressed_ftlr_total_rank(meta, jrange) =
-    meta.b_col_prefix[last(jrange) + 1] - meta.b_col_prefix[first(jrange)]
-
 """Matrix column span of `jrange` in the dense output."""
 @inline function _compressed_ftlr_output_cols(B, jrange)
-    lo = first(_compressed_ftlr_axis_range(B, first(jrange), 2))
-    hi = last(_compressed_ftlr_axis_range(B, last(jrange), 2))
+    lo = first(_tile_axis_range(B, first(jrange), 2))
+    hi = last(_tile_axis_range(B, last(jrange), 2))
     return lo:hi
 end
 
@@ -114,12 +101,11 @@ function _compressed_ftlr_rank_metadata(A, B)
         a_k_prefix[i, k + 1] = a_k_prefix[i, k] + r
         pair_ranks[i] += r * b_row_ranks[k]
     end
-    b_total_rank = sum(b_row_ranks)
     b_col_prefix = _compressed_ftlr_prefix(b_col_ranks)
-    output_row_heights = [length(_compressed_ftlr_axis_range(A, i, 1)) for i in 1:qm]
-    output_col_widths = [length(_compressed_ftlr_axis_range(B, j, 2)) for j in 1:qn]
+    output_row_heights = [length(_tile_axis_range(A, i, 1)) for i in 1:qm]
+    output_col_widths = [length(_tile_axis_range(B, j, 2)) for j in 1:qn]
     output_col_prefix = _compressed_ftlr_prefix(output_col_widths)
-    return (; a_k_prefix, b_row_ranks, b_col_ranks, b_col_k_prefix, b_row_k_prefix,
-              b_col_prefix, b_row_nonzero_prefix, pair_ranks, b_total_rank,
+    return (; a_k_prefix, qk, b_col_ranks, b_col_k_prefix, b_row_k_prefix,
+              b_col_prefix, b_row_nonzero_prefix, pair_ranks,
               output_row_heights, output_col_widths, output_col_prefix)
 end

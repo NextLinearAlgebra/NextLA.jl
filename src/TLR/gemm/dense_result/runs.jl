@@ -29,16 +29,6 @@ struct DenseResultRunTasks{S1,S2,S3,Z}
     scale_targets::Vector{Tuple{UnitRange{Int},UnitRange{Int}}}
 end
 
-function DenseResultRunTasks(stage1, stage2, stage3, terminal_stage::Int,
-                             zero_target, needs_zero::Bool, scale_targets)
-    terminal_stage in 0:3 || throw(ArgumentError(
-        "terminal stage must be between 0 and 3"))
-    return DenseResultRunTasks{typeof(stage1),typeof(stage2),typeof(stage3),
-                               typeof(zero_target)}(
-        stage1, stage2, stage3, terminal_stage, zero_target, needs_zero,
-        scale_targets)
-end
-
 """One dense-output run with persistent grouped-GEMM descriptors."""
 struct PreparedDenseResultRun
     stage1::Union{Nothing,AbstractPreparedGroupedGemm}
@@ -50,28 +40,26 @@ struct PreparedDenseResultRun
     scale_targets::Vector{Tuple{UnitRange{Int},UnitRange{Int}}}
 end
 
-@inline _prepare_dense_result_stage(::Nothing, _) = nothing
-@inline _prepare_dense_result_stage(tasks, mode) =
-    prepare_precision_gemm_grouped(tasks, mode)
-
-@inline function _destroy_prepared_dense_result_stages!(stage1, stage2, stage3)
-    stage1 === nothing || destroy_prepared_grouped_gemm!(stage1)
-    stage2 === nothing || destroy_prepared_grouped_gemm!(stage2)
-    stage3 === nothing || destroy_prepared_grouped_gemm!(stage3)
+@inline function _destroy_prepared_dense_result_run!(run::PreparedDenseResultRun)
+    run.stage1 === nothing || destroy_prepared_grouped_gemm!(run.stage1)
+    run.stage2 === nothing || destroy_prepared_grouped_gemm!(run.stage2)
+    run.stage3 === nothing || destroy_prepared_grouped_gemm!(run.stage3)
     return nothing
 end
-
-@inline _destroy_prepared_dense_result_run!(run::PreparedDenseResultRun) =
-    _destroy_prepared_dense_result_stages!(run.stage1, run.stage2, run.stage3)
 
 function _prepare_dense_result_run(tasks::DenseResultRunTasks, mode)
     stage1 = stage2 = stage3 = nothing
     try
-        stage1 = _prepare_dense_result_stage(tasks.stage1, mode)
-        stage2 = _prepare_dense_result_stage(tasks.stage2, mode)
-        stage3 = _prepare_dense_result_stage(tasks.stage3, mode)
+        stage1 = tasks.stage1 === nothing ? nothing :
+                 prepare_precision_gemm_grouped(tasks.stage1, mode)
+        stage2 = tasks.stage2 === nothing ? nothing :
+                 prepare_precision_gemm_grouped(tasks.stage2, mode)
+        stage3 = tasks.stage3 === nothing ? nothing :
+                 prepare_precision_gemm_grouped(tasks.stage3, mode)
     catch
-        _destroy_prepared_dense_result_stages!(stage1, stage2, stage3)
+        stage1 === nothing || destroy_prepared_grouped_gemm!(stage1)
+        stage2 === nothing || destroy_prepared_grouped_gemm!(stage2)
+        stage3 === nothing || destroy_prepared_grouped_gemm!(stage3)
         rethrow()
     end
     return PreparedDenseResultRun(
@@ -93,16 +81,9 @@ function _prepare_dense_result_runs(build_tasks, schedule, mode)
     return prepared
 end
 
-@inline _prepared_dense_result_stages(run::PreparedDenseResultRun) =
-    (run.stage1, run.stage2, run.stage3)
-
-@inline function _prepared_dense_result_run_has_fallback(run::PreparedDenseResultRun)
-    return any(stage -> stage isa PreparedGroupedGemmBundle,
-               _prepared_dense_result_stages(run))
-end
-
 @inline _dense_result_runs_have_fallback(runs) =
-    any(_prepared_dense_result_run_has_fallback, runs)
+    any(run -> any(stage -> stage isa PreparedGroupedGemmBundle,
+                   (run.stage1, run.stage2, run.stage3)), runs)
 
 function _close_dense_result_analysis!(analysis)
     analysis.closed && return analysis
@@ -143,7 +124,7 @@ function _execute_prepared_dense_result_runs_inner!(
         @inbounds for (rows, cols) in run.scale_targets
             _scale_output!(view(C, rows, cols), beta)
         end
-        @inbounds for (index, stage) in enumerate(_prepared_dense_result_stages(run))
+        @inbounds for (index, stage) in enumerate((run.stage1, run.stage2, run.stage3))
             if index == run.terminal_stage
                 _submit_prepared_dense_result_stage(
                     stage, backend, manage_pointer_mode, alpha, beta)

@@ -38,11 +38,7 @@ end
 
 # Tile-batch compression core --------------------------------------------------
 
-abstract type TileSource{T} end
-
-@inline _ntiles(src::TileSource) = length(src.tiles)
-
-struct DenseTiles{T,AT<:AbstractMatrix{T},TV<:AbstractVector,CV} <: TileSource{T}
+struct DenseTiles{T,AT<:AbstractMatrix{T},TV<:AbstractVector,CV}
     A::AT
     tiles::TV
     p0s::CV
@@ -52,7 +48,7 @@ struct DenseTiles{T,AT<:AbstractMatrix{T},TV<:AbstractVector,CV} <: TileSource{T
 end
 
 function _tile_norms_sq!(out, src::DenseTiles)
-    n = _ntiles(src)
+    n = length(src.tiles)
     n == 0 && return out
     backend = get_backend(src.A)
     W, _, NT = _norm_launch(backend, src.tn)
@@ -63,7 +59,7 @@ function _tile_norms_sq!(out, src::DenseTiles)
 end
 
 """A homogeneous `[tile_rows, tile_cols, tile_count]` dense tile batch."""
-struct PackedTiles{T,PT<:AbstractArray{T,3},TV<:AbstractVector} <: TileSource{T}
+struct PackedTiles{T,PT<:AbstractArray{T,3},TV<:AbstractVector}
     data::PT
     tiles::TV
 end
@@ -72,26 +68,6 @@ PackedTiles(data::AbstractArray{<:Any,3}) =
 
 _tile_norms_sq!(out, src::PackedTiles) = batch_frobenius_norms_sq!(out, src.data)
 
-@inline _cosketch!(V_tiles, src::TileSource{T}, Q_tiles) where {T} =
-    gemm_batched!(_adjoint_blas_char(T), 'N', one(T),
-                  src.tiles, Q_tiles, zero(T), V_tiles)
-
-struct ARATileSampler{S,C}
-    src::S
-    cat::C
-end
-
-function (sampler::ARATileSampler)(Y, width)
-    src, cat = sampler.src, sampler.cat
-    T = eltype(cat.omega)
-    Random.randn!(cat.omega)
-    gemm_batched!('N', 'N', one(T), src.tiles,
-                  cat.omega_tiles, zero(T), cat.Y_tiles)
-    return Y
-end
-
-@inline _ara_tile_sampler(src, cat) = ARATileSampler(src, cat)
-
 # Consecutive negligible columns required before a tile is declared converged.
 const _ARA_CONSECUTIVE = 10
 
@@ -99,42 +75,47 @@ const _ARA_CONSECUTIVE = 10
     compress_tiles!(src, workspace; eps_sq, rel)
 
 Run blocked ARA on one homogeneous tile batch. Results are left in the
-workspace's [`LowRankFactorBatch`](@ref); no matrix container is constructed.
+workspace; no matrix container is constructed.
 """
-function compress_tiles!(src::TileSource{T}, cat::CompressCategoryWorkspace;
+function compress_tiles!(src::Union{DenseTiles{T},PackedTiles{T}}, cat;
                          eps_sq::Float64, rel::Bool) where {T}
-    _ntiles(src) == 0 && return cat
-    f = cat.factors
+    isempty(src.tiles) && return cat
 
     if cat.R_keep == 0
-        _tile_norms_sq!(f.errors_sq, src)
-        fill!(f.ranks, zero(eltype(f.ranks)))
+        _tile_norms_sq!(cat.errors_sq, src)
+        fill!(cat.ranks, zero(eltype(cat.ranks)))
         return cat
     end
 
-    _tile_norms_sq!(f.errors_sq, src)
+    _tile_norms_sq!(cat.errors_sq, src)
     eps_rel = max(sqrt(eps_sq), ara_stopping_floor(tlr_orthogonalization_type(T)))
-    ara_build_basis!(cat.ara, _ara_tile_sampler(src, cat);
+    sampler = function (Y, width)
+        Random.randn!(cat.omega)
+        gemm_batched!('N', 'N', one(T), src.tiles,
+                      cat.omega_tiles, zero(T), cat.Y_tiles)
+        return Y
+    end
+    ara_build_basis!(cat.ara, sampler;
                      eps_rel, r_required=_ARA_CONSECUTIVE)
-    _cosketch!(cat.V_tiles, src, cat.Q_tiles)
-    ara_truncate!(view(f.U, :, 1:cat.R_keep, :),
-                  view(f.V, :, 1:cat.R_keep, :),
-                  f.ranks, f.errors_sq, cat.ara.Q, cat.Z;
+    gemm_batched!(_adjoint_blas_char(T), 'N', one(T),
+                  src.tiles, cat.Q_tiles, zero(T), cat.V_tiles)
+    ara_truncate!(view(cat.U, :, 1:cat.R_keep, :),
+                  view(cat.V, :, 1:cat.R_keep, :),
+                  cat.ranks, cat.errors_sq, cat.ara.Q, cat.Z;
                   tol=sqrt(eps_sq), relative=rel, maxrank=cat.R_keep,
-                  energy=f.errors_sq)
+                  energy=cat.errors_sq)
     return cat
 end
 
-function _compress_category!(A::AbstractMatrix, cat::CompressCategoryWorkspace,
+function _compress_category!(A::AbstractMatrix, cat,
                              tile_size::NTuple{2,Int},
                              eps_sq::Float64, rel::Bool)
-    f = cat.factors
-    isempty(f.tile_ids) && return cat
+    isempty(cat.tile_ids) && return cat
     bm, bn = tile_size
-    tm, tn = f.tile_shape
+    tm, tn = cat.tile_shape
     tiles = [view(A,
                   (i-1)*bm+1:(i-1)*bm+tm,
-                  (j-1)*bn+1:(j-1)*bn+tn) for (i, j) in f.tile_ids]
+                  (j-1)*bn+1:(j-1)*bn+tn) for (i, j) in cat.tile_ids]
     return compress_tiles!(DenseTiles(A, tiles, cat.p0s, cat.q0s, tm, tn), cat;
                            eps_sq, rel)
 end
@@ -180,50 +161,23 @@ end
     end
 end
 
-@inline _scatter_workgroupsize(backend) =
-    backend isa KernelAbstractions.CPU ? 1 : 128
-
-function _compression_diagnostics(ws::FTLRCompressionWorkspace)
-    qm, qn = cld(ws.key.m, ws.key.tile_size[1]), cld(ws.key.n, ws.key.tile_size[2])
-    rank_grid = Base.zeros(Int, qm, qn)
-    residual_grid = Base.zeros(Float64, qm, qn)
-    for cat in ws.cats
-        f = cat.factors
-        rk = f.ranks isa Vector ? f.ranks : Array(f.ranks)
-        err = f.errors_sq isa Vector ? f.errors_sq : Array(f.errors_sq)
-        @inbounds for (k, (i, j)) in enumerate(f.tile_ids)
-            rank_grid[i, j] = Int(rk[k])
-            residual_grid[i, j] = sqrt(max(Float64(real(err[k])), 0.0))
-        end
-    end
-    return rank_grid, residual_grid
-end
-
-function _factor_offsets_for_batch(C::CompressedFTLRMatrix,
-                                   f::LowRankFactorBatch, side::Symbol)
-    factors = side === :outer ? C.outer : C.inner
-    offsets = Vector{Int}(undef, length(f.tile_ids))
-    @inbounds for (k, (i, j)) in enumerate(f.tile_ids)
-        slot = tile_linear_index(factors.order, factors.qm, factors.qn, i, j)
-        offsets[k] = factors.offsets[slot]
-    end
-    return offsets
-end
-
-function _scatter_factor_batch!(C::CompressedFTLRMatrix,
-                                f::LowRankFactorBatch, side::Symbol)
-    isempty(f.tile_ids) && return C
+function _scatter_factor_batch!(C::CompressedFTLRMatrix, cat, side::Symbol)
+    isempty(cat.tile_ids) && return C
     backend = get_backend(C)
     factors = side === :outer ? C.outer : C.inner
-    source = side === :outer ? f.U : f.V
-    tile_axis = side === :outer ? first(f.tile_ids[1]) : last(f.tile_ids[1])
+    source = side === :outer ? cat.U : cat.V
+    tile_axis = side === :outer ? first(cat.tile_ids[1]) : last(cat.tile_ids[1])
     ld = factors.leading_dimensions[tile_axis]
-    offsets_host = _factor_offsets_for_batch(C, f, side)
+    offsets_host = Vector{Int}(undef, length(cat.tile_ids))
+    @inbounds for (k, (i, j)) in enumerate(cat.tile_ids)
+        slot = tile_linear_index(factors.order, factors.qm, factors.qn, i, j)
+        offsets_host[k] = factors.offsets[slot]
+    end
     offsets = copyto!(allocate(backend, Int, length(offsets_host)), offsets_host)
-    wg = _scatter_workgroupsize(backend)
+    wg = backend isa KernelAbstractions.CPU ? 1 : 128
     _scatter_lowrank_factor_kernel!(backend, wg)(
-        factors.data, source, offsets, f.ranks, ld;
-        ndrange=(wg * length(f.tile_ids),), workgroupsize=wg)
+        factors.data, source, offsets, cat.ranks, ld;
+        ndrange=(wg * length(cat.tile_ids),), workgroupsize=wg)
     return C
 end
 
@@ -231,9 +185,19 @@ function _finalize_compressed_ftlr(ws::FTLRCompressionWorkspace;
                                    rank_multiple::Integer=0,
                                    outer_order=TileRowMajor,
                                    inner_order=TileColMajor)
-    rank_grid, residual_grid = _compression_diagnostics(ws)
     key = ws.key
     backend = key.device
+    qm, qn = cld(key.m, key.tile_size[1]), cld(key.n, key.tile_size[2])
+    rank_grid = Base.zeros(Int, qm, qn)
+    residual_grid = Base.zeros(Float64, qm, qn)
+    for cat in ws.cats
+        rk = cat.ranks isa Vector ? cat.ranks : Array(cat.ranks)
+        err = cat.errors_sq isa Vector ? cat.errors_sq : Array(cat.errors_sq)
+        @inbounds for (k, (i, j)) in enumerate(cat.tile_ids)
+            rank_grid[i, j] = Int(rk[k])
+            residual_grid[i, j] = sqrt(max(Float64(real(err[k])), 0.0))
+        end
+    end
     C = CompressedFTLRMatrix(
         backend, key.T, key.m, key.n, key.tile_size, rank_grid;
         outer_order, inner_order, rank_multiple, rank_type=key.rank_type)
@@ -242,8 +206,8 @@ function _finalize_compressed_ftlr(ws::FTLRCompressionWorkspace;
         C.resid[slot] = residual_grid[i, j]
     end
     for cat in ws.cats
-        _scatter_factor_batch!(C, cat.factors, :outer)
-        _scatter_factor_batch!(C, cat.factors, :inner)
+        _scatter_factor_batch!(C, cat, :outer)
+        _scatter_factor_batch!(C, cat, :inner)
     end
     KernelAbstractions.synchronize(backend)
     return C

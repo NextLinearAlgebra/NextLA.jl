@@ -1,19 +1,3 @@
-function _validate_compressed_ftlr_layout(A, B)
-    nominal_tile_size(A, 2) == nominal_tile_size(B, 1) ||
-        throw(DimensionMismatch("CompressedFTLR contraction tile dimensions must match"))
-    compressed_ftlr_outer_order(B) isa TileRowMajor ||
-        throw(ArgumentError("CompressedFTLR Stage-1 fusion requires the logical B outer factors to be tile-row-major"))
-    (_compressed_ftlr_right_valid(A, B) || _compressed_ftlr_left_valid(A, B)) ||
-        throw(ArgumentError("CompressedFTLR needs a FoldRight A-U row stack or a FoldLeft B-Z column stack"))
-    _, qk = grid_size(A)
-    qk == grid_size(B)[1] || throw(DimensionMismatch("CompressedFTLR contraction grids do not match"))
-    @inbounds for k in 1:qk
-        length(_compressed_ftlr_axis_range(A, k, 2)) == length(_compressed_ftlr_axis_range(B, k, 1)) ||
-            throw(DimensionMismatch("CompressedFTLR contraction tile $k has incompatible tail extents"))
-    end
-    return nothing
-end
-
 function _validate_compressed_ftlr_gemm(C::AbstractMatrix, A, B, compute)
     T = eltype(A)
     (typeof(get_backend(A)) === typeof(get_backend(B)) &&
@@ -26,7 +10,20 @@ function _validate_compressed_ftlr_gemm(C::AbstractMatrix, A, B, compute)
         throw(ArgumentError("CompressedFTLR BF16 grouped GEMMEx requires an NVIDIA SM80 or newer device"))
     size(C) == (size(A, 1), size(B, 2)) ||
         throw(DimensionMismatch("C must be size(A,1) × size(B,2)"))
-    _validate_compressed_ftlr_layout(A, B)
+    nominal_tile_size(A, 2) == nominal_tile_size(B, 1) ||
+        throw(DimensionMismatch("CompressedFTLR contraction tile dimensions must match"))
+    compressed_ftlr_outer_order(B) isa TileRowMajor ||
+        throw(ArgumentError("CompressedFTLR Stage-1 fusion requires the logical B outer factors to be tile-row-major"))
+    (_compressed_ftlr_right_valid(A, B) || _compressed_ftlr_left_valid(A, B)) ||
+        throw(ArgumentError("CompressedFTLR needs a FoldRight A-U row stack or a FoldLeft B-Z column stack"))
+    _, qk = grid_size(A)
+    qk == grid_size(B)[1] || throw(DimensionMismatch(
+        "CompressedFTLR contraction grids do not match"))
+    @inbounds for k in 1:qk
+        length(_tile_axis_range(A, k, 2)) == length(_tile_axis_range(B, k, 1)) ||
+            throw(DimensionMismatch(
+                "CompressedFTLR contraction tile $k has incompatible tail extents"))
+    end
     validate_tlr_gemm_precision(get_backend(A), T, eltype(C), compute)
     validate_tlr_gemm_storage(A, compute; name="left operand")
     validate_tlr_gemm_storage(B, compute; name="right operand")

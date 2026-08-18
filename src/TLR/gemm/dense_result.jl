@@ -1,6 +1,5 @@
 # Dense-output GEMM for exact packed factors and dense-diagonal TLR operands.
 include("dense_result/workspace.jl")
-include("dense_result/dense_operand.jl")
 include("dense_result/runs.jl")
 include("dense_result/compressed_ftlr/metadata.jl")
 include("dense_result/compressed_ftlr/costs.jl")

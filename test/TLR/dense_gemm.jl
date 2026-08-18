@@ -81,9 +81,9 @@ end
     @test size(NextLA.dense_diag(Dt))[1:2] == reverse(size(NextLA.dense_diag(D))[1:2])
     @test size.(NextLA.get_factors(Dt, 2, 1)) ==
           reverse(size.(NextLA.get_factors(D, 1, 2)))
-    dref = NextLA.TLRmodule._diag_tile_ref(Dt, 1)
-    @test parent(NextLA.TLRmodule._dense_data(dref)) === D.D
-    @test NextLA.TLRmodule._dense_op(dref) == 'T'
+    dtile, op = NextLA.TLRmodule._diag_tile_ref(Dt, 1)
+    @test parent(dtile) === D.D
+    @test op == 'T'
 end
 
 @testset "dense-diagonal boundary transpose" begin

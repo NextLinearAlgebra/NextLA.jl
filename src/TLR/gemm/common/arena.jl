@@ -9,7 +9,7 @@ end
     (arena.cursor = firstindex(arena.storage); arena)
 @inline _arena_reset!(::Nothing) = nothing
 
-function _arena_array!(arena::GemmArena, ::Type{T}, dims::Int...) where {T}
+function _workspace_array!(arena::GemmArena, _, ::Type{T}, dims::Int...) where {T}
     T === eltype(arena.storage) || throw(ArgumentError(
         "workspace element type $(eltype(arena.storage)) does not match $T"))
     count = prod(dims)
@@ -23,6 +23,3 @@ end
 
 @inline _workspace_array!(::Nothing, backend, ::Type{T}, dims::Int...) where {T} =
     allocate(backend, T, dims...)
-@inline _workspace_array!(
-    arena::GemmArena, _, ::Type{T}, dims::Int...) where {T} =
-    _arena_array!(arena, T, dims...)

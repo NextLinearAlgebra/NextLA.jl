@@ -1,39 +1,4 @@
 """
-Fixed-width factors produced by ARA for one homogeneous tile-shape batch.
-
-`LowRankFactorBatch` is numerical staging, not a matrix representation.  Its
-`U`/`V` panels retain `maxrank` columns until every batch has discovered its
-logical ranks; finalization then scatters only the active columns into the two
-complementarily ordered packed factor vectors of a `CompressedFTLRMatrix`.
-"""
-struct LowRankFactorBatch{IDs,RI,U,V,R,E}
-    tile_shape::NTuple{2,Int}
-    tile_ids::IDs
-    rank_indices::RI
-    U::U
-    V::V
-    ranks::R
-    errors_sq::E
-end
-
-"""Reusable ARA scratch attached to one `LowRankFactorBatch`."""
-struct CompressCategoryWorkspace{F,ZT,TileVT,I32V,ARAT,QTileVT,OmegaT,
-                                 OmegaTileVT,YTileVT}
-    factors::F
-    S::Int
-    R_keep::Int
-    Z::ZT
-    V_tiles::TileVT
-    p0s::I32V
-    q0s::I32V
-    ara::ARAT
-    Q_tiles::QTileVT
-    omega::OmegaT
-    omega_tiles::OmegaTileVT
-    Y_tiles::YTileVT
-end
-
-"""
 Reusable dense-to-FTLR compression storage.
 
 There is one category per distinct logical tile shape. `diagonal=:compressed`
@@ -46,13 +11,10 @@ struct FTLRCompressionWorkspace{CatsT,StreamV,KeyT}
     key::KeyT
 end
 
-@inline compress_ara_block(S::Int) = max(min(32, S), 1)
-
 function _make_category_workspace(tile_shape::NTuple{2,Int}, tile_ids,
                                   rank_indices, U::AbstractArray{T,3}, V;
                                   rank_type::Type=Int32,
-                                  block::Int=compress_ara_block(
-                                      min(size(U, 2), tile_shape...)),
+                                  block::Int=max(min(32, size(U, 2), tile_shape...), 1),
                                   p0s=nothing, q0s=nothing) where {T}
     tm, tn = tile_shape
     kout = size(U, 2)
@@ -72,13 +34,14 @@ function _make_category_workspace(tile_shape::NTuple{2,Int}, tile_ids,
     pdev = p0s === nothing ? empty_i32 : p0s
     qdev = q0s === nothing ? empty_i32 : q0s
     Y = S == 0 ? zeros(backend, T, tm, 0, ntiles) : ara.Yblk
-    factors = LowRankFactorBatch(
+    return (
         tile_shape, tile_ids, rank_indices, U, V,
-        zeros(backend, rank_type, ntiles), zeros(backend, Float64, ntiles))
-    return CompressCategoryWorkspace(
-        factors, S, min(kout, S), Z, _batch_views(Z, S), pdev, qdev,
-        ara, _batch_views(Q, S), omega, _batch_views(omega, blk),
-        _batch_views(Y, blk))
+        ranks=zeros(backend, rank_type, ntiles),
+        errors_sq=zeros(backend, Float64, ntiles),
+        S, R_keep=min(kout, S), Z, V_tiles=_batch_views(Z, S),
+        p0s=pdev, q0s=qdev, ara, Q_tiles=_batch_views(Q, S), omega,
+        omega_tiles=_batch_views(omega, blk), Y_tiles=_batch_views(Y, blk),
+    )
 end
 
 function _compression_batch_specs(m::Int, n::Int,
@@ -108,7 +71,7 @@ function FTLRCompressionWorkspace(A::AbstractMatrix{T},
                                   maxrank::Int,
                                   diagonal::Symbol=:compressed,
                                   rank_type::Type{<:Integer}=Int32,
-                                  block::Int=compress_ara_block(maxrank)) where {T}
+                                  block::Int=max(min(32, maxrank), 1)) where {T}
     m, n = size(A)
     bm, bn = tile_size
     m > 0 && n > 0 && bm > 0 && bn > 0 && maxrank >= 0 || throw(ArgumentError(
@@ -156,20 +119,3 @@ function _validate_compression_workspace(ws::FTLRCompressionWorkspace,
         "diagonal policy, or rank type"))
     return ws
 end
-
-"""Standalone ARA workspace around caller-owned homogeneous factor panels."""
-function carve_tile_workspace(U::AbstractArray{T,3}, V,
-                              tm::Int, tn::Int, kout::Int, ntiles::Int;
-                              rank_type::Type=Int32,
-                              block::Int=compress_ara_block(
-                                  min(kout, tm, tn))) where {T}
-    size(U) == (tm, kout, ntiles) || throw(DimensionMismatch("invalid U shape"))
-    size(V) == (tn, kout, ntiles) || throw(DimensionMismatch("invalid V shape"))
-    ids = [(k, 1) for k in 1:ntiles]
-    return _make_category_workspace(
-        (tm, tn), ids, collect(1:ntiles), U, V; rank_type, block)
-end
-
-alloc_tile_workspace(U::AbstractArray{T,3}, V, tm::Int, tn::Int,
-                     kout::Int, ntiles::Int; kwargs...) where {T} =
-    carve_tile_workspace(U, V, tm, tn, kout, ntiles; kwargs...)

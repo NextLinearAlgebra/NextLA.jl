@@ -8,7 +8,7 @@
     last_slot = tile_linear_index(f.order, f.qm, f.qn, li, lj)
     first = f.offsets[first_slot]
     last = f.offsets[last_slot + 1] - 1
-    rows = length(_compressed_ftlr_axis_range(A, i, 1))
+    rows = length(_tile_axis_range(A, i, 1))
     rho == 0 && return reshape(view(f.data, 1:0), rows, 0)
     axis = f.dimension_axis === :row ? fi : fj
     packed = reshape(view(f.data, first:last), f.leading_dimensions[axis], rho)
@@ -33,7 +33,7 @@ column-restricted run keep Stage 1 fused rather than falling back to a gather.
     last_slot = tile_linear_index(f.order, f.qm, f.qn, li, lj)
     first = f.offsets[first_slot]
     last = f.offsets[last_slot + 1] - 1
-    rows = length(_compressed_ftlr_axis_range(B, k, 1))
+    rows = length(_tile_axis_range(B, k, 1))
     rho == 0 && return reshape(view(f.data, 1:0), rows, 0)
     axis = f.dimension_axis === :row ? fi : fj
     packed = reshape(view(f.data, first:last), f.leading_dimensions[axis], rho)
@@ -64,7 +64,7 @@ special-casing needed, matching the existing stacking helpers' behavior.
     last_slot = tile_linear_index(f.order, f.qm, f.qn, fi1, fk1)
     first = f.offsets[first_slot]
     last = f.offsets[last_slot + 1] - 1
-    rows = length(_compressed_ftlr_axis_range(A, k, 2))
+    rows = length(_tile_axis_range(A, k, 2))
     rho == 0 && return reshape(view(f.data, 1:0), rows, 0)
     axis = f.dimension_axis === :row ? fi0 : fk0
     packed = reshape(view(f.data, first:last), f.leading_dimensions[axis], rho)
@@ -81,7 +81,7 @@ end
     last_slot = tile_linear_index(f.order, f.qm, f.qn, li, lj)
     first = f.offsets[first_slot]
     last = f.offsets[last_slot + 1] - 1
-    rows = length(_compressed_ftlr_axis_range(B, j, 2))
+    rows = length(_tile_axis_range(B, j, 2))
     gamma == 0 && return reshape(view(f.data, 1:0), rows, 0)
     axis = f.dimension_axis === :row ? fi : fj
     packed = reshape(view(f.data, first:last), f.leading_dimensions[axis], gamma)
@@ -119,7 +119,7 @@ with no operand access at all.
         eachindex(rho_k))
 
 @inline _compressed_ftlr_foldleft_needs_zero(A, plan, irange, jrange) =
-    any(eachindex(plan.b_row_ranks)) do k
+    any(1:plan.qk) do k
         _compressed_ftlr_row_rank(plan, k, jrange) > 0 &&
             any(i -> _compressed_ftlr_storage_rank(A, i, k) == 0, irange)
     end
@@ -132,7 +132,7 @@ contribution starts within block `k`; `koff[k]` is that block's start offset in
 the run-local S arena. Identical for FoldRight and FoldLeft — Stage 1 computes
 the shared `S_ikj = V_ik'W_kj` regardless of which bracketing Stage 2/3 use.
 """
-function _compressed_ftlr_stage1_layout(A, irange, jrange, plan::CompressedFTLRRankPlan)
+function _compressed_ftlr_stage1_layout(A, irange, jrange, plan)
     _, qk = grid_size(A)
     nr = length(irange)
     rho_k = Base.zeros(Int, qk)
@@ -155,13 +155,13 @@ end
 the run's rows into a single `V`-stack (`_compressed_ftlr_run_v_stack`) cuts
 Stage-1 task count from `(run length)·qk` down to `qk`. The `W`-stack is
 likewise restricted to `jrange`, which stays zero-copy."""
-function _compressed_ftlr_stage1_tasks(A, B, irange, jrange, plan::CompressedFTLRRankPlan,
+function _compressed_ftlr_stage1_tasks(A, B, irange, jrange, plan,
                                        rho_k, koff, sdata)
     T = eltype(A)
     i0, i1 = first(irange), last(irange)
     j0, j1 = first(jrange), last(jrange)
     _, qk = grid_size(A)
-    s1 = nothing
+    s1 = GroupedGemmTask[]
     @inbounds for k in 1:qk
         rBsum = _compressed_ftlr_row_rank(plan, k, jrange)
         (rho_k[k] == 0 || rBsum == 0) && continue
@@ -169,15 +169,15 @@ function _compressed_ftlr_stage1_tasks(A, B, irange, jrange, plan::CompressedFTL
                                _compressed_ftlr_run_v_stack(A, i0, i1, k, rho_k[k]),
                                _compressed_ftlr_row_w_stack(B, k, j0, j1, rBsum), zero(T),
                                _ragged_view(sdata, koff[k], rho_k[k], rBsum))
-        if s1 === nothing; s1 = GroupedGemmTask[task]; else; push!(s1, task); end
+        push!(s1, task)
     end
-    return s1
+    return isempty(s1) ? nothing : s1
 end
 
 """`k`'s fused dense Stage-1 block, shaped `(rho_k × σ_k)`. Individual `S_ikj`
 are strided views into it: rows `row_off[ii,k] .+ (1:rA)`, columns
 `b_row_k_prefix[k,j] .+ (1:rB)`."""
-@inline _compressed_ftlr_sblock(sdata, koff, rho_k, plan::CompressedFTLRRankPlan, k, jrange) =
+@inline _compressed_ftlr_sblock(sdata, koff, rho_k, plan, k, jrange) =
     reshape(view(sdata, koff[k]:(koff[k + 1] - 1)),
             rho_k[k], _compressed_ftlr_row_rank(plan, k, jrange))
 
@@ -187,7 +187,7 @@ Execute one FoldRight CompressedFTLR row run: `T^R_ikj = S_ikj Z_kj'`, then
 left. `T` is packed `(i,j,k)`-order so each row is already the Stage-3
 `rho_i × (qn*bn)` stack, letting Stage 3 issue one wide GEMM per row.
 """
-function _build_compressed_ftlr_foldright_run(C, A, B, plan::CompressedFTLRRankPlan,
+function _build_compressed_ftlr_foldright_run(C, A, B, plan,
                                       irange, jrange, alpha, beta, arena)
     T = eltype(A)
     _, qk = grid_size(A)
@@ -214,7 +214,7 @@ function _build_compressed_ftlr_foldright_run(C, A, B, plan::CompressedFTLRRankP
     # No active tile pair can contribute to this run.
     if s_total == 0
         @inbounds for i in irange
-            push!(scale_targets, (_compressed_ftlr_axis_range(A, i, 1), output_cols))
+            push!(scale_targets, (_tile_axis_range(A, i, 1), output_cols))
         end
         return DenseResultRunTasks(
             nothing, nothing, nothing, 0, nothing, false, scale_targets)
@@ -232,7 +232,7 @@ function _build_compressed_ftlr_foldright_run(C, A, B, plan::CompressedFTLRRankP
     # depends on -- `tstack` on i, `Sblock` on (i,k) -- instead of being rebuilt
     # qk*qn and qn times respectively. Zero-rank i and (i,k) also skip whole
     # bands here rather than being rejected per innermost iteration.
-    s2 = nothing
+    s2 = GroupedGemmTask[]
     @inbounds for (ii, i) in enumerate(irange)
         rho = plan.a_k_prefix[i, end]
         rho == 0 && continue
@@ -247,23 +247,24 @@ function _build_compressed_ftlr_foldright_run(C, A, B, plan::CompressedFTLRRankP
                 rB = _compressed_ftlr_storage_rank(B, k, j)
                 rB == 0 && continue
                 scol = _compressed_ftlr_row_rank_offset(plan, k, j, jrange)
-                tcol = _compressed_ftlr_width_offset(plan, j, jrange)
+                tcol = plan.output_col_prefix[j] -
+                       plan.output_col_prefix[first(jrange)]
                 Sview = view(Sblock, Srows, (scol + 1):(scol + rB))
                 task = GroupedGemmTask('N', 'T', one(T),
                                        Sview,
                                        compressed_ftlr_storage_inner(B, k, j), zero(T),
                                        view(tstack, (rho_before_k + 1):(rho_before_k + rA),
                                             (tcol + 1):(tcol + plan.output_col_widths[j])))
-                if s2 === nothing; s2 = GroupedGemmTask[task]; else; push!(s2, task); end
+                push!(s2, task)
             end
         end
     end
 
     # Stage 3: one wide output GEMM per row, grouped across the run's rows.
-    s3 = nothing
+    s3 = GroupedGemmTask[]
     @inbounds for (ii, i) in enumerate(irange)
         rho = plan.a_k_prefix[i, end]
-        rows = _compressed_ftlr_axis_range(A, i, 1)
+        rows = _tile_axis_range(A, i, 1)
         if rho == 0
             push!(scale_targets, (rows, output_cols))
             continue
@@ -271,10 +272,10 @@ function _build_compressed_ftlr_foldright_run(C, A, B, plan::CompressedFTLRRankP
         task = GroupedGemmTask('N', 'N', alpha, _compressed_ftlr_row_outer_stack(A, i, rho),
                                _ragged_view(tdata, tbase[ii], rho, width), beta,
                                view(C, rows, output_cols))
-        if s3 === nothing; s3 = GroupedGemmTask[task]; else; push!(s3, task); end
+        push!(s3, task)
     end
     return DenseResultRunTasks(
-        s1, s2, s3, 3, tdata,
+        s1, isempty(s2) ? nothing : s2, isempty(s3) ? nothing : s3, 3, tdata,
         _compressed_ftlr_foldright_needs_zero(plan, rho_k, jrange), scale_targets)
 end
 
@@ -285,7 +286,7 @@ the right. For every output column `j`, the `T` arena stacks all rows in the
 run vertically into one `run_height × gamma_j` matrix, letting Stage 3 share
 `Z_j` across the run and issue one GEMM per `j` rather than one per `(i,j)`.
 """
-function _build_compressed_ftlr_foldleft_run(C, A, B, plan::CompressedFTLRRankPlan,
+function _build_compressed_ftlr_foldleft_run(C, A, B, plan,
                                      irange, jrange, alpha, beta, arena)
     T = eltype(A)
     _, qk = grid_size(A)
@@ -311,11 +312,11 @@ function _build_compressed_ftlr_foldleft_run(C, A, B, plan::CompressedFTLRRankPl
         tbase_cols[jj + 1] = tbase_cols[jj] + run_height * plan.b_col_ranks[j]
     end
     t_total = tbase_cols[end] - 1
-    output_rows = (first(_compressed_ftlr_axis_range(A, i0, 1)):
-                   last(_compressed_ftlr_axis_range(A, i1, 1)))
+    output_rows = (first(_tile_axis_range(A, i0, 1)):
+                   last(_tile_axis_range(A, i1, 1)))
     if s_total == 0
         @inbounds for i in irange
-            push!(scale_targets, (_compressed_ftlr_axis_range(A, i, 1),
+            push!(scale_targets, (_tile_axis_range(A, i, 1),
                                   _compressed_ftlr_output_cols(B, jrange)))
         end
         return DenseResultRunTasks(
@@ -330,7 +331,7 @@ function _build_compressed_ftlr_foldleft_run(C, A, B, plan::CompressedFTLRRankPl
 
     # Same nesting rationale as FoldRight's Stage 2: `Sblock` depends on (i,k)
     # and `Tj` on j, so neither is rebuilt in the innermost loop.
-    s2 = nothing
+    s2 = GroupedGemmTask[]
     @inbounds for (ii, i) in enumerate(irange)
         Trows = (run_row_prefix[ii] + 1):run_row_prefix[ii + 1]
         for k in 1:qk
@@ -350,15 +351,15 @@ function _build_compressed_ftlr_foldleft_run(C, A, B, plan::CompressedFTLRRankPl
                                        view(Tj, Trows,
                                             (plan.b_col_k_prefix[j, k] + 1):
                                                 (plan.b_col_k_prefix[j, k] + rB)))
-                if s2 === nothing; s2 = GroupedGemmTask[task]; else; push!(s2, task); end
+                push!(s2, task)
             end
         end
     end
 
-    s3 = nothing
+    s3 = GroupedGemmTask[]
     @inbounds for j in jrange
         gamma = plan.b_col_ranks[j]
-        output_cols = _compressed_ftlr_axis_range(B, j, 2)
+        output_cols = _tile_axis_range(B, j, 2)
         if gamma == 0
             push!(scale_targets, (output_rows, output_cols))
             continue
@@ -367,16 +368,16 @@ function _build_compressed_ftlr_foldleft_run(C, A, B, plan::CompressedFTLRRankPl
                                _ragged_view(tdata, tbase_cols[j - j0 + 1], run_height, gamma),
                                _compressed_ftlr_col_z_stack(B, j, gamma), beta,
                                view(C, output_rows, output_cols))
-        if s3 === nothing; s3 = GroupedGemmTask[task]; else; push!(s3, task); end
+        push!(s3, task)
     end
     return DenseResultRunTasks(
-        s1, s2, s3, 3, tdata,
+        s1, isempty(s2) ? nothing : s2, isempty(s3) ? nothing : s3, 3, tdata,
         _compressed_ftlr_foldleft_needs_zero(A, plan, irange, jrange), scale_targets)
 end
 
 """Dispatch a run to its fold's builder. `jrange` is the run's output tile
 column span -- `1:qn` reproduces whole-width behaviour exactly."""
-@inline function _build_compressed_ftlr_run(C, A, B, plan::CompressedFTLRRankPlan,
+@inline function _build_compressed_ftlr_run(C, A, B, plan,
                                             irange, jrange, fold, alpha, beta, arena)
     return fold === :right ?
         _build_compressed_ftlr_foldright_run(C, A, B, plan, irange, jrange, alpha, beta, arena) :

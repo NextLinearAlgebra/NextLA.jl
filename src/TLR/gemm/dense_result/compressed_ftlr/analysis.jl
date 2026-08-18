@@ -93,8 +93,9 @@ function analyze_compressed_gemm(
     return analysis
 end
 
-function _validate_compressed_gemm_analysis(
-    analysis::CompressedGemmAnalysis, C, A, B, workspace, transA, transB, mode)
+function _execute_compressed_gemm_analysis!(
+    analysis::CompressedGemmAnalysis, C, A, B, workspace,
+    alpha, beta, transA, transB, mode)
     _validate_dense_result_analysis_binding(
         analysis, C, A, B, workspace, transA, transB, mode)
     # Same-eltype `==` compares element-wise without materialising a temporary.
@@ -102,14 +103,6 @@ function _validate_compressed_gemm_analysis(
         throw(ArgumentError("left operand exact ranks changed after symbolic analysis"))
     ranks(B) == analysis.B_ranks ||
         throw(ArgumentError("right operand exact ranks changed after symbolic analysis"))
-    return nothing
-end
-
-function _execute_compressed_gemm_analysis!(
-    analysis::CompressedGemmAnalysis, C, A, B, workspace,
-    alpha, beta, transA, transB, mode)
-    _validate_compressed_gemm_analysis(
-        analysis, C, A, B, workspace, transA, transB, mode)
     backend = get_backend(analysis.logical_A)
     return _execute_prepared_dense_result_runs!(
         analysis.runs, C, backend, eltype(A), alpha, beta,

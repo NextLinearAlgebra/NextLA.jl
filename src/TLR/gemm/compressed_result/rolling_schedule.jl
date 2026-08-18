@@ -1,34 +1,3 @@
-mutable struct TLRGemmScheduleStats
-    active_counts::Vector{Int}
-    pending_counts::Vector{Int}
-    retirement_waves::Vector{Int}
-    admissions::Int
-    passes::Int
-    padded_projection_columns::Int
-    discarded_terminal_columns::Int
-    sampling_ns::Int
-    orthogonalization_ns::Int
-    finalization_ns::Int
-    admission_ns::Int
-end
-
-TLRGemmScheduleStats() = TLRGemmScheduleStats(
-    Int[], Int[], Int[], 0, 0, 0, 0, 0, 0, 0, 0)
-
-@inline function _stats_sync(stats, x)
-    stats === nothing || KernelAbstractions.synchronize(get_backend(x))
-end
-
-@inline function _record_pass!(stats, nactive, pending, info)
-    stats === nothing && return
-    push!(stats.active_counts, nactive)
-    push!(stats.pending_counts, pending)
-    stats.passes += 1
-    stats.padded_projection_columns +=
-        sum(max(info.projection_width - p, 0) for p in info.progress_before)
-    stats.discarded_terminal_columns += info.discarded
-end
-
 function _retirement_outputs(ws_owner, count::Int)
     U = view(ws_owner.U, :, :, 1:count)
     V = view(ws_owner.V, :, :, 1:count)
@@ -151,8 +120,7 @@ end
 
 function _rolling_lane_loop!(Cout, run, ara_ws, allmembers::AbstractVector{Int},
                              fixed::Int, ops, arena, ws_owner;
-                             beta, eps_rel, r_required, tol, rel, compute,
-                             stats=nothing)
+                             beta, eps_rel, r_required, tol, rel, compute)
     cap = ws_owner.key.capacity
     member_ids = ws_owner.member_ids
     progress = ws_owner.progress
@@ -161,24 +129,11 @@ function _rolling_lane_loop!(Cout, run, ara_ws, allmembers::AbstractVector{Int},
     fill!(progress, 0)
     pending = initial + 1
     nactive = initial
-    stats === nothing || (stats.admissions += initial)
     ara_reset!(ara_ws.state, ara_ws.block, size(ara_ws.Q, 2))
     copyto!(ara_ws.state.samples_host, ara_ws.state.samples)
     fill!(ara_ws.Q, zero(eltype(ara_ws.Q)))
 
-    raw_sampler = (Y, width, _) -> apply_run!(Y, run, width, nactive; beta, compute)
-    sampler = if stats === nothing
-        raw_sampler
-    else
-        function (Y, width, ids)
-            _stats_sync(stats, Y)
-            ts = time_ns()
-            raw_sampler(Y, width, ids)
-            _stats_sync(stats, Y)
-            stats.sampling_ns += time_ns() - ts
-            return Y
-        end
-    end
+    sampler = (Y, width, _) -> apply_run!(Y, run, width, nactive; beta, compute)
     swapper = (p, q) -> _swap_run_members!(run, p, q)
 
     while nactive > 0 || pending <= length(allmembers)
@@ -195,45 +150,26 @@ function _rolling_lane_loop!(Cout, run, ara_ws, allmembers::AbstractVector{Int},
             fill!(view(progress, slots), 0)
             pending += nnew
             nactive = nnew
-            stats === nothing || (stats.admissions += nnew)
             ara_ws = rebind_ara_phase(ara_ws, arena)
             rebind_sampling_scratch!(run, arena)
         end
 
-        progress_before = copy(view(progress, 1:nactive))
-        active_before = nactive
-        _stats_sync(stats, ara_ws.Q)
-        t0 = time_ns()
-        sampling_before = stats === nothing ? 0 : stats.sampling_ns
         info = ara_packed_pass!(
             ara_ws, sampler, nactive, member_ids, progress;
             eps_rel, r_required, compute, swap_member! = swapper)
-        _stats_sync(stats, ara_ws.Q)
-        stats === nothing || (stats.orthogonalization_ns +=
-            time_ns() - t0 - (stats.sampling_ns - sampling_before))
         nactive = info.nactive
-        pending_count = max(length(allmembers) - pending + 1, 0)
-        _record_pass!(stats, active_before, pending_count,
-                      (; info..., progress_before))
         retired = info.retired
         isempty(retired) && continue
-        stats === nothing || push!(stats.retirement_waves, length(retired))
 
-        _stats_sync(stats, ara_ws.Q)
-        t0 = time_ns()
         _finalize_wave!(
             Cout, run, ara_ws, retired, member_ids, progress, fixed,
             arena, ws_owner; beta, tol, rel, compute)
-        _stats_sync(stats, ara_ws.Q)
-        stats === nothing || (stats.finalization_ns += time_ns() - t0)
 
         nnew = min(cap - nactive, max(length(allmembers) - pending + 1, 0))
         if nnew > 0
             slots = (nactive + 1):(nactive + nnew)
             ids = view(member_ids, slots)
             copyto!(ids, view(allmembers, pending:(pending + nnew - 1)))
-            _stats_sync(stats, ara_ws.Q)
-            t0 = time_ns()
             _arena_reset_phase!(arena)
             admit_wave!(
                 run, ops, ids, slots, fixed, arena;
@@ -242,16 +178,11 @@ function _rolling_lane_loop!(Cout, run, ara_ws, allmembers::AbstractVector{Int},
             fill!(view(progress, slots), 0)
             pending += nnew
             nactive += nnew
-            stats === nothing || begin
-                _stats_sync(stats, ara_ws.Q)
-                stats.admissions += nnew
-                stats.admission_ns += time_ns() - t0
-            end
         end
         if nactive > 0
             ara_ws = rebind_ara_phase(ara_ws, arena)
             rebind_sampling_scratch!(run, arena)
         end
     end
-    return stats
+    return Cout
 end

@@ -56,12 +56,10 @@ end
 @inline _run_thi_arena(::Nothing) = nothing
 @inline _run_thi_arena(arena::ARARunArena) = arena.phase_thi
 
-@inline _numerical_bytes(A::AbstractArray) = length(A) * sizeof(eltype(A))
-
 Base.sizeof(arena::ARARunArena) =
-    _numerical_bytes(arena.persistent_t.storage) +
-    _numerical_bytes(arena.phase_t.storage) +
-    _numerical_bytes(arena.phase_thi.storage)
+    sizeof(arena.persistent_t.storage) +
+    sizeof(arena.phase_t.storage) +
+    sizeof(arena.phase_thi.storage)
 
 """
     TLRGemmWorkspace
@@ -71,12 +69,10 @@ dense-output workspace, execution is currently single-stream; the object owns
 one phase-reusing `ARARunArena` plus the traversal output, diagnostic, and
 scatter buffers that would otherwise be allocated once per `gemm!` call.
 """
-struct TLRGemmWorkspace{A,U,V,R,E,RS,ES,I,RD,ED,AS,M,P,O,IH,K}
+struct TLRGemmWorkspace{A,U,V,RS,ES,I,RD,ED,AS,M,P,O,IH,K}
     arena::A
     U::U
     V::V
-    ranks::R
-    errors::E
     ranks_slot::RS
     errors_slot::ES
     indices::I
@@ -92,13 +88,11 @@ struct TLRGemmWorkspace{A,U,V,R,E,RS,ES,I,RD,ED,AS,M,P,O,IH,K}
 end
 
 function Base.sizeof(ws::TLRGemmWorkspace)
-    return sizeof(ws.arena) + _numerical_bytes(ws.U) + _numerical_bytes(ws.V) +
-           _numerical_bytes(ws.ranks) + _numerical_bytes(ws.errors) +
-           _numerical_bytes(ws.ranks_slot) + _numerical_bytes(ws.errors_slot) +
-           _numerical_bytes(ws.indices) + _numerical_bytes(ws.ranks_global) +
-           _numerical_bytes(ws.errors_global) +
-           _numerical_bytes(ws.ara_state.dR) +
-           sum(_numerical_bytes, (
+    return sizeof(ws.arena) + sizeof(ws.U) + sizeof(ws.V) +
+           sizeof(ws.ranks_slot) + sizeof(ws.errors_slot) +
+           sizeof(ws.indices) + sizeof(ws.ranks_global) +
+           sizeof(ws.errors_global) + sizeof(ws.ara_state.dR) +
+           sum(sizeof, (
                ws.ara_state.status, ws.ara_state.kcut,
                ws.ara_state.samples, ws.ara_state.ranks,
                ws.ara_state.svec, ws.ara_state.jcount,
@@ -106,22 +100,17 @@ function Base.sizeof(ws::TLRGemmWorkspace)
            ))
 end
 
-function TLRGemmWorkspace(C::CompressedFTLRMatrix{BackendT,T},
-                          A::CompressedFTLRMatrix{BackendT,T},
-                          B::CompressedFTLRMatrix{BackendT,T};
-                          bytes=nothing,
-                          transA::Char='N', transB::Char='N',
-                          block::Int=32) where {BackendT,T}
-    spec = _tlr_gemm_workspace_spec(C, A, B; transA, transB, block)
+function TLRGemmWorkspace(C::CompressedFTLRMatrix{BackendT,T}, spec;
+                          bytes=nothing) where {BackendT,T}
     requested = bytes === nothing ?
-        _tlr_gemm_workspace_bytes(spec, spec.nmember) : Int(bytes)
+        _tlr_gemm_workspace_bytes(spec, spec.key.nmember) : Int(bytes)
     requested >= _tlr_gemm_workspace_bytes(spec, 1) || throw(ArgumentError(
         "workspace has $requested bytes; at least " *
         "$(_tlr_gemm_workspace_bytes(spec, 1)) bytes are required"))
     capacity = _tlr_workspace_capacity(spec, requested)
     backend = get_backend(C)
     ab = ara_run_workspace_bytes(
-        spec.family, spec.key.rA, spec.key.rB, spec.key.qk, capacity,
+        spec.key.family, spec.key.rA, spec.key.rB, spec.key.qk, capacity,
         spec.key.block, spec.key.maxrank, spec.key.bm, spec.key.bn,
         T, spec.Thi)
     arena = ARARunArena(
@@ -149,8 +138,6 @@ function TLRGemmWorkspace(C::CompressedFTLRMatrix{BackendT,T},
         allocate(backend, T, opkey.bn, opkey.maxrank, n),
         allocate(backend, opkey.rankT, n),
         allocate(backend, Float64, n),
-        allocate(backend, opkey.rankT, n),
-        allocate(backend, Float64, n),
         allocate(backend, Int32, n),
         allocate(backend, opkey.rankT, opkey.qm * opkey.qn),
         allocate(backend, Float64, opkey.qm * opkey.qn),
@@ -164,43 +151,17 @@ function TLRGemmWorkspace(C::CompressedFTLRMatrix{BackendT,T},
     )
 end
 
-"""
-    tlr_gemm_minimum_workspace_bytes(C, A, B; transA='N', transB='N', block=32)
-
-Smallest numerical workspace for canonical TLR-output GEMM: fixed global
-diagnostics plus one rolling-scheduler slot.
-"""
-function tlr_gemm_minimum_workspace_bytes(
-        C::CompressedFTLRMatrix, A::CompressedFTLRMatrix, B::CompressedFTLRMatrix;
-        transA::Char='N', transB::Char='N', block::Int=32)
-    spec = _tlr_gemm_workspace_spec(C, A, B; transA, transB, block)
-    return _tlr_gemm_workspace_bytes(spec, 1)
-end
-
-"""
-    tlr_gemm_maximum_workspace_bytes(C, A, B; transA='N', transB='N', block=32)
-
-Smallest numerical workspace that admits the widest complete fixed-axis lane.
-Additional bytes cannot increase rolling-scheduler capacity.
-"""
-function tlr_gemm_maximum_workspace_bytes(
-        C::CompressedFTLRMatrix, A::CompressedFTLRMatrix, B::CompressedFTLRMatrix;
-        transA::Char='N', transB::Char='N', block::Int=32)
-    spec = _tlr_gemm_workspace_spec(C, A, B; transA, transB, block)
-    return _tlr_gemm_workspace_bytes(spec, spec.nmember)
-end
-
 function _tlr_gemm_workspace_bytes(spec, capacity::Int)
-    1 <= capacity <= spec.nmember ||
-        throw(ArgumentError("slot capacity must be in 1:$(spec.nmember)"))
+    1 <= capacity <= spec.key.nmember ||
+        throw(ArgumentError("slot capacity must be in 1:$(spec.key.nmember)"))
     k = spec.key
     ab = ara_run_workspace_bytes(
-        spec.family, k.rA, k.rB, k.qk, capacity, k.block,
+        k.family, k.rA, k.rB, k.qk, capacity, k.block,
         k.maxrank, k.bm, k.bn, k.T, spec.Thi)
     arena = ab.persistent_t_bytes + ab.phase_t_bytes + ab.phase_thi_bytes
     traversal_t = (k.bm + k.bn) * k.maxrank * capacity * sizeof(k.T)
-    diagnostics = 2 * capacity * sizeof(k.rankT) +
-                  2 * capacity * sizeof(Float64) +
+    diagnostics = capacity * sizeof(k.rankT) +
+                  capacity * sizeof(Float64) +
                   capacity * sizeof(Int32) +
                   k.qm * k.qn * (sizeof(k.rankT) + sizeof(Float64))
     ara_state = k.block * capacity * sizeof(Float64) +
@@ -210,7 +171,7 @@ function _tlr_gemm_workspace_bytes(spec, capacity::Int)
 end
 
 function _tlr_workspace_capacity(spec, bytes::Int)
-    lo, hi = 1, spec.nmember
+    lo, hi = 1, spec.key.nmember
     while lo < hi
         mid = (lo + hi + 1) >>> 1
         if _tlr_gemm_workspace_bytes(spec, mid) <= bytes

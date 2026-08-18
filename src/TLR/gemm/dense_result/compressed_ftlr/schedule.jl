@@ -1,22 +1,3 @@
-"""Host-only rank metadata plus the fold-cost profile derived from it, for one
-CompressedFTLR GEMM. See `metadata.jl` for the pure rank facts and `costs.jl`
-for how they turn into FoldRight/FoldLeft costs."""
-struct CompressedFTLRRankPlan
-    a_k_prefix::Matrix{Int}      # (logical i, prefix through logical k)
-    b_row_ranks::Vector{Int}     # σ_k = Σ_j rB_kj
-    b_col_ranks::Vector{Int}     # γ_j = Σ_k rB_kj
-    b_col_k_prefix::Matrix{Int}  # (logical j, prefix through logical k)
-    b_row_k_prefix::Matrix{Int} # (logical k, prefix through logical j): Σ_{j'<j} rB_kj'
-    b_col_prefix::Vector{Int}    # prefix of γ_j across logical j
-    b_row_nonzero_prefix::Matrix{Int} # (logical k, prefix through j): #{j' < j : rB_kj' != 0}
-    pair_ranks::Vector{Int}      # p_i = Σ_k rA_ik σ_k
-    b_total_rank::Int
-    output_row_heights::Vector{Int}
-    output_col_widths::Vector{Int}
-    output_col_prefix::Vector{Int}
-    profile::RaggedWorkspaceProfile
-end
-
 """One scheduled work unit: output tile rows `rows` × tile columns `cols`,
 executed with a single `fold`. `cols` spanning the whole grid is the
 whole-width case; a narrower span subdivides below one output row, which is
@@ -24,11 +5,7 @@ what lets the workspace budget be met at a granularity finer than a full row."""
 function _compressed_ftlr_rank_plan(A, B)
     meta = _compressed_ftlr_rank_metadata(A, B)
     profile = _compressed_ftlr_fold_cost(meta, A, B)
-    return CompressedFTLRRankPlan(meta.a_k_prefix, meta.b_row_ranks, meta.b_col_ranks,
-                        meta.b_col_k_prefix, meta.b_row_k_prefix, meta.b_col_prefix,
-                        meta.b_row_nonzero_prefix, meta.pair_ranks, meta.b_total_rank,
-                        meta.output_row_heights, meta.output_col_widths, meta.output_col_prefix,
-                        profile)
+    return (; meta..., profile)
 end
 
 """Smallest workspace in which this GEMM can run at all.
@@ -95,14 +72,14 @@ function gemm_workspace_bytes(A::CompressedFTLRMatrix, B::CompressedFTLRMatrix;
 end
 
 """Contiguous output-row runs greedily packed under an exact ragged budget."""
-function _compressed_ftlr_row_runs(profile::RaggedWorkspaceProfile, budget::Int)
+function _compressed_ftlr_row_runs(profile, budget::Int)
     budget >= profile.minimum || throw(ArgumentError(
         "workspace has $budget bytes; at least $(profile.minimum) bytes are required"))
     runs = DenseResultRun[]
     i = 1
-    while i <= length(profile.row_bytes)
+    while i <= profile.nrows
         j = i - 1
-        while j < length(profile.row_bytes) && _compressed_ftlr_select_fold(profile, i:(j + 1), budget) !== nothing
+        while j < profile.nrows && _compressed_ftlr_select_fold(profile, i:(j + 1), budget) !== nothing
             j += 1
         end
         # A zero-work row is allowed even for a zero byte budget.
@@ -115,7 +92,7 @@ function _compressed_ftlr_row_runs(profile::RaggedWorkspaceProfile, budget::Int)
     return runs
 end
 
-function _compressed_ftlr_select_fold(profile::RaggedWorkspaceProfile, rows::UnitRange{Int}, budget::Int)
+function _compressed_ftlr_select_fold(profile, rows::UnitRange{Int}, budget::Int)
     right_bytes = profile.right_byte_prefix === nothing ? typemax(Int) :
         _compressed_ftlr_range_total(profile.right_byte_prefix, rows)
     left_bytes = profile.left_byte_prefix === nothing ? typemax(Int) :
@@ -176,7 +153,7 @@ Each block is scheduled independently by the row-run scheduler and the blocks
 execute sequentially, resetting the arena between runs -- so peak workspace stays
 the maximum over runs rather than their sum.
 """
-function _compressed_ftlr_column_schedule(meta, A, B, profile::RaggedWorkspaceProfile,
+function _compressed_ftlr_column_schedule(meta, A, B, profile,
                                           budget::Int)
     # Fast path: full width fits, so behave exactly as the whole-width scheduler.
     profile.minimum <= budget && return _compressed_ftlr_row_runs(profile, budget)
@@ -207,7 +184,7 @@ function _compressed_ftlr_column_floor(meta, A, B)
     return floor_bytes
 end
 
-function _prepare_compressed_ftlr_workspace(A, B, plan::CompressedFTLRRankPlan, workspace)
+function _prepare_compressed_ftlr_workspace(A, B, plan, workspace)
     profile = plan.profile
     T = eltype(A)
     ws = if workspace isa Integer

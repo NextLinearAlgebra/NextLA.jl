@@ -6,6 +6,9 @@ Both use the same `DenseResultRun`, `DenseResultRunTasks`, prepared-run lifecycl
 and terminal-stage executor as compressed × compressed.
 """
 
+@inline _dense_block(A::AbstractMatrix, rows, cols) = (view(A, rows, cols), 'N')
+@inline _dense_block(A::Transpose, rows, cols) = (view(parent(A), cols, rows), 'T')
+
 mutable struct CompressedMixedGemmAnalysis{CT,AT,BT,WT,ModeT,PlanT,RT}
     C::CT
     A::AT
@@ -24,12 +27,6 @@ mutable struct CompressedMixedGemmAnalysis{CT,AT,BT,WT,ModeT,PlanT,RT}
     closed::Bool
 end
 
-@inline function _grouped_tasks_push(tasks, task)
-    tasks === nothing && return GroupedGemmTask[task]
-    push!(tasks, task)
-    return tasks
-end
-
 @inline function _validate_two_stage_grouped_precision(A)
     eltype(A) === Core.BFloat16 &&
         !supports_bfloat16_grouped_gemm(get_backend(A)) &&
@@ -42,7 +39,7 @@ end
 # floor retain the API contract through a compressed-only tilewise fallback.
 function _compressed_dense_gemm_sequential!(
     C, A::AbstractTLRMatrix{T},
-    B::LogicalDenseOperand, alpha, beta, budget::Int,
+    B::AbstractMatrix, alpha, beta, budget::Int,
     compute, arena=nothing) where {T}
     _scale_output!(C, beta)
     r = maxrank(A)
@@ -71,7 +68,7 @@ function _compressed_dense_gemm_sequential!(
 end
 
 function _dense_compressed_gemm_sequential!(
-    C, A::LogicalDenseOperand,
+    C, A::AbstractMatrix,
     B::AbstractTLRMatrix{T},
     alpha, beta, budget::Int, compute, arena=nothing) where {T}
     _scale_output!(C, beta)
@@ -100,15 +97,6 @@ function _dense_compressed_gemm_sequential!(
     return C
 end
 
-"""Rank stacks and fixed fold for a two-stage compressed product."""
-struct TwoStageCompressedPlan
-    prefix::Matrix{Int}
-    totals::Vector{Int}
-    bases::Vector{Int}
-    total_rank::Int
-    fold::Symbol
-end
-
 function _two_stage_rank_plan(A, fold::Symbol)
     fold in (:left, :right) || throw(ArgumentError(
         "two-stage compressed fold must be :left or :right"))
@@ -123,11 +111,8 @@ function _two_stage_rank_plan(A, fold::Symbol)
     end
     totals = [prefix[output, end] for output in 1:outputs]
     bases = _compressed_ftlr_prefix(totals)
-    return TwoStageCompressedPlan(prefix, totals, bases, bases[end], fold)
+    return (; prefix, totals, bases, total_rank=bases[end], fold)
 end
-
-@inline _two_stage_workspace_floor(plan::TwoStageCompressedPlan, ::Type{T}) where {T} =
-    plan.total_rank * sizeof(T)
 
 """Largest aligned dense-row run admitted by a FoldLeft workspace."""
 @inline function _dense_compressed_row_run_height(
@@ -141,13 +126,13 @@ end
     return fld(height, alignment_rows) * alignment_rows
 end
 
-function _two_stage_schedule(C, plan::TwoStageCompressedPlan, budget::Int, ::Type{T}) where {T}
+function _two_stage_schedule(C, plan, budget::Int, ::Type{T}) where {T}
     plan.total_rank == 0 && return DenseResultRun[
         DenseResultRun(1:size(C, 1), 1:size(C, 2), plan.fold)]
     budget_elements = fld(budget, sizeof(T))
     budget_elements >= plan.total_rank || throw(ArgumentError(
         "two-stage compressed analysis requires at least " *
-        "$(_two_stage_workspace_floor(plan, T)) workspace bytes for one fused run"))
+        "$(plan.total_rank * sizeof(T)) workspace bytes for one fused run"))
     if plan.fold === :left
         height = _dense_compressed_row_run_height(
             budget_elements, plan.total_rank, size(C, 1), T)
@@ -163,8 +148,8 @@ function _build_dense_compressed_run(C, A, B, plan, run, work)
     rows = run.rows
     h = length(rows)
     qk, _ = grid_size(B)
-    stage1 = nothing
-    stage2 = nothing
+    stage1 = GroupedGemmTask[]
+    stage2 = GroupedGemmTask[]
     scales = Tuple{UnitRange{Int},UnitRange{Int}}[]
     T = eltype(B)
     @inbounds for j in run.cols
@@ -182,24 +167,25 @@ function _build_dense_compressed_run(C, A, B, plan, run, work)
             inner = _tile_axis_range(B, k, 1)
             Ad, opA = _dense_block(A, rows, inner)
             Tk = view(Tj, :, (plan.prefix[j, k] + 1):plan.prefix[j, k + 1])
-            stage1 = _grouped_tasks_push(stage1, GroupedGemmTask(
+            push!(stage1, GroupedGemmTask(
                 opA, 'N', one(T), Ad,
                 compressed_ftlr_storage_outer(B, k, j), zero(T), Tk))
         end
-        stage2 = _grouped_tasks_push(stage2, GroupedGemmTask(
+        push!(stage2, GroupedGemmTask(
             'N', 'T', one(T), Tj,
             _compressed_ftlr_col_z_stack(B, j, gamma), zero(T), Cview))
     end
     return DenseResultRunTasks(
-        stage1, stage2, nothing, 2, work, false, scales)
+        isempty(stage1) ? nothing : stage1, isempty(stage2) ? nothing : stage2,
+        nothing, 2, work, false, scales)
 end
 
 function _build_compressed_dense_run(C, A, B, plan, run, work)
     cols = run.cols
     w = length(cols)
     _, qk = grid_size(A)
-    stage1 = nothing
-    stage2 = nothing
+    stage1 = GroupedGemmTask[]
+    stage2 = GroupedGemmTask[]
     scales = Tuple{UnitRange{Int},UnitRange{Int}}[]
     T = eltype(A)
     @inbounds for i in run.rows
@@ -217,16 +203,17 @@ function _build_compressed_dense_run(C, A, B, plan, run, work)
             inner = _tile_axis_range(A, k, 2)
             Bd, opB = _dense_block(B, inner, cols)
             Tk = view(Ti, (plan.prefix[i, k] + 1):plan.prefix[i, k + 1], :)
-            stage1 = _grouped_tasks_push(stage1, GroupedGemmTask(
+            push!(stage1, GroupedGemmTask(
                 'T', opB, one(T),
                 compressed_ftlr_storage_inner(A, i, k), Bd, zero(T), Tk))
         end
-        stage2 = _grouped_tasks_push(stage2, GroupedGemmTask(
+        push!(stage2, GroupedGemmTask(
             'N', 'N', one(T),
             _compressed_ftlr_row_outer_stack(A, i, rho), Ti, zero(T), Cview))
     end
     return DenseResultRunTasks(
-        stage1, stage2, nothing, 2, work, false, scales)
+        isempty(stage1) ? nothing : stage1, isempty(stage2) ? nothing : stage2,
+        nothing, 2, work, false, scales)
 end
 
 function _prepare_two_stage_runs(C, A, B, compressed, plan, budget, mode, arena)
@@ -285,7 +272,7 @@ function analyze_compressed_gemm(
 ) where {BackendT,T}
     workspace isa DenseGemmWorkspace || throw(ArgumentError(
         "symbolic two-stage GEMM analysis requires a reusable DenseGemmWorkspace"))
-    LA = logical_dense_operand(A, transA)
+    LA = transA == 'T' ? transpose(A) : A
     LB = transB == 'T' ? transpose(B) : B
     size(LA, 2) == size(LB, 1) || throw(DimensionMismatch("inner dimensions must match"))
     size(C) == (size(LA, 1), size(LB, 2)) ||
@@ -310,7 +297,7 @@ function analyze_compressed_gemm(
     workspace isa DenseGemmWorkspace || throw(ArgumentError(
         "symbolic two-stage GEMM analysis requires a reusable DenseGemmWorkspace"))
     LA = transA == 'T' ? transpose(A) : A
-    LB = logical_dense_operand(B, transB)
+    LB = transB == 'T' ? transpose(B) : B
     size(LA, 2) == size(LB, 1) || throw(DimensionMismatch("inner dimensions must match"))
     size(C) == (size(LA, 1), size(LB, 2)) ||
         throw(DimensionMismatch("C has the wrong dimensions"))

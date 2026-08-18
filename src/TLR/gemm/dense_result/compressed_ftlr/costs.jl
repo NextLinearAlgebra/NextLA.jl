@@ -1,20 +1,3 @@
-"""Exact numerical workspace requirements and FLOP costs for a CompressedFTLR
-FoldRight/FoldLeft row run."""
-struct RaggedWorkspaceProfile
-    columns::UnitRange{Int}   # output tile columns these costs were computed for
-    row_bytes::Vector{Int}
-    right_row_bytes::Union{Nothing,Vector{Int}}
-    left_row_bytes::Union{Nothing,Vector{Int}}
-    right_flops::Union{Nothing,Vector{Int}}
-    left_flops::Union{Nothing,Vector{Int}}
-    right_byte_prefix::Union{Nothing,Vector{Int}}
-    left_byte_prefix::Union{Nothing,Vector{Int}}
-    right_flop_prefix::Union{Nothing,Vector{Int}}
-    left_flop_prefix::Union{Nothing,Vector{Int}}
-    minimum::Int
-    maximum::Int
-end
-
 """
     _compressed_ftlr_fold_cost(meta, A, B)
 
@@ -44,10 +27,11 @@ ordinary prefix sums over any row range, always matches what the executor
 function _compressed_ftlr_fold_cost(meta, A, B,
                                     jrange::UnitRange{Int}=1:length(meta.output_col_widths))
     qm = length(meta.pair_ranks)
-    qk = length(meta.b_row_ranks)
+    qk = meta.qk
     Tbytes = sizeof(eltype(A))
     width = _compressed_ftlr_width(meta, jrange)
-    total_rank = _compressed_ftlr_total_rank(meta, jrange)
+    total_rank = meta.b_col_prefix[last(jrange) + 1] -
+                 meta.b_col_prefix[first(jrange)]
 
     # `pair_ranks` is stored over the whole grid; restricted to `jrange` it is
     # Σ_k rA_ik·σ_k(jrange). Recomputing costs O(qm·qk), the same order as the
@@ -94,12 +78,12 @@ function _compressed_ftlr_fold_cost(meta, A, B,
 
     maximum_bytes = min(right === nothing ? typemax(Int) : sum(right),
                         left === nothing ? typemax(Int) : sum(left))
-    return RaggedWorkspaceProfile(
-        jrange, row_bytes, right, left, right_flops, left_flops,
-        right === nothing ? nothing : _compressed_ftlr_prefix(right),
-        left === nothing ? nothing : _compressed_ftlr_prefix(left),
-        right_flops === nothing ? nothing : _compressed_ftlr_prefix(right_flops),
-        left_flops === nothing ? nothing : _compressed_ftlr_prefix(left_flops),
-        isempty(row_bytes) ? 0 : maximum(row_bytes), maximum_bytes,
+    return (
+        columns=jrange, nrows=qm,
+        right_byte_prefix=right === nothing ? nothing : _compressed_ftlr_prefix(right),
+        left_byte_prefix=left === nothing ? nothing : _compressed_ftlr_prefix(left),
+        right_flop_prefix=right_flops === nothing ? nothing : _compressed_ftlr_prefix(right_flops),
+        left_flop_prefix=left_flops === nothing ? nothing : _compressed_ftlr_prefix(left_flops),
+        minimum=isempty(row_bytes) ? 0 : maximum(row_bytes), maximum=maximum_bytes,
     )
 end

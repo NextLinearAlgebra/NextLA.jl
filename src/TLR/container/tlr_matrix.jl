@@ -57,7 +57,13 @@ end
 @inline get_factors(A::TransposeTLRMatrix{<:Any,<:TLRMatrix}, i::Int, j::Int) =
     get_factors(offdiagonal(A), i, j)
 
-function _validate_zero_compressed_diagonal(offdiag::CompressedFTLRMatrix)
+"""
+    TLRMatrix(offdiag::CompressedFTLRMatrix)
+
+Wrap finalized full-grid compressed off-diagonal storage and allocate a
+separate dense diagonal. Diagonal ranks in `offdiag` must be zero.
+"""
+function TLRMatrix(offdiag::CompressedFTLRMatrix{BackendT,T}) where {BackendT,T}
     compressed_ftlr_outer_order(offdiag) isa TileRowMajor || throw(ArgumentError(
         "TLRMatrix requires row-major outer-factor packing"))
     compressed_ftlr_inner_order(offdiag) isa TileColMajor || throw(ArgumentError(
@@ -66,34 +72,17 @@ function _validate_zero_compressed_diagonal(offdiag::CompressedFTLRMatrix)
         _compressed_ftlr_rank(offdiag, k, k) == 0 || throw(ArgumentError(
             "TLRMatrix off-diagonal storage requires rank zero at ($k, $k)"))
     end
-    return offdiag
-end
-
-function _allocate_tlr_diagonal(backend, ::Type{T}, m::Int, n::Int,
-                                tile_size::NTuple{2,Int}) where {T}
-    bm, bn = tile_size
-    mt, nt = cld(m, bm), cld(n, bn)
+    bm, bn = nominal_tile_size(offdiag)
+    mt, nt = grid_size(offdiag)
     n_diag = min(mt, nt)
-    tail_m, tail_n = m % bm, n % bn
+    tail_m, tail_n = tail_tile_size(offdiag)
     corner_tm = n_diag == mt && !iszero(tail_m) ? tail_m : bm
     corner_tn = n_diag == nt && !iszero(tail_n) ? tail_n : bn
     has_corner = n_diag > 0 && (corner_tm != bm || corner_tn != bn)
+    backend = get_backend(offdiag)
     D = zeros(backend, T, bm, bn, n_diag - Int(has_corner))
     D_corner = zeros(
         backend, T, max(corner_tm, 1), max(corner_tn, 1), has_corner ? 1 : 0)
-    return D, D_corner
-end
-
-"""
-    TLRMatrix(offdiag::CompressedFTLRMatrix)
-
-Wrap finalized full-grid compressed off-diagonal storage and allocate a
-separate dense diagonal. Diagonal ranks in `offdiag` must be zero.
-"""
-function TLRMatrix(offdiag::CompressedFTLRMatrix{BackendT,T}) where {BackendT,T}
-    _validate_zero_compressed_diagonal(offdiag)
-    D, D_corner = _allocate_tlr_diagonal(
-        get_backend(offdiag), T, size(offdiag)..., nominal_tile_size(offdiag))
     return TLRMatrix{BackendT,T,typeof(D),typeof(offdiag)}(offdiag, D, D_corner)
 end
 
@@ -110,9 +99,9 @@ function TLRMatrix(
     rank_multiple::Integer=0,
     rank_type::Type{<:Integer}=Int32,
 ) where {T}
-    _order_instance(outer_order) isa TileRowMajor || throw(ArgumentError(
+    (outer_order === TileRowMajor || outer_order isa TileRowMajor) || throw(ArgumentError(
         "TLRMatrix requires outer_order=TileRowMajor"))
-    _order_instance(inner_order) isa TileColMajor || throw(ArgumentError(
+    (inner_order === TileColMajor || inner_order isa TileColMajor) || throw(ArgumentError(
         "TLRMatrix requires inner_order=TileColMajor"))
     offdiag = CompressedFTLRMatrix(
         backend, T, m, n, tile_size, ranks_in;

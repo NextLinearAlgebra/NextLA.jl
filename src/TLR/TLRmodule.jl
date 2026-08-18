@@ -34,7 +34,7 @@ export AbstractTLRMatrix, TLRMatrix, CompressedFTLRMatrix
 export offdiagonal
 export uncompress!
 export get_factors
-export LowRankFactorBatch, FTLRCompressionWorkspace
+export FTLRCompressionWorkspace
 export maxrank, ranks, rank_multiple, maximum_storage_rank
 export residuals, dense_diag, dense_diag_corner, grid_size
 export nominal_tile_size, tail_tile_size

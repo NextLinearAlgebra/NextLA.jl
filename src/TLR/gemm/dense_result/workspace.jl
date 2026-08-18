@@ -4,8 +4,7 @@ struct DenseGemmWorkspace{T,A<:AbstractVector{T}}
 end
 
 Base.eltype(::DenseGemmWorkspace{T}) where {T} = T
-Base.length(ws::DenseGemmWorkspace) = length(ws.storage)
-Base.sizeof(ws::DenseGemmWorkspace) = length(ws) * sizeof(eltype(ws))
+Base.sizeof(ws::DenseGemmWorkspace) = sizeof(ws.storage)
 
 function DenseGemmWorkspace(A::AbstractTLRMatrix{T}, bytes::Integer) where {T}
     bytes >= 0 || throw(ArgumentError("workspace bytes must be nonnegative"))

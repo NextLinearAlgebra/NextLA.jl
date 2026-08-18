@@ -80,7 +80,7 @@ end
     @test NextLA.residuals(Z)[zero_idx] == 0
 end
 
-@testset "LowRankFactorBatch packed tile source" begin
+@testset "packed tile compression workspace" begin
     rng = MersenneTwister(7)
     b, count, cap = 6, 4, 3
     true_ranks = [2, 2, 3, 3]
@@ -91,17 +91,17 @@ end
     end
     U = zeros(Float64, b, cap, count)
     V = zeros(Float64, b, cap, count)
-    ws = _TLRM.alloc_tile_workspace(U, V, b, b, cap, count)
-    @test ws.factors isa NextLA.LowRankFactorBatch
+    ws = _TLRM._make_category_workspace(
+        (b, b), [(k, 1) for k in 1:count], collect(1:count), U, V)
     @test parent(ws.Z) === V
     _TLRM.compress_tiles!(_TLRM.PackedTiles(tiles), ws; eps_sq=1e-12, rel=false)
-    got = Array(ws.factors.ranks)
+    got = Array(ws.ranks)
     @test got == true_ranks
     for k in 1:count
         r = got[k]
         @test norm(tiles[:, :, k] - U[:, 1:r, k] * V[:, 1:r, k]') /
               norm(tiles[:, :, k]) <= 1e-8
-        @test sqrt(ws.factors.errors_sq[k]) <= 1e-8 * norm(tiles[:, :, k])
+        @test sqrt(ws.errors_sq[k]) <= 1e-8 * norm(tiles[:, :, k])
     end
 end
 

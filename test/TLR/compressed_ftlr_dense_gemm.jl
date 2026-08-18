@@ -141,7 +141,7 @@ end
     right_B = make_operand(Int[0 1; 1 1])
     right_plan = _TLRM._compressed_ftlr_rank_plan(positive, right_B)
     right_workspace = NextLA.DenseGemmWorkspace(
-        positive, sum(right_plan.profile.right_row_bytes))
+        positive, right_plan.profile.right_byte_prefix[end])
     right_arena = _TLRM.GemmArena(view(right_workspace.storage, :), 1)
     right_hole = _TLRM._build_compressed_ftlr_foldright_run(
         C, positive, right_B, right_plan, 1:2, 1:2, 1f0, 0f0, right_arena)
@@ -152,7 +152,7 @@ end
     left_A = make_operand(Int[0 1; 1 1])
     left_plan = _TLRM._compressed_ftlr_rank_plan(left_A, positive)
     left_workspace = NextLA.DenseGemmWorkspace(
-        left_A, sum(left_plan.profile.left_row_bytes))
+        left_A, left_plan.profile.left_byte_prefix[end])
     left_arena = _TLRM.GemmArena(view(left_workspace.storage, :), 1)
     left_hole = _TLRM._build_compressed_ftlr_foldleft_run(
         C, left_A, positive, left_plan, 1:2, 1:2, 1f0, 0f0, left_arena)
@@ -167,7 +167,7 @@ end
     B = NextLA.CompressedFTLRMatrix(
         KernelAbstractions.CPU(), Float32, 8, 8, 4, reverse(rank_grid; dims=1))
     plan = _TLRM._compressed_ftlr_rank_plan(A, B)
-    @test plan.profile.right_row_bytes === nothing
+    @test plan.profile.right_byte_prefix === nothing
     workspace = NextLA.DenseGemmWorkspace(A, plan.profile.maximum)
     arena = _TLRM.GemmArena(view(workspace.storage, :), 1)
     C = zeros(Float32, 8, 8)
@@ -317,8 +317,8 @@ function _compressed_dense32(A)
     dense = zeros(Float32, size(A))
     qm, qn = NextLA.grid_size(A)
     for j in 1:qn, i in 1:qm
-        rows = _TLRM._compressed_ftlr_axis_range(A, i, 1)
-        cols = _TLRM._compressed_ftlr_axis_range(A, j, 2)
+        rows = _TLRM._tile_axis_range(A, i, 1)
+        cols = _TLRM._tile_axis_range(A, j, 2)
         U, V = NextLA.get_factors(A, i, j)
         dense[rows, cols] .= Float32.(U) * transpose(Float32.(V))
     end

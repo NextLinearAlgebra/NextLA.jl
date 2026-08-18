@@ -39,11 +39,9 @@ end
 @inline _compressed_ftlr_rank(
     A::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) =
     _compressed_ftlr_rank(parent(A), j, i)
-@inline _rank_storage_width(r::Integer, multiple::Integer) =
-    iszero(r) ? 0 : iszero(multiple) ? Int(r) : cld(Int(r), Int(multiple)) * Int(multiple)
-
 @inline function _compressed_ftlr_storage_rank(A::CompressedFTLRMatrix, i::Int, j::Int)
-    return _rank_storage_width(_compressed_ftlr_rank(A, i, j), A.rank_multiple)
+    r = _compressed_ftlr_rank(A, i, j)
+    return iszero(r) || iszero(A.rank_multiple) ? r : cld(r, A.rank_multiple) * A.rank_multiple
 end
 @inline _compressed_ftlr_storage_rank(
     A::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) =
@@ -100,8 +98,10 @@ end
 @inline tile_order(A::CompressedFTLRMatrix) = A.outer.order
 @inline rank_multiple(A::CompressedFTLRMatrix) = A.rank_multiple
 @inline rank_multiple(A::TransposeTLRMatrix) = rank_multiple(parent(A))
-@inline maximum_storage_rank(A::CompressedFTLRMatrix) =
-    _rank_storage_width(maxrank(A), rank_multiple(A))
+@inline function maximum_storage_rank(A::CompressedFTLRMatrix)
+    r, multiple = maxrank(A), rank_multiple(A)
+    return iszero(r) || iszero(multiple) ? r : cld(r, multiple) * multiple
+end
 @inline maximum_storage_rank(A::TransposeTLRMatrix) = maximum_storage_rank(parent(A))
 
 @inline _compressed_ftlr_outer_storage(A::CompressedFTLRMatrix) = A.outer
@@ -150,16 +150,6 @@ end
     return offsets
 end
 
-function _compressed_ftlr_rank_vector(order::TileOrderStyle, ranks_in::AbstractMatrix,
-                           ::Type{RankT}) where {RankT<:Integer}
-    qm, qn = size(ranks_in)
-    ranks_out = Vector{RankT}(undef, qm * qn)
-    @inbounds for j in 1:qn, i in 1:qm
-        ranks_out[tile_linear_index(order, qm, qn, i, j)] = RankT(ranks_in[i, j])
-    end
-    return ranks_out
-end
-
 """
     CompressedFTLRMatrix(backend, T, m, n, tile_size, ranks;
                outer_order=TileRowMajor, inner_order=TileColMajor,
@@ -192,9 +182,12 @@ function CompressedFTLRMatrix(backend::Backend, ::Type{T}, m::Int, n::Int,
             throw(ArgumentError("CompressedFTLR rank at ($i, $j) exceeds its logical tile extent"))
     end
 
-    outer_style = _order_instance(outer_order)
-    inner_style = _order_instance(inner_order)
-    storage_rank_at = (i, j) -> _rank_storage_width(ranks_in[i, j], multiple)
+    outer_style = outer_order isa Type ? outer_order() : outer_order
+    inner_style = inner_order isa Type ? inner_order() : inner_order
+    storage_rank_at = function (i, j)
+        r = Int(ranks_in[i, j])
+        return iszero(r) || iszero(multiple) ? r : cld(r, multiple) * multiple
+    end
     # Multiple-of-eight leading dimensions keep every packed factor base
     # 16-byte aligned, including ragged boundary tiles.
     uld = [cld(x, 8) * 8 for x in rowdims]
@@ -207,7 +200,10 @@ function CompressedFTLRMatrix(backend::Backend, ::Type{T}, m::Int, n::Int,
     vdata = zeros(backend, T, voffsets[end] - 1)
     outer = CompressedFTLRPackedFactors(udata, uoffsets, outer_style, uld, rowdims, :row, qm, qn)
     inner = CompressedFTLRPackedFactors(vdata, voffsets, inner_style, vld, coldims, :col, qm, qn)
-    rankvec = _compressed_ftlr_rank_vector(outer_style, ranks_in, rank_type)
+    rankvec = Vector{rank_type}(undef, qm * qn)
+    @inbounds for j in 1:qn, i in 1:qm
+        rankvec[tile_linear_index(outer_style, qm, qn, i, j)] = rank_type(ranks_in[i, j])
+    end
     resid = Base.zeros(Float64, qm * qn)
     return CompressedFTLRMatrix{typeof(backend),T,typeof(udata),rank_type,typeof(outer_style),
                       typeof(inner_style)}(
