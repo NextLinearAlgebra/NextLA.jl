@@ -164,22 +164,22 @@ function _prepare_tlr_gemm_workspace(C, A, B, workspace;
                                      transA::Char, transB::Char, block::Int)
     spec = _tlr_gemm_workspace_spec(C, A, B; transA, transB, block)
     if workspace === nothing
-        return TLRGemmWorkspace(C, spec), spec
+        return CompressedGemmWorkspace(C, spec), spec
     elseif workspace isa Int
         workspace >= 0 ||
             throw(ArgumentError("workspace bytes must be nonnegative"))
         required = _tlr_gemm_workspace_bytes(spec, 1)
         workspace >= required || throw(ArgumentError(
             "workspace has $workspace bytes; at least $required bytes are required"))
-        ws = TLRGemmWorkspace(C, spec; bytes=workspace)
+        ws = CompressedGemmWorkspace(C, spec; bytes=workspace)
         return ws, spec
-    elseif workspace isa TLRGemmWorkspace
+    elseif workspace isa CompressedGemmWorkspace
         workspace.operation == spec || throw(ArgumentError(
-            "TLRGemmWorkspace geometry, backend, or element type does not match this operation"))
+            "CompressedGemmWorkspace geometry, backend, or element type does not match this operation"))
         return workspace, spec
     end
     throw(ArgumentError(
-        "workspace must be nothing, an integer byte count, or TLRGemmWorkspace"))
+        "workspace must be nothing, an integer byte count, or CompressedGemmWorkspace"))
 end
 
 """Internal fixed-width ARA driver used by allocation-returning [`gemm`](@ref)."""
@@ -362,9 +362,9 @@ function gemm(A::CompressedFTLRMatrix{BackendT,T},
               compute=nothing, workspace=nothing) where {BackendT,T}
     maxrank >= 0 || throw(ArgumentError("maxrank must be nonnegative"))
     rank_multiple >= 0 || throw(ArgumentError("rank_multiple must be nonnegative"))
-    workspace isa TLRGemmWorkspace && throw(ArgumentError(
+    workspace isa CompressedGemmWorkspace && throw(ArgumentError(
         "allocation-returning gemm accepts workspace=nothing or a byte count; " *
-        "a TLRGemmWorkspace is bound to private output staging"))
+        "a CompressedGemmWorkspace is bound to private output staging"))
     LA = transA == 'T' ? transpose(A) : A
     LB = transB == 'T' ? transpose(B) : B
     size(LA, 2) == size(LB, 1) ||

@@ -747,7 +747,7 @@ lane tails, limits occupancy.
 \label{sec:choose}
 
 The public operation receives an optional reusable workspace. Internally,
-$\texttt{TLRGemmWorkspace}$ owns the arena, slot-local progress, convergence
+$\texttt{CompressedGemmWorkspace}$ owns the arena, slot-local progress, convergence
 and diagnostic arrays, output panels, and global scatter buffers. The workspace
 compatibility key includes the selected sampling family, geometry, active rank
 caps, block width, output rank cap, and slot capacity. The driver can therefore

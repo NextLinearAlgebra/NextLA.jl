@@ -4,10 +4,10 @@ The destination representation is the implementation boundary.
 
 | Destination | Product | Implementation |
 |---|---|---|
-| `AbstractMatrix` | compressed × compressed | `dense_result/` three-stage lowering |
-| `AbstractMatrix` | compressed × dense, dense × compressed | `dense_result/` two-stage specializations |
+| `AbstractMatrix` | compressed × compressed | `dense_accumulation/` three-stage lowering |
+| `AbstractMatrix` | compressed × dense, dense × compressed | `dense_accumulation/` two-stage specializations |
 | `AbstractMatrix` | dense-diagonal TLR products | compressed lowering plus block-diagonal updates |
-| newly allocated `CompressedFTLRMatrix` | compressed × compressed | `compressed_result/` ARA and final packing |
+| newly allocated `CompressedFTLRMatrix` | compressed × compressed | `compressed_accumulation/` ARA and final packing |
 
 Dense accumulation never depends on output-rank discovery. Compressed output
 uses private fixed-width numerical staging because its packed offsets cannot be
@@ -17,16 +17,19 @@ known until ARA converges.
 
 ```text
 gemm/
-├── common/               precision policy and bump arena
-├── dense_result/         dense accumulation
-│   ├── compressed_ftlr/  rank metadata and two/three-stage lowering
-│   ├── dense_diagonal.jl dense diagonal cross terms
-│   └── driver.jl         public gemm! dispatch
-└── compressed_result/    ARA compressed-output construction
-    ├── workspace.jl      ARA arenas
-    ├── run_coupling.jl   factor panels and implicit product operator
-    ├── rolling_schedule.jl runtime admission and retirement
-    └── driver.jl         allocation-returning gemm
+├── compute_policy.jl        GEMM tensor-core compute-mode policy
+├── arena.jl                 result-independent bump allocator
+├── dense_accumulation/       dense accumulation
+│   ├── schedule.jl           rank metadata, cost formulas, and run scheduling
+│   ├── three_stage.jl         compressed × compressed lowering + its analysis
+│   ├── two_stage.jl            one-dense-operand specializations + their analysis
+│   ├── dense_diagonal.jl        dense diagonal cross terms
+│   └── driver.jl                 public gemm! dispatch and shared validation
+└── compressed_accumulation/  ARA compressed-output construction
+    ├── workspace.jl          ARA arenas
+    ├── run_coupling.jl       factor panels and implicit product operator
+    ├── rolling_schedule.jl   runtime admission and retirement
+    └── driver.jl             allocation-returning gemm
 ```
 
 ## Dense accumulation
@@ -59,5 +62,5 @@ uses fixed-width storage privately, then allocates final complementary packed
 factors and copies only active columns. There is no in-place compressed-output
 `gemm!`, reserved-capacity public container, or `PaddedFTLRMatrix`.
 
-See [`compressed_result/README.md`](compressed_result/README.md) and
-[`compressed_result/algorithm.tex`](compressed_result/algorithm.tex).
+See [`compressed_accumulation/README.md`](compressed_accumulation/README.md) and
+[`compressed_accumulation/algorithm.tex`](compressed_accumulation/algorithm.tex).

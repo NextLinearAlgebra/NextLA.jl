@@ -6,7 +6,7 @@ compressed axis is a tile range. The fold has the same meaning in every case:
 `:right` ends with the compressed left operand's outer stack, while `:left`
 ends with the compressed right operand's inner stack.
 """
-struct DenseResultRun
+struct DenseAccumulationRun
     rows::UnitRange{Int}
     cols::UnitRange{Int}
     fold::Symbol
@@ -19,7 +19,7 @@ compressed × compressed sets `terminal_stage == 3`. The terminal stage is the
 only stage whose prepared scalars are replaced by the numerical call's
 `alpha` and `beta`.
 """
-struct DenseResultRunTasks{S1,S2,S3,Z}
+struct DenseAccumulationRunTasks{S1,S2,S3,Z}
     stage1::S1
     stage2::S2
     stage3::S3
@@ -30,7 +30,7 @@ struct DenseResultRunTasks{S1,S2,S3,Z}
 end
 
 """One dense-output run with persistent grouped-GEMM descriptors."""
-struct PreparedDenseResultRun
+struct PreparedDenseAccumulationRun
     stage1::Union{Nothing,AbstractPreparedGroupedGemm}
     stage2::Union{Nothing,AbstractPreparedGroupedGemm}
     stage3::Union{Nothing,AbstractPreparedGroupedGemm}
@@ -40,14 +40,14 @@ struct PreparedDenseResultRun
     scale_targets::Vector{Tuple{UnitRange{Int},UnitRange{Int}}}
 end
 
-@inline function _destroy_prepared_dense_result_run!(run::PreparedDenseResultRun)
+@inline function _destroy_prepared_dense_accumulation_run!(run::PreparedDenseAccumulationRun)
     run.stage1 === nothing || destroy_prepared_grouped_gemm!(run.stage1)
     run.stage2 === nothing || destroy_prepared_grouped_gemm!(run.stage2)
     run.stage3 === nothing || destroy_prepared_grouped_gemm!(run.stage3)
     return nothing
 end
 
-function _prepare_dense_result_run(tasks::DenseResultRunTasks, mode)
+function _prepare_dense_accumulation_run(tasks::DenseAccumulationRunTasks, mode)
     stage1 = stage2 = stage3 = nothing
     try
         stage1 = tasks.stage1 === nothing ? nothing :
@@ -62,37 +62,37 @@ function _prepare_dense_result_run(tasks::DenseResultRunTasks, mode)
         stage3 === nothing || destroy_prepared_grouped_gemm!(stage3)
         rethrow()
     end
-    return PreparedDenseResultRun(
+    return PreparedDenseAccumulationRun(
         stage1, stage2, stage3, tasks.terminal_stage, tasks.zero_target,
         tasks.needs_zero, tasks.scale_targets)
 end
 
-function _prepare_dense_result_runs(build_tasks, schedule, mode)
-    prepared = PreparedDenseResultRun[]
+function _prepare_dense_accumulation_runs(build_tasks, schedule, mode)
+    prepared = PreparedDenseAccumulationRun[]
     sizehint!(prepared, length(schedule))
     try
         for run in schedule
-            push!(prepared, _prepare_dense_result_run(build_tasks(run), mode))
+            push!(prepared, _prepare_dense_accumulation_run(build_tasks(run), mode))
         end
     catch
-        foreach(_destroy_prepared_dense_result_run!, prepared)
+        foreach(_destroy_prepared_dense_accumulation_run!, prepared)
         rethrow()
     end
     return prepared
 end
 
-@inline _dense_result_runs_have_fallback(runs) =
+@inline _dense_accumulation_runs_have_fallback(runs) =
     any(run -> any(stage -> stage isa PreparedGroupedGemmBundle,
                    (run.stage1, run.stage2, run.stage3)), runs)
 
-function _close_dense_result_analysis!(analysis)
+function _close_dense_accumulation_analysis!(analysis)
     analysis.closed && return analysis
     analysis.closed = true
-    foreach(_destroy_prepared_dense_result_run!, analysis.runs)
+    foreach(_destroy_prepared_dense_accumulation_run!, analysis.runs)
     return analysis
 end
 
-function _validate_dense_result_analysis_binding(
+function _validate_dense_accumulation_analysis_binding(
     analysis, C, A, B, workspace, transA, transB, mode)
     analysis.closed && throw(ArgumentError("dense-result analysis has been closed"))
     C === analysis.C && A === analysis.A && B === analysis.B ||
@@ -106,7 +106,7 @@ function _validate_dense_result_analysis_binding(
     return nothing
 end
 
-@inline function _submit_prepared_dense_result_stage(
+@inline function _submit_prepared_dense_accumulation_stage(
     stage, backend, manage_pointer_mode, overrides...)
     stage === nothing && return nothing
     if manage_pointer_mode && !(stage isa PreparedGroupedGemmBundle)
@@ -117,7 +117,7 @@ end
     return precision_gemm_grouped_prepared!(stage, overrides...)
 end
 
-function _execute_prepared_dense_result_runs_inner!(
+function _execute_prepared_dense_accumulation_runs_inner!(
     runs, C, backend, ::Type{T}, alpha, beta, manage_pointer_mode) where {T}
     for run in runs
         run.needs_zero && fill!(run.zero_target, zero(T))
@@ -126,10 +126,10 @@ function _execute_prepared_dense_result_runs_inner!(
         end
         @inbounds for (index, stage) in enumerate((run.stage1, run.stage2, run.stage3))
             if index == run.terminal_stage
-                _submit_prepared_dense_result_stage(
+                _submit_prepared_dense_accumulation_stage(
                     stage, backend, manage_pointer_mode, alpha, beta)
             else
-                _submit_prepared_dense_result_stage(
+                _submit_prepared_dense_accumulation_stage(
                     stage, backend, manage_pointer_mode)
             end
         end
@@ -137,14 +137,14 @@ function _execute_prepared_dense_result_runs_inner!(
     return C
 end
 
-function _execute_prepared_dense_result_runs!(
+function _execute_prepared_dense_accumulation_runs!(
     runs, C, backend, ::Type{T}, alpha, beta, has_fallback::Bool) where {T}
     if has_fallback
-        return _execute_prepared_dense_result_runs_inner!(
+        return _execute_prepared_dense_accumulation_runs_inner!(
             runs, C, backend, T, alpha, beta, true)
     end
     return _with_grouped_host_pointer_mode(backend) do
-        _execute_prepared_dense_result_runs_inner!(
+        _execute_prepared_dense_accumulation_runs_inner!(
             runs, C, backend, T, alpha, beta, false)
     end
 end

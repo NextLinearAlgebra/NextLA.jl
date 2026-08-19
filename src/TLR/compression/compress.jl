@@ -1,5 +1,3 @@
-include("workspace.jl")
-
 # Dense-diagonal copy ----------------------------------------------------------
 
 @kernel function _copy_diag_from_dense_kernel!(D::AbstractArray{T,3},

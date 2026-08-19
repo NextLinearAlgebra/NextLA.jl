@@ -11,7 +11,7 @@
 #     precompile on the development machine (`AMDGPUBackend` undefined in
 #     AMDGPU, a pre-existing version mismatch), so the wrapper below is written
 #     against the rocSOLVER signature but has no test coverage. Until it runs,
-#     the generic looped-LAPACK method in `numerics/ara.jl` remains correct for
+#     the generic looped-LAPACK method in `compression/ara.jl` remains correct for
 #     ROCArrays — it simply copies to the host. Treat a first run of this
 #     method as bring-up, not as a regression.
 

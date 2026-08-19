@@ -62,14 +62,14 @@ Base.sizeof(arena::ARARunArena) =
     sizeof(arena.phase_thi.storage)
 
 """
-    TLRGemmWorkspace
+    CompressedGemmWorkspace
 
 Reusable numerical storage for canonical TLR-output GEMM. Unlike the
 dense-output workspace, execution is currently single-stream; the object owns
 one phase-reusing `ARARunArena` plus the traversal output, diagnostic, and
 scatter buffers that would otherwise be allocated once per `gemm!` call.
 """
-struct TLRGemmWorkspace{A,U,V,RS,ES,I,RD,ED,AS,M,P,O,IH,K}
+struct CompressedGemmWorkspace{A,U,V,RS,ES,I,RD,ED,AS,M,P,O,IH,K}
     arena::A
     U::U
     V::V
@@ -88,7 +88,7 @@ struct TLRGemmWorkspace{A,U,V,RS,ES,I,RD,ED,AS,M,P,O,IH,K}
     capacity::Int
 end
 
-function Base.sizeof(ws::TLRGemmWorkspace)
+function Base.sizeof(ws::CompressedGemmWorkspace)
     return sizeof(ws.arena) + sizeof(ws.U) + sizeof(ws.V) +
            sizeof(ws.ranks_slot) + sizeof(ws.errors_slot) +
            sizeof(ws.indices) + sizeof(ws.ranks_global) +
@@ -101,7 +101,7 @@ function Base.sizeof(ws::TLRGemmWorkspace)
            ))
 end
 
-function TLRGemmWorkspace(C::CompressedFTLRMatrix{BackendT,T}, spec;
+function CompressedGemmWorkspace(C::CompressedFTLRMatrix{BackendT,T}, spec;
                           bytes=nothing) where {BackendT,T}
     requested = bytes === nothing ?
         _tlr_gemm_workspace_bytes(spec, spec.nmember) : bytes
@@ -132,7 +132,7 @@ function TLRGemmWorkspace(C::CompressedFTLRMatrix{BackendT,T}, spec;
         rmax=allocate(backend, Float64, n),
         samples_host=Vector{Int32}(undef, n),
     )
-    return TLRGemmWorkspace(
+    return CompressedGemmWorkspace(
         arena,
         allocate(backend, T, opkey.bm, opkey.maxrank, n),
         allocate(backend, T, opkey.bn, opkey.maxrank, n),

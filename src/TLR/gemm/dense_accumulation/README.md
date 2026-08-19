@@ -1,24 +1,25 @@
-# CompressedFTLR dense-result lowering
+# Dense-accumulation GEMM
 
-This directory contains every lowering with at least one exact-rank compressed
-operand and a dense destination.
+This directory implements every product that accumulates
+`alpha·op(A)·op(B) + beta·C` into a dense destination `C`, with at least one
+exact-rank compressed operand.
 
 ## Files
 
-- `metadata.jl` computes rank prefixes and output tile extents.
-- `costs.jl` derives exact workspace and arithmetic costs for FoldRight and
-  FoldLeft.
-- `schedule.jl` packs the output into rectangular `DenseResultRun`s under the
-  workspace budget.
-- `three_stage.jl` lowers compressed × compressed.
+- `workspace.jl` owns `DenseGemmWorkspace`, the reusable byte-budget storage.
+- `runs.jl` is the shared prepared-run lifecycle and numerical executor
+  (`DenseAccumulationRun`/`DenseAccumulationRunTasks`/`PreparedDenseAccumulationRun`).
+- `schedule.jl` computes rank prefixes and output tile extents, derives exact
+  workspace/arithmetic costs for FoldRight and FoldLeft, and packs the output
+  into rectangular `DenseAccumulationRun`s under the workspace budget.
+- `three_stage.jl` lowers compressed × compressed and owns its symbolic
+  `CompressedGemmAnalysis` type.
 - `two_stage.jl` lowers the two products with one dense operand as fixed-fold
-  specializations.
-- `analysis.jl` owns the compressed × compressed symbolic-analysis type and
-  compatibility checks.
-- `validation.jl` validates packed layouts, backends, and precision policy.
-
-The shared prepared-run lifecycle and numerical executor live one level above
-in `dense_result/runs.jl`.
+  specializations, and owns its own `CompressedMixedGemmAnalysis` type the
+  same way.
+- `dense_diagonal.jl` adds the off-diagonal/diagonal cross terms and the
+  diagonal product for dense-diagonal `TLRMatrix` operands.
+- `driver.jl` is the public `gemm!` dispatch and shared input validation.
 
 ## Scheduling model
 
@@ -51,7 +52,7 @@ For a product with one dense operand, one side of this graph is already dense:
 - dense × compressed is always FoldLeft and partitions physical output rows.
 
 Their `TwoStageCompressedPlan` is the corresponding one-sided rank prefix and
-fixed fold. Both produce the same `DenseResultRunTasks` type as the full
+fixed fold. Both produce the same `DenseAccumulationRunTasks` type as the full
 three-stage lowering.
 
 ## Symbolic analysis

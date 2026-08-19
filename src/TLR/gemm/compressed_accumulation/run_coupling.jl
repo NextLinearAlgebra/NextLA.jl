@@ -17,7 +17,7 @@ index is fixed vs. swept) and the same 3-stage hot-sampler shape:
     sketch = (Fixed === :column ? S : S') * proj # T (:column) or W (:row)
     Y      = member[p] * sketch[p]               # same reduction either way
 
-Under the complementary packing `compressed_result` requires (see
+Under the complementary packing `compressed_accumulation` requires (see
 `_require_complementary_packing`), fixing a column always makes B's inner
 factor zero-copy for the whole run (`shared`) while A's outer factor must be
 swept per member (`member`, swap-tracked); fixing a row always makes A's
@@ -51,7 +51,7 @@ strided-only view of them would otherwise suffice.
 `Y` (the ARA basis being grown) is the one operand this cannot cover: it is
 owned by the caller's `ARAWorkspace`, not this run, so its address is only
 known at the first `apply_run!` call and cannot be cached in this struct
-without threading a descriptor through `numerics/ara.jl`. Its pointer array
+without threading a descriptor through `compression/ara.jl`. Its pointer array
 is therefore built once per `apply_run!` call (not once per GEMM within it,
 since the fused reduction and the beta accumulation share the same `Y`) and
 is the sampler's only remaining per-pass allocation.

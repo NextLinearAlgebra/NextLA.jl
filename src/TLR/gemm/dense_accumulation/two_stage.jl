@@ -2,7 +2,7 @@
 
 `CompressedFTLR × dense` is FoldRight with the compressed-right stages elided;
 `dense × CompressedFTLR` is FoldLeft with the compressed-left stages elided.
-Both use the same `DenseResultRun`, `DenseResultRunTasks`, prepared-run lifecycle,
+Both use the same `DenseAccumulationRun`, `DenseAccumulationRunTasks`, prepared-run lifecycle,
 and terminal-stage executor as compressed × compressed.
 """
 
@@ -21,7 +21,7 @@ mutable struct CompressedMixedGemmAnalysis{CT,AT,BT,WT,ModeT,RT}
     # Copy in the compressed operand's own rank type.
     ranks::RT
     workspace_bytes::Int
-    runs::Vector{PreparedDenseResultRun}
+    runs::Vector{PreparedDenseAccumulationRun}
     has_fallback::Bool
     closed::Bool
 end
@@ -126,8 +126,8 @@ end
 end
 
 function _two_stage_schedule(C, plan, budget::Int, ::Type{T}) where {T}
-    plan.total_rank == 0 && return DenseResultRun[
-        DenseResultRun(1:size(C, 1), 1:size(C, 2), plan.fold)]
+    plan.total_rank == 0 && return DenseAccumulationRun[
+        DenseAccumulationRun(1:size(C, 1), 1:size(C, 2), plan.fold)]
     budget_elements = fld(budget, sizeof(T))
     budget_elements >= plan.total_rank || throw(ArgumentError(
         "two-stage compressed analysis requires at least " *
@@ -135,11 +135,11 @@ function _two_stage_schedule(C, plan, budget::Int, ::Type{T}) where {T}
     if plan.fold === :left
         height = _dense_compressed_row_run_height(
             budget_elements, plan.total_rank, size(C, 1), T)
-        return [DenseResultRun(rows, 1:length(plan.totals), :left)
+        return [DenseAccumulationRun(rows, 1:length(plan.totals), :left)
                 for rows in Iterators.partition(1:size(C, 1), height)]
     end
     width = clamp(fld(budget_elements, plan.total_rank), 1, size(C, 2))
-    return [DenseResultRun(1:length(plan.totals), cols, :right)
+    return [DenseAccumulationRun(1:length(plan.totals), cols, :right)
             for cols in Iterators.partition(1:size(C, 2), width)]
 end
 
@@ -174,7 +174,7 @@ function _build_dense_compressed_run(C, A, B, plan, run, work)
             'N', 'T', one(T), Tj,
             _compressed_ftlr_col_z_stack(B, j, gamma), zero(T), Cview))
     end
-    return DenseResultRunTasks(
+    return DenseAccumulationRunTasks(
         isempty(stage1) ? nothing : stage1, isempty(stage2) ? nothing : stage2,
         nothing, 2, work, false, scales)
 end
@@ -210,15 +210,15 @@ function _build_compressed_dense_run(C, A, B, plan, run, work)
             'N', 'N', one(T),
             _compressed_ftlr_row_outer_stack(A, i, rho), Ti, zero(T), Cview))
     end
-    return DenseResultRunTasks(
+    return DenseAccumulationRunTasks(
         isempty(stage1) ? nothing : stage1, isempty(stage2) ? nothing : stage2,
         nothing, 2, work, false, scales)
 end
 
 function _prepare_two_stage_runs(C, A, B, compressed, plan, budget, mode, arena)
     schedule = _two_stage_schedule(C, plan, budget, eltype(compressed))
-    plan.total_rank == 0 && return _prepare_dense_result_runs(schedule, mode) do _
-        DenseResultRunTasks(
+    plan.total_rank == 0 && return _prepare_dense_accumulation_runs(schedule, mode) do _
+        DenseAccumulationRunTasks(
             nothing, nothing, nothing, 0, nothing, false,
             [(1:size(C, 1), 1:size(C, 2))])
     end
@@ -229,30 +229,30 @@ function _prepare_two_stage_runs(C, A, B, compressed, plan, budget, mode, arena)
         height = maximum(length(run.rows) for run in schedule)
         work = _workspace_array!(arena, backend, eltype(compressed),
                                  height, plan.total_rank)
-        return _prepare_dense_result_runs(schedule, mode) do run
+        return _prepare_dense_accumulation_runs(schedule, mode) do run
             _build_dense_compressed_run(C, A, B, plan, run, work)
         end
     end
     width = maximum(length(run.cols) for run in schedule)
     work = _workspace_array!(arena, backend, eltype(compressed),
                              plan.total_rank, width)
-    return _prepare_dense_result_runs(schedule, mode) do run
+    return _prepare_dense_accumulation_runs(schedule, mode) do run
         _build_compressed_dense_run(C, A, B, plan, run, work)
     end
 end
 
 Base.close(analysis::CompressedMixedGemmAnalysis) =
-    _close_dense_result_analysis!(analysis)
+    _close_dense_accumulation_analysis!(analysis)
 
 function _new_compressed_mixed_analysis(
     C, A, B, workspace, transA, transB, mode, fold, compressed, runs)
     analysis = CompressedMixedGemmAnalysis(
         C, A, B, workspace, transA, transB, mode, fold,
         copy(ranks(compressed)),
-        sizeof(workspace), runs, _dense_result_runs_have_fallback(runs), false)
+        sizeof(workspace), runs, _dense_accumulation_runs_have_fallback(runs), false)
     finalizer(analysis) do object
         try
-            _close_dense_result_analysis!(object)
+            _close_dense_accumulation_analysis!(object)
         catch
             # Device teardown may precede Julia object finalization.
         end
@@ -276,7 +276,7 @@ function analyze_compressed_gemm(
     mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
     validate_tlr_gemm_precision(backend, T, eltype(C), mode)
     _validate_two_stage_grouped_precision(LB)
-    _, arena, budget = _prepare_dense_result_workspace(B, workspace)
+    _, arena, budget = _prepare_dense_accumulation_workspace(B, workspace)
     plan = _two_stage_rank_plan(LB, :left)
     runs = _prepare_two_stage_runs(C, LA, LB, LB, plan, budget, mode, arena)
     return _new_compressed_mixed_analysis(
@@ -300,7 +300,7 @@ function analyze_compressed_gemm(
     mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
     validate_tlr_gemm_precision(backend, T, eltype(C), mode)
     _validate_two_stage_grouped_precision(LA)
-    _, arena, budget = _prepare_dense_result_workspace(A, workspace)
+    _, arena, budget = _prepare_dense_accumulation_workspace(A, workspace)
     plan = _two_stage_rank_plan(LA, :right)
     runs = _prepare_two_stage_runs(C, LA, LB, LA, plan, budget, mode, arena)
     return _new_compressed_mixed_analysis(
@@ -311,12 +311,12 @@ end
 function _execute_compressed_mixed_analysis!(
     analysis::CompressedMixedGemmAnalysis, C, A, B, workspace,
     alpha, beta, transA, transB, mode)
-    _validate_dense_result_analysis_binding(
+    _validate_dense_accumulation_analysis_binding(
         analysis, C, A, B, workspace, transA, transB, mode)
     compressed = analysis.fold === :right ? A : B
     ranks(compressed) == analysis.ranks ||
         throw(ArgumentError("compressed operand ranks changed after analysis"))
-    return _execute_prepared_dense_result_runs!(
+    return _execute_prepared_dense_accumulation_runs!(
         analysis.runs, C, get_backend(compressed), eltype(compressed), alpha, beta,
         analysis.has_fallback)
 end

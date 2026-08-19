@@ -40,10 +40,50 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backend
         "workspace has $(sizeof(ws)) bytes; at least $required bytes are required"))
     gemm!(C, offdiagonal(A), offdiagonal(B);
           workspace=ws, alpha=α, beta=β, transA, transB, compute=mode)
-    _, arena, capacity = _prepare_dense_result_workspace(A, ws)
+    _, arena, capacity = _prepare_dense_accumulation_workspace(A, ws)
     _tlr_offdiag_times_diag!(C, offdiagonal(LA), LB, α, mode, arena, capacity)
     _tlr_diag_times_offdiag!(C, LA, offdiagonal(LB), α, mode, arena, capacity)
     return _tlr_diag_times_diag!(C, LA, LB, α, mode)
+end
+
+function _validate_compressed_ftlr_gemm(C::AbstractMatrix, A, B, compute)
+    T = eltype(A)
+    (typeof(get_backend(A)) === typeof(get_backend(B)) &&
+     typeof(get_backend(A)) === typeof(get_backend(C))) ||
+        throw(ArgumentError("CompressedFTLR operands and output must use the same backend"))
+    supports_grouped_gemm(get_backend(A)) || throw(ArgumentError(
+        "CompressedFTLR dense GEMM requires a grouped-GEMM backend; " *
+        "currently CPU and CUDA are supported"))
+    T === Core.BFloat16 && !supports_bfloat16_grouped_gemm(get_backend(A)) &&
+        throw(ArgumentError("CompressedFTLR BF16 grouped GEMMEx requires an NVIDIA SM80 or newer device"))
+    size(C) == (size(A, 1), size(B, 2)) ||
+        throw(DimensionMismatch("C must be size(A,1) × size(B,2)"))
+    nominal_tile_size(A, 2) == nominal_tile_size(B, 1) ||
+        throw(DimensionMismatch("CompressedFTLR contraction tile dimensions must match"))
+    compressed_ftlr_outer_order(B) isa TileRowMajor ||
+        throw(ArgumentError("CompressedFTLR Stage-1 fusion requires the logical B outer factors to be tile-row-major"))
+    (_compressed_ftlr_right_valid(A, B) || _compressed_ftlr_left_valid(A, B)) ||
+        throw(ArgumentError("CompressedFTLR needs a FoldRight A-U row stack or a FoldLeft B-Z column stack"))
+    _, qk = grid_size(A)
+    qk == grid_size(B)[1] || throw(DimensionMismatch(
+        "CompressedFTLR contraction grids do not match"))
+    @inbounds for k in 1:qk
+        length(_tile_axis_range(A, k, 2)) == length(_tile_axis_range(B, k, 1)) ||
+            throw(DimensionMismatch(
+                "CompressedFTLR contraction tile $k has incompatible tail extents"))
+    end
+    validate_tlr_gemm_precision(get_backend(A), T, eltype(C), compute)
+    validate_tlr_gemm_storage(A, compute; name="left operand")
+    validate_tlr_gemm_storage(B, compute; name="right operand")
+    # cuBLAS grouped GEMMEx accepts the FP16/FP32-compute case, but (unlike
+    # ordinary GEMMEx) the grouped entry point rejects an FP16 -> FP32 output
+    # signature on current CUDA. Every CompressedFTLR stage must stay grouped, so keep
+    # storage homogeneous until that API capability becomes available.
+    eltype(C) === T || throw(ArgumentError(
+        "CompressedFTLR grouped GEMMEx currently requires output storage to match operand storage; " *
+        "got $T × $T → $(eltype(C))",
+    ))
+    return nothing
 end
 
 """
@@ -189,7 +229,7 @@ function gemm!(C::AbstractMatrix, A::CompressedFTLRMatrix{BackendT,T},
             analysis, C, A, B, workspace, ScalarT(alpha), ScalarT(beta),
             transA, transB, mode)
     end
-    ws, arena, budget = _prepare_dense_result_workspace(A, workspace)
+    ws, arena, budget = _prepare_dense_accumulation_workspace(A, workspace)
     plan = _two_stage_rank_plan(LA, :right)
     if budget < plan.total_rank * sizeof(T)
         return _compressed_dense_gemm_sequential!(
@@ -227,7 +267,7 @@ function gemm!(C::AbstractMatrix, A::AbstractMatrix{T},
             analysis, C, A, B, workspace, ScalarT(alpha), ScalarT(beta),
             transA, transB, mode)
     end
-    ws, arena, budget = _prepare_dense_result_workspace(B, workspace)
+    ws, arena, budget = _prepare_dense_accumulation_workspace(B, workspace)
     plan = _two_stage_rank_plan(LB, :left)
     if budget < plan.total_rank * sizeof(T)
         return _dense_compressed_gemm_sequential!(

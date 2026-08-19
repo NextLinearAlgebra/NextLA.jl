@@ -25,7 +25,7 @@ function DenseGemmWorkspace(A::AbstractTLRMatrix{T},
     return workspace
 end
 
-function _prepare_dense_result_workspace(
+function _prepare_dense_accumulation_workspace(
     A::AbstractTLRMatrix{T}, workspace) where {T}
     ws = if workspace isa Int
         DenseGemmWorkspace(A, workspace)

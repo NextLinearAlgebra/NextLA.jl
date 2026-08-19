@@ -337,7 +337,7 @@ Wrap a caller-owned basis panel `Q` (`m × maxrank × count`), so the loop can
 write straight into numerical staging supplied by dense compression or GEMM.
 Everything else is allocated on `Q`'s
 backend, drawn from `arena` when one is supplied (see `ARARunArena` in
-`gemm/compressed_result/workspace.jl`) and via plain `allocate` otherwise.
+`gemm/compressed_accumulation/workspace.jl`) and via plain `allocate` otherwise.
 """
 function ARAWorkspace(Q::AbstractArray{T,3}; block::Int=32, arena=nothing,
                       state_storage=nothing) where {T}
