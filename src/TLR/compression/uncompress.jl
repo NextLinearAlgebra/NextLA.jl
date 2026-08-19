@@ -9,16 +9,19 @@ export uncompress!
 end
 
 function _copy_diagonal_to_dense!(A::AbstractMatrix{T}, A_tlr::TLRMatrix{<:Any,T}) where {T}
+    # full diagonal tiles
     n_full_diag = size(A_tlr.D, 3)
     bm, bn = nominal_tile_size(A_tlr)
     _copy_diag_kernel!(get_backend(A_tlr))(
         A, A_tlr.D, bm, bn;
         ndrange=(bm, bn, n_full_diag),
     )
+
+    # corner diagonal tile
     if size(A_tlr.D_corner, 3) != 0
         tile_k = ndiag_tiles(A_tlr)
         tm, tn = tile_size(A_tlr, tile_k, tile_k)
-        copyto!(_dense_tile_view(A, A_tlr, tile_k, tile_k), view(A_tlr.D_corner, 1:tm, 1:tn, 1))
+        copyto!(dense_tile_view(A, A_tlr, tile_k, tile_k), view(A_tlr.D_corner, 1:tm, 1:tn, 1))
     end
     return A
 end
@@ -26,14 +29,13 @@ end
 """
     uncompress!(A, A_tlr)
 
-Write the dense matrix represented by `A_tlr` into `A` in-place.
-
-The full-grid compressed off-diagonal part is reconstructed first; its rank-zero
-diagonal slots leave zeros that are then overwritten from dense diagonal storage.
+Write `A_tlr` into `A`. Rank-zero diagonal slots are reconstructed from dense
+diagonal storage after the compressed off-diagonal tiles.
 """
 function uncompress!(A::AbstractMatrix{T}, A_tlr::TLRMatrix{<:Any,T}) where {T}
     size(A) == size(A_tlr) ||
         throw(DimensionMismatch("A dimensions must match A_tlr"))
+
     uncompress!(A, offdiagonal(A_tlr))
     _copy_diagonal_to_dense!(A, A_tlr)
     return A
@@ -42,32 +44,35 @@ end
 """Write an exact-rank CompressedFTLR matrix into dense storage."""
 function uncompress!(A::AbstractMatrix{T}, A_tlr::CompressedFTLRMatrix{<:Any,T}) where {T}
     size(A) == size(A_tlr) || throw(DimensionMismatch("A dimensions must match A_tlr"))
+
     fill!(A, zero(T))
     qm, qn = grid_size(A_tlr)
     mode = default_gemm_compute_mode(T)
-    # Exact ranks make the tile reconstructions heterogeneous. On CUDA submit
-    # their factor/destination views through GEMMGroupedBatchedEx in one call;
-    # the generic path remains an explicit CPU-compatible tile loop.
+
+    # grouped exact-rank reconstruction
+    # Exact ranks are heterogeneous, so supported backends use one grouped call.
     if supports_grouped_gemm(get_backend(A_tlr))
         T === Core.BFloat16 && !supports_bfloat16_grouped_gemm(get_backend(A_tlr)) &&
             throw(ArgumentError("CompressedFTLR BF16 grouped GEMMEx requires an NVIDIA SM80 or newer device"))
         tasks = GroupedGemmTask[]
         sizehint!(tasks, qm * qn)
         @inbounds for j in 1:qn, i in 1:qm
-            _compressed_ftlr_rank(A_tlr, i, j) == 0 && continue
+            compressed_ftlr_rank(A_tlr, i, j) == 0 && continue
             U, V = get_factors(A_tlr, i, j)
             push!(tasks, GroupedGemmTask(
-                'N', _adjoint_blas_char(T), one(T), U, V, zero(T),
-                _dense_tile_view(A, A_tlr, i, j)))
+                'N', adjoint_blas_char(T), one(T), U, V, zero(T),
+                dense_tile_view(A, A_tlr, i, j)))
         end
         isempty(tasks) || precision_gemm_grouped!(tasks, mode)
         return A
     end
+
+    # generic tile reconstruction
     @inbounds for j in 1:qn, i in 1:qm
-        _compressed_ftlr_rank(A_tlr, i, j) == 0 && continue
+        compressed_ftlr_rank(A_tlr, i, j) == 0 && continue
         U, V = get_factors(A_tlr, i, j)
-        precision_gemm!('N', _adjoint_blas_char(T), one(T), U, V, zero(T),
-                        _dense_tile_view(A, A_tlr, i, j), mode)
+        precision_gemm!('N', adjoint_blas_char(T), one(T), U, V, zero(T),
+                        dense_tile_view(A, A_tlr, i, j), mode)
     end
     return A
 end

@@ -1,8 +1,8 @@
 @inline NextLA.supports_grouped_gemm(::Type{<:CUDA.CUDABackend}) = true
 
-@inline function NextLA.TLRmodule._validate_compressed_ftlr_tile_alignment(
+@inline function NextLA.TLRmodule.validate_compressed_ftlr_tile_alignment(
     ::CUDA.CUDABackend, ::Type{T}, bm::Int, bn::Int) where {T}
-    return NextLA.TLRmodule._validate_compressed_ftlr_tile_alignment_cuda(T, bm, bn)
+    return NextLA.TLRmodule.validate_compressed_ftlr_tile_alignment_cuda(T, bm, bn)
 end
 
 @inline NextLA.TLRmodule.required_tlr_gemm_rank_multiple(
@@ -219,7 +219,7 @@ function NextLA._precision_gemm_grouped_prepared!(prepared::CUDAPreparedGroupedG
     return _submit_cuda_prepared_grouped_gemm!(prepared)
 end
 
-function NextLA._with_grouped_host_pointer_mode(f, ::CUDA.CUDABackend)
+function NextLA.with_grouped_host_pointer_mode(f, ::CUDA.CUDABackend)
     CUBLAS.cublasSetPointerMode_v2(CUBLAS.handle(), CUBLAS.CUBLAS_POINTER_MODE_HOST)
     try
         return f()
@@ -228,7 +228,7 @@ function NextLA._with_grouped_host_pointer_mode(f, ::CUDA.CUDABackend)
     end
 end
 
-function NextLA._with_grouped_device_pointer_mode(f, ::CUDA.CUDABackend)
+function NextLA.with_grouped_device_pointer_mode(f, ::CUDA.CUDABackend)
     CUBLAS.cublasSetPointerMode_v2(CUBLAS.handle(), CUBLAS.CUBLAS_POINTER_MODE_DEVICE)
     try
         return f()
@@ -241,7 +241,7 @@ function _cuda_grouped_gemm_ex!(tasks::AbstractVector{<:NextLA.GroupedGemmTask},
     isempty(tasks) && return tasks
     prepared = NextLA.prepare_precision_gemm_grouped(tasks, mode)
     try
-        NextLA._with_grouped_host_pointer_mode(NextLA.get_backend(first(tasks).C)) do
+        NextLA.with_grouped_host_pointer_mode(NextLA.get_backend(first(tasks).C)) do
             NextLA.precision_gemm_grouped_prepared!(prepared)
         end
     finally

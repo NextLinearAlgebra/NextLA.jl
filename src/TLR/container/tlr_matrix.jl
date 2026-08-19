@@ -37,7 +37,7 @@ Base.size(A::TLRMatrix) = size(A.offdiag)
 @inline dense_diag_corner(A::TransposeTLRMatrix{<:Any,<:TLRMatrix}) =
     PermutedDimsArray(dense_diag_corner(parent(A)), (2, 1, 3))
 
-@inline function _diag_tile_view(A::TLRMatrix, tile_k::Int)
+@inline function diag_tile_view(A::TLRMatrix, tile_k::Int)
     1 <= tile_k <= ndiag_tiles(A) || throw(BoundsError(1:ndiag_tiles(A), tile_k))
     if tile_k <= size(A.D, 3)
         return view(A.D, :, :, tile_k)
@@ -46,8 +46,8 @@ Base.size(A::TLRMatrix) = size(A.offdiag)
     return view(A.D_corner, :, :, 1)
 end
 
-@inline _diag_tile_view(A::TransposeTLRMatrix{<:Any,<:TLRMatrix}, tile_k::Int) =
-    transpose(_diag_tile_view(parent(A), tile_k))
+@inline diag_tile_view(A::TransposeTLRMatrix{<:Any,<:TLRMatrix}, tile_k::Int) =
+    transpose(diag_tile_view(parent(A), tile_k))
 
 """Return an exact-rank factor pair for an off-diagonal tile."""
 @inline function get_factors(A::TLRMatrix, i::Int, j::Int)
@@ -70,7 +70,7 @@ function TLRMatrix(offdiag::CompressedFTLRMatrix{BackendT,T}) where {BackendT,T}
     compressed_ftlr_inner_order(offdiag) isa TileColMajor || throw(ArgumentError(
         "TLRMatrix requires column-major inner-factor packing"))
     @inbounds for k in 1:min(grid_size(offdiag)...)
-        _compressed_ftlr_rank(offdiag, k, k) == 0 || throw(ArgumentError(
+        compressed_ftlr_rank(offdiag, k, k) == 0 || throw(ArgumentError(
             "TLRMatrix off-diagonal storage requires rank zero at ($k, $k)"))
     end
 

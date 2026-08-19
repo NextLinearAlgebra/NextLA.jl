@@ -195,11 +195,11 @@ end
 function _precision_gemm_grouped_prepared!(bundle::PreparedGroupedGemmBundle,
                                                    overrides...)
     if bundle.grouped !== nothing
-        _with_grouped_host_pointer_mode(bundle.backend) do
+        with_grouped_host_pointer_mode(bundle.backend) do
             _precision_gemm_grouped_prepared!(bundle.grouped, overrides...)
         end
     end
-    _with_grouped_device_pointer_mode(bundle.backend) do
+    with_grouped_device_pointer_mode(bundle.backend) do
         for task in bundle.fallback
             alpha = isempty(overrides) ? task.alpha : overrides[1]
             beta = isempty(overrides) ? task.beta : overrides[2]
@@ -222,5 +222,5 @@ end
 _destroy_prepared_grouped_gemm!(prepared) = prepared
 
 """Run `f` while grouped-GEMM scalar arrays are interpreted as host memory."""
-_with_grouped_host_pointer_mode(f, backend) = f()
-_with_grouped_device_pointer_mode(f, backend) = f()
+with_grouped_host_pointer_mode(f, backend) = f()
+with_grouped_device_pointer_mode(f, backend) = f()

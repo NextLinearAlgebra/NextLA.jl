@@ -81,7 +81,7 @@ end
     @test size(NextLA.dense_diag(Dt))[1:2] == reverse(size(NextLA.dense_diag(D))[1:2])
     @test size.(NextLA.get_factors(Dt, 2, 1)) ==
           reverse(size.(NextLA.get_factors(D, 1, 2)))
-    dtile, op = NextLA.TLRmodule._diag_tile_ref(Dt, 1)
+    dtile, op = NextLA.TLRmodule.diag_tile_ref(Dt, 1)
     @test parent(dtile) === D.D
     @test op == 'T'
 end

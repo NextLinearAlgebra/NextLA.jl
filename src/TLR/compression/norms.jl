@@ -1,17 +1,17 @@
 # Squared magnitude accumulated in Float64. Energy and error decisions are
 # intentionally more accurate than factor storage and GEMM compute precision.
-@inline _abs2_f64(x::Real) = abs2(Float64(x))
-@inline _abs2_f64(x::Complex) =
+@inline abs2_f64(x::Real) = abs2(Float64(x))
+@inline abs2_f64(x::Complex) =
     abs2(Float64(real(x))) + abs2(Float64(imag(x)))
 
-@inline function _norm_launch(backend, ncols::Int)
+@inline function norm_launch(backend, ncols::Int)
     W = unwrap(SUBGROUP_SIZE(typeof(backend)))
     nsub = ncols >= 8 ? 8 : ncols >= 4 ? 4 : ncols >= 2 ? 2 : 1
     return W, nsub, W * nsub
 end
 
 # Per-tile squared Frobenius norm for tiles addressed within a dense matrix.
-@kernel function _tile_norm_sq_kernel!(out::AbstractVector{Tout},
+@kernel function tile_norm_sq_kernel!(out::AbstractVector{Tout},
                                        A::AbstractMatrix{T},
                                        p0s,
                                        q0s,
@@ -28,19 +28,21 @@ end
     lane = (tid - 1) % W + 1
     sg = (tid - 1) ÷ W + 1
     nsub = NT ÷ W
+
+    # tile accumulation
     acc = 0.0
     col = sg
     while col <= tn
         row = lane
         while row <= tm
-            @inbounds acc += _abs2_f64(A[p0+row, q0+col])
+            @inbounds acc += abs2_f64(A[p0+row, q0+col])
             row += W
         end
         col += nsub
     end
     @inbounds partial[tid] = acc
 
-    # Barriers must remain literal for the KernelAbstractions CPU backend.
+    # workgroup reduction with literal CPU-backend barriers
     @synchronize
     if NT > 512 && tid <= 512; @inbounds partial[tid] += partial[tid+512]; end
     @synchronize
@@ -62,13 +64,14 @@ end
     @synchronize
     if NT >   1 && tid == 1;   @inbounds partial[1]   += partial[2];       end
     @synchronize
+
     if tid == 1
         @inbounds out[ob] = Tout(partial[1])
     end
 end
 
 # Per-slab squared Frobenius norm of a packed `[m, n, batch]` array.
-@kernel function _tile_norm_sq_kernel!(out::AbstractVector{Tout},
+@kernel function tile_norm_sq_kernel!(out::AbstractVector{Tout},
                                        X::AbstractArray{T,3},
                                        ::Val{W},
                                        ::Val{NT},
@@ -81,17 +84,21 @@ end
     lane = (tid - 1) % W + 1
     sg = (tid - 1) ÷ W + 1
     nsub = NT ÷ W
+
+    # slab accumulation
     acc = 0.0
     col = sg
     while col <= tn
         row = lane
         while row <= tm
-            @inbounds acc += _abs2_f64(X[row, col, ob])
+            @inbounds acc += abs2_f64(X[row, col, ob])
             row += W
         end
         col += nsub
     end
     @inbounds partial[tid] = acc
+
+    # workgroup reduction with literal CPU-backend barriers
     @synchronize
     if NT > 512 && tid <= 512; @inbounds partial[tid] += partial[tid+512]; end
     @synchronize
@@ -113,6 +120,7 @@ end
     @synchronize
     if NT >   1 && tid == 1;   @inbounds partial[1]   += partial[2];       end
     @synchronize
+
     if tid == 1
         @inbounds out[ob] = Tout(partial[1])
     end
@@ -121,8 +129,8 @@ end
 """
     batch_frobenius_norms_sq!(out, X) -> out
 
-Compute one squared Frobenius norm for each slab of `X::Array{T,3}`. The
-reduction is a single fused kernel per batch and accumulates in Float64.
+Compute one squared Frobenius norm for each slab of `X`, accumulating in
+`Float64` in one kernel launch.
 """
 function batch_frobenius_norms_sq!(out::AbstractVector,
                                    X::AbstractArray{<:Any,3})
@@ -130,9 +138,10 @@ function batch_frobenius_norms_sq!(out::AbstractVector,
     length(out) == count ||
         throw(DimensionMismatch("out must have one entry per batch slab"))
     count == 0 && return out
+
     backend = get_backend(X)
-    W, _, NT = _norm_launch(backend, size(X, 2))
-    _tile_norm_sq_kernel!(backend, NT)(
+    W, _, NT = norm_launch(backend, size(X, 2))
+    tile_norm_sq_kernel!(backend, NT)(
         out, X, Val{W}(), Val{NT}();
         ndrange=(NT * count,), workgroupsize=NT,
     )

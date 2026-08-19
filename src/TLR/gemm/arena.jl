@@ -5,11 +5,11 @@ mutable struct GemmArena{A}
     cursor::Int
 end
 
-@inline _arena_reset!(arena::GemmArena) =
+@inline arena_reset!(arena::GemmArena) =
     (arena.cursor = firstindex(arena.storage); arena)
-@inline _arena_reset!(::Nothing) = nothing
+@inline arena_reset!(::Nothing) = nothing
 
-function _workspace_array!(arena::GemmArena, _, ::Type{T}, dims::Int...) where {T}
+function workspace_array!(arena::GemmArena, _, ::Type{T}, dims::Int...) where {T}
     T === eltype(arena.storage) || throw(ArgumentError(
         "workspace element type $(eltype(arena.storage)) does not match $T"))
     count = prod(dims)
@@ -21,5 +21,5 @@ function _workspace_array!(arena::GemmArena, _, ::Type{T}, dims::Int...) where {
     return reshape(view(arena.storage, first:last), dims...)
 end
 
-@inline _workspace_array!(::Nothing, backend, ::Type{T}, dims::Int...) where {T} =
+@inline workspace_array!(::Nothing, backend, ::Type{T}, dims::Int...) where {T} =
     allocate(backend, T, dims...)

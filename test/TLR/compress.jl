@@ -51,6 +51,8 @@ end
     @test size(NextLA.dense_diag(S), 3) == 0
     @test size(NextLA.dense_diag_corner(S)) == (2, 2, 1)
     @test reconstruct_tlr(S) == small
+    @test_throws ArgumentError NextLA.TLRMatrix(
+        small, 4; maxrank=2, r_required=0)
 end
 
 @testset "compression residual and rank-cap semantics" begin
@@ -91,10 +93,11 @@ end
     end
     U = zeros(Float64, b, cap, count)
     V = zeros(Float64, b, cap, count)
-    ws = _TLRM._make_category_workspace(
+    ws = _TLRM.make_category_workspace(
         (b, b), [(k, 1) for k in 1:count], U, V)
     @test parent(ws.Z) === V
-    _TLRM.compress_tiles!(_TLRM.PackedTiles(tiles), ws; eps_sq=1e-12, rel=false)
+    _TLRM.compress_tiles!(
+        _TLRM.PackedTiles(tiles), ws; eps_sq=1e-12, rel=false, r_required=4)
     got = Array(ws.ranks)
     @test got == true_ranks
     for k in 1:count

@@ -1,20 +1,10 @@
-# Support kernels for the blocked adaptive randomized approximation (ARA) of
-# Boukaram, Turkiyyah & Keyes, "Randomized GPU algorithms for the construction
-# of hierarchical matrices from matrix-vector operations", SIAM J. Sci. Comput.
-# 41(4):C339–C366, 2019 (Algorithm 2.3): sample a block, orthogonalize it
-# against the existing basis with BCGS2, normalize it with two mixed-precision
-# Cholesky-QR passes, and stop once `r_required` consecutive projected columns
-# are negligible. `ara_block_norms!` recovers those norms from the two
-# triangular factors (`dR`); `ara_update_convergence!` tracks the running
-# maximum, consecutive-small-vector count, detected rank, and next sample width
-# per batch member.
-#
-# `R[j,j]` and not the column norms of the projected block: at convergence the
-# block is random combinations of the few directions that remain, so every
-# column still has O(1) norm while the block itself is rank-deficient. `R[j,j]`
-# is column `j`'s residual against both the basis and the block's earlier
-# columns, so it collapses exactly when nothing new is left -- column norms
-# alone would miss this generic stopping case.
+# Blocked ARA support for Boukaram, Turkiyyah & Keyes, SIAM J. Sci. Comput.
+# 41(4):C339-C366, 2019, Algorithm 2.3. Each pass samples a block, applies
+# BCGS2 and two mixed-precision Cholesky-QR passes, and stops after
+# `r_required` negligible projected columns. `ara_block_norms!` uses the
+# diagonal of the composite triangular factor because projected column norms
+# remain O(1) when the residual block is rank-deficient; its diagonal entries
+# measure residuals against both the basis and earlier block columns.
 
 """Minimal reusable workspace for ARA's Cholesky-QR passes."""
 struct ARACholeskyWorkspace{QT,YT,GT,RT,QViews,RViews}
@@ -40,9 +30,10 @@ function ARACholeskyWorkspace(Q::AbstractArray{T,3},
         throw(DimensionMismatch("G_hi must have size ($width, $width, $count)"))
     size(R1) == size(G_hi) == size(R2) ||
         throw(DimensionMismatch("R1 and R2 must match G_hi"))
+
     return ARACholeskyWorkspace(
         Q, Y_hi, G_hi, R1, R2,
-        _batch_views(Q), _batch_views(R1), _batch_views(R2),
+        batch_views(Q), batch_views(R1), batch_views(R2),
     )
 end
 
@@ -82,7 +73,7 @@ function ara_cholesky_pass!(ws::ARACholeskyWorkspace, Rdest, Rdest_tiles;
 
     Y_hi .= Q
     Thi = eltype(Y_hi)
-    gemm_batched!(_adjoint_blas_char(Thi), 'N',
+    gemm_batched!(adjoint_blas_char(Thi), 'N',
                   one(Thi), Y_hi, Y_hi, zero(Thi), G_hi)
     result = potrf_batched!('U', G_hi)
     if status !== nothing && result isa Tuple
@@ -102,8 +93,8 @@ end
                                           R2::AbstractArray{T,3}) where {T}
     j, b = @index(Global, NTuple)
     @inbounds begin
-        dR[j, b] = sqrt(_abs2_f64(R1[j, j, b])) *
-                   sqrt(_abs2_f64(R2[j, j, b]))
+        dR[j, b] = sqrt(abs2_f64(R1[j, j, b])) *
+                   sqrt(abs2_f64(R2[j, j, b]))
     end
 end
 
@@ -122,6 +113,7 @@ function ara_block_norms!(dR, ws::ARACholeskyWorkspace;
     size(dR) == (s, count) ||
         throw(DimensionMismatch("dR must have size ($s, $count)"))
     count == 0 && return dR
+
     R1 = count == total ? ws.R1 : view(ws.R1, :, :, 1:count)
     R2 = count == total ? ws.R2 : view(ws.R2, :, :, 1:count)
     _ara_block_norms_kernel!(get_backend(R1))(
@@ -169,6 +161,7 @@ function ARAConvergenceState(samples, ranks, svec, jcount, rmax, samples_host)
         throw(DimensionMismatch("ARA convergence arrays must have equal length"))
     length(samples_host) == count ||
         throw(DimensionMismatch("ARA samples host mirror must have length $count"))
+
     return ARAConvergenceState(
         samples, ranks, svec, jcount, rmax, samples_host)
 end
@@ -201,6 +194,7 @@ end
     @inbounds begin
         drawn = Int(samples[b])
         if drawn > 0
+            # member state and block scan
             m = rmax[b]
             sv = Int(svec[b])
             rk = Int(ranks[b])
@@ -215,6 +209,8 @@ end
                     rk = j0 + j
                 end
             end
+
+            # updated state and next width
             j0 += min(drawn, block)
             rmax[b] = m
             svec[b] = Int32(sv)
@@ -235,8 +231,7 @@ still sampling.
 
 A member stops when `r_required` consecutive columns satisfy
 `dR[j] ≤ eps_rel · rmax`, or when it reaches `maxrank`. Members already at
-`samples == 0` are skipped, so a converged member costs nothing but its slot in
-the batch — packing the active members contiguously is a separate concern.
+`samples == 0` are skipped; packing active members contiguously is separate.
 
 The returned count comes from a device-to-host copy of `samples`, one small
 transfer per pass. That is the loop's only synchronization point.
@@ -258,6 +253,7 @@ function ara_update_convergence!(state::ARAConvergenceState,
         throw(ArgumentError("block exceeds the rows of dR"))
     eps_rel >= 0 || throw(ArgumentError("eps_rel must be nonnegative"))
     r_required >= 1 || throw(ArgumentError("r_required must be positive"))
+
     _ara_convergence_kernel!(get_backend(dR))(
         state.samples, state.ranks, state.svec, state.jcount, state.rmax, dR,
         Float64(eps_rel), r_required, block, maxrank; ndrange=count,
@@ -277,17 +273,9 @@ end
 """
     ara_stopping_floor(Tgram) -> Float64
 
-Smallest relative tolerance the loop can honour, `√u_hi`.
-
-At the stopping block the projected panel has `κ(Y_Δ) ≈ 1/ε_rel`, and two-pass
-Cholesky-QR attains `O(u)` orthogonality only for `κ ≤ u^{-1/2}` (Yamamoto,
-Nakatsukasa, Yanagisawa & Fukaya, ETNA 44:306–326, 2015). Equating the two gives
-`ε_rel ≥ √u_hi` — about `1.05e-8` for a `Float64` Gram, matching the empirical
-limit Boukaram, Turkiyyah & Keyes report in §2.3.1.
-
-This is a property of the orthogonalizer, not a tuning knob: it is the exact
-point at which `potrf` also starts to break down, which is why breakdown is a
-sound convergence signal rather than a failure.
+Smallest supported relative tolerance, `√u_hi`. Two-pass Cholesky-QR requires
+`κ ≤ u_hi^{-1/2}` (Yamamoto et al., ETNA 44:306-326, 2015); below this tolerance,
+`potrf_batched!` breakdown is expected and acts as a convergence signal.
 """
 @inline ara_stopping_floor(::Type{Tgram}) where {Tgram} =
     sqrt(Float64(eps(real(Tgram))) / 2)
@@ -310,28 +298,24 @@ end
 """
     ARAWorkspace(::Type{T}, backend, m, maxrank, count; block=32)
 
-Allocate the ARA loop's scratch. `block` is the number of columns sampled per
-pass; it trades kernel efficiency against oversampling and does not affect
-correctness. The reference uses 32 (the warp size).
+Allocate ARA scratch. `block` is the sample width and affects efficiency and
+oversampling, not correctness.
 """
 function ARAWorkspace(::Type{T}, backend, m::Int, maxrank::Int, count::Int;
                       block::Int=32, arena=nothing,
                       state_storage=nothing) where {T}
     maxrank >= 0 && count >= 0 && m >= 0 ||
         throw(ArgumentError("m, maxrank and count must be nonnegative"))
-    Q = _workspace_array!(
-        _run_persistent_t_arena(arena), backend, T, m, maxrank, count)
+    Q = workspace_array!(
+        run_persistent_t_arena(arena), backend, T, m, maxrank, count)
     return ARAWorkspace(Q; block, arena, state_storage)
 end
 
 """
     ARAWorkspace(Q; block=32, arena=nothing)
 
-Wrap a caller-owned basis panel `Q` (`m × maxrank × count`) so the loop writes
-straight into numerical staging supplied by dense compression or GEMM.
-Everything else is allocated on `Q`'s backend, drawn from `arena` when one is
-supplied (see `ARARunArena` in `gemm/compressed_accumulation/workspace.jl`)
-and via plain `allocate` otherwise.
+Wrap a caller-owned basis panel `Q` (`m × maxrank × count`). Other storage is
+allocated on `Q`'s backend or drawn from `arena` when supplied.
 """
 function ARAWorkspace(Q::AbstractArray{T,3}; block::Int=32, arena=nothing,
                       state_storage=nothing) where {T}
@@ -342,16 +326,16 @@ function ARAWorkspace(Q::AbstractArray{T,3}; block::Int=32, arena=nothing,
     backend = get_backend(Q)
     blk = min(block, max(maxrank, 1))
     Thi = tlr_orthogonalization_type(T)
-    tarena = _run_t_arena(arena)
-    thi_arena = _run_thi_arena(arena)
-    Yblk = _workspace_array!(tarena, backend, T, m, blk, count)
-    Dproj = _workspace_array!(tarena, backend, T, max(maxrank, 1), blk, count)
-    R1 = _workspace_array!(tarena, backend, T, blk, blk, count)
-    R2 = _workspace_array!(tarena, backend, T, blk, blk, count)
+    tarena = run_t_arena(arena)
+    thi_arena = run_thi_arena(arena)
+    Yblk = workspace_array!(tarena, backend, T, m, blk, count)
+    Dproj = workspace_array!(tarena, backend, T, max(maxrank, 1), blk, count)
+    R1 = workspace_array!(tarena, backend, T, blk, blk, count)
+    R2 = workspace_array!(tarena, backend, T, blk, blk, count)
     chol = ARACholeskyWorkspace(
         Yblk,
-        _workspace_array!(thi_arena, backend, Thi, m, blk, count),
-        _workspace_array!(thi_arena, backend, Thi, blk, blk, count),
+        workspace_array!(thi_arena, backend, Thi, m, blk, count),
+        workspace_array!(thi_arena, backend, Thi, blk, blk, count),
         R1, R2,
     )
 
@@ -391,24 +375,26 @@ scheduler has reused the phase arena for admission or retirement. Persistent
 `Q` and every convergence/status buffer retain their identities and contents.
 """
 function rebind_ara_phase(ws::ARAWorkspace, arena)
-    _arena_reset_phase!(arena)
+    arena_reset_phase!(arena)
     T = eltype(ws.Q)
     backend = get_backend(ws.Q)
     m, maxrank, count = size(ws.Q)
     blk = ws.block
     Thi = tlr_orthogonalization_type(T)
-    a = _run_t_arena(arena)
-    ahi = _run_thi_arena(arena)
-    Yblk = _workspace_array!(a, backend, T, m, blk, count)
-    Dproj = _workspace_array!(a, backend, T, max(maxrank, 1), blk, count)
-    R1 = _workspace_array!(a, backend, T, blk, blk, count)
-    R2 = _workspace_array!(a, backend, T, blk, blk, count)
+    a = run_t_arena(arena)
+    ahi = run_thi_arena(arena)
+
+    Yblk = workspace_array!(a, backend, T, m, blk, count)
+    Dproj = workspace_array!(a, backend, T, max(maxrank, 1), blk, count)
+    R1 = workspace_array!(a, backend, T, blk, blk, count)
+    R2 = workspace_array!(a, backend, T, blk, blk, count)
     chol = ARACholeskyWorkspace(
         Yblk,
-        _workspace_array!(ahi, backend, Thi, m, blk, count),
-        _workspace_array!(ahi, backend, Thi, blk, blk, count),
+        workspace_array!(ahi, backend, Thi, m, blk, count),
+        workspace_array!(ahi, backend, Thi, blk, blk, count),
         R1, R2,
     )
+
     return ARAWorkspace(
         ws.Q, Yblk, Dproj, chol, ws.dR, ws.status, ws.status_host,
         ws.kcut, ws.kcut_host, ws.state, ws.block,
@@ -422,17 +408,17 @@ end
 Grow an orthonormal basis for the column space of a batch of implicit operators
 to relative tolerance `eps_rel` (Boukaram, Turkiyyah & Keyes, Algorithm 2.3).
 
-`sample_right!(Y, width)` is the black box: it must overwrite the first `width`
+`sample_right!(Y, width)` must overwrite the first `width`
 columns of the `m × block × count` array `Y` with `Xᵦ Ω` for a freshly drawn
-Gaussian `Ω`, independently per batch member. Freshness is required — the
+Gaussian `Ω`, independently per batch member. Freshness is required because the
 stopping rule is the Halko–Martinsson–Tropp a posteriori bound, whose failure
 probability decays like `10^{-r_required}` only for independent samples.
 
 Each pass projects the block against the existing basis with two-pass block
-classical Gram–Schmidt, normalizes it with two mixed-precision
-Cholesky-QR passes, and folds `diag(R)` into the convergence state. A member stops when
-`r_required` consecutive columns are negligible, when `potrf` breaks down (its
-block is numerically singular, so nothing new remains), or at `maxrank`.
+classical Gram-Schmidt, normalizes it with two mixed-precision Cholesky-QR
+passes, and folds `diag(R)` into the convergence state. A member stops when
+`r_required` consecutive columns are negligible, when `potrf_batched!` reports
+a numerically singular block, or at `maxrank`.
 
 `eps_rel` below [`ara_stopping_floor`](@ref) is rejected rather than silently
 run to `maxrank`.
@@ -459,7 +445,7 @@ function ara_build_basis!(ws::ARAWorkspace, sample_right!;
     (count == 0 || maxrank == 0) &&
         return (; Q=view(ws.Q, :, 1:0, :), ranks=ws.state.ranks, passes=0)
 
-    adj = _adjoint_blas_char(T)
+    adj = adjoint_blas_char(T)
     ara_reset!(ws.state, blk, maxrank)
     fill!(ws.Q, zero(T))
     passes = 0
@@ -471,20 +457,10 @@ function ara_build_basis!(ws::ARAWorkspace, sample_right!;
         sample_right!(ws.Yblk, width)
         width < blk && fill!(view(ws.Yblk, :, (width + 1):blk, :), zero(T))
 
-        # Block Gram-Schmidt with one reorthogonalization, INTERLEAVED with the
-        # two Cholesky-QR passes: `(P·CQR)²`, exactly as Algorithm 2.3 lines
-        # 22-27 (the Gram/potrf/trsm sit inside the `for i = 1:2` loop).
-        #
-        # The interleaving is load-bearing, not stylistic. `P²·CQR²` -- both
-        # projections, then both normalizations -- is a different algorithm in
-        # finite precision. A column that is numerically dependent on the rest
-        # of the block has a within-block residual of size `O(u‖Y‖)`, the same
-        # order as the `O(u‖Y‖)` overlap with `Q` that BCGS leaves behind; so
-        # that residual's direction has an `O(1)` *fraction* lying in `span(Q)`.
-        # The first Cholesky normalizes it to unit length and bakes that
-        # fraction in at `O(1)`. Interleaved, the second projection runs *after*
-        # that amplification and removes it; batched together, both projections
-        # happen before it and nothing ever does.
+        # interleaved BCGS2 and Cholesky-QR2
+        # Algorithm 2.3 applies `(P·CQR)²`. Interleaving is required because the
+        # first normalization can amplify an `O(u‖Y‖)` overlap with `Q` to an
+        # O(1) fraction; the second projection must run afterward to remove it.
         Qc = grown > 0 ? view(ws.Q, :, 1:grown, :) : nothing
         D = grown > 0 ? view(ws.Dproj, 1:grown, :, :) : nothing
         fill!(ws.status, Int32(0))
@@ -504,7 +480,7 @@ function ara_build_basis!(ws::ARAWorkspace, sample_right!;
         end
         copyto!(ws.status_host, ws.status)
 
-        # discard columns the normalization couldn't deliver, append the rest
+        # valid block prefix and basis append
         ara_block_norms!(ws.dR, ws.chol)
         ara_mask_breakdown!(ws.Yblk, ws.dR, ws.kcut, ws.chol.R1, ws.status,
                             width, floor_rel)
@@ -524,37 +500,33 @@ function ara_build_basis!(ws::ARAWorkspace, sample_right!;
     return (; Q=view(ws.Q, :, 1:grown, :), ranks=ws.state.ranks, passes)
 end
 
-# Where a block stops being numerically usable.
-#
-# Two things can end it, and `potrf`'s status alone is not enough:
-#
-#   * `potrf` reports `info = k` when the leading minor of order `k` is not
-#     positive definite, so columns `1..k-1` were validly factored.
-#   * `potrf` can also *succeed* on a pivot that is positive but far too small
-#     to divide by. Measured on a rank-4 Float32 panel of width 12: status 0,
-#     yet pivots 5–12 sat at `~5e-7` against a leading `6.6`. The triangular
-#     solve then produces garbage (or, on an exactly zero panel, `NaN` from
-#     `0/0`).
+# A block is usable through column `k-1` when `potrf` reports `info = k`.
+# Status alone is insufficient: a positive but tiny pivot can pass `potrf` and
+# still make the triangular solve unstable or produce `NaN` on a zero panel.
 @kernel function _ara_cut_kernel!(kcut, R1::AbstractArray{T,3}, status,
                                   width::Int, floor_rel::Float64) where {T}
     b = @index(Global, Linear)
     @inbounds begin
+        # largest finite pivot
         mx = 0.0
         for j in 1:width
-            d = sqrt(_abs2_f64(R1[j, j, b]))
+            d = sqrt(abs2_f64(R1[j, j, b]))
             (isfinite(d) && d > mx) && (mx = d)
         end
+
+        # factorization and small-pivot cutoffs
         k = width + 1
         info = Int(status[b])
         (info > 0 && info < k) && (k = info)
         thresh = floor_rel * mx
         for j in 1:width
-            d = sqrt(_abs2_f64(R1[j, j, b]))
+            d = sqrt(abs2_f64(R1[j, j, b]))
             if !isfinite(d) || d < thresh
                 (j < k) && (k = j)
                 break
             end
         end
+
         kcut[b] = Int32(k)
     end
 end
@@ -574,10 +546,9 @@ end
     ara_mask_breakdown!(Y, dR, kcut, R1, status, width, floor_rel) -> kcut
 
 Discard the columns of a block that the orthonormalization could not deliver,
-keeping its valid prefix. `R1` is the **first**-pass triangular factor and
-`floor_rel` the CholeskyQR2 validity threshold `√u_hi`; see the commentary above
-for why `potrf`'s status alone is insufficient and why the composite factor
-cannot be used here.
+keeping its valid prefix. `R1` is the first-pass triangular factor and
+`floor_rel` the CholeskyQR2 validity threshold `√u_hi`; the composite factor
+cannot identify where the first pass became invalid.
 """
 function ara_mask_breakdown!(Y, dR, kcut, R1, status, width::Int, floor_rel::Float64)
     width == 0 && return kcut
@@ -611,7 +582,7 @@ end
 # last live slot, leaving a dense active prefix and a retired suffix. The
 # accumulated basis is moved once, at retirement, rather than inactive members
 # occupying every later batched factorization.
-@kernel function _ara_swap_basis_kernel!(Q, p::Int, q::Int)
+@kernel function ara_swap_basis_kernel!(Q, p::Int, q::Int)
     i, j = @index(Global, NTuple)
     @inbounds begin
         x = Q[i, j, p]
@@ -634,13 +605,15 @@ end
 
 function _ara_swap_members!(ws::ARAWorkspace, p::Int, q::Int)
     p == q && return ws
+
     backend = get_backend(ws.Q)
-    _ara_swap_basis_kernel!(backend)(ws.Q, p, q;
-                                     ndrange=(size(ws.Q, 1), size(ws.Q, 2)))
+    ara_swap_basis_kernel!(backend)(ws.Q, p, q;
+                                    ndrange=(size(ws.Q, 1), size(ws.Q, 2)))
     _ara_swap_state_kernel!(backend)(
         ws.state.samples, ws.state.ranks, ws.state.svec, ws.state.jcount,
         ws.state.rmax, p, q; ndrange=(1,),
     )
+
     ws.state.samples_host[p], ws.state.samples_host[q] =
         ws.state.samples_host[q], ws.state.samples_host[p]
     return ws
@@ -687,12 +660,14 @@ function ara_reset_slots!(ws::ARAWorkspace, firstslot::Int, count::Int,
     1 <= firstslot <= size(ws.Q, 3) &&
         firstslot + count - 1 <= size(ws.Q, 3) ||
         throw(BoundsError(ws.Q, (:, :, firstslot:(firstslot + count - 1))))
+
     first_width = min(ws.block, maxrank)
     _ara_reset_slot_kernel!(get_backend(ws.Q))(
         ws.Q, ws.state.samples, ws.state.ranks, ws.state.svec,
         ws.state.jcount, ws.state.rmax, firstslot, count, first_width;
         ndrange=(size(ws.Q, 1), size(ws.Q, 2), count),
     )
+
     @inbounds fill!(
         view(ws.state.samples_host, firstslot:(firstslot + count - 1)),
         Int32(first_width),
@@ -705,7 +680,7 @@ function _ara_orthogonalize_group!(ws::ARAWorkspace, slots::UnitRange{Int},
                                    mode, floor_rel)
     isempty(slots) && return
     T = eltype(ws.Q)
-    adj = _adjoint_blas_char(T)
+    adj = adjoint_blas_char(T)
     Y = view(ws.Yblk, :, 1:width, slots)
     Qc = projection_width > 0 ?
         view(ws.Q, :, 1:projection_width, slots) : nothing
@@ -713,6 +688,7 @@ function _ara_orthogonalize_group!(ws::ARAWorkspace, slots::UnitRange{Int},
         view(ws.Dproj, 1:projection_width, 1:width, slots) : nothing
     status = view(ws.status, slots)
     fill!(status, Int32(0))
+
     chol = ARACholeskyWorkspace(
         Y,
         view(ws.chol.Y_hi, :, 1:width, slots),
@@ -720,6 +696,7 @@ function _ara_orthogonalize_group!(ws::ARAWorkspace, slots::UnitRange{Int},
         view(ws.chol.R1, 1:width, 1:width, slots),
         view(ws.chol.R2, 1:width, 1:width, slots),
     )
+
     for pass in 1:2
         if Qc !== nothing
             precision_gemm_batched!(adj, 'N', one(T), Qc, Y,
@@ -735,6 +712,7 @@ function _ara_orthogonalize_group!(ws::ARAWorkspace, slots::UnitRange{Int},
                 chol, chol.R2, chol.R2_tiles; count=length(slots))
         end
     end
+
     dR = view(ws.dR, 1:width, slots)
     ara_block_norms!(dR, chol)
     kcut = view(ws.kcut, slots)
@@ -760,11 +738,13 @@ function ara_packed_pass!(ws::ARAWorkspace, sample_right!, nactive::Int,
                             projection_width=0, discarded=0)
     nactive <= size(ws.Q, 3) ||
         throw(DimensionMismatch("active count exceeds workspace capacity"))
+
     T = eltype(ws.Q)
     Thi = tlr_orthogonalization_type(T)
     mode = compute === nothing ? default_gemm_compute_mode(T) :
            gemm_compute_mode(compute)
     floor_rel = ara_stopping_floor(Thi)
+
     eps_rel >= floor_rel || throw(ArgumentError(
         "eps_rel = $eps_rel is below the Cholesky-QR limit $floor_rel"))
     drawn = collect(Int, view(ws.state.samples_host, 1:nactive))
@@ -774,10 +754,9 @@ function ara_packed_pass!(ws::ARAWorkspace, sample_right!, nactive::Int,
                          discarded=0)
     projection_width = maximum(view(progress_host, 1:nactive))
 
-    # Keep the common full block in front and the final partial block in one
-    # suffix. They share the fused full-k sampling launch below, but use
-    # separate Cholesky-QR batches so padded terminal columns never enter a
-    # factorization.
+    # full-width prefix and partial-width suffix
+    # Both groups share the sampling launch but use separate Cholesky-QR batches
+    # so padded terminal columns never enter a factorization.
     nfull = count(==(width), drawn)
     if nfull < nactive
         p, q = 1, nactive
@@ -800,10 +779,13 @@ function ara_packed_pass!(ws::ARAWorkspace, sample_right!, nactive::Int,
             q -= 1
         end
     end
+
+    # sampled panels
     Y = view(ws.Yblk, :, :, 1:nactive)
     sample_right!(Y, width, view(member_ids, 1:nactive))
     width < ws.block && fill!(view(Y, :, (width + 1):ws.block, :), zero(T))
 
+    # width-specific orthogonalization
     nfull > 0 && _ara_orthogonalize_group!(
         ws, 1:nfull, width, projection_width, mode, floor_rel)
     if nfull < nactive
@@ -812,9 +794,11 @@ function ara_packed_pass!(ws::ARAWorkspace, sample_right!, nactive::Int,
             ws, (nfull + 1):nactive, terminal_width, projection_width,
             mode, floor_rel)
     end
+
     copyto!(ws.status_host, ws.status)
     copyto!(ws.kcut_host, ws.kcut)
 
+    # basis progress and convergence
     _ara_append_local_kernel!(get_backend(ws.Q))(
         ws.Q, Y, ws.state.samples, ws.state.jcount;
         ndrange=(size(ws.Q, 1), width, nactive),
@@ -826,8 +810,8 @@ function ara_packed_pass!(ws::ARAWorkspace, sample_right!, nactive::Int,
     ara_update_convergence!(
         ws.state, ws.dR, eps_rel, r_required, width, size(ws.Q, 2), nactive)
 
-    # Breakdown is terminal only when it occurs inside the member's valid
-    # prefix; a terminal member's deliberately discarded tail is irrelevant.
+    # breakdown retirement within each valid prefix
+    # A terminal member's deliberately discarded tail is irrelevant.
     samples = ws.state.samples_host
     copyto!(samples, ws.state.samples)
     @inbounds for p in 1:nactive
@@ -837,6 +821,7 @@ function ara_packed_pass!(ws::ARAWorkspace, sample_right!, nactive::Int,
     end
     copyto!(ws.state.samples, samples)
 
+    # retired suffix
     oldactive = nactive
     p = 1
     while p <= nactive
@@ -861,31 +846,12 @@ function ara_packed_pass!(ws::ARAWorkspace, sample_right!, nactive::Int,
             projection_width, discarded)
 end
 
-# ---------------------------------------------------------------------------
-# A2: optimal truncation of X ≈ Q Zᵀ.
-# ---------------------------------------------------------------------------
-#
-# With `Q` orthonormal and `Z = P Σ Wᵀ` the thin SVD of `Z`,
-#
-#     Q Zᵀ = Q W Σ Pᵀ = (Q W) Σ Pᵀ ,
-#
-# and `QW` has orthonormal columns, so this *is* the SVD of the represented
-# matrix: its singular values are those of `Z`. Truncating at rank `r` is
-# therefore optimal in the Eckart–Young sense, with squared error `Σ_{k>r} σ_k²`
-# known exactly and for free. The outputs are `U = Q·W[:,1:r]` and
-# `V = P[:,1:r]·diag(σ_{1:r})` — the latter a column scaling, not a product.
-#
-# Two invariants make this safe when `Q` carries zero columns (which it does:
-# `ara_mask_breakdown!` zeroes the tail of a broken-down block).
-#
-#   * Column `j` of `Z = XᵀQ` is zero whenever column `j` of `Q` is. Then
-#     `Z[:,j] = P Σ W[j,:]ᵀ = 0` and, since `P` has orthonormal columns,
-#     `σ_k W[j,k] = 0` for every `k`. So the retained right singular vectors
-#     (those with `σ_k > 0`) vanish on exactly the rows that index zero columns
-#     of `Q`. Hence `UᵀU = W[:,1:r]ᵀ (QᵀQ) W[:,1:r] = I` even though `QᵀQ ≠ I`.
-#   * Members truncate to different ranks. The batch runs at the row-wise
-#     maximum with `W`'s tail zeroed per member, so every product stays a single
-#     uniform batched GEMM and the surplus columns come out exactly zero.
+# A2 truncation uses `Z = PΣWᵀ` to obtain the represented matrix's SVD,
+# `QZᵀ = (QW)ΣPᵀ`, and its exact Eckart-Young error. It returns
+# `U = QW[:,1:r]` and column-scaled `V = P[:,1:r]diag(σ[1:r])`.
+# Zero columns of `Q` induce zero columns of `Z` and zero rows in retained
+# right singular vectors, so `U` remains orthonormal after breakdown masking.
+# Per-member `W` tails are zeroed to support different ranks in one batched GEMM.
 
 """
     batched_thin_svd!(A) -> (U, S, V)
@@ -894,27 +860,22 @@ Thin SVD `A[:,:,b] = U[:,:,b] * Diagonal(S[:,b]) * V[:,:,b]'` of every member of
 a batch of tall-skinny matrices, with `size(A,1) ≥ size(A,2)`. `A` may be
 overwritten.
 
-This is the one backend hook of the truncation step. The generic method loops
-LAPACK on the host and is correct for every array type; backends override it:
-
-  * **CUDA** — `gesvdaStridedBatched`. Measured on this repository's panels it
-    is 3.4× faster than a Gram plus `syevjBatched` at `s = 64` and recovers the
-    true rank where the Gram route over-retains, because it never squares the
-    condition number. Its *left* factor is not orthonormal when returned
-    untruncated, but the caller consumes the *right* factor, which measures
-    clean at `~1e-14`.
-  * **AMD** — `rocsolver_?gesvdj_strided_batched`, the batched one-sided Jacobi
-    SVD, which is the closest rocSOLVER equivalent.
+This backend hook defaults to host LAPACK. CUDA overrides it with
+`CUDA.CUSOLVER.gesvda!`, avoiding the condition-number squaring of a Gram-based
+SVD; AMD uses batched one-sided Jacobi SVD.
 """
 function batched_thin_svd!(A::AbstractArray{T,3}) where {T}
     m, n, count = size(A)
     m >= n || throw(ArgumentError("batched_thin_svd! requires size(A,1) >= size(A,2)"))
     RT = real(T)
+
     n == 0 && return (
         similar(A, T, m, 0, count),
         similar(A, RT, 0, count),
         similar(A, T, 0, 0, count),
     )
+
+    # host factorizations
     Ah = A isa Array ? A : Array(A)
     U = Array{T,3}(undef, m, n, count)
     S = Array{RT,2}(undef, n, count)
@@ -925,7 +886,10 @@ function batched_thin_svd!(A::AbstractArray{T,3}) where {T}
         copyto!(view(S, :, b), F.S)
         copyto!(view(V, :, :, b), F.V)
     end
+
     A isa Array && return (U, S, V)
+
+    # backend restoration
     dev = similar(A, T, 0)                       # backend-typed constructor
     return (_to_backend(dev, U), _to_backend(dev, S), _to_backend(dev, V))
 end
@@ -936,28 +900,24 @@ end
     return D
 end
 
-# Per member: the smallest `r` whose discarded energy fits the budget, capped at
-# `maxrank`. Scanning from the tail accumulates the discarded energy directly,
-# so the reported error is the achieved one, not a bound.
-#
-# When `has_energy`, `energy[b] = ‖X‖²_F` of the *original* operator is supplied
-# and the range-capture error is charged against the budget too. `Q` is
-# orthonormal, so `‖QQᵀX‖² = ‖Z‖² = Σ_k σ_k²` and Pythagoras gives
-# `‖X − QQᵀX‖² = ‖X‖² − Σ_k σ_k²` exactly; the total error of the returned
-# factors is then `‖X‖² − Σ_{k≤r} σ_k²`. This is the randQB_EI indicator, and it
-# carries its cancellation: both terms are `O(‖X‖²)` while the difference may be
-# far smaller, so it is clamped to zero below the rounding floor of the
-# subtraction — otherwise noise there is charged as real error and the rank
-# is inflated.
+# The smallest rank whose discarded energy fits the budget is capped at
+# `maxrank`; a tail scan reports achieved error. With original energy supplied,
+# Pythagoras adds range-capture error `‖X‖² - Σσ_k²`, making total error
+# `‖X‖² - Σ_{k≤r}σ_k²` (the randQB_EI indicator). Cancellation can make capture
+# smaller than subtraction roundoff, so values below that floor are clamped to
+# zero to avoid inflated ranks.
 @kernel function _ara_truncation_rank_kernel!(ranks, err_sq, S, energy, tol_sq,
                                               relative::Bool, has_energy::Bool,
                                               maxrank::Int, width::Int, rows::Int)
     b = @index(Global, Linear)
     @inbounds begin
+        # represented energy
         total = 0.0
         for k in 1:width
             total += Float64(S[k, b])^2
         end
+
+        # range-capture budget
         reference = has_energy ? Float64(energy[b]) : total
         capture = 0.0
         if has_energy
@@ -966,6 +926,8 @@ end
             capture = (capture < floor_sq) ? 0.0 : capture
         end
         budget = (relative ? Float64(tol_sq) * reference : Float64(tol_sq)) - capture
+
+        # smallest admissible rank
         dropped = 0.0
         r = width
         while r > 0
@@ -974,12 +936,14 @@ end
             dropped += e
             r -= 1
         end
+
         if r > maxrank                     # capacity is authoritative
             for k in (maxrank + 1):r
                 dropped += Float64(S[k, b])^2
             end
             r = maxrank
         end
+
         ranks[b] = eltype(ranks)(r)
         err_sq[b] = capture + dropped
     end
@@ -997,6 +961,7 @@ end
         for i in axes(W, 1)
             W[i, k, b] = keep ? W[i, k, b] : zero(T)
         end
+
         scale = keep ? T(S[k, b]) : zero(T)
         for i in axes(V, 1)
             V[i, k, b] = P[i, k, b] * scale
@@ -1011,15 +976,13 @@ end
 Optimally truncate `X ≈ Q Zᵀ` to per-member rank, writing `U` (`b_m × maxrank ×
 count`, orthonormal columns) and `V` (`b_n × maxrank × count`).
 
-`tol` is the Frobenius error budget, squared internally; with `relative=true` it
-is taken against each member's reference energy. `err_sq[b]` returns the
-**achieved** squared error, and `ranks[b] == maxrank` flags a member whose
-spectrum did not fit.
+`tol` is the Frobenius error budget, relative to each member's reference energy
+when `relative=true`. `err_sq[b]` is the achieved squared error;
+`ranks[b] == maxrank` indicates that the spectrum exceeded capacity.
 
-`energy[b] = ‖X‖_F²` of the original operator may be supplied when it is known
-independently, as it is when compressing an explicit matrix. The range-capture
-error `‖X‖² − ‖Z‖²` is then charged against the budget as well, so `err_sq` is
-the total error of the returned factors rather than the truncation part alone.
+`energy[b] = ‖X‖_F²` of the original operator may be supplied when known
+independently. The range-capture error `‖X‖² - ‖Z‖²` is then included, so
+`err_sq` covers both range capture and truncation.
 Without it the reference is `‖Z‖²` and capture is assumed zero, which is correct
 when `Q` was built to tolerance by [`ara_build_basis!`](@ref).
 
@@ -1055,8 +1018,8 @@ function ara_truncate!(U, V, ranks, err_sq, Q, Z;
     _ara_apply_truncation_kernel!(backend)(
         W, V, P, S, ranks, maxrank; ndrange=(maxrank, count),
     )
-    # U = Q · W[:, 1:maxrank]; columns past each member's rank are zero because
-    # the kernel above zeroed the matching columns of W.
+
+    # left factors at uniform batch width
     precision_gemm_batched!('N', 'N', one(T), Q, view(W, :, 1:maxrank, :),
                             zero(T), U, mode)
     return (; U, V, ranks, err_sq)

@@ -9,14 +9,13 @@
 Compute `C := alpha·(op(A)·op(B)) + beta·C` for dense-diagonal TLR matrices.
 The compressed off-diagonal product uses the common three-stage grouped
 lowering; off-diagonal/diagonal cross terms and the diagonal product are added
-as grouped second-pass updates.
-`compute` selects the accumulation mode; when omitted it defaults to `Float32` for
-`Float16` operands and otherwise to the operand type. `alpha` and `beta` are
-converted to that compute type.
+as grouped updates. `compute` defaults low-precision operands to `Float32` and
+otherwise uses the operand type; `alpha` and `beta` use that compute type.
 """
 function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{BackendT,T};
     workspace, alpha=true, beta=false,
     transA::Char=('N'), transB::Char=('N'), compute=nothing) where {BackendT,T}
+    # logical operands and geometry
     LA = transA == 'T' ? transpose(A) : A
     LB = transB == 'T' ? transpose(B) : B
     size(LA, 2) == size(LB, 1) || throw(DimensionMismatch(
@@ -26,11 +25,14 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backend
     nominal_tile_size(LA, 2) == nominal_tile_size(LB, 1) ||
         throw(DimensionMismatch(
             "op(A)'s column tile size must equal op(B)'s row tile size (contraction tiling)"))
+
+    # compute policy
     mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
     backend = get_backend(A)
     validate_tlr_gemm_precision(backend, T, eltype(C), mode)
     validate_tlr_gemm_storage(LA, mode; name="compressed left operand")
 
+    # scalars and workspace
     ScalarT = gemm_compute_type(mode)
     α = ScalarT(alpha)
     β = ScalarT(beta)
@@ -38,16 +40,20 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backend
     required = gemm_minimum_workspace_bytes(A, B; transA, transB)
     sizeof(ws) >= required || throw(ArgumentError(
         "workspace has $(sizeof(ws)) bytes; at least $required bytes are required"))
+
+    # compressed and diagonal terms
     gemm!(C, offdiagonal(A), offdiagonal(B);
           workspace=ws, alpha=α, beta=β, transA, transB, compute=mode)
-    _, arena, capacity = _prepare_dense_accumulation_workspace(A, ws)
-    _tlr_offdiag_times_diag!(C, offdiagonal(LA), LB, α, mode, arena, capacity)
-    _tlr_diag_times_offdiag!(C, LA, offdiagonal(LB), α, mode, arena, capacity)
-    return _tlr_diag_times_diag!(C, LA, LB, α, mode)
+    _, arena, capacity = prepare_dense_accumulation_workspace(A, ws)
+    tlr_offdiag_times_diag!(C, offdiagonal(LA), LB, α, mode, arena, capacity)
+    tlr_diag_times_offdiag!(C, LA, offdiagonal(LB), α, mode, arena, capacity)
+    return tlr_diag_times_diag!(C, LA, LB, α, mode)
 end
 
-function _validate_compressed_ftlr_gemm(C::AbstractMatrix, A, B, compute)
+function validate_compressed_ftlr_gemm(C::AbstractMatrix, A, B, compute)
     T = eltype(A)
+
+    # backend capabilities
     (typeof(get_backend(A)) === typeof(get_backend(B)) &&
      typeof(get_backend(A)) === typeof(get_backend(C))) ||
         throw(ArgumentError("CompressedFTLR operands and output must use the same backend"))
@@ -56,29 +62,31 @@ function _validate_compressed_ftlr_gemm(C::AbstractMatrix, A, B, compute)
         "currently CPU and CUDA are supported"))
     T === Core.BFloat16 && !supports_bfloat16_grouped_gemm(get_backend(A)) &&
         throw(ArgumentError("CompressedFTLR BF16 grouped GEMMEx requires an NVIDIA SM80 or newer device"))
+
+    # output and packing geometry
     size(C) == (size(A, 1), size(B, 2)) ||
         throw(DimensionMismatch("C must be size(A,1) × size(B,2)"))
     nominal_tile_size(A, 2) == nominal_tile_size(B, 1) ||
         throw(DimensionMismatch("CompressedFTLR contraction tile dimensions must match"))
     compressed_ftlr_outer_order(B) isa TileRowMajor ||
         throw(ArgumentError("CompressedFTLR Stage-1 fusion requires the logical B outer factors to be tile-row-major"))
-    (_compressed_ftlr_right_valid(A, B) || _compressed_ftlr_left_valid(A, B)) ||
+    (compressed_ftlr_right_valid(A, B) || compressed_ftlr_left_valid(A, B)) ||
         throw(ArgumentError("CompressedFTLR needs a FoldRight A-U row stack or a FoldLeft B-Z column stack"))
     _, qk = grid_size(A)
     qk == grid_size(B)[1] || throw(DimensionMismatch(
         "CompressedFTLR contraction grids do not match"))
     @inbounds for k in 1:qk
-        length(_tile_axis_range(A, k, 2)) == length(_tile_axis_range(B, k, 1)) ||
+        length(tile_axis_range(A, k, 2)) == length(tile_axis_range(B, k, 1)) ||
             throw(DimensionMismatch(
                 "CompressedFTLR contraction tile $k has incompatible tail extents"))
     end
+
+    # precision and storage
     validate_tlr_gemm_precision(get_backend(A), T, eltype(C), compute)
     validate_tlr_gemm_storage(A, compute; name="left operand")
     validate_tlr_gemm_storage(B, compute; name="right operand")
-    # cuBLAS grouped GEMMEx accepts the FP16/FP32-compute case, but (unlike
-    # ordinary GEMMEx) the grouped entry point rejects an FP16 -> FP32 output
-    # signature on current CUDA. Every CompressedFTLR stage must stay grouped, so keep
-    # storage homogeneous until that API capability becomes available.
+    # grouped output-storage limitation
+    # CUDA grouped GEMM rejects low-precision input with Float32 output.
     eltype(C) === T || throw(ArgumentError(
         "CompressedFTLR grouped GEMMEx currently requires output storage to match operand storage; " *
         "got $T × $T → $(eltype(C))",
@@ -89,10 +97,8 @@ end
 """
     gemm!(C, A::CompressedFTLRMatrix, B::CompressedFTLRMatrix; workspace, alpha=true, beta=false)
 
-Exact-rank CompressedFTLR dense accumulation on CPU and CUDA. Supports nominal
-grids with trailing boundary tiles and logical `N/T` operands, using the common
-grouped interface for all three stages and selecting FoldRight/FoldLeft from
-packed layouts.
+Exact-rank dense accumulation for logical `N/T` operands and trailing boundary
+tiles. Packed layouts select FoldRight or FoldLeft grouped lowering.
 """
 function gemm!(C::AbstractMatrix, A::CompressedFTLRMatrix{BackendT,T}, B::CompressedFTLRMatrix{BackendT,T};
     workspace, alpha=true, beta=false,
@@ -102,40 +108,39 @@ function gemm!(C::AbstractMatrix, A::CompressedFTLRMatrix{BackendT,T}, B::Compre
     size(LA, 2) == size(LB, 1) || throw(DimensionMismatch("inner dimensions must match"))
     size(C) == (size(LA, 1), size(LB, 2)) ||
         throw(DimensionMismatch("C must be size(op(A),1) × size(op(B),2)"))
+
+    # compute scalars
     mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
     ScalarT = gemm_compute_type(mode)
     α = ScalarT(alpha)
     β = ScalarT(beta)
+
+    # symbolic analysis and execution
     if analysis === nothing
-        # One-shot path: build the symbolic analysis, execute once, discard it.
-        # This shares the prepared-descriptor lowering instead of maintaining a
-        # second implementation that rebuilt every cuBLAS descriptor per row run
-        # (measured ~38x slower on H100 for repeated calls, and identical cost
-        # for a single call since analysis does the same work once).
-        _validate_compressed_ftlr_gemm(C, LA, LB, mode)
-        # Rank vectors are intentionally mutable so a reserved-capacity TLR
-        # container can still be populated through the legacy in-place API.
-        # Do not trust the construction-time cached maximum for this fast path.
+        # one-shot prepared descriptors
+        validate_compressed_ftlr_gemm(C, LA, LB, mode)
+        # mutable ranks may invalidate the construction-time maximum
         (all(iszero, ranks(A)) || all(iszero, ranks(B))) &&
-            return _scale_output!(C, β)
+            return scale_output!(C, β)
         ws = workspace isa DenseGemmWorkspace ? workspace :
              DenseGemmWorkspace(A, workspace)
         one_shot = analyze_compressed_gemm(
             C, A, B; workspace=ws, transA, transB, compute=mode)
         try
-            return _execute_compressed_gemm_analysis!(
+            return execute_compressed_gemm_analysis!(
                 one_shot, C, A, B, ws, α, β, transA, transB, mode)
         finally
             close(one_shot)
         end
     elseif analysis isa CompressedGemmAnalysis
-        return _execute_compressed_gemm_analysis!(
+        return execute_compressed_gemm_analysis!(
             analysis, C, A, B, workspace, α, β, transA, transB, mode)
     end
+
     throw(ArgumentError("analysis must be nothing or CompressedGemmAnalysis"))
 end
 
-@inline function _validate_dense_backend(C, compressed, dense)
+@inline function validate_dense_backend(C, compressed, dense)
     backend = get_backend(compressed)
     typeof(get_backend(dense)) === typeof(backend) &&
         typeof(get_backend(C)) === typeof(backend) ||
@@ -161,7 +166,7 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T},
     gemm!(C, offdiagonal(A), B;
           workspace, alpha=alpha_value, beta=ScalarT(beta), transA, transB,
           compute=mode)
-    return _tlr_diag_times_dense!(
+    return tlr_diag_times_dense!(
         C, transA == 'T' ? transpose(A) : A, transB == 'T' ? transpose(B) : B,
         alpha_value, mode)
 end
@@ -183,7 +188,7 @@ function gemm!(C::AbstractMatrix, A::AbstractMatrix{T},
     gemm!(C, A, offdiagonal(B);
           workspace, alpha=alpha_value, beta=ScalarT(beta), transA, transB,
           compute=mode)
-    return _dense_times_tlr_diag!(
+    return dense_times_tlr_diag!(
         C, transA == 'T' ? transpose(A) : A, transB == 'T' ? transpose(B) : B,
         alpha_value, mode)
 end
@@ -193,7 +198,7 @@ function _execute_one_shot_two_stage!(
     analysis = analyze_compressed_gemm(
         C, A, B; workspace, transA, transB, compute=mode)
     try
-        return _execute_compressed_mixed_analysis!(
+        return execute_compressed_mixed_analysis!(
             analysis, C, A, B, workspace, alpha, beta,
             transA, transB, mode)
     finally
@@ -212,27 +217,32 @@ function gemm!(C::AbstractMatrix, A::CompressedFTLRMatrix{BackendT,T},
     B::AbstractMatrix{T};
     workspace, alpha=true, beta=false, analysis=nothing,
     transA::Char='N', transB::Char='N', compute=nothing) where {BackendT,T}
+    # logical operands and validation
     LA = transA == 'T' ? transpose(A) : A
     LB = transB == 'T' ? transpose(B) : B
     size(LA, 2) == size(LB, 1) || throw(DimensionMismatch("inner dimensions must match"))
     size(C) == (size(LA, 1), size(LB, 2)) ||
         throw(DimensionMismatch("C must be size(op(A),1) × size(op(B),2)"))
-    backend = _validate_dense_backend(C, A, B)
+    backend = validate_dense_backend(C, A, B)
     mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
     validate_tlr_gemm_precision(backend, T, eltype(C), mode)
     validate_tlr_gemm_storage(LA, mode; name="compressed left operand")
     ScalarT = gemm_compute_type(mode)
+
+    # reusable analysis
     if analysis !== nothing
         analysis isa CompressedMixedGemmAnalysis || throw(ArgumentError(
             "analysis must be nothing or CompressedMixedGemmAnalysis"))
-        return _execute_compressed_mixed_analysis!(
+        return execute_compressed_mixed_analysis!(
             analysis, C, A, B, workspace, ScalarT(alpha), ScalarT(beta),
             transA, transB, mode)
     end
-    ws, arena, budget = _prepare_dense_accumulation_workspace(A, workspace)
-    plan = _two_stage_rank_plan(LA, :right)
+
+    # workspace-dependent execution path
+    ws, arena, budget = prepare_dense_accumulation_workspace(A, workspace)
+    plan = two_stage_rank_plan(LA, :right)
     if budget < plan.total_rank * sizeof(T)
-        return _compressed_dense_gemm_sequential!(
+        return compressed_dense_gemm_sequential!(
             C, LA, LB, ScalarT(alpha), ScalarT(beta), budget, mode, arena)
     end
     return _execute_one_shot_two_stage!(
@@ -250,27 +260,32 @@ function gemm!(C::AbstractMatrix, A::AbstractMatrix{T},
     B::CompressedFTLRMatrix{BackendT,T};
     workspace, alpha=true, beta=false, analysis=nothing,
     transA::Char='N', transB::Char='N', compute=nothing) where {BackendT,T}
+    # logical operands and validation
     LA = transA == 'T' ? transpose(A) : A
     LB = transB == 'T' ? transpose(B) : B
     size(LA, 2) == size(LB, 1) || throw(DimensionMismatch("inner dimensions must match"))
     size(C) == (size(LA, 1), size(LB, 2)) ||
         throw(DimensionMismatch("C must be size(op(A),1) × size(op(B),2)"))
-    backend = _validate_dense_backend(C, B, A)
+    backend = validate_dense_backend(C, B, A)
     mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
     validate_tlr_gemm_precision(backend, T, eltype(C), mode)
     validate_tlr_gemm_storage(LB, mode; name="compressed right operand")
     ScalarT = gemm_compute_type(mode)
+
+    # reusable analysis
     if analysis !== nothing
         analysis isa CompressedMixedGemmAnalysis || throw(ArgumentError(
             "analysis must be nothing or CompressedMixedGemmAnalysis"))
-        return _execute_compressed_mixed_analysis!(
+        return execute_compressed_mixed_analysis!(
             analysis, C, A, B, workspace, ScalarT(alpha), ScalarT(beta),
             transA, transB, mode)
     end
-    ws, arena, budget = _prepare_dense_accumulation_workspace(B, workspace)
-    plan = _two_stage_rank_plan(LB, :left)
+
+    # workspace-dependent execution path
+    ws, arena, budget = prepare_dense_accumulation_workspace(B, workspace)
+    plan = two_stage_rank_plan(LB, :left)
     if budget < plan.total_rank * sizeof(T)
-        return _dense_compressed_gemm_sequential!(
+        return dense_compressed_gemm_sequential!(
             C, LA, LB, ScalarT(alpha), ScalarT(beta), budget, mode, arena)
     end
     return _execute_one_shot_two_stage!(

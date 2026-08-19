@@ -62,12 +62,13 @@ function _prepare_dense_accumulation_run(tasks::DenseAccumulationRunTasks, mode)
         stage3 === nothing || destroy_prepared_grouped_gemm!(stage3)
         rethrow()
     end
+
     return PreparedDenseAccumulationRun(
         stage1, stage2, stage3, tasks.terminal_stage, tasks.zero_target,
         tasks.needs_zero, tasks.scale_targets)
 end
 
-function _prepare_dense_accumulation_runs(build_tasks, schedule, mode)
+function prepare_dense_accumulation_runs(build_tasks, schedule, mode)
     prepared = PreparedDenseAccumulationRun[]
     sizehint!(prepared, length(schedule))
     try
@@ -78,21 +79,22 @@ function _prepare_dense_accumulation_runs(build_tasks, schedule, mode)
         foreach(_destroy_prepared_dense_accumulation_run!, prepared)
         rethrow()
     end
+
     return prepared
 end
 
-@inline _dense_accumulation_runs_have_fallback(runs) =
+@inline dense_accumulation_runs_have_fallback(runs) =
     any(run -> any(stage -> stage isa PreparedGroupedGemmBundle,
                    (run.stage1, run.stage2, run.stage3)), runs)
 
-function _close_dense_accumulation_analysis!(analysis)
+function close_dense_accumulation_analysis!(analysis)
     analysis.closed && return analysis
     analysis.closed = true
     foreach(_destroy_prepared_dense_accumulation_run!, analysis.runs)
     return analysis
 end
 
-function _validate_dense_accumulation_analysis_binding(
+function validate_dense_accumulation_analysis_binding(
     analysis, C, A, B, workspace, transA, transB, mode)
     analysis.closed && throw(ArgumentError("dense-accumulation analysis has been closed"))
     C === analysis.C && A === analysis.A && B === analysis.B ||
@@ -110,7 +112,7 @@ end
     stage, backend, manage_pointer_mode, overrides...)
     stage === nothing && return nothing
     if manage_pointer_mode && !(stage isa PreparedGroupedGemmBundle)
-        return _with_grouped_host_pointer_mode(backend) do
+        return with_grouped_host_pointer_mode(backend) do
             precision_gemm_grouped_prepared!(stage, overrides...)
         end
     end
@@ -123,10 +125,10 @@ function _execute_prepared_dense_accumulation_runs_inner!(
         # beta pre-scale for the terminal stage's untouched output region
         run.needs_zero && fill!(run.zero_target, zero(T))
         @inbounds for (rows, cols) in run.scale_targets
-            _scale_output!(view(C, rows, cols), beta)
+            scale_output!(view(C, rows, cols), beta)
         end
 
-        # submit each stage, substituting alpha/beta only at the terminal one
+        # stage submission with terminal scalar overrides
         @inbounds for (index, stage) in enumerate((run.stage1, run.stage2, run.stage3))
             if index == run.terminal_stage
                 _submit_prepared_dense_accumulation_stage(
@@ -137,16 +139,17 @@ function _execute_prepared_dense_accumulation_runs_inner!(
             end
         end
     end
+
     return C
 end
 
-function _execute_prepared_dense_accumulation_runs!(
+function execute_prepared_dense_accumulation_runs!(
     runs, C, backend, ::Type{T}, alpha, beta, has_fallback::Bool) where {T}
     if has_fallback
         return _execute_prepared_dense_accumulation_runs_inner!(
             runs, C, backend, T, alpha, beta, true)
     end
-    return _with_grouped_host_pointer_mode(backend) do
+    return with_grouped_host_pointer_mode(backend) do
         _execute_prepared_dense_accumulation_runs_inner!(
             runs, C, backend, T, alpha, beta, false)
     end

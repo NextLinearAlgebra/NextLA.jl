@@ -11,7 +11,7 @@ struct FTLRCompressionWorkspace{CatsT,StreamV,KeyT}
     key::KeyT
 end
 
-function _make_category_workspace(tile_shape::NTuple{2,Int}, tile_ids,
+function make_category_workspace(tile_shape::NTuple{2,Int}, tile_ids,
                                   U::AbstractArray{T,3}, V;
                                   block::Int=max(min(32, size(U, 2), tile_shape...), 1),
                                   p0s=nothing, q0s=nothing) where {T}
@@ -43,9 +43,9 @@ function _make_category_workspace(tile_shape::NTuple{2,Int}, tile_ids,
         tile_shape, tile_ids, U, V,
         ranks=zeros(backend, Int, ntiles),
         errors_sq=zeros(backend, Float64, ntiles),
-        R_keep=min(kout, S), Z, V_tiles=_batch_views(Z, S),
-        p0s=pdev, q0s=qdev, ara, Q_tiles=_batch_views(Q, S), omega,
-        omega_tiles=_batch_views(omega, blk), Y_tiles=_batch_views(Y, blk),
+        R_keep=min(kout, S), Z, V_tiles=batch_views(Z, S),
+        p0s=pdev, q0s=qdev, ara, Q_tiles=batch_views(Q, S), omega,
+        omega_tiles=batch_views(omega, blk), Y_tiles=batch_views(Y, blk),
     )
 end
 
@@ -53,10 +53,13 @@ function _compression_batch_specs(m::Int, n::Int,
                                   tile_size::NTuple{2,Int}, diagonal::Symbol)
     diagonal in (:compressed, :dense) || throw(ArgumentError(
         "diagonal must be :compressed or :dense"))
+
     bm, bn = tile_size
     qm, qn = cld(m, bm), cld(n, bn)
     shapes = NTuple{2,Int}[]
     ids_by_shape = Dict{NTuple{2,Int},Vector{NTuple{2,Int}}}()
+
+    # shape-grouped tile ids
     @inbounds for j in 1:qn, i in 1:qm
         diagonal === :dense && i == j && continue
         tm = min(bm, m - (i - 1) * bm)
@@ -68,6 +71,7 @@ function _compression_batch_specs(m::Int, n::Int,
         end
         push!(ids_by_shape[shape], (i, j))
     end
+
     return [(shape=shape, tile_ids=ids_by_shape[shape]) for shape in shapes]
 end
 
@@ -94,9 +98,11 @@ function FTLRCompressionWorkspace(A::AbstractMatrix{T},
         q0s = copyto!(allocate(backend, Int32, count), q0_host)
         U = zeros(backend, T, tm, maxrank, count)
         V = zeros(backend, T, tn, maxrank, count)
-        _make_category_workspace(
+        make_category_workspace(
             spec.shape, ids, U, V; block, p0s, q0s)
     end
+
+    # workspace identity
     key = (; device=backend, T, m, n, tile_size, maxrank, diagonal)
     return FTLRCompressionWorkspace(cats, create_streams(backend, length(cats)), key)
 end
@@ -104,11 +110,11 @@ end
 FTLRCompressionWorkspace(A::AbstractMatrix, b::Int; kwargs...) =
     FTLRCompressionWorkspace(A, (b, b); kwargs...)
 
-function _validate_compression_workspace(ws::FTLRCompressionWorkspace,
-                                         A::AbstractMatrix,
-                                         tile_size::NTuple{2,Int},
-                                         maxrank::Int,
-                                         diagonal::Symbol)
+function validate_compression_workspace(ws::FTLRCompressionWorkspace,
+                                        A::AbstractMatrix,
+                                        tile_size::NTuple{2,Int},
+                                        maxrank::Int,
+                                        diagonal::Symbol)
     key = ws.key
     expected = (typeof(get_backend(A)), eltype(A), size(A, 1), size(A, 2),
                 tile_size, maxrank, diagonal)

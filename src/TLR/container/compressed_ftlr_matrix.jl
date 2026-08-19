@@ -1,10 +1,8 @@
 """
-    CompressedFTLRMatrix
+    CompressedFTLRPackedFactors
 
-Logical-rank, block-compressed low-rank storage for a rectangular tile grid. Every
-factor is a single packed allocation; `offsets` gives the scalar span of each
-tile in that factor's own tile order.  The outer and inner factors may use
-different orders, which is what permits row-packed `W` and column-packed `Z`.
+One packed factor allocation for a rectangular tile grid. `offsets` gives each
+tile's scalar span in this factor's tile order.
 """
 struct CompressedFTLRPackedFactors{AT<:AbstractVector,O<:TileOrderStyle}
     data::AT
@@ -15,6 +13,7 @@ struct CompressedFTLRPackedFactors{AT<:AbstractVector,O<:TileOrderStyle}
     qn::Int
 end
 
+"""Logical-rank block-compressed storage with independently ordered factors."""
 struct CompressedFTLRMatrix{BackendT<:Backend,T,AT<:AbstractVector{T},
                   OuterT<:TileOrderStyle,InnerT<:TileOrderStyle} <: AbstractTLRMatrix{T}
     backend::BackendT
@@ -30,25 +29,25 @@ struct CompressedFTLRMatrix{BackendT<:Backend,T,AT<:AbstractVector{T},
     maxrank::Int
 end
 
-@inline function _compressed_ftlr_rank(A::CompressedFTLRMatrix, i::Int, j::Int)
+@inline function compressed_ftlr_rank(A::CompressedFTLRMatrix, i::Int, j::Int)
     slot = tile_linear_index(A.outer.order, A.outer.qm, A.outer.qn, i, j)
     return A.ranks[slot]
 end
-@inline _compressed_ftlr_rank(
+@inline compressed_ftlr_rank(
     A::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) =
-    _compressed_ftlr_rank(parent(A), j, i)
-@inline function _compressed_ftlr_storage_rank(A::CompressedFTLRMatrix, i::Int, j::Int)
-    r = _compressed_ftlr_rank(A, i, j)
+    compressed_ftlr_rank(parent(A), j, i)
+@inline function compressed_ftlr_storage_rank(A::CompressedFTLRMatrix, i::Int, j::Int)
+    r = compressed_ftlr_rank(A, i, j)
     return iszero(r) || iszero(A.rank_multiple) ? r : cld(r, A.rank_multiple) * A.rank_multiple
 end
-@inline _compressed_ftlr_storage_rank(
+@inline compressed_ftlr_storage_rank(
     A::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) =
-    _compressed_ftlr_storage_rank(parent(A), j, i)
-@inline _compressed_ftlr_logical_coords(::CompressedFTLRMatrix, i::Int, j::Int) = (i, j)
-@inline _compressed_ftlr_logical_coords(
+    compressed_ftlr_storage_rank(parent(A), j, i)
+@inline compressed_ftlr_logical_coords(::CompressedFTLRMatrix, i::Int, j::Int) = (i, j)
+@inline compressed_ftlr_logical_coords(
     ::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) = (j, i)
 
-@inline function _compressed_ftlr_factor_view(f::CompressedFTLRPackedFactors,
+@inline function compressed_ftlr_factor_view(f::CompressedFTLRPackedFactors,
                                                i::Int, j::Int, axis_index::Int,
                                                visible_r=nothing)
     logical_rows = f.logical_dimensions[axis_index]
@@ -58,15 +57,16 @@ end
     ld = aligned_leading_dimension(eltype(f.data), logical_rows)
     stored_r = (next - first) ÷ ld
     width = visible_r === nothing ? stored_r : visible_r
+
     stored_r == 0 && return reshape(view(f.data, 1:0), logical_rows, 0)
     packed = reshape(view(f.data, first:(next - 1)), ld, stored_r)
     return view(packed, 1:logical_rows, 1:width)
 end
 
 @inline compressed_ftlr_outer(A::CompressedFTLRMatrix, i::Int, j::Int) =
-    _compressed_ftlr_factor_view(A.outer, i, j, i, _compressed_ftlr_rank(A, i, j))
+    compressed_ftlr_factor_view(A.outer, i, j, i, compressed_ftlr_rank(A, i, j))
 @inline compressed_ftlr_inner(A::CompressedFTLRMatrix, i::Int, j::Int) =
-    _compressed_ftlr_factor_view(A.inner, i, j, j, _compressed_ftlr_rank(A, i, j))
+    compressed_ftlr_factor_view(A.inner, i, j, j, compressed_ftlr_rank(A, i, j))
 @inline compressed_ftlr_outer(
     A::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) =
     compressed_ftlr_inner(parent(A), j, i)
@@ -74,9 +74,9 @@ end
     A::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) =
     compressed_ftlr_outer(parent(A), j, i)
 @inline compressed_ftlr_storage_outer(A::CompressedFTLRMatrix, i::Int, j::Int) =
-    _compressed_ftlr_factor_view(A.outer, i, j, i)
+    compressed_ftlr_factor_view(A.outer, i, j, i)
 @inline compressed_ftlr_storage_inner(A::CompressedFTLRMatrix, i::Int, j::Int) =
-    _compressed_ftlr_factor_view(A.inner, i, j, j)
+    compressed_ftlr_factor_view(A.inner, i, j, j)
 @inline compressed_ftlr_storage_outer(
     A::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}, i::Int, j::Int) =
     compressed_ftlr_storage_inner(parent(A), j, i)
@@ -100,28 +100,29 @@ end
 end
 @inline maximum_storage_rank(A::TransposeTLRMatrix) = maximum_storage_rank(parent(A))
 
-@inline _compressed_ftlr_outer_storage(A::CompressedFTLRMatrix) = A.outer
-@inline _compressed_ftlr_inner_storage(A::CompressedFTLRMatrix) = A.inner
-@inline _compressed_ftlr_outer_storage(
+@inline compressed_ftlr_outer_storage(A::CompressedFTLRMatrix) = A.outer
+@inline compressed_ftlr_inner_storage(A::CompressedFTLRMatrix) = A.inner
+@inline compressed_ftlr_outer_storage(
     A::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}) = parent(A).inner
-@inline _compressed_ftlr_inner_storage(
+@inline compressed_ftlr_inner_storage(
     A::TransposeTLRMatrix{<:Any,<:CompressedFTLRMatrix}) = parent(A).outer
 
 """
-    _compressed_ftlr_uniform_view(f::CompressedFTLRPackedFactors)
+    compressed_ftlr_uniform_view(f::CompressedFTLRPackedFactors)
 
-Reinterpret `f`'s packed storage as a dense `[extent, width, qm*qn]` array,
-where the third index is `f`'s own tile order
-(`tile_linear_index(f.order, qm, qn, i, j)`). Valid only when every tile shares
-the same stored capacity and logical extent along `f`'s axis — i.e. `f`
-belongs to private uniform, regular-grid compressed-output staging. Throws if that
-uniformity does not hold, rather than silently returning a misinterpreted view.
+View uniformly packed factors as `[extent, width, qm*qn]` in `f.order`. This is
+valid only for private regular-grid staging and throws on nonuniform extents,
+capacities, or backing storage.
 """
-function _compressed_ftlr_uniform_view(f::CompressedFTLRPackedFactors)
+function compressed_ftlr_uniform_view(f::CompressedFTLRPackedFactors)
     ntiles = f.qm * f.qn
     extent = f.logical_dimensions[1]
+
+    # regular-grid extent
     all(==(extent), f.logical_dimensions) ||
         throw(ArgumentError("packed factors are not on a regular grid (nonuniform tile extent)"))
+
+    # uniform tile capacity
     ld = aligned_leading_dimension(eltype(f.data), extent)
     stride = f.offsets[2] - f.offsets[1]
     stride % ld == 0 || throw(ArgumentError(
@@ -129,6 +130,8 @@ function _compressed_ftlr_uniform_view(f::CompressedFTLRPackedFactors)
     capacity = stride ÷ ld
     all(k -> f.offsets[k + 1] - f.offsets[k] == stride, 1:ntiles) || throw(ArgumentError(
         "packed factors do not have a uniform per-tile width"))
+
+    # backing size
     length(f.data) == stride * ntiles || throw(ArgumentError(
         "packed factor storage size is inconsistent with a uniform-capacity layout"))
     return view(reshape(f.data, ld, capacity, ntiles), 1:extent, :, :)
@@ -183,8 +186,8 @@ function CompressedFTLRMatrix(backend::Backend, ::Type{T}, m::Int, n::Int,
         r = ranks_in[i, j]
         return iszero(r) || iszero(rank_multiple) ? r : cld(r, rank_multiple) * rank_multiple
     end
-    # Aligned leading dimensions keep every packed factor base 16-byte aligned,
-    # including ragged boundary tiles.
+
+    # leading dimensions for 16-byte-aligned factor bases, including ragged tiles
     uoffsets = _compressed_ftlr_offsets(
         outer_style, qm, qn,
         (i, j) -> aligned_leading_dimension(T, rowdims[i]), storage_rank_at)

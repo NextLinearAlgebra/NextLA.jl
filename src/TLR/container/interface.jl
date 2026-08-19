@@ -57,9 +57,6 @@ struct TransposeTLRMatrix{T,A<:AbstractTLRMatrix{T}} <: AbstractTLRMatrix{T}
     parent::A
 end
 
-TransposeTLRMatrix(A::AbstractTLRMatrix{T}) where {T} =
-    TransposeTLRMatrix{T,typeof(A)}(A)
-
 Base.parent(A::TransposeTLRMatrix) = getfield(A, :parent)
 Base.transpose(A::AbstractTLRMatrix) = TransposeTLRMatrix(A)
 Base.transpose(A::TransposeTLRMatrix) = parent(A)
@@ -88,9 +85,8 @@ Base.size(A::TransposeTLRMatrix) = reverse(size(parent(A)))
 """
     regular_grid_size(A) -> (q_m, q_n)
 
-Sub-grid of full-size regular tiles, `(⌊m/bm⌋, ⌊n/bn⌋)` — `grid_size` minus
-any partial boundary row/column. Equals `grid_size` when the matrix tiles
-evenly. This is the interior grid the gemm hard term operates over.
+Sub-grid of full-size tiles, `(⌊m/bm⌋, ⌊n/bn⌋)`. It excludes any partial
+boundary row or column and equals `grid_size` when the matrix tiles evenly.
 """
 @inline regular_grid_size(A::AbstractTLRMatrix) =
     (fld(size(A, 1), nominal_tile_size(A, 1)),
@@ -121,14 +117,14 @@ end
         (tile_j - 1) * nominal_tile_size(A, 2) + 1)
 end
 
-@inline function _dense_tile_view(dense::AbstractMatrix, A, tile_i::Int, tile_j::Int)
+@inline function dense_tile_view(dense::AbstractMatrix, A, tile_i::Int, tile_j::Int)
     p0, q0 = tile_origin_coords(A, tile_i, tile_j)
     tm, tn = tile_size(A, tile_i, tile_j)
     return view(dense, p0:(p0+tm-1), q0:(q0+tn-1))
 end
 
 """Logical row/column range of one TLR tile along `axis`."""
-@inline function _tile_axis_range(A::AbstractTLRMatrix, tile::Int, axis::Int)
+@inline function tile_axis_range(A::AbstractTLRMatrix, tile::Int, axis::Int)
     first = (tile - 1) * nominal_tile_size(A, axis) + 1
     extent = tile_size(A, axis == 1 ? tile : 1, axis == 2 ? tile : 1)[axis]
     return first:(first + extent - 1)

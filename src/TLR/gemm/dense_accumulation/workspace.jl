@@ -25,7 +25,7 @@ function DenseGemmWorkspace(A::AbstractTLRMatrix{T},
     return workspace
 end
 
-function _prepare_dense_accumulation_workspace(
+function prepare_dense_accumulation_workspace(
     A::AbstractTLRMatrix{T}, workspace) where {T}
     ws = if workspace isa Int
         DenseGemmWorkspace(A, workspace)
@@ -39,5 +39,6 @@ function _prepare_dense_accumulation_workspace(
         throw(ArgumentError(
             "workspace must be an integer byte count or DenseGemmWorkspace"))
     end
+
     return ws, GemmArena(view(ws.storage, :), 1), sizeof(ws)
 end

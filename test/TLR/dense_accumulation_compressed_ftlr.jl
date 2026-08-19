@@ -11,13 +11,14 @@ function _compressed_ftlr_to_backend(A::NextLA.CompressedFTLRMatrix, AT)
                            rank_grid;
                            outer_order=typeof(A.outer.order), inner_order=typeof(A.inner.order),
                            rank_multiple=NextLA.rank_multiple(A))
+
     copyto!(B.outer.data, AT(Array(A.outer.data)))
     copyto!(B.inner.data, AT(Array(A.inner.data)))
     return B
 end
 
 @testset "dense × compressed aligned row-run sizing" begin
-    height = _TLRM._dense_compressed_row_run_height
+    height = _TLRM.dense_compressed_row_run_height
     @test height(25 * 10, 10, 100, Float16) == 24
     @test height(25 * 10, 10, 100, Float32) == 24
     @test height(25 * 10, 10, 100, Float64) == 24
@@ -104,12 +105,12 @@ end
         end
     end
 
-    left_plan = _TLRM._two_stage_rank_plan(G, :left)
-    right_plan = _TLRM._two_stage_rank_plan(G, :right)
+    left_plan = _TLRM.two_stage_rank_plan(G, :left)
+    right_plan = _TLRM.two_stage_rank_plan(G, :right)
     @test all(run.fold === :left for run in
-              _TLRM._two_stage_schedule(zeros(9, 9), left_plan, 4096, Float64))
+              _TLRM.two_stage_schedule(zeros(9, 9), left_plan, 4096, Float64))
     @test all(run.fold === :right for run in
-              _TLRM._two_stage_schedule(zeros(9, 9), right_plan, 4096, Float64))
+              _TLRM.two_stage_schedule(zeros(9, 9), right_plan, 4096, Float64))
 end
 
 @testset "CompressedFTLR clears T only for uncovered rank holes" begin
@@ -119,19 +120,19 @@ end
     end
 
     positive = make_operand(ones(Int, 2, 2))
-    positive_plan = _TLRM._compressed_ftlr_rank_plan(positive, positive)
+    positive_plan = _TLRM.compressed_ftlr_rank_plan(positive, positive)
     positive_workspace = NextLA.DenseGemmWorkspace(
         positive, positive_plan.profile.maximum)
     positive_arena = _TLRM.GemmArena(
         view(positive_workspace.storage, :), 1)
     C = zeros(Float32, 8, 8)
 
-    right = _TLRM._build_compressed_ftlr_foldright_run(
+    right = _TLRM.build_compressed_ftlr_foldright_run(
         C, positive, positive, positive_plan, 1:2, 1:2, 1f0, 0f0,
         positive_arena)
     @test !right.needs_zero
 
-    left = _TLRM._build_compressed_ftlr_foldleft_run(
+    left = _TLRM.build_compressed_ftlr_foldleft_run(
         C, positive, positive, positive_plan, 1:2, 1:2, 1f0, 0f0,
         positive_arena)
     @test !left.needs_zero
@@ -139,22 +140,22 @@ end
     # FoldRight gives every active A rank rows across every output column.
     # A zero B tile therefore leaves a consumed T block unwritten.
     right_B = make_operand(Int[0 1; 1 1])
-    right_plan = _TLRM._compressed_ftlr_rank_plan(positive, right_B)
+    right_plan = _TLRM.compressed_ftlr_rank_plan(positive, right_B)
     right_workspace = NextLA.DenseGemmWorkspace(
         positive, right_plan.profile.right_byte_prefix[end])
     right_arena = _TLRM.GemmArena(view(right_workspace.storage, :), 1)
-    right_hole = _TLRM._build_compressed_ftlr_foldright_run(
+    right_hole = _TLRM.build_compressed_ftlr_foldright_run(
         C, positive, right_B, right_plan, 1:2, 1:2, 1f0, 0f0, right_arena)
     @test right_hole.needs_zero
 
     # FoldLeft gives every physical output row columns for every active B
     # rank. A zero A tile leaves the corresponding rows unwritten.
     left_A = make_operand(Int[0 1; 1 1])
-    left_plan = _TLRM._compressed_ftlr_rank_plan(left_A, positive)
+    left_plan = _TLRM.compressed_ftlr_rank_plan(left_A, positive)
     left_workspace = NextLA.DenseGemmWorkspace(
         left_A, left_plan.profile.left_byte_prefix[end])
     left_arena = _TLRM.GemmArena(view(left_workspace.storage, :), 1)
-    left_hole = _TLRM._build_compressed_ftlr_foldleft_run(
+    left_hole = _TLRM.build_compressed_ftlr_foldleft_run(
         C, left_A, positive, left_plan, 1:2, 1:2, 1f0, 0f0, left_arena)
     @test left_hole.needs_zero
 end
@@ -166,12 +167,12 @@ end
         outer_order=NextLA.TileColMajor, inner_order=NextLA.TileColMajor)
     B = NextLA.CompressedFTLRMatrix(
         KernelAbstractions.CPU(), Float32, 8, 8, 4, reverse(rank_grid; dims=1))
-    plan = _TLRM._compressed_ftlr_rank_plan(A, B)
+    plan = _TLRM.compressed_ftlr_rank_plan(A, B)
     @test plan.profile.right_byte_prefix === nothing
     workspace = NextLA.DenseGemmWorkspace(A, plan.profile.maximum)
     arena = _TLRM.GemmArena(view(workspace.storage, :), 1)
     C = zeros(Float32, 8, 8)
-    tasks = _TLRM._build_compressed_ftlr_foldleft_run(
+    tasks = _TLRM.build_compressed_ftlr_foldleft_run(
         C, A, B, plan, 1:2, 1:2, 1f0, 0f0, arena)
 
     @test length(tasks.stage3) == NextLA.grid_size(B)[2]
@@ -204,8 +205,8 @@ end
 end
 
 @testset "CompressedFTLR CUDA logical transpose combinations" begin
-    Ahost = _compressed_ftlr_fixture(Float32, Int[1 2; 3 1])
-    Bhost = _compressed_ftlr_fixture(Float32, Int[2 1; 1 3])
+    Ahost = compressed_ftlr_fixture(Float32, Int[1 2; 3 1])
+    Bhost = compressed_ftlr_fixture(Float32, Int[2 1; 1 3])
     referenceA = zeros(Float32, size(Ahost)); referenceB = zeros(Float32, size(Bhost))
     NextLA.uncompress!(referenceA, Ahost); NextLA.uncompress!(referenceB, Bhost)
     for (name, AT, sync) in backends
@@ -230,8 +231,8 @@ end
 end
 
 @testset "CompressedFTLR CUDA dense GEMM" begin
-    Ahost = _compressed_ftlr_fixture(Float32)
-    Bhost = _compressed_ftlr_fixture(Float32, Int[1 0; 2 1; 3 1])
+    Ahost = compressed_ftlr_fixture(Float32)
+    Bhost = compressed_ftlr_fixture(Float32, Int[1 0; 2 1; 3 1])
     referenceAhost = zeros(Float32, size(Ahost))
     referenceBhost = zeros(Float32, size(Bhost))
     NextLA.uncompress!(referenceAhost, Ahost)
@@ -262,53 +263,63 @@ end
     end
 end
 
+# Both two-stage folds slice their T workspace at each output's rank prefix, so
+# a member's operands are 16-byte aligned only when every preceding rank is a
+# multiple of the backend's alignment quantum. Quantized ranks therefore stay
+# fully grouped, while exact ranks route the unaligned members through ordinary
+# GEMMEx -- same results either way, so both paths are covered here.
 @testset "CompressedFTLR CUDA mixed grouped lowering and analysis" begin
     rank_grid = Int[1 2 1; 2 0 1; 1 1 1]
-    H = NextLA.CompressedFTLRMatrix(
-        KernelAbstractions.CPU(), Float32, 9, 9, (4, 4), rank_grid)
-    rng = MersenneTwister(2026)
-    for j in 1:3, i in 1:3
-        U, V = NextLA.get_factors(H, i, j)
-        U .= randn(rng, Float32, size(U))
-        V .= randn(rng, Float32, size(V))
-    end
-    Hdense = zeros(Float32, 9, 9)
-    NextLA.uncompress!(Hdense, H)
-    for (name, AT, sync) in backends
-        name == "CUDA" || continue
-        G = _compressed_ftlr_to_backend(H, AT)
-        for side in (:compressed_dense, :dense_compressed),
-            trans_dense in ('N', 'T'), trans_compressed in ('N', 'T')
-            Xhost = randn(rng, Float32, 9, 9)
-            X = AT(Xhost)
-            C0 = randn(rng, Float32, 9, 9)
-            C = AT(C0)
-            workspace = NextLA.DenseGemmWorkspace(G, 4096)
-            if side === :compressed_dense
-                analysis = NextLA.analyze_compressed_gemm(
-                    C, G, X; workspace,
-                    transA=trans_compressed, transB=trans_dense)
-                @test !analysis.has_fallback
-                NextLA.gemm!(
-                    C, G, X; workspace, alpha=1.25f0, beta=-0.5f0,
-                    transA=trans_compressed, transB=trans_dense, analysis)
-                opG = trans_compressed == 'N' ? Hdense : transpose(Hdense)
-                opX = trans_dense == 'N' ? Xhost : transpose(Xhost)
-            else
-                analysis = NextLA.analyze_compressed_gemm(
-                    C, X, G; workspace,
-                    transA=trans_dense, transB=trans_compressed)
-                @test !analysis.has_fallback
-                NextLA.gemm!(
-                    C, X, G; workspace, alpha=1.25f0, beta=-0.5f0,
-                    transA=trans_dense, transB=trans_compressed, analysis)
-                opX = trans_dense == 'N' ? Xhost : transpose(Xhost)
-                opG = trans_compressed == 'N' ? Hdense : transpose(Hdense)
+    quantum = NextLA.gemm_alignment_quantum(Float32)
+    for rank_multiple in (quantum, 0)
+        H = NextLA.CompressedFTLRMatrix(
+            KernelAbstractions.CPU(), Float32, 9, 9, (4, 4), rank_grid;
+            rank_multiple)
+        rng = MersenneTwister(2026)
+        for j in 1:3, i in 1:3
+            U, V = NextLA.get_factors(H, i, j)
+            U .= randn(rng, Float32, size(U))
+            V .= randn(rng, Float32, size(V))
+        end
+        Hdense = zeros(Float32, 9, 9)
+        NextLA.uncompress!(Hdense, H)
+
+        for (name, AT, sync) in backends
+            name == "CUDA" || continue
+            G = _compressed_ftlr_to_backend(H, AT)
+            for side in (:compressed_dense, :dense_compressed),
+                trans_dense in ('N', 'T'), trans_compressed in ('N', 'T')
+                Xhost = randn(rng, Float32, 9, 9)
+                X = AT(Xhost)
+                C0 = randn(rng, Float32, 9, 9)
+                C = AT(C0)
+                workspace = NextLA.DenseGemmWorkspace(G, 4096)
+                if side === :compressed_dense
+                    analysis = NextLA.analyze_compressed_gemm(
+                        C, G, X; workspace,
+                        transA=trans_compressed, transB=trans_dense)
+                    @test analysis.has_fallback == iszero(rank_multiple)
+                    NextLA.gemm!(
+                        C, G, X; workspace, alpha=1.25f0, beta=-0.5f0,
+                        transA=trans_compressed, transB=trans_dense, analysis)
+                    opG = trans_compressed == 'N' ? Hdense : transpose(Hdense)
+                    opX = trans_dense == 'N' ? Xhost : transpose(Xhost)
+                else
+                    analysis = NextLA.analyze_compressed_gemm(
+                        C, X, G; workspace,
+                        transA=trans_dense, transB=trans_compressed)
+                    @test analysis.has_fallback == iszero(rank_multiple)
+                    NextLA.gemm!(
+                        C, X, G; workspace, alpha=1.25f0, beta=-0.5f0,
+                        transA=trans_dense, transB=trans_compressed, analysis)
+                    opX = trans_dense == 'N' ? Xhost : transpose(Xhost)
+                    opG = trans_compressed == 'N' ? Hdense : transpose(Hdense)
+                end
+                sync(C)
+                product = side === :compressed_dense ? opG * opX : opX * opG
+                @test Array(C) ≈ 1.25f0 .* product .- 0.5f0 .* C0 rtol=3f-4 atol=3f-4
+                close(analysis)
             end
-            sync(C)
-            product = side === :compressed_dense ? opG * opX : opX * opG
-            @test Array(C) ≈ 1.25f0 .* product .- 0.5f0 .* C0 rtol=3f-4 atol=3f-4
-            close(analysis)
         end
     end
 end
@@ -317,8 +328,8 @@ function _compressed_dense32(A)
     dense = zeros(Float32, size(A))
     qm, qn = NextLA.grid_size(A)
     for j in 1:qn, i in 1:qm
-        rows = _TLRM._tile_axis_range(A, i, 1)
-        cols = _TLRM._tile_axis_range(A, j, 2)
+        rows = _TLRM.tile_axis_range(A, i, 1)
+        cols = _TLRM.tile_axis_range(A, j, 2)
         U, V = NextLA.get_factors(A, i, j)
         dense[rows, cols] .= Float32.(U) * transpose(Float32.(V))
     end
@@ -332,15 +343,15 @@ end
         (Float32, NextLA.TF32(), 5f-3),
     )
         q = T === Float16 ? 8 : compute isa NextLA.TF32 ? 4 : 0
-        Ahost = _compressed_ftlr_fixture(T, rank_grid; rank_multiple=q)
-        Bhost = _compressed_ftlr_fixture(
+        Ahost = compressed_ftlr_fixture(T, rank_grid; rank_multiple=q)
+        Bhost = compressed_ftlr_fixture(
             T, reverse(rank_grid; dims=1); rank_multiple=q)
         reference = _compressed_dense32(Ahost) * _compressed_dense32(Bhost)
         for (name, AT, sync) in backends
             name == "CUDA" || continue
             A = _compressed_ftlr_to_backend(Ahost, AT)
             B = _compressed_ftlr_to_backend(Bhost, AT)
-            exact_host = _compressed_ftlr_fixture(T, rank_grid)
+            exact_host = compressed_ftlr_fixture(T, rank_grid)
             exact = _compressed_ftlr_to_backend(exact_host, AT)
             @test_throws ArgumentError NextLA.gemm!(
                 AT(zeros(T, size(exact, 1), size(exact, 2))), exact, exact;

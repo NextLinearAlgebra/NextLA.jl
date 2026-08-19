@@ -1,19 +1,20 @@
-@inline _diag_tile_ref(A::TLRMatrix, k::Int) = (_diag_tile_view(A, k), 'N')
-@inline _diag_tile_ref(A::TransposeTLRMatrix{<:Any,<:TLRMatrix}, k::Int) =
-    (_diag_tile_view(parent(A), k), 'T')
+@inline diag_tile_ref(A::TLRMatrix, k::Int) = (diag_tile_view(A, k), 'N')
+@inline diag_tile_ref(A::TransposeTLRMatrix{<:Any,<:TLRMatrix}, k::Int) =
+    (diag_tile_view(parent(A), k), 'T')
 
 """Nonzero-execution-rank `(i,k,r)` tiles between `OA`'s off-diagonal factors
 and `DB`'s diagonal, paired with each tile's intermediate (`S = V'D`) element
-count. Shared by the workspace-bound queries and `_tlr_offdiag_times_diag!`'s
+count. Shared by the workspace-bound queries and `tlr_offdiag_times_diag!`'s
 packing loop, so the two can never enumerate different tile sets."""
 function _tlr_right_cross_items(OA, DB)
     qm, qk = grid_size(OA)
     items = Tuple{Int,Int,Int}[]
     @inbounds for k in 1:min(qk, ndiag_tiles(DB)), i in 1:qm
-        r = _compressed_ftlr_storage_rank(OA, i, k)
+        r = compressed_ftlr_storage_rank(OA, i, k)
         r == 0 || push!(items, (i, k, r))
     end
-    sizes = [r * length(_tile_axis_range(DB, k, 2)) for (_, k, r) in items]
+
+    sizes = [r * length(tile_axis_range(DB, k, 2)) for (_, k, r) in items]
     return items, sizes
 end
 
@@ -24,10 +25,11 @@ function _tlr_left_cross_items(OB, DA)
     qk, qn = grid_size(OB)
     items = Tuple{Int,Int,Int}[]
     @inbounds for k in 1:min(qk, ndiag_tiles(DA)), j in 1:qn
-        r = _compressed_ftlr_storage_rank(OB, k, j)
+        r = compressed_ftlr_storage_rank(OB, k, j)
         r == 0 || push!(items, (k, j, r))
     end
-    sizes = [length(_tile_axis_range(DA, k, 1)) * r for (k, _, r) in items]
+
+    sizes = [length(tile_axis_range(DA, k, 1)) * r for (k, _, r) in items]
     return items, sizes
 end
 
@@ -40,7 +42,9 @@ function _tlr_diagonal_intermediate_sizes(A::TLRMatrix, B::TLRMatrix,
     OB = offdiagonal(DB)
     _, qk = grid_size(OA)
     qkB, _ = grid_size(OB)
+
     qk == qkB || throw(DimensionMismatch("TLR contraction grids do not match"))
+
     _, right = _tlr_right_cross_items(OA, DB)
     _, left = _tlr_left_cross_items(OB, DA)
     return right, left
@@ -79,14 +83,9 @@ end
 """
     _tlr_pack_cross_items!(mode, arena, capacity, T, items, sizes, push_item!)
 
-Shared arena-packing driver for the two dense-diagonal cross terms
-(`O_A D_B` and `D_A O_B`). Chunks `items` (with per-item intermediate element
-counts `sizes`) into passes that fit `arena`, 16-byte-aligning each
-intermediate's offset within a pass, and submits each pass as one grouped
-stage-1 call and one grouped stage-2 call. `push_item!(stage1, stage2, idx)`
-builds and pushes item `items[idx]`'s stage-1/stage-2 `GroupedGemmTask`s,
-including carving its own intermediate out of `arena` (already positioned at
-that item's aligned offset when `push_item!` is called).
+Pack dense-diagonal cross terms into 16-byte-aligned arena passes. `sizes`
+contains each intermediate's elements; `push_item!` carves that intermediate
+and appends its two `GroupedGemmTask`s.
 """
 function _tlr_pack_cross_items!(mode, arena, capacity::Int, ::Type{T}, items, sizes,
                                 push_item!) where {T}
@@ -98,11 +97,11 @@ function _tlr_pack_cross_items!(mode, arena, capacity::Int, ::Type{T}, items, si
 
     first_item = 1
     while first_item <= length(items)
-        _arena_reset!(arena)
+        arena_reset!(arena)
         stage1 = GroupedGemmTask[]
         stage2 = GroupedGemmTask[]
 
-        # pack items into this pass until the arena is full
+        # aligned items for this pass
         used = 0
         item = first_item
         while item <= length(items)
@@ -123,21 +122,23 @@ function _tlr_pack_cross_items!(mode, arena, capacity::Int, ::Type{T}, items, si
 end
 
 # O_A D_B:  S_ik = V_A_ik' D_B_kk  (stage 1),  C[rows,cols] += α U_A_ik S_ik  (stage 2).
-function _tlr_offdiag_times_diag!(C, OA, DB, alpha, mode, arena, capacity::Int)
+function tlr_offdiag_times_diag!(C, OA, DB, alpha, mode, arena, capacity::Int)
     T = eltype(OA)
     items, sizes = _tlr_right_cross_items(OA, DB)
     backend = get_backend(OA)
+
+    # cross-term batches
     _tlr_pack_cross_items!(mode, arena, capacity, T, items, sizes,
         (stage1, stage2, idx) -> begin
             i, k, r = items[idx]
-            cols = _tile_axis_range(DB, k, 2)
-            S = _workspace_array!(arena, backend, T, r, length(cols))
+            cols = tile_axis_range(DB, k, 2)
+            S = workspace_array!(arena, backend, T, r, length(cols))
             V = compressed_ftlr_storage_inner(OA, i, k)
-            D, opD = _diag_tile_ref(DB, k)
+            D, opD = diag_tile_ref(DB, k)
             push!(stage1, GroupedGemmTask(
                 'T', opD, one(T), V, D, zero(T), S))
             U = compressed_ftlr_storage_outer(OA, i, k)
-            rows = _tile_axis_range(OA, i, 1)
+            rows = tile_axis_range(OA, i, 1)
             push!(stage2, GroupedGemmTask(
                 'N', 'N', alpha, U, S, one(alpha), view(C, rows, cols)))
         end)
@@ -145,40 +146,45 @@ function _tlr_offdiag_times_diag!(C, OA, DB, alpha, mode, arena, capacity::Int)
 end
 
 # D_A O_B:  W_kj = D_A_kk U_B_kj  (stage 1),  C[rows,cols] += α W_kj V_B_kj'  (stage 2).
-function _tlr_diag_times_offdiag!(C, DA, OB, alpha, mode, arena, capacity::Int)
+function tlr_diag_times_offdiag!(C, DA, OB, alpha, mode, arena, capacity::Int)
     T = eltype(OB)
     items, sizes = _tlr_left_cross_items(OB, DA)
     backend = get_backend(OB)
+
+    # cross-term batches
     _tlr_pack_cross_items!(mode, arena, capacity, T, items, sizes,
         (stage1, stage2, idx) -> begin
             k, j, r = items[idx]
-            rows = _tile_axis_range(DA, k, 1)
-            W = _workspace_array!(arena, backend, T, length(rows), r)
+            rows = tile_axis_range(DA, k, 1)
+            W = workspace_array!(arena, backend, T, length(rows), r)
             U = compressed_ftlr_storage_outer(OB, k, j)
-            D, opD = _diag_tile_ref(DA, k)
+            D, opD = diag_tile_ref(DA, k)
             push!(stage1, GroupedGemmTask(
                 opD, 'N', one(T), D, U, zero(T), W))
             V = compressed_ftlr_storage_inner(OB, k, j)
-            cols = _tile_axis_range(OB, j, 2)
+            cols = tile_axis_range(OB, j, 2)
             push!(stage2, GroupedGemmTask(
                 'N', 'T', alpha, W, V, one(alpha), view(C, rows, cols)))
         end)
     return C
 end
 
-function _tlr_diag_times_diag!(C, DA, DB, alpha, mode)
+function tlr_diag_times_diag!(C, DA, DB, alpha, mode)
     n = min(ndiag_tiles(DA), ndiag_tiles(DB))
     tasks = GroupedGemmTask[]
     sizehint!(tasks, n)
+
+    # diagonal product tasks
     @inbounds for k in 1:n
-        Atile, opA = _diag_tile_ref(DA, k)
-        Btile, opB = _diag_tile_ref(DB, k)
-        rows = _tile_axis_range(DA, k, 1)
-        cols = _tile_axis_range(DB, k, 2)
+        Atile, opA = diag_tile_ref(DA, k)
+        Btile, opB = diag_tile_ref(DB, k)
+        rows = tile_axis_range(DA, k, 1)
+        cols = tile_axis_range(DB, k, 2)
         push!(tasks, GroupedGemmTask(
             opA, opB, alpha, Atile, Btile, one(alpha),
             view(C, rows, cols)))
     end
+
     isempty(tasks) || precision_gemm_grouped!(tasks, mode)
     return C
 end
@@ -189,41 +195,47 @@ The off-diagonal part is handled by the compressed two-stage lowering. Each
 dense diagonal tile contributes to one disjoint output row block, so these
 updates need no numerical workspace and can be submitted as one grouped GEMM.
 """
-function _tlr_diag_times_dense!(C, DA, B, alpha, mode)
+function tlr_diag_times_dense!(C, DA, B, alpha, mode)
     tasks = GroupedGemmTask[]
     sizehint!(tasks, ndiag_tiles(DA))
     output_cols = 1:size(C, 2)
+
+    # diagonal-row updates
     @inbounds for k in 1:ndiag_tiles(DA)
-        D, opD = _diag_tile_ref(DA, k)
-        rows = _tile_axis_range(DA, k, 1)
-        inner = _tile_axis_range(DA, k, 2)
-        Bdense, opB = _dense_block(B, inner, output_cols)
+        D, opD = diag_tile_ref(DA, k)
+        rows = tile_axis_range(DA, k, 1)
+        inner = tile_axis_range(DA, k, 2)
+        Bdense, opB = dense_block(B, inner, output_cols)
         push!(tasks, GroupedGemmTask(
             opD, opB, alpha, D, Bdense, one(alpha),
             view(C, rows, output_cols)))
     end
+
     isempty(tasks) || precision_gemm_grouped!(tasks, mode)
     return C
 end
 
 """Add the block-diagonal part of `op(A::Matrix) * op(B::TLRMatrix)` to `C`.
 
-This is the mirror of [`_tlr_diag_times_dense!`](@ref): each diagonal tile
+This is the mirror of [`tlr_diag_times_dense!`](@ref): each diagonal tile
 updates one disjoint output column block after the compressed FoldLeft pass.
 """
-function _dense_times_tlr_diag!(C, A, DB, alpha, mode)
+function dense_times_tlr_diag!(C, A, DB, alpha, mode)
     tasks = GroupedGemmTask[]
     sizehint!(tasks, ndiag_tiles(DB))
     output_rows = 1:size(C, 1)
+
+    # diagonal-column updates
     @inbounds for k in 1:ndiag_tiles(DB)
-        D, opD = _diag_tile_ref(DB, k)
-        inner = _tile_axis_range(DB, k, 1)
-        cols = _tile_axis_range(DB, k, 2)
-        Adense, opA = _dense_block(A, output_rows, inner)
+        D, opD = diag_tile_ref(DB, k)
+        inner = tile_axis_range(DB, k, 1)
+        cols = tile_axis_range(DB, k, 2)
+        Adense, opA = dense_block(A, output_rows, inner)
         push!(tasks, GroupedGemmTask(
             opA, opD, alpha, Adense, D, one(alpha),
             view(C, output_rows, cols)))
     end
+
     isempty(tasks) || precision_gemm_grouped!(tasks, mode)
     return C
 end

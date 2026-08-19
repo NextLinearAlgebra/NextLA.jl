@@ -39,10 +39,12 @@ end
 # 10×10 dense-diagonal fixture tiled 4|4|2: right/bottom/corner boundary tiles are
 # all populated and every off-diagonal tile has known rank.
 function boundary_dense_fixture(::Type{T}) where {T}
+    # diagonal tiles
     d11 = make_dense_tile(T, 4; seed=11)
     d22 = make_dense_tile(T, 4; seed=22)
     d33 = make_dense_tile(T, 2; seed=33)
 
+    # off-diagonal low-rank tiles
     a12 = make_lowrank_tile(T, 4, 2; seed=101)
     a21 = make_lowrank_tile(T, 4, 3; seed=102)
     a13 = make_rect_lowrank_tile(T, 4, 2, 2; seed=103)
@@ -50,6 +52,7 @@ function boundary_dense_fixture(::Type{T}) where {T}
     a31 = make_rect_lowrank_tile(T, 2, 4, 2; seed=105)
     a32 = make_rect_lowrank_tile(T, 2, 4, 2; seed=106)
 
+    # block assembly
     top = hcat(d11, a12, a13)
     mid = hcat(a21, d22, a23)
     bot = hcat(a31, a32, d33)
@@ -130,8 +133,12 @@ end
 function fill_random_tlr!(A_tlr::NextLA.TLRMatrix, ArrayType::Type; seed::Integer)
     rng = MersenneTwister(seed)
     T = eltype(A_tlr)
+
+    # dense diagonal
     A_tlr.D .= ArrayType(randn(rng, T, size(A_tlr.D)))
     A_tlr.D_corner .= ArrayType(randn(rng, T, size(A_tlr.D_corner)))
+
+    # low-rank off-diagonal factors
     qm, qn = NextLA.grid_size(A_tlr)
     for j in 1:qn, i in 1:qm
         i == j && continue
@@ -146,6 +153,7 @@ end
 function fill_random_tlr!(A_tlr::NextLA.CompressedFTLRMatrix, ArrayType::Type; seed::Integer)
     rng = MersenneTwister(seed)
     T = eltype(A_tlr)
+
     qm, qn = NextLA.grid_size(A_tlr)
     for j in 1:qn, i in 1:qm
         r = Int(NextLA.ranks(A_tlr)[expected_storage_slot(A_tlr, i, j)])
@@ -163,8 +171,22 @@ function random_tlr_matrix(ArrayType::Type, ::Type{T}, n::Int, b::Int, r::Int;
     q = cld(n, b)
     rank_grid = [i == j ? 0 : min(r, min(b, n-(i-1)*b), min(b, n-(j-1)*b))
                  for i in 1:q, j in 1:q]
+
     A = NextLA.TLRMatrix(backend, T, n, n, b, rank_grid)
     return fill_random_tlr!(A, ArrayType; seed)
+end
+
+function compressed_ftlr_fixture(
+    ::Type{T}=Float64,
+    ranks::AbstractMatrix{<:Integer}=Int[1 2 0; 3 1 2];
+    rank_multiple::Int=0) where {T}
+    qm, qn = size(ranks)
+    b = max(4, NextLA.gemm_alignment_quantum(T))
+
+    A = NextLA.CompressedFTLRMatrix(
+        KernelAbstractions.CPU(), T, b*qm, b*qn, b, ranks; rank_multiple)
+    fill_random_tlr!(A, Array; seed=123)
+    return A
 end
 
 # ── Dense-reference GEMM drivers ──────────────────────────────────────────────
@@ -177,6 +199,7 @@ function assert_gemm_matches_dense(ArrayType::Type, A_tlr, B_tlr, synchronize;
     rng = MersenneTwister(303)
     C0_cpu = randn(rng, T, size(A_tlr, 1), size(B_tlr, 2))
     C = ArrayType(C0_cpu)
+
     workspace = max(budget, NextLA.gemm_minimum_workspace_bytes(A_tlr, B_tlr))
     NextLA.gemm!(C, A_tlr, B_tlr; alpha=alpha, beta=beta, workspace)
     synchronize(C)
@@ -193,10 +216,12 @@ function assert_tlr_gemm_matches_dense(ArrayType::Type, T::Type, n::Int, b::Int,
     q = cld(n, b)
     rank_grid = [i == j ? 0 : min(r, min(b, n-(i-1)*b), min(b, n-(j-1)*b))
                  for i in 1:q, j in 1:q]
+
     A_tlr = NextLA.TLRMatrix(backend, T, n, n, b, rank_grid)
     B_tlr = NextLA.TLRMatrix(backend, T, n, n, b, rank_grid)
     fill_random_tlr!(A_tlr, ArrayType; seed=101)
     fill_random_tlr!(B_tlr, ArrayType; seed=202)
+
     assert_gemm_matches_dense(ArrayType, A_tlr, B_tlr, synchronize;
                               budget, alpha, beta, atol, rtol)
 end
@@ -209,18 +234,21 @@ function assert_dense_diag_transpose_matches(n, b, r, oA, oB, transA, transB;
     q = cld(n, b)
     rank_grid = [i == j ? 0 : min(r, min(b, n-(i-1)*b), min(b, n-(j-1)*b))
                  for i in 1:q, j in 1:q]
+
     A = NextLA.TLRMatrix(backend, Float64, n, n, b, rank_grid)
     B = NextLA.TLRMatrix(backend, Float64, n, n, b, rank_grid)
     fill_random_tlr!(A, ArrayType; seed=11)
     fill_random_tlr!(B, ArrayType; seed=22)
     C0 = randn(MersenneTwister(33), Float64, n, n)
     C = ArrayType(C0)
+
     workspace = max(
         budget,
         NextLA.gemm_minimum_workspace_bytes(A, B; transA, transB),
     )
     NextLA.gemm!(C, A, B; alpha, beta, transA, transB, workspace)
     synchronize(C)
+
     opd(X, t) = uppercase(t) == 'T' ? transpose(X) : X
     ref = alpha .* (opd(reconstruct_tlr(A), transA) * opd(reconstruct_tlr(B), transB)) .+ beta .* C0
     @test isapprox(Array(C), ref; atol, rtol)

@@ -1,10 +1,6 @@
-# TLR-specific GEMM precision policy.
-#
-# The generic compute-mode machinery (GEMMCompute, TF32, gemm_compute_mode,
-# gemm_compute_type, validate_gemm_signature) lives in NextLA. The two helpers
-# below encode TLR's operand-type policy — only Float16/Float32/Float64 are
-# supported, with Float16 accumulated in Float32 — and are used as the default
-# `compute` mode throughout the region terms.
+# TLR compute defaults; generic compute-mode machinery lives in NextLA.
+# Float16, BFloat16, Float32, and Float64 are supported, with low-precision
+# operands accumulated in Float32.
 
 @inline default_gemm_compute_mode(::Type{Float16}) = GEMMCompute{Float32}()
 @inline default_gemm_compute_mode(::Type{Core.BFloat16}) = GEMMCompute{Float32}()
@@ -28,10 +24,10 @@ end
 
 # Backends also opt in when grouped tensor-core kernels require aligned tile
 # start addresses. Construction stays backend-agnostic; GEMM owns this error.
-@inline _validate_compressed_ftlr_tile_alignment(
+@inline validate_compressed_ftlr_tile_alignment(
     backend, ::Type, bm::Int, bn::Int) = nothing
 
-function _validate_compressed_ftlr_tile_alignment_cuda(
+function validate_compressed_ftlr_tile_alignment_cuda(
     ::Type{T}, bm::Int, bn::Int) where {T}
     q = gemm_alignment_quantum(T)
     (bm % q == 0 && bn % q == 0) || throw(ArgumentError(
@@ -47,12 +43,16 @@ function validate_tlr_gemm_storage(A, mode; name::AbstractString="operand")
     backend = get_backend(X)
     T = eltype(X)
     bm, bn = nominal_tile_size(X)
-    _validate_compressed_ftlr_tile_alignment(backend, T, bm, bn)
+
+    # tile alignment
+    validate_compressed_ftlr_tile_alignment(backend, T, bm, bn)
     q = required_tlr_gemm_rank_multiple(backend, T, mode)
     q <= 1 && return nothing
+
+    # stored-rank alignment
     qm, qn = grid_size(X)
     @inbounds for j in 1:qn, i in 1:qm
-        width = _compressed_ftlr_storage_rank(X, i, j)
+        width = compressed_ftlr_storage_rank(X, i, j)
         (iszero(width) || iszero(width % q)) || throw(ArgumentError(
             "$name stores tile ($i, $j) at rank width $width, but this GEMM " *
             "precision requires widths divisible by $q; construct it with " *
@@ -62,7 +62,7 @@ function validate_tlr_gemm_storage(A, mode; name::AbstractString="operand")
 end
 
 """Scale a dense destination once before product terms are accumulated."""
-@inline function _scale_output!(C, beta)
+@inline function scale_output!(C, beta)
     T = eltype(C)
     if iszero(beta)
         fill!(C, zero(T))
