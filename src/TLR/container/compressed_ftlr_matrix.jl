@@ -160,6 +160,7 @@ function CompressedFTLRMatrix(backend::Backend, ::Type{T}, m::Int, n::Int,
                     tile_size::NTuple{2,Int}, ranks_in::AbstractMatrix{Int};
                     outer_order=TileRowMajor, inner_order=TileColMajor,
                     rank_multiple::Int=0) where {T}
+    # argument checks
     bm, bn = tile_size
     m > 0 && n > 0 && bm > 0 && bn > 0 ||
         throw(ArgumentError("m, n, and tile dimensions must be positive"))
@@ -175,6 +176,7 @@ function CompressedFTLRMatrix(backend::Backend, ::Type{T}, m::Int, n::Int,
             throw(ArgumentError("CompressedFTLR rank at ($i, $j) exceeds its logical tile extent"))
     end
 
+    # packed offsets and backing storage
     outer_style = outer_order isa Type ? outer_order() : outer_order
     inner_style = inner_order isa Type ? inner_order() : inner_order
     storage_rank_at = function (i, j)
@@ -193,10 +195,13 @@ function CompressedFTLRMatrix(backend::Backend, ::Type{T}, m::Int, n::Int,
     vdata = zeros(backend, T, voffsets[end] - 1)
     outer = CompressedFTLRPackedFactors(udata, uoffsets, outer_style, rowdims, qm, qn)
     inner = CompressedFTLRPackedFactors(vdata, voffsets, inner_style, coldims, qm, qn)
+
+    # diagnostic rank vector, in the outer factor's own tile order
     rankvec = Vector{Int}(undef, qm * qn)
     @inbounds for j in 1:qn, i in 1:qm
         rankvec[tile_linear_index(outer_style, qm, qn, i, j)] = ranks_in[i, j]
     end
+
     return CompressedFTLRMatrix{typeof(backend),T,typeof(udata),typeof(outer_style),
                       typeof(inner_style)}(
         backend, m, n, tile_size, (m % bm, n % bn), outer, inner,

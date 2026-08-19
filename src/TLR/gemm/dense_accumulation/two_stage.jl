@@ -43,6 +43,8 @@ function _compressed_dense_gemm_sequential!(
     _scale_output!(C, beta)
     r = maxrank(A)
     (isempty(C) || r == 0) && return C
+
+    # widest column batch the workspace budget admits
     mt, kt = grid_size(A)
     n = size(B, 2)
     batch_width = clamp(div(budget, max(r * sizeof(T), 1)), 1, n)
@@ -73,6 +75,8 @@ function _dense_compressed_gemm_sequential!(
     _scale_output!(C, beta)
     r = maxrank(B)
     (isempty(C) || r == 0) && return C
+
+    # tallest row batch the workspace budget admits
     kt, nt = grid_size(B)
     m = size(A, 1)
     height = clamp(div(budget, max(r * sizeof(T), 1)), 1, m)
@@ -276,6 +280,8 @@ function analyze_compressed_gemm(
     mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
     validate_tlr_gemm_precision(backend, T, eltype(C), mode)
     _validate_two_stage_grouped_precision(LB)
+
+    # FoldLeft rank plan and prepared run schedule
     _, arena, budget = _prepare_dense_accumulation_workspace(B, workspace)
     plan = _two_stage_rank_plan(LB, :left)
     runs = _prepare_two_stage_runs(C, LA, LB, LB, plan, budget, mode, arena)
@@ -300,6 +306,8 @@ function analyze_compressed_gemm(
     mode = compute === nothing ? default_gemm_compute_mode(T) : gemm_compute_mode(compute)
     validate_tlr_gemm_precision(backend, T, eltype(C), mode)
     _validate_two_stage_grouped_precision(LA)
+
+    # FoldRight rank plan and prepared run schedule
     _, arena, budget = _prepare_dense_accumulation_workspace(A, workspace)
     plan = _two_stage_rank_plan(LA, :right)
     runs = _prepare_two_stage_runs(C, LA, LB, LA, plan, budget, mode, arena)

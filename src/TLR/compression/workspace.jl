@@ -18,9 +18,13 @@ function _make_category_workspace(tile_shape::NTuple{2,Int}, tile_ids,
     tm, tn = tile_shape
     kout = size(U, 2)
     ntiles = size(U, 3)
+
+    # shape checks
     size(U) == (tm, kout, ntiles) || throw(DimensionMismatch("invalid U batch shape"))
     size(V) == (tn, kout, ntiles) || throw(DimensionMismatch("invalid V batch shape"))
     length(tile_ids) == ntiles || throw(DimensionMismatch("tile_ids must match batch size"))
+
+    # sketch width and ARA basis scratch
     backend = get_backend(U)
     S = min(kout, tm, tn)
     blk = S == 0 ? 0 : max(min(block, S), 1)
@@ -28,10 +32,13 @@ function _make_category_workspace(tile_shape::NTuple{2,Int}, tile_ids,
     Q = zeros(backend, T, tm, S, ntiles)
     ara = S == 0 ? nothing : ARAWorkspace(Q; block=blk)
     omega = zeros(backend, T, tn, blk, ntiles)
+    Y = S == 0 ? zeros(backend, T, tm, 0, ntiles) : ara.Yblk
+
+    # tile-origin device buffers, empty when the caller has none
     empty_i32 = allocate(backend, Int32, 0)
     pdev = p0s === nothing ? empty_i32 : p0s
     qdev = q0s === nothing ? empty_i32 : q0s
-    Y = S == 0 ? zeros(backend, T, tm, 0, ntiles) : ara.Yblk
+
     return (
         tile_shape, tile_ids, U, V,
         ranks=zeros(backend, Int, ntiles),
@@ -73,6 +80,8 @@ function FTLRCompressionWorkspace(A::AbstractMatrix{T},
     bm, bn = tile_size
     m > 0 && n > 0 && bm > 0 && bn > 0 && maxrank >= 0 || throw(ArgumentError(
         "matrix and tile dimensions must be positive and maxrank nonnegative"))
+
+    # one category workspace per distinct tile shape
     backend = get_backend(A)
     specs = _compression_batch_specs(m, n, tile_size, diagonal)
     cats = map(specs) do spec

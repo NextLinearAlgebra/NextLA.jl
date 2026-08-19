@@ -103,6 +103,7 @@ end
 
 function CompressedGemmWorkspace(C::CompressedFTLRMatrix{BackendT,T}, spec;
                           bytes=nothing) where {BackendT,T}
+    # resolve the requested byte budget into a slot capacity
     requested = bytes === nothing ?
         _tlr_gemm_workspace_bytes(spec, spec.nmember) : bytes
     requested >= _tlr_gemm_workspace_bytes(spec, 1) || throw(ArgumentError(
@@ -110,6 +111,8 @@ function CompressedGemmWorkspace(C::CompressedFTLRMatrix{BackendT,T}, spec;
         "$(_tlr_gemm_workspace_bytes(spec, 1)) bytes are required"))
     capacity = _tlr_workspace_capacity(spec, requested)
     backend = get_backend(C)
+
+    # ARA run arena, sized for this capacity
     ab = ara_run_workspace_bytes(
         spec.family, spec.rA, spec.rB, spec.qk, capacity,
         spec.block, spec.maxrank, spec.bm, spec.bn,
@@ -117,6 +120,8 @@ function CompressedGemmWorkspace(C::CompressedFTLRMatrix{BackendT,T}, spec;
     arena = ARARunArena(
         backend, T, spec.Thi, ab.persistent_t_bytes,
         ab.phase_t_bytes, ab.phase_thi_bytes)
+
+    # convergence-state scratch, one entry per slot
     n = capacity
     opkey = spec
     ara_state = (
@@ -132,6 +137,8 @@ function CompressedGemmWorkspace(C::CompressedFTLRMatrix{BackendT,T}, spec;
         rmax=allocate(backend, Float64, n),
         samples_host=Vector{Int32}(undef, n),
     )
+
+    # traversal output (U, V), diagnostic, and scatter buffers
     return CompressedGemmWorkspace(
         arena,
         allocate(backend, T, opkey.bm, opkey.maxrank, n),

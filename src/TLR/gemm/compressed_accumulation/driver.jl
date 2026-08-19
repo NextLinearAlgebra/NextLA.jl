@@ -191,6 +191,7 @@ function _gemm_tlr!(C::CompressedFTLRMatrix{BackendT,T},
                tol::Real=0.0, rel::Bool=false,
                eps_rel=nothing, r_required::Int=10, block::Int=32,
                compute=nothing, workspace=nothing) where {BackendT,T}
+    # argument checks
     LA = transA == 'T' ? transpose(A) : A
     LB = transB == 'T' ? transpose(B) : B
     _validate_canonical_tlr_gemm(C, LA, LB)
@@ -198,6 +199,7 @@ function _gemm_tlr!(C::CompressedFTLRMatrix{BackendT,T},
     r_required >= 1 || throw(ArgumentError("r_required must be positive"))
     block >= 1 || throw(ArgumentError("block must be positive"))
 
+    # compute policy and sampling tolerance
     mode = compute === nothing ? default_gemm_compute_mode(T) :
            gemm_compute_mode(compute)
     validate_tlr_gemm_precision(get_backend(C), T, T, mode)
@@ -209,6 +211,7 @@ function _gemm_tlr!(C::CompressedFTLRMatrix{BackendT,T},
     sample_tol >= floor_rel || throw(ArgumentError(
         "eps_rel=$sample_tol is below the supported floor $floor_rel"))
 
+    # workspace and the four zero-copy factor-panel views the runs sample from
     ws_owner, workspace_spec = _prepare_tlr_gemm_workspace(
         C, A, B, workspace; transA, transB, block)
     qmA, qnA = regular_grid_size(LA)
@@ -223,6 +226,8 @@ function _gemm_tlr!(C::CompressedFTLRMatrix{BackendT,T},
         au=(data=_compressed_ftlr_uniform_view(_compressed_ftlr_outer_storage(LA)),
             order=compressed_ftlr_outer_order(LA), qm=qmA, qn=qnA),
     )
+
+    # traversal shape shared by both families
     qm, qk = grid_size(LA)
     _, qn = grid_size(LB)
     rA, rB = _active_rank_cap(A), _active_rank_cap(B)

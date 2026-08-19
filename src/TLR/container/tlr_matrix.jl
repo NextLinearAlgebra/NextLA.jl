@@ -64,6 +64,7 @@ Wrap finalized full-grid compressed off-diagonal storage and allocate a
 separate dense diagonal. Diagonal ranks in `offdiag` must be zero.
 """
 function TLRMatrix(offdiag::CompressedFTLRMatrix{BackendT,T}) where {BackendT,T}
+    # layout and zero-diagonal-rank checks
     compressed_ftlr_outer_order(offdiag) isa TileRowMajor || throw(ArgumentError(
         "TLRMatrix requires row-major outer-factor packing"))
     compressed_ftlr_inner_order(offdiag) isa TileColMajor || throw(ArgumentError(
@@ -72,6 +73,8 @@ function TLRMatrix(offdiag::CompressedFTLRMatrix{BackendT,T}) where {BackendT,T}
         _compressed_ftlr_rank(offdiag, k, k) == 0 || throw(ArgumentError(
             "TLRMatrix off-diagonal storage requires rank zero at ($k, $k)"))
     end
+
+    # dense-diagonal sizing, with an optional ragged corner tile
     bm, bn = nominal_tile_size(offdiag)
     mt, nt = grid_size(offdiag)
     n_diag = min(mt, nt)
@@ -83,6 +86,7 @@ function TLRMatrix(offdiag::CompressedFTLRMatrix{BackendT,T}) where {BackendT,T}
     D = zeros(backend, T, bm, bn, n_diag - has_corner)
     D_corner = zeros(
         backend, T, max(corner_tm, 1), max(corner_tn, 1), has_corner ? 1 : 0)
+
     return TLRMatrix{BackendT,T,typeof(D),typeof(offdiag)}(offdiag, D, D_corner)
 end
 

@@ -95,11 +95,14 @@ function _tlr_pack_cross_items!(mode, arena, capacity::Int, ::Type{T}, items, si
         capacity >= needed || throw(ArgumentError(
             "workspace has $capacity bytes; a dense-diagonal update requires at least $needed bytes"))
     end
+
     first_item = 1
     while first_item <= length(items)
         _arena_reset!(arena)
         stage1 = GroupedGemmTask[]
         stage2 = GroupedGemmTask[]
+
+        # pack items into this pass until the arena is full
         used = 0
         item = first_item
         while item <= length(items)
@@ -111,6 +114,7 @@ function _tlr_pack_cross_items!(mode, arena, capacity::Int, ::Type{T}, items, si
             used = aligned_used + count
             item += 1
         end
+
         precision_gemm_grouped!(stage1, mode)
         precision_gemm_grouped!(stage2, mode)
         first_item = item

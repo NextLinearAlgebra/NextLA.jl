@@ -57,6 +57,8 @@ function _finalize_wave!(Cout, run::RunCoupling{:column}, ara_ws,
         fill!(rr, zero(eltype(rr)))
         fill!(ee, 0.0)
     end
+
+    # scatter this wave's factors into C's outer/inner storage
     qm = grid_size(Cout)[1]
     qn = grid_size(Cout)[2]
     outslots = view(ws_owner.output_slots, 1:count)
@@ -105,6 +107,8 @@ function _finalize_wave!(Cout, run::RunCoupling{:row}, ara_ws,
         fill!(rr, zero(eltype(rr)))
         fill!(ee, 0.0)
     end
+
+    # scatter this wave's factors into C's outer/inner storage
     qm = grid_size(Cout)[1]
     qn = grid_size(Cout)[2]
     outslots = view(ws_owner.output_slots, 1:count)
@@ -121,6 +125,7 @@ end
 function _rolling_lane_loop!(Cout, run, ara_ws, allmembers::AbstractVector{Int},
                              fixed::Int, ops, arena, ws_owner;
                              beta, eps_rel, r_required, tol, rel, compute)
+    # initial active-slot prefix
     cap = ws_owner.capacity
     member_ids = ws_owner.member_ids
     progress = ws_owner.progress
@@ -133,10 +138,12 @@ function _rolling_lane_loop!(Cout, run, ara_ws, allmembers::AbstractVector{Int},
     copyto!(ara_ws.state.samples_host, ara_ws.state.samples)
     fill!(ara_ws.Q, zero(eltype(ara_ws.Q)))
 
+    # hot samplers, reused every pass below
     sampler = (Y, width, _) -> apply_run!(Y, run, width, nactive; beta, compute)
     swapper = (p, q) -> _swap_run_members!(run, p, q)
 
     while nactive > 0 || pending <= length(allmembers)
+        # cold start: every prior slot retired, admit the next wave before sampling
         if nactive == 0
             nnew = min(cap, length(allmembers) - pending + 1)
             slots = 1:nnew
@@ -154,6 +161,7 @@ function _rolling_lane_loop!(Cout, run, ara_ws, allmembers::AbstractVector{Int},
             rebind_sampling_scratch!(run, arena)
         end
 
+        # one ARA pass, swap-compacting members that converged this pass
         info = ara_packed_pass!(
             ara_ws, sampler, nactive, member_ids, progress;
             eps_rel, r_required, compute, swap_member! = swapper)
@@ -161,10 +169,12 @@ function _rolling_lane_loop!(Cout, run, ara_ws, allmembers::AbstractVector{Int},
         retired = info.retired
         isempty(retired) && continue
 
+        # truncate and scatter the retired suffix into C
         _finalize_wave!(
             Cout, run, ara_ws, retired, member_ids, progress, fixed,
             arena, ws_owner; beta, tol, rel, compute)
 
+        # backfill the slots retirement just freed
         nnew = min(cap - nactive, max(length(allmembers) - pending + 1, 0))
         if nnew > 0
             slots = (nactive + 1):(nactive + nnew)

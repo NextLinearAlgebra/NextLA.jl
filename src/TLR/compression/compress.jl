@@ -93,6 +93,8 @@ function compress_tiles!(src::Union{DenseTiles{T},PackedTiles{T}}, cat;
                       cat.omega_tiles, zero(T), cat.Y_tiles)
         return Y
     end
+
+    # basis growth, then co-range and optimal truncation
     ara_build_basis!(cat.ara, sampler;
                      eps_rel, r_required=_ARA_CONSECUTIVE)
     gemm_batched!(_adjoint_blas_char(T), 'N', one(T),
@@ -187,6 +189,8 @@ function _finalize_compressed_ftlr(ws::FTLRCompressionWorkspace;
     key = ws.key
     backend = key.device
     qm, qn = cld(key.m, key.tile_size[1]), cld(key.n, key.tile_size[2])
+
+    # gather per-category ranks and residuals into one host grid
     rank_grid = Base.zeros(Int, qm, qn)
     residual_grid = Base.zeros(Float64, qm, qn)
     for cat in ws.cats
@@ -197,6 +201,8 @@ function _finalize_compressed_ftlr(ws::FTLRCompressionWorkspace;
             residual_grid[i, j] = sqrt(max(Float64(real(err[k])), 0.0))
         end
     end
+
+    # exact-rank storage, sized from the discovered grid
     C = CompressedFTLRMatrix(
         backend, key.T, key.m, key.n, key.tile_size, rank_grid;
         outer_order, inner_order, rank_multiple)
@@ -204,6 +210,8 @@ function _finalize_compressed_ftlr(ws::FTLRCompressionWorkspace;
         slot = tile_linear_index(C.outer.order, C.outer.qm, C.outer.qn, i, j)
         C.resid[slot] = residual_grid[i, j]
     end
+
+    # scatter each category's factors into the packed storage
     for cat in ws.cats
         _scatter_factor_batch!(C, cat, :outer)
         _scatter_factor_batch!(C, cat, :inner)

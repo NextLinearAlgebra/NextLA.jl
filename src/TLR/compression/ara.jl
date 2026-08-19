@@ -1,25 +1,20 @@
 # Support kernels for the blocked adaptive randomized approximation (ARA) of
 # Boukaram, Turkiyyah & Keyes, "Randomized GPU algorithms for the construction
 # of hierarchical matrices from matrix-vector operations", SIAM J. Sci. Comput.
-# 41(4):C339–C366, 2019 (Algorithm 2.3).
+# 41(4):C339–C366, 2019 (Algorithm 2.3): sample a block, orthogonalize it
+# against the existing basis with BCGS2, normalize it with two mixed-precision
+# Cholesky-QR passes, and stop once `r_required` consecutive projected columns
+# are negligible. `ara_block_norms!` recovers those norms from the two
+# triangular factors (`dR`); `ara_update_convergence!` tracks the running
+# maximum, consecutive-small-vector count, detected rank, and next sample width
+# per batch member.
 #
-# The loop samples a block, orthogonalizes it against the existing basis with
-# BCGS2, normalizes it with two mixed-precision Cholesky-QR passes, and stops once
-# `r_required` consecutive projected columns have negligible norm. Two pieces of
-# bookkeeping make that possible and live here:
-#
-#   * `ara_block_norms!` recovers the projected column norms from the two
-#     triangular factors (`dR` in the reference), and
-#   * `ara_update_convergence!` maintains, per batch member, the running maximum
-#     norm, the consecutive-small-vector count, the detected rank, and how many
-#     columns that member should sample next.
-#
-# Why the diagonal and not the column norms of the projected block: at
-# convergence the block is a set of random combinations of the few directions
-# that remain, so every *column* still has O(1) norm while the *block* is
-# rank-deficient. `R[j,j]` is the residual of column `j` against both the basis
-# and the earlier columns of the same block, so it collapses exactly when there
-# is nothing new left. Column norms alone would miss the generic stopping case.
+# `R[j,j]` and not the column norms of the projected block: at convergence the
+# block is random combinations of the few directions that remain, so every
+# column still has O(1) norm while the block itself is rank-deficient. `R[j,j]`
+# is column `j`'s residual against both the basis and the block's earlier
+# columns, so it collapses exactly when nothing new is left -- column norms
+# alone would miss this generic stopping case.
 
 """Minimal reusable workspace for ARA's Cholesky-QR passes."""
 struct ARACholeskyWorkspace{QT,YT,GT,RT,QViews,RViews}
@@ -284,12 +279,11 @@ end
 
 Smallest relative tolerance the loop can honour, `√u_hi`.
 
-At the stopping block the projected panel has `κ(Y_Δ) ≈ 1/ε_rel`, and
-two-pass Cholesky-QR attains `O(u)` orthogonality only for `κ ≤ u^{-1/2}` (Yamamoto,
+At the stopping block the projected panel has `κ(Y_Δ) ≈ 1/ε_rel`, and two-pass
+Cholesky-QR attains `O(u)` orthogonality only for `κ ≤ u^{-1/2}` (Yamamoto,
 Nakatsukasa, Yanagisawa & Fukaya, ETNA 44:306–326, 2015). Equating the two gives
-`ε_rel ≥ √u_hi` — about `1.05e-8` for a `Float64` Gram. Boukaram, Turkiyyah &
-Keyes report the same limit empirically (§2.3.1: below it, quad precision is
-needed to stabilise the Cholesky QR).
+`ε_rel ≥ √u_hi` — about `1.05e-8` for a `Float64` Gram, matching the empirical
+limit Boukaram, Turkiyyah & Keyes report in §2.3.1.
 
 This is a property of the orthogonalizer, not a tuning knob: it is the exact
 point at which `potrf` also starts to break down, which is why breakdown is a
@@ -333,15 +327,17 @@ end
 """
     ARAWorkspace(Q; block=32, arena=nothing)
 
-Wrap a caller-owned basis panel `Q` (`m × maxrank × count`), so the loop can
-write straight into numerical staging supplied by dense compression or GEMM.
-Everything else is allocated on `Q`'s
-backend, drawn from `arena` when one is supplied (see `ARARunArena` in
-`gemm/compressed_accumulation/workspace.jl`) and via plain `allocate` otherwise.
+Wrap a caller-owned basis panel `Q` (`m × maxrank × count`) so the loop writes
+straight into numerical staging supplied by dense compression or GEMM.
+Everything else is allocated on `Q`'s backend, drawn from `arena` when one is
+supplied (see `ARARunArena` in `gemm/compressed_accumulation/workspace.jl`)
+and via plain `allocate` otherwise.
 """
 function ARAWorkspace(Q::AbstractArray{T,3}; block::Int=32, arena=nothing,
                       state_storage=nothing) where {T}
     block >= 1 || throw(ArgumentError("block must be positive"))
+
+    # basis growth and Cholesky-QR scratch
     m, maxrank, count = size(Q)
     backend = get_backend(Q)
     blk = min(block, max(maxrank, 1))
@@ -358,6 +354,8 @@ function ARAWorkspace(Q::AbstractArray{T,3}; block::Int=32, arena=nothing,
         _workspace_array!(thi_arena, backend, Thi, blk, blk, count),
         R1, R2,
     )
+
+    # convergence-state scratch, fresh or caller-supplied
     if state_storage === nothing
         dR = allocate(backend, Float64, blk, count)
         status = allocate(backend, Int32, count)
@@ -378,6 +376,7 @@ function ARAWorkspace(Q::AbstractArray{T,3}; block::Int=32, arena=nothing,
             state_storage.jcount, state_storage.rmax,
             state_storage.samples_host)
     end
+
     return ARAWorkspace(
         Q, Yblk, Dproj, chol, dR, status, status_host, kcut, kcut_host,
         state, blk,
@@ -467,6 +466,7 @@ function ara_build_basis!(ws::ARAWorkspace, sample_right!;
     grown = 0                      # columns of `Q` written so far (batch-uniform)
 
     while grown < maxrank
+        # fresh sample block, zero-padded past `width` on a partial final pass
         width = min(blk, maxrank - grown)
         sample_right!(ws.Yblk, width)
         width < blk && fill!(view(ws.Yblk, :, (width + 1):blk, :), zero(T))
@@ -504,16 +504,17 @@ function ara_build_basis!(ws::ARAWorkspace, sample_right!;
         end
         copyto!(ws.status_host, ws.status)
 
+        # discard columns the normalization couldn't deliver, append the rest
         ara_block_norms!(ws.dR, ws.chol)
         ara_mask_breakdown!(ws.Yblk, ws.dR, ws.kcut, ws.chol.R1, ws.status,
                             width, floor_rel)
         copyto!(ws.kcut_host, ws.kcut)
-
         view(ws.Q, :, (grown + 1):(grown + width), :) .=
             view(ws.Yblk, :, 1:width, :)
         grown += width
         passes += 1
 
+        # per-member stopping test and breakdown retirement
         ara_update_convergence!(ws.state, ws.dR, eps_rel, r_required,
                                 width, maxrank)
         active = _ara_retire_broken!(ws.state, ws.kcut_host, width)
@@ -1013,7 +1014,7 @@ count`, orthonormal columns) and `V` (`b_n × maxrank × count`).
 `tol` is the Frobenius error budget, squared internally; with `relative=true` it
 is taken against each member's reference energy. `err_sq[b]` returns the
 **achieved** squared error, and `ranks[b] == maxrank` flags a member whose
-spectrum did not fit — no separate residual pass is needed to report either
+spectrum did not fit.
 
 `energy[b] = ‖X‖_F²` of the original operator may be supplied when it is known
 independently, as it is when compressing an explicit matrix. The range-capture

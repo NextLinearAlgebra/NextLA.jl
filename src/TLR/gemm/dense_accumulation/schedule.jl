@@ -21,16 +21,10 @@ end
 @inline _compressed_ftlr_range_total(prefix::Vector{Int}, rows::UnitRange{Int}) =
     prefix[last(rows) + 1] - prefix[first(rows)]
 
-# --------------------------------------------------------- column-range views
-# Work is scheduled over output tile rows `irange` × tile columns `jrange`.
-# Passing the full `1:qn` reproduces whole-width behaviour exactly; a narrower
-# `jrange` shrinks both arenas, which is what lets the workspace budget be met
-# at a granularity finer than one output row. Every quantity that aggregates
-# over `j` must therefore be queried on the range rather than read whole, and
-# every offset into a `j`-indexed arena rebased to the range start.
-#
-# These read field names shared by the rank metadata and the same metadata with
-# its attached cost profile, so the cost formula and `three_stage.jl` share them.
+# column-range views: work is scheduled over tile rows `irange` × tile columns
+# `jrange`; a narrower `jrange` than the full `1:qn` is what lets the workspace
+# budget be met below one output row, so every `j`-aggregating quantity below
+# is queried on the range rather than read whole.
 
 """`σ_k` restricted to `jrange`: `Σ_{j ∈ jrange} rB_kj`."""
 @inline _compressed_ftlr_row_rank(meta, k::Int, jrange) =

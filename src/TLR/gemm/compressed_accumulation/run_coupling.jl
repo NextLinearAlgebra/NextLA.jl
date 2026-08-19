@@ -30,39 +30,28 @@ everything else, including this struct.
 
 ## Pointer-batch descriptors (hot path only)
 
-`member` is not representable as a strided-3D batch across members (its
-entries are views at arbitrary, non-uniformly-spaced offsets into shared
-operand storage), so a batched GEMM over it needs a pointer-batched call. On
-backends with pointer-batched GEMM, the hot per-pass sampler's
-member-batched final reduction and beta accumulation are made
-allocation-free by building the needed pointer tables once here rather than
-rebuilding them every pass: `member_ptrs`, `betaU_ptrs`, `betaV_ptrs` are
-swap-tracked ([`swap_batch_ptrs!`](@ref) in [`_swap_run_members!`](@ref)
-keeps them in step with active-prefix packing); `sketch_ptrs`,
-`sharedOm_ptrs`, and `beta_tmp_ptrs` address this run's own scratch
-(`sketch`, `Omega`, `beta_tmp`), which is never swapped, only reused, so
-they are built once and never touched again. CUBLAS/rocBLAS's
-pointer-batched GEMM has no strided/pointer mixed form, so once `member`
-(or `betaU`/`betaV`) forces a call into pointer-batched form, every operand
-in that same call must be -- including the otherwise-strided `sketch`/`Om`/
-`beta_tmp`, which is why they get descriptors too even though a
-strided-only view of them would otherwise suffice.
+`member`'s entries sit at arbitrary, non-uniformly-spaced offsets into shared
+operand storage, so a batched GEMM over it needs a pointer-batched call, not a
+strided one. On backends that support pointer-batched GEMM, the hot per-pass
+sampler stays allocation-free by building every pointer table it needs once
+here rather than rebuilding them each pass: `member_ptrs`/`betaU_ptrs`/
+`betaV_ptrs` are swap-tracked alongside active-prefix packing
+([`swap_batch_ptrs!`](@ref) in [`_swap_run_members!`](@ref)); `sketch_ptrs`/
+`sharedOm_ptrs`/`beta_tmp_ptrs` cover this run's own scratch, which is only
+ever reused (never swapped), so they're built once and left alone. Because
+CUBLAS/rocBLAS's pointer-batched GEMM has no mixed strided/pointer form, once
+`member` forces a call into pointer-batched form every operand in that call
+needs a descriptor too, even the otherwise-strided scratch.
 
-`Y` (the ARA basis being grown) is the one operand this cannot cover: it is
-owned by the caller's `ARAWorkspace`, not this run, so its address is only
-known at the first `apply_run!` call and cannot be cached in this struct
-without threading a descriptor through `compression/ara.jl`. Its pointer array
-is therefore built once per `apply_run!` call (not once per GEMM within it,
-since the fused reduction and the beta accumulation share the same `Y`) and
-is the sampler's only remaining per-pass allocation.
+`Y`, the ARA basis being grown, is the one operand this can't cover: it's
+owned by the caller's `ARAWorkspace`, so its address is only known once
+[`apply_run!`](@ref) is first called, and gets its own pointer array built
+there instead -- the sampler's only remaining per-pass allocation.
 
-The co-range apply ([`apply_corange!`](@ref), called once after convergence,
-not once per pass) is intentionally left entirely on the `Vector`-of-views
-path and does not use any of these descriptors: its cost does not compound
-with pass count the way the sampler's did, and its formation batches
-`member` over member × contraction-tile (`nmember*qk` pointers, needing a
-`qk`-blocked swap) rather than member-only, which would need a second,
-larger descriptor.
+[`apply_corange!`](@ref) (called once after convergence, not once per pass)
+skips all of this and stays on the plain `Vector`-of-views path: its cost
+doesn't compound with pass count, and its own batching shape (member ×
+contraction-tile) doesn't match these member-only descriptors anyway.
 """
 mutable struct RunCoupling{Fixed,ST,SHT,MT,BUT,BVT,PT,SKT,OT,BT,T}
     S::ST
@@ -117,6 +106,7 @@ function RunCoupling(::Val{:column}, ops, rows, j::Int;
     bn = size(shared, 1)
     backend = get_backend(shared)
 
+    # coupling matrix S = V_A' W_B, batched over member and contraction tile
     S = _workspace_array!(parena, backend, T, rA, rB, qk, nmember)
     if nmember > 0 && qk > 0 && rA > 0 && rB > 0
         left_factor_views = [view(rowV[p], :, :, kidx) for p in 1:nmember for kidx in 1:qk]
@@ -126,6 +116,7 @@ function RunCoupling(::Val{:column}, ops, rows, j::Int;
                                 left_factor_views, right_factor_views, zero(T), coupling_views, mode)
     end
 
+    # beta terms, read directly from C's existing content when beta != 0
     betaU, betaV = if iszero(beta)
         (nothing, nothing)
     else
@@ -134,8 +125,8 @@ function RunCoupling(::Val{:column}, ops, rows, j::Int;
          [compressed_ftlr_storage_inner(C, i, j) for i in ids])
     end
 
-    # S-construction packing is dead here. Rewind only phase scratch; the
-    # persistent S/factor stacks remain intact.
+    # sampling and truncation scratch. S-construction packing is dead here.
+    # Rewind only phase scratch; the persistent S/factor stacks remain intact.
     _arena_reset_phase!(arena)
     proj = _workspace_array!(tarena, backend, T, rB, block, qk)
     sketch = _workspace_array!(tarena, backend, T, rA, qk, block, nmember)
@@ -144,6 +135,7 @@ function RunCoupling(::Val{:column}, ops, rows, j::Int;
                         betaV === nothing ? 0 : size(first(betaV), 2),
                         max(block, maxrank), nmember)
 
+    # pointer-batched descriptors, when the backend supports them
     ptrs_ok = nmember > 0 && supports_pointer_batched(backend)
     member_ptrs = ptrs_ok ?
         BatchPtrDescriptor([reshape(member[p], bm, rA * qk) for p in 1:nmember]) :
@@ -190,6 +182,8 @@ function RunCoupling(::Val{:row}, ops, i::Int, cols;
     bn = size(ops.bv.data, 1)
     parena = _run_persistent_t_arena(arena)
     tarena = _run_t_arena(arena)
+
+    # member/shared factor panels
     Ainner = [_trimmed_tile(ops.av, i, kidx, rA) for kidx in 1:qk]
     shared = _factor_row_stack(ops.au, i, rA; arena=parena)
     Bouter = [[_trimmed_tile(ops.bu, kidx, j, rB) for kidx in 1:qk] for j in ids]
@@ -198,6 +192,7 @@ function RunCoupling(::Val{:row}, ops, i::Int, cols;
         for j in ids
     ]
 
+    # coupling matrix S = V_A' W_B, batched over member and contraction tile
     S = _workspace_array!(parena, backend, T, rA, rB, qk, nmember)
     if nmember > 0 && qk > 0 && rA > 0 && rB > 0
         left_factor_views = [Ainner[kidx] for p in 1:nmember for kidx in 1:qk]
@@ -206,6 +201,8 @@ function RunCoupling(::Val{:row}, ops, i::Int, cols;
         precision_gemm_batched!(_adjoint_blas_char(T), 'N', one(T),
                                 left_factor_views, right_factor_views, zero(T), coupling_views, mode)
     end
+
+    # beta terms, read directly from C's existing content when beta != 0
     betaU, betaV = if iszero(beta)
         (nothing, nothing)
     else
@@ -215,12 +212,14 @@ function RunCoupling(::Val{:row}, ops, i::Int, cols;
     end
     rC = betaU === nothing ? 0 : size(first(betaU), 2)
 
+    # sampling and truncation scratch (phase-only; S/factor stacks are persistent)
     _arena_reset_phase!(arena)
     proj = _workspace_array!(tarena, backend, T, rA, block, qk)
     sketch = _workspace_array!(tarena, backend, T, rB, qk, block, nmember)
     Omega = _workspace_array!(tarena, backend, T, bm, block, 1)
     beta_tmp = _workspace_array!(tarena, backend, T, rC, max(block, maxrank), nmember)
 
+    # pointer-batched descriptors, when the backend supports them
     ptrs_ok = nmember > 0 && qk > 0 && supports_pointer_batched(backend)
     member_ptrs = ptrs_ok ?
         BatchPtrDescriptor([reshape(member[p], bn, rB * qk) for p in 1:nmember]) :
@@ -723,16 +722,13 @@ end
 
 Pure arithmetic, no allocation: the persistent and peak phase bytes one
 canonical TLR-output GEMM run (`family ∈ (:column, :row_left)`) draws from an
-`ARARunArena` over its whole lifetime. Sampling and finalization
-scratch share one rewound phase arena, while `Q`, `S`, and packed factor stacks
-remain persistent. Mirrors
-`direct.jl`'s `full_workspace_bytes`/`_slice_bytes` pattern for the dense
-path. `bm`/`bn` are the output tile's row/column block sizes; `maxrank`
+`ARARunArena` over its whole lifetime. Sampling and finalization scratch share
+one rewound phase arena, while `Q`, `S`, and packed factor stacks remain
+persistent. `bm`/`bn` are the output tile's row/column block sizes; `maxrank`
 upper-bounds both the achieved rank `sQ` (only known after a run converges)
 and the β-term rank `rC` (only known when `beta != 0`), so this is an upper
-bound, not a tight minimum -- consistent with `_arena_array!` failing loudly
-(not silently) if it is ever wrong instead of merely loose.
-
+bound, not a tight minimum -- consistent with `_workspace_array!` failing
+loudly (not silently) if it is ever wrong instead of merely loose.
 """
 function ara_run_workspace_bytes(family::Symbol, rA::Int, rB::Int, qk::Int,
                                  nmember::Int, block::Int, maxrank::Int,

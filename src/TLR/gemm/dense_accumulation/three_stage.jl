@@ -185,6 +185,7 @@ function _build_compressed_ftlr_foldright_run(C, A, B, plan,
     width = _compressed_ftlr_width(plan, jrange)
     output_cols = _compressed_ftlr_output_cols(B, jrange)
 
+    # Stage 1 layout and each row's terminal FoldRight operand offset.
     rho_k, row_off, koff, s_total = _compressed_ftlr_stage1_layout(A, irange, jrange, plan)
     # A row's terminal FoldRight operand is a dense `rho_i × width` column-major
     # matrix. Its individual `(k,j)` pieces are strided views into that matrix,
@@ -368,6 +369,8 @@ function _build_compressed_ftlr_foldleft_run(C, A, B, plan,
         end,
         scale_targets)
 end
+
+# symbolic analysis: reusable prepared-run bundle for repeated numerical calls
 
 """
     CompressedGemmAnalysis

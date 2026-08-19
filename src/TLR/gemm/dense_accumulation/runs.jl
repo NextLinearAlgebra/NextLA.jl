@@ -94,7 +94,7 @@ end
 
 function _validate_dense_accumulation_analysis_binding(
     analysis, C, A, B, workspace, transA, transB, mode)
-    analysis.closed && throw(ArgumentError("dense-result analysis has been closed"))
+    analysis.closed && throw(ArgumentError("dense-accumulation analysis has been closed"))
     C === analysis.C && A === analysis.A && B === analysis.B ||
         throw(ArgumentError("analysis is bound to different matrix objects"))
     workspace === analysis.workspace && sizeof(workspace) == analysis.workspace_bytes ||
@@ -120,10 +120,13 @@ end
 function _execute_prepared_dense_accumulation_runs_inner!(
     runs, C, backend, ::Type{T}, alpha, beta, manage_pointer_mode) where {T}
     for run in runs
+        # beta pre-scale for the terminal stage's untouched output region
         run.needs_zero && fill!(run.zero_target, zero(T))
         @inbounds for (rows, cols) in run.scale_targets
             _scale_output!(view(C, rows, cols), beta)
         end
+
+        # submit each stage, substituting alpha/beta only at the terminal one
         @inbounds for (index, stage) in enumerate((run.stage1, run.stage2, run.stage3))
             if index == run.terminal_stage
                 _submit_prepared_dense_accumulation_stage(
