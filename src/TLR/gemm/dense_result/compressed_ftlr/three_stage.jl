@@ -10,8 +10,7 @@
     last = f.offsets[last_slot + 1] - 1
     rows = length(_tile_axis_range(A, i, 1))
     rho == 0 && return reshape(view(f.data, 1:0), rows, 0)
-    axis = f.dimension_axis === :row ? fi : fj
-    packed = reshape(view(f.data, first:last), f.leading_dimensions[axis], rho)
+    packed = reshape(view(f.data, first:last), length(first:last) ÷ rho, rho)
     return view(packed, 1:rows, :)
 end
 
@@ -35,8 +34,7 @@ column-restricted run keep Stage 1 fused rather than falling back to a gather.
     last = f.offsets[last_slot + 1] - 1
     rows = length(_tile_axis_range(B, k, 1))
     rho == 0 && return reshape(view(f.data, 1:0), rows, 0)
-    axis = f.dimension_axis === :row ? fi : fj
-    packed = reshape(view(f.data, first:last), f.leading_dimensions[axis], rho)
+    packed = reshape(view(f.data, first:last), length(first:last) ÷ rho, rho)
     return view(packed, 1:rows, :)
 end
 
@@ -66,8 +64,7 @@ special-casing needed, matching the existing stacking helpers' behavior.
     last = f.offsets[last_slot + 1] - 1
     rows = length(_tile_axis_range(A, k, 2))
     rho == 0 && return reshape(view(f.data, 1:0), rows, 0)
-    axis = f.dimension_axis === :row ? fi0 : fk0
-    packed = reshape(view(f.data, first:last), f.leading_dimensions[axis], rho)
+    packed = reshape(view(f.data, first:last), length(first:last) ÷ rho, rho)
     return view(packed, 1:rows, :)
 end
 
@@ -83,8 +80,7 @@ end
     last = f.offsets[last_slot + 1] - 1
     rows = length(_tile_axis_range(B, j, 2))
     gamma == 0 && return reshape(view(f.data, 1:0), rows, 0)
-    axis = f.dimension_axis === :row ? fi : fj
-    packed = reshape(view(f.data, first:last), f.leading_dimensions[axis], gamma)
+    packed = reshape(view(f.data, first:last), length(first:last) ÷ gamma, gamma)
     return view(packed, 1:rows, :)
 end
 

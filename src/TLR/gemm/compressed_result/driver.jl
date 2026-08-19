@@ -328,10 +328,8 @@ function _pack_ara_output(staging::CompressedFTLRMatrix;
         r == 0 && continue
         # `staging` retains one fixed physical width even after its diagnostic
         # rank vector is overwritten with the discovered ranks.
-        Us = _compressed_ftlr_factor_view(
-            staging.outer, maxrank(staging), r, i, j)
-        Vs = _compressed_ftlr_factor_view(
-            staging.inner, maxrank(staging), r, i, j)
+        Us = _compressed_ftlr_factor_view(staging.outer, i, j, i, r)
+        Vs = _compressed_ftlr_factor_view(staging.inner, i, j, j, r)
         copyto!(compressed_ftlr_outer(C, i, j), Us)
         copyto!(compressed_ftlr_inner(C, i, j), Vs)
     end

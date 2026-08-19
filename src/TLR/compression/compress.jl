@@ -167,7 +167,8 @@ function _scatter_factor_batch!(C::CompressedFTLRMatrix, cat, side::Symbol)
     factors = side === :outer ? C.outer : C.inner
     source = side === :outer ? cat.U : cat.V
     tile_axis = side === :outer ? first(cat.tile_ids[1]) : last(cat.tile_ids[1])
-    ld = factors.leading_dimensions[tile_axis]
+    ld = aligned_leading_dimension(eltype(factors.data),
+                                   factors.logical_dimensions[tile_axis])
     offsets_host = Vector{Int}(undef, length(cat.tile_ids))
     @inbounds for (k, (i, j)) in enumerate(cat.tile_ids)
         slot = tile_linear_index(factors.order, factors.qm, factors.qn, i, j)

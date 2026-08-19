@@ -34,8 +34,7 @@ function gemm!(C::AbstractMatrix, A::TLRMatrix{BackendT,T}, B::TLRMatrix{Backend
     ScalarT = gemm_compute_type(mode)
     α = ScalarT(alpha)
     β = ScalarT(beta)
-    ws = workspace isa DenseGemmWorkspace ? workspace :
-         DenseGemmWorkspace(A, workspace)
+    ws = workspace isa DenseGemmWorkspace ? workspace : DenseGemmWorkspace(A, workspace)
     required = gemm_minimum_workspace_bytes(A, B; transA, transB)
     sizeof(ws) >= required || throw(ArgumentError(
         "workspace has $(sizeof(ws)) bytes; at least $required bytes are required"))
