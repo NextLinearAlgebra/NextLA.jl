@@ -6,6 +6,7 @@ using Random
 
 include("lapack_helpers.jl")
 include("gpu_backends.jl")
+include("backend_test_helpers.jl")
 backends = available_backends()
 @info "Test backends" backends=[b[1] for b in backends]
 
@@ -50,6 +51,16 @@ function matrix_generation(type, M, N; dist=:uniform, mode=:decay,
 end
 
 include("NextLAMatrix.jl")
+
+include("TLR/helpers.jl")
+include("TLR/container.jl")
+include("TLR/primitives.jl")
+include("TLR/ara.jl")
+include("TLR/compress.jl")
+include("TLR/dense_accumulation_tlr.jl")
+include("TLR/dense_accumulation_compressed_ftlr.jl")
+include("TLR/compressed_accumulation.jl")
+
 include("lu.jl")
 include("unified_rectrxm.jl")
 include("trsm.jl")
@@ -70,3 +81,7 @@ include("ttqrt.jl")
 include("ttmqr.jl")
 include("pamm.jl")
 include("pemv.jl")
+include("gemm_batched.jl")
+include("gemm_grouped.jl")
+include("trsm_batched.jl")
+include("potrf_batched.jl")

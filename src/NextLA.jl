@@ -10,6 +10,11 @@ import LinearAlgebra.BLAS: @blasfunc
 using Random: Random
 using KernelAbstractions
 
+@inline SUBGROUP_SIZE(::Type{<:KernelAbstractions.CPU}) = Val(1)
+@inline unwrap(::Val{x}) where {x} = x
+@inline supports_pointer_batched(backend) = supports_pointer_batched(typeof(backend))
+@inline supports_pointer_batched(::Type) = false
+
 """
 	lamch(::Type{T}, cmach) where{T<: Number}
 
@@ -56,10 +61,18 @@ include("NextLAMatrix.jl")
 include("lu.jl")
 include("trmm.jl")
 include("trsm.jl")
+include("trsm_batched.jl")
 include("rectrxm.jl")
 include("matmul.jl")
+include("gemm_types.jl")
+include("gemmEx.jl")
+include("gemm_batched.jl")
+include("gemm_precision.jl")
+include("gemm_grouped.jl")
+include("streams.jl")
 include("lauu2.jl")
 include("lauum.jl")
+include("potrf_batched.jl")
 
 include("geqrt.jl")
 include("geqr2.jl")
@@ -77,4 +90,25 @@ include("axpy.jl")
 include("pemv.jl")
 include("ttmqr.jl")
 include("ttqrt.jl")
+
+include("TLR/TLRmodule.jl")
+using .TLRmodule: TileColMajor, TileRowMajor
+using .TLRmodule: AbstractTLRMatrix, TLRMatrix, CompressedFTLRMatrix
+using .TLRmodule: ndiag_tiles, tile_origin_coords, tile_size
+using .TLRmodule: maxrank, ranks, rank_multiple, maximum_storage_rank
+using .TLRmodule: residuals, dense_diag, dense_diag_corner, grid_size, nominal_tile_size, tail_tile_size
+using .TLRmodule: uncompress!
+using .TLRmodule: FTLRCompressionWorkspace
+using .TLRmodule: get_factors
+using .TLRmodule: offdiagonal
+using .TLRmodule: gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes, gemm_workspace_bytes
+using .TLRmodule: DenseGemmWorkspace
+using .TLRmodule: CompressedGemmAnalysis, CompressedMixedGemmAnalysis, analyze_compressed_gemm
+export TLRMatrix, CompressedFTLRMatrix
+export uncompress!
+export gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes, gemm_workspace_bytes
+export rank_multiple, maximum_storage_rank
+export FTLRCompressionWorkspace
+export DenseGemmWorkspace
+export CompressedGemmAnalysis, CompressedMixedGemmAnalysis, analyze_compressed_gemm
 end
