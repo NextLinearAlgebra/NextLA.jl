@@ -104,6 +104,8 @@ using .TLRmodule: offdiagonal
 using .TLRmodule: gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes, gemm_workspace_bytes
 using .TLRmodule: DenseGemmWorkspace
 using .TLRmodule: CompressedGemmAnalysis, CompressedMixedGemmAnalysis, analyze_compressed_gemm
+export TLRMatrix, CompressedFTLRMatrix
+export uncompress!
 export gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes, gemm_workspace_bytes
 export rank_multiple, maximum_storage_rank
 export FTLRCompressionWorkspace

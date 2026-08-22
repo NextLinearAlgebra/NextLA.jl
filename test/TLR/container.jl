@@ -1,5 +1,11 @@
 using KernelAbstractions
 
+@testset "top-level TLR API" begin
+    @test TLRMatrix === NextLA.TLRMatrix
+    @test CompressedFTLRMatrix === NextLA.CompressedFTLRMatrix
+    @test uncompress! === NextLA.uncompress!
+end
+
 @testset "finalized CompressedFTLRMatrix layout" begin
     ranks = Int[1 3 0; 2 1 1; 1 1 1]
     A = NextLA.CompressedFTLRMatrix(
