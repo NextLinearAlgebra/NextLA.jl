@@ -1,114 +1,68 @@
-export adaptive_precision_LT
-# computes the approximated working precsion of each level of the 
-#   matrix.
-# Will be used to store the matrix blocks in a lower precision 
-# Assumption is the matrix is lower triangular: Will be genrealized
+"""
+    adaptive_precisions(A, U=DataType[Float32, Float64], n_min=4, epsilon=1e-8; uplo='L')
 
-using LinearAlgebra # for the inbuilt Frobenius norm function
+Chooses a working precision for each level of the recursive splitting of `A`, and returns them
+as a `Vector{DataType}` that can be passed as `precisions` to `FullMixedPrec`, `SymmMixedPrec`
+or `TriMixedPrec`. `uplo` is 'L' or 'U' for a triangular or symmetric `A`, of which only that
+triangle is read, and 'F' for a full one. `adaptive_precision_LT` is the same function under
+its original name.
 
-# Function to select the adaptive precision at each level of the triangular matrix
-# A : Lower Triangular matrix
-# n_min : minimal diagonal block size, proxy for the number of levels
-# U : vector of the available precision levels expressed as the unit roundoff errors
-    # 1: q52
-    # 2: bf16
-    # 3: f16
-    # 4: f32
-    # 5: f64
+`A` is split as those containers split it. At level `k`, counted from 0 at the top, `E_k` is
+the largest Frobenius norm of the level's off-diagonal blocks -- the `uplo` one, or both for
+'F' -- relative to the norm of the part of `A` that is read, and the target unit roundoff is
+`epsilon / (2^((k+1)/2) * E_k)`. The level gets
+the coarsest type in `U` whose unit roundoff `eps(T)/2` does not exceed the target, or the
+finest if none does. Splitting stops before any block would have fewer than `n_min` rows on
+either side, and the result ends with the finest type in `U` for the leaves, so a matrix too
+small to split returns that type alone.
 
-    # used to compute the machine precision levels
-    # HAS TO BE SORTED IN ASCENDING ORDER
-# returns the adaptive precision u_k for each level of the matrix blocks k
+`U` may list `Float8_E5M2` (q52), `BFloat16`, `Float16`, `Float32` and `Float64`, in any
+order. The part of `A` that is read must be finite and not zero, `A` square and non-empty,
+`uplo` 'L', 'U' or 'F', `n_min` at least 1 and `epsilon` positive.
+"""
+function adaptive_precisions(
+    A::AbstractMatrix,
+    U::AbstractVector{DataType}=DataType[Float32, Float64],
+    n_min::Integer=4,
+    epsilon::Real=1e-8;
+    uplo::Char='L'
+)
+    n = size(A, 1)
+    n == size(A, 2) || throw(DimensionMismatch("A must be square"))
+    isempty(A) && throw(ArgumentError("A must not be empty"))
+    uplo in ('L', 'U', 'F') || throw(ArgumentError("uplo must be 'L', 'U' or 'F'"))
+    isempty(U) && throw(ArgumentError("U must not be empty"))
+    all(_supported, U) ||
+        throw(ArgumentError("U must be Float8_E5M2, BFloat16, Float16, Float32 or Float64"))
+    n_min >= 1 || throw(ArgumentError("n_min must be at least 1"))
+    epsilon > 0 || throw(ArgumentError("epsilon must be positive"))
+    norm_A = norm(uplo == 'L' ? LowerTriangular(A) : uplo == 'U' ? UpperTriangular(A) : A)
+    isfinite(norm_A) || throw(ArgumentError("A must be finite"))
+    iszero(norm_A) && throw(ArgumentError("A must not be zero"))
 
-# also returns the precision matrix blocks for debugging
-function adaptive_precision_LT(A, U = [4,5], n_min = 4, epsilon = 1e-8)
-    
-    # creating the array of roundoff errors (working precision)
-    u16 = eps(Float16)/2
-    u32 = eps(Float32)/2
-    u64 = eps(Float64)/2
-
-    # Hardcoding the rest for convenience (will change later, or create another module)
-    q52 = 1.25e-1 # quarter precision
-    bf16 = 3.91e-3 # bfloat16
-
-
-    U_all = Float64[q52, bf16, u16, u32, u64] # Full precision set
-    U_string = ["q52", "bf16", "f16", "f32", "f64"]
-
-    U_set = [] # will hold the user specified precision levels
-    U_str = []
-
-    for i in U
-        push!(U_set, U_all[i])
-        push!(U_str, U_string[i])
-    end
-
-    u_approx = [] # hold the approximated precision levels
-
-    norm_A = norm(A)
-
-    N = size(A, 1)
-    @assert N == size(A, 2) "Matrix must be triangular in shape (square dimensions)"
-
-    vertices = [[(1, 1), (N, N)]]  # [(top-left, bottom-right)] coordinates
-
-    half_length = N
-    k = 0 # the current level
-
-    while ((half_length/2) >= n_min)
-        #partition the submatrices
-        new_vertices_diag = []
-        frob_norms_level = []
-        half_length = Int(ceil(half_length/2))
-
-        for vertex in vertices
-
-            # diagonal submatrices
-            top_left_vertices = [[vertex[1][1], vertex[1][2]], [vertex[1][1] + half_length-1,vertex[1][2] + half_length-1]]
-            bottom_right_vertices = [[vertex[1][1] + half_length, vertex[1][2] + half_length], [vertex[2][1] ,vertex[2][2]]]
-
-            # off diagonal submatrices
-            off_diag_left = [[vertex[1][1] + half_length, vertex[1][2]], [vertex[2][1], vertex[1][2] + half_length -1]]
-            # off_diag_right = [[vertex[1][1], vertex[1][2]+ half_length], [vertex[1][1]+half_length-1, vertex[2][2]]]
-            
-
-            off_diag_norm_left = norm(@view(A[off_diag_left[1][1] : off_diag_left[2][1], off_diag_left[1][2] : off_diag_left[2][2]]))
-            # off_diag_norm_right = norm(@view(A[off_diag_right[1][1] : off_diag_right[2][1], off_diag_right[1][2] : off_diag_right[2][2]]))
-
-
-            #result[off_diag_left[1][1] : off_diag_left[2][1], off_diag_left[1][2] : off_diag_left[2][2]] .= off_diag_norm_left
-            #result[off_diag_right[1][1] : off_diag_right[2][1], off_diag_right[1][2] : off_diag_right[2][2]] .= off_diag_norm_right
-
-            push!(frob_norms_level, off_diag_norm_left)
-            
-            # push!(new_vertices_diag, top_left_vertices, bottom_right_vertices)
-
-            # # Fix for line 72
-            push!(new_vertices_diag, top_left_vertices)
-            push!(new_vertices_diag, bottom_right_vertices)
+    types = sort(unique(U); by=T -> Float64(eps(T)), rev=true)
+    roundoffs = [Float64(eps(T)) / 2 for T in types]
+    levels = DataType[]
+    blocks = [1:n]
+    k = 0
+    while all(r -> length(r) >= 2 && length(r) - _rec_split(length(r)) >= n_min, blocks)
+        next = UnitRange{Int}[]
+        level_norm = 0.0
+        for r in blocks
+            mid = _rec_split(length(r))
+            top, bottom = r[1:mid], r[mid+1:end]
+            uplo == 'U' || (level_norm = max(level_norm, norm(view(A, bottom, top))))
+            uplo == 'L' || (level_norm = max(level_norm, norm(view(A, top, bottom))))
+            push!(next, top, bottom)
         end
-
-        # find the maximum norm at the level
-        # then change the elements on this level to the maximum norm in the result matrix 
-        level_norm = maximum(frob_norms_level)
-        
-        E_k = level_norm/norm_A
-        u_work = epsilon/((2^((k+1)/2))*E_k)
-
-        i = 1
-        while ((u_work < U_set[i]) && (i < size(U, 1)))
-            i += 1
-        end
-
-        push!(u_approx, U_str[i])
-
-
-        vertices = new_vertices_diag
-        k = k+1
-        
+        target = epsilon / (2^((k + 1) / 2) * (level_norm / norm_A))
+        i = findfirst(<=(target), roundoffs)
+        push!(levels, i === nothing ? types[end] : types[i])
+        blocks = next
+        k += 1
     end
-
-    return u_approx
-
+    push!(levels, types[end])
+    return levels
 end
+
+const adaptive_precision_LT = adaptive_precisions

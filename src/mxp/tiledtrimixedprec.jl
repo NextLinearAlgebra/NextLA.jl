@@ -1,162 +1,112 @@
-# tiled mixed precision matrix
+"""
+    TiledTriMixedPrec{T_Diag, T_OffDiag, T_Scale, M_Diag, M_OffDiag} <: AbstractMixedPrec{T_Diag}
 
-# tile data structure that stores the information about where each tile 
-Tile{T_Diag, T_OffDiag} = Union{AbstractMatrix{T_Diag}, AbstractMatrix{T_OffDiag}, Nothing}
-
-struct TiledTriMixedPrec{T_Diag, T_OffDiag} <: AbstractMatrix{T_Diag}
-    tiles::Matrix{Tile{T_Diag, T_OffDiag}}
-    
-    sz::Tuple{Int, Int}
-    
+A triangular matrix stored as a flat grid of tiles. The tile sizes come from the same
+recursive splitting as `TriMixedPrec`, stopped at `threshold`; diagonal tiles are stored in
+`T_Diag` and the off-diagonal tiles of the `uplo` triangle in `T_OffDiag`, one tile per grid
+cell, each with its own scale factor of type `T_Scale`. The other triangle is not stored and
+reads as zero.
+"""
+struct TiledTriMixedPrec{T_Diag<:AbstractFloat, T_OffDiag<:AbstractFloat, T_Scale<:AbstractFloat,
+                         M_Diag<:AbstractMatrix{T_Diag}, M_OffDiag<:AbstractMatrix{T_OffDiag}} <:
+       AbstractMixedPrec{T_Diag}
+    diag::Vector{M_Diag}
+    off::Matrix{Union{Nothing, M_OffDiag}}
+    diag_scales::Vector{T_Scale}
+    off_scales::Matrix{T_Scale}
+    offsets::Vector{Int}
     uplo::Char
-    
-    # to be able to getindex if not a power of 2
-    row_sizes::Vector{Int}
-    col_sizes::Vector{Int}
+    n::Int
 end
 
+"""
+    TiledTriMixedPrec(A::AbstractMatrix, uplo::Char; precisions::Vector{DataType}, threshold, scale_type=Float32)
 
+Constructs a `TiledTriMixedPrec` representation of the triangular matrix `A`.
 
+`A` is split as `TriMixedPrec` splits it until a diagonal block has at most `threshold` rows;
+those blocks set the tile sizes. As in the other containers, off-diagonal tiles are stored in
+`precisions[1]` and diagonal tiles in `precisions[end]`, which is also `T_Diag`; `precisions`
+holds one or two types. Only the `uplo` triangle of `A` is read. A tile whose largest
+magnitude exceeds `floatmax` of its storage type is divided by a scale factor, clamped and
+stored with that factor; a tile beyond `floatmax(scale_type) * floatmax` of its storage type
+throws an `ArgumentError`. `precisions` may contain `Float8_E5M2` (q52), `BFloat16`,
+`Float16`, `Float32` and `Float64`, and `scale_type` be `Float16`, `Float32` or `Float64`. `A` must
+be square, non-empty and finite, `uplo` 'L' or 'U' and `threshold` at least 1.
+"""
 function TiledTriMixedPrec(
-    A::AbstractMatrix, 
-    uplo::Char; 
-    T_Diag::Type, 
-    T_OffDiag::Type, 
-    threshold::Int
-)
-    n = size(A, 1)
-    @assert n == size(A, 2) "Matrix must be square"
-
-    num_leaves = _count_leaves(n, threshold)
-    
-    tiles = Matrix{Tile{T_Diag, T_OffDiag}}(nothing, num_leaves, num_leaves)
-    row_sizes = zeros(Int, num_leaves)
-    col_sizes = zeros(Int, num_leaves)
-
-    _recursive_tile_split!(
-        tiles, row_sizes, col_sizes,
-        A,                          
-        1, 1,                       
-        uplo, T_Diag, T_OffDiag, threshold
+    A::AbstractMatrix,
+    uplo::Char;
+    precisions::Vector{DataType},
+    threshold::Integer,
+    scale_type::Type{T_Scale}=Float32
+) where {T_Scale<:AbstractFloat}
+    _check_args(A, precisions, T_Scale)
+    length(precisions) <= 2 ||
+        throw(ArgumentError("precisions must hold one or two types: off-diagonal, then diagonal"))
+    uplo in ('L', 'U') || throw(ArgumentError("uplo must be 'L' or 'U'"))
+    threshold >= 1 || throw(ArgumentError("threshold must be at least 1"))
+    T_OffDiag, T_Diag = precisions[1], precisions[end]
+    sizes = Int[]
+    _tile_sizes!(sizes, size(A, 1), Int(threshold))
+    offsets = cumsum([1; sizes])
+    t = length(sizes)
+    tile(k) = offsets[k]:offsets[k+1]-1
+    M_Diag = typeof(similar(A, T_Diag, 0, 0))
+    M_OffDiag = typeof(similar(A, T_OffDiag, 0, 0))
+    diag = Vector{M_Diag}(undef, t)
+    diag_scales = Vector{T_Scale}(undef, t)
+    for k in 1:t
+        block = view(A, tile(k), tile(k))
+        diag[k], diag_scales[k] = _store(uplo == 'L' ? tril(block) : triu(block), T_Diag, T_Scale)
+    end
+    off = Matrix{Union{Nothing, M_OffDiag}}(nothing, t, t)
+    off_scales = ones(T_Scale, t, t)
+    for r in 1:t, c in 1:t
+        r != c && _stored(r, c, uplo) || continue
+        off[r, c], off_scales[r, c] = _store(view(A, tile(r), tile(c)), T_OffDiag, T_Scale)
+    end
+    return TiledTriMixedPrec{T_Diag, T_OffDiag, T_Scale, M_Diag, M_OffDiag}(
+        diag, off, diag_scales, off_scales, offsets, uplo, size(A, 1)
     )
-
-    return TiledTriMixedPrec{T_Diag, T_OffDiag}(tiles, (n, n), uplo, row_sizes, col_sizes)
 end
 
-
-function _recursive_tile_split!(
-    tiles, row_sizes, col_sizes,
-    A_view,
-    tile_r::Int, tile_c::Int,
-    uplo, T_Diag, T_OffDiag, threshold
-)
-    n = size(A_view, 1)
-
-    
-    if n <= threshold
-        tiles[tile_r, tile_c] = T_Diag.(A_view) 
-        row_sizes[tile_r] = n
-        col_sizes[tile_c] = n
-        return
-    end
-
-    
-    mid = isinteger(log2(n)) ? div(n, 2) : 2^floor(Int, log2(n))
-
-    A11_view = view(A_view, 1:mid, 1:mid)
-    A22_view = view(A_view, mid+1:n, mid+1:n)
-    
-    A11_leaves = _count_leaves(mid, threshold)
-
-    if uplo == 'L'
-        A21_view = view(A_view, mid+1:n, 1:mid)
-        
-        tiles[tile_r + A11_leaves, tile_c] = T_OffDiag.(A21_view)
-        
-        _recursive_tile_split!(tiles, row_sizes, col_sizes, A11_view, tile_r, tile_c, uplo, T_Diag, T_OffDiag, threshold)
-        _recursive_tile_split!(tiles, row_sizes, col_sizes, A22_view, tile_r + A11_leaves, tile_c + A11_leaves, uplo, T_Diag, T_OffDiag, threshold)
-
-    else # uplo == 'U'
-        A12_view = view(A_view, 1:mid, mid+1:n)
-        
-        tiles[tile_r, tile_c + A11_leaves] = T_OffDiag.(A12_view)
-        
-        _recursive_tile_split!(tiles, row_sizes, col_sizes, A11_view, tile_r, tile_c, uplo, T_Diag, T_OffDiag, threshold)
-        _recursive_tile_split!(tiles, row_sizes, col_sizes, A22_view, tile_r + A11_leaves, tile_c + A11_leaves, uplo, T_Diag, T_OffDiag, threshold)
-    end
+function _tile_sizes!(sizes::Vector{Int}, n::Int, threshold::Int)
+    n <= threshold && return push!(sizes, n)
+    mid = _rec_split(n)
+    _tile_sizes!(sizes, mid, threshold)
+    _tile_sizes!(sizes, n - mid, threshold)
+    return sizes
 end
 
-function _count_leaves(n::Int, threshold::Int)
-    if n <= threshold
-        return 1
-    end
-    
-    mid = isinteger(log2(n)) ? div(n, 2) : 2^floor(Int, log2(n))
-    
-    leaves_A11 = _count_leaves(mid, threshold)
-    leaves_A22 = _count_leaves(n - mid, threshold)
-    
-    return leaves_A11 + leaves_A22
+Base.size(A::TiledTriMixedPrec) = (A.n, A.n)
+
+Base.@propagate_inbounds function Base.getindex(A::TiledTriMixedPrec{T_Diag}, i::Int, j::Int) where {T_Diag}
+    @boundscheck checkbounds(A, i, j)
+    _stored(i, j, A.uplo) || return zero(T_Diag)
+    r, c = searchsortedlast(A.offsets, i), searchsortedlast(A.offsets, j)
+    li, lj = i - A.offsets[r] + 1, j - A.offsets[c] + 1
+    r == c && return _unscaled(A.diag[r][li, lj], A.diag_scales[r], T_Diag)
+    return _unscaled(A.off[r, c][li, lj], A.off_scales[r, c], T_Diag)
 end
 
-function Base.size(A::TiledTriMixedPrec)
-    return A.sz
-end
+"""
+    reconstruct_matrix(A::TiledTriMixedPrec{T_Diag})
 
-function Base.size(A::TiledTriMixedPrec, dim::Integer)
-    return A.sz[dim]
-end
-
-
-function find_tile_and_local_indices(sizes::Vector{Int}, global_idx::Int)
-    local_idx = global_idx
-    cumulative_size = 0
-    
-    for (tile_idx, tile_size) in enumerate(sizes)
-        if local_idx <= tile_size
-            # We found the correct tile!
-            return tile_idx, local_idx
+Copies the tiled matrix back into one dense array with element type `T_Diag`, of the same
+array type as the stored tiles, with each tile's scale applied and zeros in the other
+triangle.
+"""
+function reconstruct_matrix(A::TiledTriMixedPrec{T_Diag}) where {T_Diag}
+    C = fill!(similar(first(A.diag), T_Diag, A.n, A.n), zero(T_Diag))
+    t = length(A.diag)
+    for r in 1:t, c in 1:t
+        rows, cols = A.offsets[r]:A.offsets[r+1]-1, A.offsets[c]:A.offsets[c+1]-1
+        if r == c
+            @views C[rows, cols] .= _unscaled.(A.diag[r], A.diag_scales[r], T_Diag)
+        elseif A.off[r, c] !== nothing
+            @views C[rows, cols] .= _unscaled.(A.off[r, c], A.off_scales[r, c], T_Diag)
         end
-        # Otherwise, subtract this tile's size and move to the next.
-        local_idx -= tile_size
-        cumulative_size += tile_size # This line is not strictly needed for the logic, but good for debugging
     end
-    
-    # If we get here, the index is out of bounds
-    error("Global index $global_idx is out of bounds.")
-end
-
-
-function Base.getindex(A::TiledTriMixedPrec{T_Diag, T_OffDiag}, i::Int, j::Int) where {T_Diag, T_OffDiag}
-    # 1. Check for out-of-bounds access on the global matrix
-    rows, cols = A.sz
-    if !(1 <= i <= rows && 1 <= j <= cols)
-        throw(BoundsError(A, (i, j)))
-    end
-
-    # 2. Check if the index is in the zero part of the triangular matrix
-    #    before doing any complex calculations. This is a fast path.
-    if A.uplo == 'L' && j > i
-        return zero(T_Diag)
-    elseif A.uplo == 'U' && i > j
-        return zero(T_Diag)
-    end
-
-    # 3. Find the tile coordinates and local indices
-    tile_r, local_i = find_tile_and_local_indices(A.row_sizes, i)
-    tile_c, local_j = find_tile_and_local_indices(A.col_sizes, j)
-    
-    # 4. Retrieve the tile from the grid
-    tile = A.tiles[tile_r, tile_c]
-
-    # 5. Get the value
-    if tile === nothing
-        # This can happen if we access an index on the main diagonal
-        # that falls between tiles in the explicit zero part. For example,
-        # in a lower-triangular matrix, A.tiles[1, 2] would be nothing.
-        return zero(T_Diag)
-    else
-        # Access the element within the tile using local indices
-        return tile[local_i, local_j]
-    end
+    return C
 end

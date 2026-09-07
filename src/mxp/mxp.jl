@@ -1,0 +1,26 @@
+"""
+    MixedPrecision
+
+Mixed-precision matrix containers and the routines that work over them.
+Not re-exported by NextLA; opt in with `using NextLA.MixedPrecision`.
+"""
+module MixedPrecision
+
+using LinearAlgebra
+
+using ..NextLA: _rec_split
+
+abstract type AbstractMixedPrec{T} <: AbstractMatrix{T} end
+
+include("transposedmixedprec.jl")
+include("blocks.jl")
+include("fullmixedprec.jl")
+include("symmmixedprec.jl")
+include("trimixedprec.jl")
+include("tiledtrimixedprec.jl")
+include("adaptive.jl")
+
+export FullMixedPrec, SymmMixedPrec, TriMixedPrec, TiledTriMixedPrec
+export reconstruct_matrix, adaptive_precisions, adaptive_precision_LT
+
+end

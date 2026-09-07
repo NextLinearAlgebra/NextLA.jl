@@ -1,176 +1,115 @@
 """
-    TriMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
+    TriMixedPrec{T_Base<:AbstractFloat, T_Scale<:AbstractFloat} <: AbstractMixedPrec{T_Base}
 
 A hierarchical, recursive mixed-precision data structure that maps to triangular matrices.
-It partitions the matrix into two recursive diagonal blocks (`A11`, `A22`) and a single dense 
+It partitions the matrix into two recursive diagonal blocks (`A11`, `A22`) and a single dense
 off-diagonal block (`OffDiag`), structured according to its `uplo` ('U' for upper, 'L' for lower) character.
+A node holds either `A11`, `A22` and `OffDiag`, or a leaf block `Base`, never both. Every
+stored block carries a scale factor of type `T_Scale`, `one(T_Scale)` when it is unscaled.
+The struct is mutable so that a block an update takes past `floatmax` of its type can be
+stored back with a larger scale.
 """
-struct TriMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
-    A11::Union{TriMixedPrec{T_Base}, Nothing}
-    A22::Union{TriMixedPrec{T_Base}, Nothing}
-    OffDiag::Union{AbstractMatrix, Nothing}
-    offDiag_scale::Union{Float32, Nothing}
-    base_scale::Union{Float32, Nothing}
-    BaseCase::Union{AbstractMatrix{T_Base}, Nothing}
+mutable struct TriMixedPrec{T_Base<:AbstractFloat, T_Scale<:AbstractFloat} <:
+       AbstractMixedPrec{T_Base}
+    A11::Union{TriMixedPrec{T_Base, T_Scale}, Nothing}
+    A22::Union{TriMixedPrec{T_Base, T_Scale}, Nothing}
+    OffDiag::Union{AbstractMatrix{<:AbstractFloat}, Nothing}
+    OffDiag_scale::T_Scale
+    Base_scale::T_Scale
+    Base::Union{AbstractMatrix{T_Base}, Nothing}
     uplo::Char
-    sz::Tuple{Int, Int}
+    n::Int
 end
 
 """
-    TriMixedPrec(A::AbstractMatrix, uplo::Char; precisions::Vector{DataType})
+    TriMixedPrec(A::AbstractMatrix, uplo::Char; precisions::Vector{DataType}, scale_type=Float32)
 
 Constructs a `TriMixedPrec` representation of the triangular matrix `A`.
 
-Utilizes a base-2 recursive splitting scheme to divide the matrix into two diagonal triangular 
-blocks and one off-diagonal rectangular block. The algorithm maps the given `precisions` to 
-each depth level. For blocks evaluated as `Float16`, dynamic quantization is applied to safely 
-scale and clamp any values that exceed the `Float16` maximum (`65504.0f0`), ensuring robust 
-mixed-precision arithmetic without numerical overflow.
+The matrix is partitioned using a base-2 recursive splitting scheme, as for `FullMixedPrec`.
+Each level stores the off-diagonal block of the `uplo` triangle in `precisions[1]` and
+recurses on `A11` and `A22` with the rest. The recursion stops when one precision remains or
+the block is 1×1; that block's `uplo` triangle is stored in `precisions[end]`, which is
+also `T_Base`, with zeros in the other half.
+Only the `uplo` triangle of `A` is read back; the other triangle reads as zero. Every block
+is a copy, so later changes to `A` do not show through.
+
+`precisions` may contain `Float8_E5M2` (q52), `BFloat16`, `Float16`, `Float32` and `Float64`.
+A block whose largest magnitude exceeds `floatmax` of its storage type is divided by a scale
+factor, clamped and stored with that factor, of type `scale_type` (`Float16`, `Float32` or
+`Float64`). A block whose largest magnitude exceeds `floatmax(scale_type) * floatmax` of its
+storage type cannot be represented and throws an `ArgumentError`. `A` must be square,
+non-empty and finite, and `uplo` must be 'L' or 'U'.
 """
 function TriMixedPrec(
     A::AbstractMatrix,
     uplo::Char;
-    precisions::Vector{DataType}
-)
-    FP16_MAX_VAL = 65504.0f0
-    n = size(A, 1)
-    @assert n == size(A, 2)
-
-    if length(precisions) == 1
-        T_Base = precisions[1]
-
-        local base_matrix
-        local base_scale
-
-        if T_Base == Float16
-            alpha = maximum(abs, A)
-            if alpha > FP16_MAX_VAL
-                base_scale = Float32(alpha / FP16_MAX_VAL)
-                base_matrix = similar(A, Float16, size(A))
-                @. base_matrix = Float16(round(clamp(A / base_scale, -FP16_MAX_VAL, FP16_MAX_VAL)))
-            else
-                base_scale = nothing
-                base_matrix = similar(A, Float16, size(A))
-                base_matrix .= A
-            end
-        else
-            if eltype(A) == T_Base
-                base_matrix = A
-            else
-                base_matrix = similar(A, T_Base, size(A))
-                base_matrix .= A
-            end
-            base_scale = nothing
-        end
-        
-        return TriMixedPrec{T_Base}(nothing, nothing, nothing, nothing, base_scale, base_matrix, uplo, (n, n))
-    end
-
-    if isinteger(log2(n))
-        mid = div(n, 2)
-    else
-        mid = 2 ^ floor(Int, log2(n))
-    end
-    
-    T_OffDiag = precisions[1]
-    remaining_precisions = precisions[2:end]
-
-    A11 = TriMixedPrec(view(A, 1:mid, 1:mid), uplo; precisions=remaining_precisions)
-    A22 = TriMixedPrec(view(A, mid+1:n, mid+1:n), uplo; precisions=remaining_precisions)
-
-    local offDiag_matrix
-    local offDiag_view
-    local offDiag_scale = nothing
-    if uplo == 'L'
-        offDiag_view = view(A, mid+1:n, 1:mid)
-    else
-        offDiag_view = view(A, 1:mid, mid+1:n)
-    end
-
-    if T_OffDiag == Float16
-        alpha_offDiag = maximum(abs, offDiag_view)
-        if alpha_offDiag > FP16_MAX_VAL
-            offDiag_scale = Float32(alpha_offDiag / FP16_MAX_VAL)
-            offDiag_matrix = similar(offDiag_view, Float16, size(offDiag_view))
-            @. offDiag_matrix = Float16(round(clamp(offDiag_view / offDiag_scale, -FP16_MAX_VAL, FP16_MAX_VAL)))
-        else
-            offDiag_matrix = similar(offDiag_view, Float16, size(offDiag_view))
-            offDiag_matrix .= offDiag_view
-        end
-    else
-        if eltype(offDiag_view) == T_OffDiag
-            offDiag_matrix = offDiag_view
-        else
-            offDiag_matrix = similar(A, T_OffDiag, size(offDiag_view))
-            offDiag_matrix .= offDiag_view
-        end
-        offDiag_scale = nothing
-    end
-
-    T_Final_Base = precisions[end]
-    return TriMixedPrec{T_Final_Base}(A11, A22, offDiag_matrix, offDiag_scale, nothing, nothing, uplo, (n, n))
+    precisions::Vector{DataType},
+    scale_type::Type{T_Scale}=Float32
+) where {T_Scale<:AbstractFloat}
+    _check_args(A, precisions, T_Scale)
+    uplo in ('L', 'U') || throw(ArgumentError("uplo must be 'L' or 'U'"))
+    return _triangular_tree(TriMixedPrec, A, uplo, precisions, T_Scale)
 end
 
-function Base.size(A::TriMixedPrec)
-    return A.sz
-end
+Base.size(A::TriMixedPrec) = (A.n, A.n)
 
-function Base.getindex(A::TriMixedPrec{T_Base}, i::Int, j::Int) where {T_Base}
-    if A.BaseCase !== nothing
-        return A.BaseCase[i, j]
-    end
-
+Base.@propagate_inbounds function Base.getindex(A::TriMixedPrec{T_Base}, i::Int, j::Int) where {T_Base}
+    @boundscheck checkbounds(A, i, j)
+    _stored(i, j, A.uplo) || return zero(T_Base)
+    A.Base !== nothing && return _unscaled(A.Base[i, j], A.Base_scale, T_Base)
     mid = size(A.A11, 1)
+    i <= mid && j <= mid && return @inbounds A.A11[i, j]
+    i > mid && j > mid && return @inbounds A.A22[i - mid, j - mid]
+    x = A.uplo == 'L' ? A.OffDiag[i - mid, j] : A.OffDiag[i, j - mid]
+    return _unscaled(x, A.OffDiag_scale, T_Base)
+end
 
-    if i <= mid && j <= mid
-        return A.A11[i, j]
-    elseif i > mid && j > mid
-        return A.A22[i - mid, j - mid]
-    elseif i > mid && j <= mid
-        if A.uplo == 'L'
-            return A.OffDiag[i - mid, j]
-        else
-            return zero(T_Base)
-        end
+"""
+    reconstruct_matrix(A::TriMixedPrec{T_Base})
+
+Copies the triangular mixed-precision matrix back into one dense array with element type
+`T_Base`, of the same array type as the stored blocks, with each block's scale applied and
+zeros in the other triangle.
+"""
+function reconstruct_matrix(A::TriMixedPrec{T_Base}) where {T_Base}
+    B = A.Base !== nothing ? A.Base : A.OffDiag
+    return _reconstruct!(similar(B, T_Base, A.n, A.n), A)
+end
+
+function _reconstruct!(C::AbstractMatrix, A::TriMixedPrec{T_Base}) where {T_Base}
+    if A.Base !== nothing
+        r = 1:size(C, 1)
+        C .= ifelse.(_stored.(r, r', A.uplo), _unscaled.(A.Base, A.Base_scale, T_Base), zero(T_Base))
+        return C
+    end
+    mid, n = size(A.A11, 1), A.n
+    @inbounds _reconstruct!(view(C, 1:mid, 1:mid), A.A11)
+    @inbounds _reconstruct!(view(C, mid+1:n, mid+1:n), A.A22)
+    if A.uplo == 'L'
+        @inbounds @views C[mid+1:n, 1:mid] .= _unscaled.(A.OffDiag, A.OffDiag_scale, T_Base)
+        @inbounds @views C[1:mid, mid+1:n] .= zero(T_Base)
     else
-        if A.uplo == 'U'
-            return A.OffDiag[i, j - mid]
-        else
-            return zero(T_Base)
-        end
+        @inbounds @views C[1:mid, mid+1:n] .= _unscaled.(A.OffDiag, A.OffDiag_scale, T_Base)
+        @inbounds @views C[mid+1:n, 1:mid] .= zero(T_Base)
     end
-end
-
-function Base.sizeof(A::TriMixedPrec)
-    if A.BaseCase !== nothing
-        return sizeof(A.BaseCase)
-    end
-
-    return sizeof(A.A11) + sizeof(A.A22) + sizeof(A.OffDiag)
+    return C
 end
 
 """
-    TriMixedPrec(A::SymmMixedPrec{T_Base})
+    TriMixedPrec(A::SymmMixedPrec{T_Base, T_Scale})
 
-Dynamically converts an existing `SymmMixedPrec` matrix structure into a `TriMixedPrec` format.
+Views a `SymmMixedPrec` as a `TriMixedPrec` over the same stored blocks, without copying.
+The result reads only the `uplo` triangle, so a `SymmMixedPrec` factored in place can be used
+as its triangular factor.
 """
-function TriMixedPrec(A::SymmMixedPrec{T_Base}) where {T_Base}
-    if A.BaseCase !== nothing
-        return TriMixedPrec{T_Base}(
-            nothing, nothing, nothing,
-            nothing, A.base_scale, A.BaseCase,
-            A.uplo, A.sz
-        )
-    end
-
-    return TriMixedPrec{T_Base}(
-        TriMixedPrec(A.A11),
-        TriMixedPrec(A.A22),
-        A.OffDiag,
-        A.offDiag_scale,
-        nothing,  
-        nothing,  
-        A.uplo,
-        A.sz
+function TriMixedPrec(A::SymmMixedPrec{T_Base, T_Scale}) where {T_Base, T_Scale}
+    A.Base !== nothing && return TriMixedPrec{T_Base, T_Scale}(
+        nothing, nothing, nothing,
+        one(T_Scale), A.Base_scale, A.Base, A.uplo, A.n
+    )
+    return TriMixedPrec{T_Base, T_Scale}(
+        TriMixedPrec(A.A11), TriMixedPrec(A.A22), A.OffDiag,
+        A.OffDiag_scale, one(T_Scale), nothing, A.uplo, A.n
     )
 end

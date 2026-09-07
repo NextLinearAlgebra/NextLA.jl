@@ -91,9 +91,6 @@ include("axpy.jl")
 include("pemv.jl")
 include("ttmqr.jl")
 include("ttqrt.jl")
-include("mxp/fullmixedprec.jl")
-include("mxp/symmmixedprec.jl")
-include("mxp/trimixedprec.jl")
-include("mxp/tiledtrimixedprec.jl")
-include("mxp/adaptive.jl")
+include("mxp/mxp.jl")
+
 end

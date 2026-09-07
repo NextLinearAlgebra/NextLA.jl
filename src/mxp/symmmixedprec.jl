@@ -1,141 +1,98 @@
 """
-    SymmMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
+    SymmMixedPrec{T_Base<:AbstractFloat, T_Scale<:AbstractFloat} <: AbstractMixedPrec{T_Base}
 
 A hierarchical, recursive mixed-precision data structure that maps to symmetric matrices.
-Only one triangle (specified by `uplo` as 'U' or 'L') is explicitly stored. It recursively 
-partitions the symmetric matrix into two symmetric diagonal sub-blocks (`A11`, `A22`) and 
+Only one triangle (specified by `uplo` as 'U' or 'L') is explicitly stored. It recursively
+partitions the symmetric matrix into two symmetric diagonal sub-blocks (`A11`, `A22`) and
 one corresponding off-diagonal block (`OffDiag`).
+A node holds either `A11`, `A22` and `OffDiag`, or a leaf block `Base`, never both. Every
+stored block carries a scale factor of type `T_Scale`, `one(T_Scale)` when it is unscaled.
+The struct is mutable so that a block an update takes past `floatmax` of its type can be
+stored back with a larger scale.
 """
-struct SymmMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
-    A11::Union{SymmMixedPrec{T_Base}, Nothing}
-    A22::Union{SymmMixedPrec{T_Base}, Nothing}
-    OffDiag::Union{AbstractMatrix, Nothing}
-    offDiag_scale::Union{Float32, Nothing}
-    base_scale::Union{Float32, Nothing}
-    BaseCase::Union{AbstractMatrix{T_Base}, Nothing}
+mutable struct SymmMixedPrec{T_Base<:AbstractFloat, T_Scale<:AbstractFloat} <:
+       AbstractMixedPrec{T_Base}
+    A11::Union{SymmMixedPrec{T_Base, T_Scale}, Nothing}
+    A22::Union{SymmMixedPrec{T_Base, T_Scale}, Nothing}
+    OffDiag::Union{AbstractMatrix{<:AbstractFloat}, Nothing}
+    OffDiag_scale::T_Scale
+    Base_scale::T_Scale
+    Base::Union{AbstractMatrix{T_Base}, Nothing}
     uplo::Char
-    sz::Tuple{Int, Int}
+    n::Int
 end
 
 """
-    SymmMixedPrec(A::AbstractMatrix, uplo::Char; precisions::Vector{DataType})
+    SymmMixedPrec(A::AbstractMatrix, uplo::Char; precisions::Vector{DataType}, scale_type=Float32)
 
 Constructs a `SymmMixedPrec` representation of the symmetric matrix `A`.
 
-Uses a base-2 recursive splitting scheme to partition the indicated triangle ('U' or 'L') 
-into smaller symmetric blocks and rectangular off-diagonal views. To preserve bounds during 
-`Float16` conversion, per-block dynamic quantization handles elements by detecting values 
-exceeding `65504.0f0`, computing a scaling factor, and applying clamping. This ensures 
-high-magnitude structures safely avoid numerical overflow across the memory layout.
+The matrix is partitioned using a base-2 recursive splitting scheme, as for `FullMixedPrec`.
+Each level stores the off-diagonal block of the `uplo` triangle in `precisions[1]` and
+recurses on `A11` and `A22` with the rest. The recursion stops when one precision remains or
+the block is 1×1; that block's `uplo` triangle is stored in `precisions[end]`, which is
+also `T_Base`, with zeros in the other half.
+`A` is assumed symmetric: only its `uplo` triangle is read back.
+
+`precisions` may contain `Float8_E5M2` (q52), `BFloat16`, `Float16`, `Float32` and `Float64`.
+A block whose largest magnitude exceeds `floatmax` of its storage type is divided by a scale
+factor, clamped and stored with that factor, of type `scale_type` (`Float16`, `Float32` or
+`Float64`). A block whose largest magnitude exceeds `floatmax(scale_type) * floatmax` of its
+storage type cannot be represented and throws an `ArgumentError`. `A` must be square,
+non-empty and finite, and `uplo` must be 'L' or 'U'.
 """
 function SymmMixedPrec(
     A::AbstractMatrix,
     uplo::Char;
-    precisions::Vector{DataType}
-)
-    FP16_MAX_VAL = 65504.0f0
-    n = size(A, 1)
-    @assert n == size(A, 2) "A must be square"
-
-    if length(precisions) == 1 || n <= 1
-        T_Base = precisions[1]
-        local base_matrix
-        local base_scale
-        
-        if T_Base == Float16
-            alpha = maximum(abs, A)
-            if alpha > FP16_MAX_VAL
-                base_scale = Float32(alpha / FP16_MAX_VAL)
-                base_matrix = similar(A, Float16, size(A))
-                @. base_matrix = Float16(round(clamp(A / base_scale, -FP16_MAX_VAL, FP16_MAX_VAL)))
-            else
-                base_scale = nothing
-                base_matrix = similar(A, Float16, size(A))
-                base_matrix .= A
-            end
-        else
-            base_matrix = similar(A, T_Base, size(A))
-            base_matrix .= A
-            base_scale = nothing
-        end
-
-        return SymmMixedPrec{T_Base}(nothing, nothing, nothing, nothing, base_scale, base_matrix, uplo, (n, n))
-    end
-
-    mid = isinteger(log2(n)) ? div(n, 2) : 2^floor(Int, log2(n))
-
-    T_OffDiag = precisions[1]
-    remaining_precisions = precisions[2:end]
-
-    A11 = SymmMixedPrec(view(A, 1:mid, 1:mid), uplo; precisions=remaining_precisions)
-    A22 = SymmMixedPrec(view(A, mid+1:n, mid+1:n), uplo; precisions=remaining_precisions)
-
-    local offDiag_matrix
-    local offDiag_view
-    local offDiag_scale = nothing
-    if uplo == 'L'
-        offDiag_view = view(A, mid+1:n, 1:mid)
-    else
-        offDiag_view = view(A, 1:mid, mid+1:n)
-    end
-
-    if T_OffDiag == Float16
-        alpha_offDiag = maximum(abs, offDiag_view)
-        if alpha_offDiag > FP16_MAX_VAL
-            offDiag_scale = Float32(alpha_offDiag / FP16_MAX_VAL)
-            offDiag_matrix = similar(offDiag_view, Float16, size(offDiag_view))
-            @. offDiag_matrix = Float16(round(clamp(offDiag_view / offDiag_scale, -FP16_MAX_VAL, FP16_MAX_VAL)))
-        else
-            offDiag_matrix = similar(offDiag_view, Float16, size(offDiag_view))
-            offDiag_matrix .= offDiag_view
-        end
-    else
-        offDiag_matrix = similar(A, T_OffDiag, size(offDiag_view))
-        offDiag_matrix .= offDiag_view
-        offDiag_scale = nothing
-    end
-
-    T_Final_Base = precisions[end]
-    return SymmMixedPrec{T_Final_Base}(A11, A22, offDiag_matrix, offDiag_scale, nothing, nothing, uplo, (n, n))
+    precisions::Vector{DataType},
+    scale_type::Type{T_Scale}=Float32
+) where {T_Scale<:AbstractFloat}
+    _check_args(A, precisions, T_Scale)
+    uplo in ('L', 'U') || throw(ArgumentError("uplo must be 'L' or 'U'"))
+    return _triangular_tree(SymmMixedPrec, A, uplo, precisions, T_Scale)
 end
 
-function Base.size(A::SymmMixedPrec)
-    return A.sz
-end
+Base.size(A::SymmMixedPrec) = (A.n, A.n)
 
-function Base.transpose(A::SymmMixedPrec)
-    return A
-end
+Base.transpose(A::SymmMixedPrec) = A
 
-function Base.getindex(A::SymmMixedPrec{T_Base}, i::Int, j::Int) where {T_Base}
-    if A.BaseCase !== nothing
-        if (A.uplo == 'L' && i < j) || (A.uplo == 'U' && i > j)
-             return A.BaseCase[j, i]
-        else
-             return A.BaseCase[i, j]
-        end
+Base.@propagate_inbounds function Base.getindex(A::SymmMixedPrec{T_Base}, i::Int, j::Int) where {T_Base}
+    @boundscheck checkbounds(A, i, j)
+    if A.Base !== nothing
+        _stored(i, j, A.uplo) || ((i, j) = (j, i))
+        return _unscaled(A.Base[i, j], A.Base_scale, T_Base)
     end
-
     mid = size(A.A11, 1)
+    i <= mid && j <= mid && return @inbounds A.A11[i, j]
+    i > mid && j > mid && return @inbounds A.A22[i - mid, j - mid]
+    r, c = i > mid ? (i - mid, j) : (j - mid, i)
+    x = A.uplo == 'L' ? A.OffDiag[r, c] : A.OffDiag[c, r]
+    return _unscaled(x, A.OffDiag_scale, T_Base)
+end
 
-    if i <= mid && j <= mid
-        return A.A11[i, j]
+"""
+    reconstruct_matrix(A::SymmMixedPrec{T_Base})
 
-    elseif i > mid && j > mid
-        return A.A22[i - mid, j - mid]
+Copies the symmetric mixed-precision matrix back into one dense array with element type
+`T_Base`, of the same array type as the stored blocks, with both triangles filled from the
+stored one and each block's scale applied.
+"""
+function reconstruct_matrix(A::SymmMixedPrec{T_Base}) where {T_Base}
+    B = A.Base !== nothing ? A.Base : A.OffDiag
+    return _reconstruct!(similar(B, T_Base, A.n, A.n), A)
+end
 
-    elseif i > mid && j <= mid
-        if A.uplo == 'L'
-            return A.OffDiag[i - mid, j]
-        else
-            return A.OffDiag[j, i - mid]
-        end
-
-    else
-        if A.uplo == 'U'
-            return A.OffDiag[i, j - mid]
-        else
-            return A.OffDiag[j - mid, i]
-        end
+function _reconstruct!(C::AbstractMatrix, A::SymmMixedPrec{T_Base}) where {T_Base}
+    if A.Base !== nothing
+        r = 1:size(C, 1)
+        C .= _unscaled.(ifelse.(_stored.(r, r', A.uplo), A.Base, transpose(A.Base)), A.Base_scale, T_Base)
+        return C
     end
+    mid, n = size(A.A11, 1), A.n
+    @inbounds _reconstruct!(view(C, 1:mid, 1:mid), A.A11)
+    @inbounds _reconstruct!(view(C, mid+1:n, mid+1:n), A.A22)
+    lo, up = A.uplo == 'L' ? (A.OffDiag, transpose(A.OffDiag)) : (transpose(A.OffDiag), A.OffDiag)
+    @inbounds @views C[mid+1:n, 1:mid] .= _unscaled.(lo, A.OffDiag_scale, T_Base)
+    @inbounds @views C[1:mid, mid+1:n] .= _unscaled.(up, A.OffDiag_scale, T_Base)
+    return C
 end
