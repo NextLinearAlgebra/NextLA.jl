@@ -1,6 +1,30 @@
 using KernelAbstractions
 
 """
+    supports_float64(ArrayType)
+
+Whether `ArrayType`'s device can hold `Float64`, decided by trying it.
+
+Double precision is a property of the part and its driver, not of the vendor
+library: Intel's data-center GPUs support it, consumer integrated graphics
+generally do not, and `oneArray(::Matrix{Float64})` throws rather than falling
+back. So this asks the device instead of assuming anything about the backend.
+"""
+function supports_float64(ArrayType)
+    try
+        # invokelatest for the same reason as the functional() call below: the
+        # backend package is loaded dynamically, so its constructors are too
+        # new for this world age and a direct call raises MethodError.
+        Base.invokelatest(ArrayType, zeros(Float64, 1, 1))
+        return true
+    catch e
+        get(ENV, "NEXTLA_GPU_DEBUG", "0") == "1" &&
+            @warn "$ArrayType: no Float64 support — $(sprint(showerror, e))"
+        return false
+    end
+end
+
+"""
     available_gpu_backends()
 
 Returns a vector of (name, ArrayType, synchronize_fn) for GPU backends that are
@@ -26,6 +50,14 @@ function available_gpu_backends()
             # invokelatest avoids "method too new" world-age errors when loading packages dynamically
             if Base.invokelatest(getproperty(pkg, func_sym))
                 AT = getproperty(pkg, array_sym)
+                # This suite is written in double precision throughout, and
+                # NextLA does not currently run on a device without it. Leave
+                # such backends out rather than erroring on every case; see
+                # KNOWN_ISSUES.md for what supporting them would involve.
+                if !supports_float64(AT)
+                    debug && @warn "$name: no Float64 on this device, backend skipped"
+                    continue
+                end
                 sync_fn = function(arr)
                     KernelAbstractions.synchronize(KernelAbstractions.get_backend(arr))
                 end
