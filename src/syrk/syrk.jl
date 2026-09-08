@@ -21,3 +21,6 @@
 
 include("syrk_dispatch.jl")
 include("syrk_batched.jl")
+include("syrk_kernel.jl")
+include("recsyrk.jl")
+include("recsyrk_dev.jl")
