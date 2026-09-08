@@ -19,3 +19,16 @@ function NextLA.potrf_batched!(uplo::Char,
                                A::AMDGPU.StridedROCArray{T,3}) where {T}
     return _potrf_batched_amdgpu!(uplo, A)
 end
+
+# rocSOLVER under the pinned AMDGPU 2.1 takes a whole ROCMatrix only, so a view
+# -- a recursive Cholesky's leaf -- is factored in a contiguous copy and written
+# back. Never executed: no AMD device here.
+function NextLA.potrf!(uplo::Char, A::AMDGPU.StridedROCMatrix{T}) where {T<:Union{Float32,Float64,ComplexF32,ComplexF64}}
+    NextLA._potrf_dims(uplo, A)
+    A isa AMDGPU.ROCMatrix && return AMDGPU.rocSOLVER.potrf!(uplo, A)
+    B = similar(parent(A), T, size(A))
+    B .= A
+    _, info = AMDGPU.rocSOLVER.potrf!(uplo, B)
+    A .= B
+    return A, info
+end

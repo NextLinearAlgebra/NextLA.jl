@@ -45,6 +45,17 @@ function _expected_potrf_batched_file(name::String)
     error("Unknown backend `$name`")
 end
 
+function _expected_potrf_file(name::String)
+    name == "CPU" && return "src/cholesky/potrf.jl"
+    name == "CUDA" && return "ext/cuda/potrf.jl"
+    name == "AMDGPU" && return "ext/amdgpu/potrf.jl"
+    name == "Metal" && return "ext/metal/potrf.jl"
+    # oneAPI has no single-matrix potrf! wrapper; the generic method's backend
+    # guard is what it hits. See KNOWN_ISSUES.md.
+    name == "oneAPI" && return "src/cholesky/potrf.jl"
+    error("Unknown backend `$name`")
+end
+
 function _expected_syrk_file(name::String)
     name == "CPU" && return "src/syrk/syrk_dispatch.jl"
     name == "CUDA" && return "ext/cuda/syrk.jl"
