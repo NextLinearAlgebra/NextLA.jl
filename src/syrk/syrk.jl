@@ -11,9 +11,12 @@
 # fallback @warn, which announced a fall back to batched GEMM on paths that
 # actually loop single syrk! calls.
 #
-# The vendor methods live in ext/{cuda,amdgpu,oneapi,metal}/syrk.jl, so this
-# file is CPU-only by design: syrk! forwards to BLAS.syrk!, and syrk_batched!
-# loops it.
+# syrk_dispatch.jl and syrk_batched.jl are CPU-only by design -- syrk! forwards
+# to BLAS.syrk! and syrk_batched! loops it, with the vendor methods living in
+# ext/{cuda,amdgpu,oneapi,metal}/syrk.jl. syrk_kernel.jl is the portable
+# alternative: a tiled KernelAbstractions SYRK needing no library at all, for
+# backends or element types no vendor covers. recsyrk.jl drives either one
+# recursively.
 #
 # Layout contract: this is the only file here that includes. Exports stay in
 # the file that defines the symbol, so moving a unit to another feature is a
@@ -23,4 +26,3 @@ include("syrk_dispatch.jl")
 include("syrk_batched.jl")
 include("syrk_kernel.jl")
 include("recsyrk.jl")
-include("recsyrk_dev.jl")

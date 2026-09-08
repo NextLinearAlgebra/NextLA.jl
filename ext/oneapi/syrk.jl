@@ -71,3 +71,9 @@ function NextLA.syrk_batched!(uplo::Char,
     _syrk_strided_batched_native!(uplo, trans, alpha, A, beta, C)
     return C
 end
+
+# recsyrk!'s Float16 updates (src/syrk/recsyrk.jl). oneAPI has no gemmEx!, so the
+# multiply goes through gemm! -- mul! on the device -- as vicki-development's
+# recsyrk_dev.jl did with oneMKL.gemm!. Never executed: no Intel GPU here.
+NextLA._syrk_half_gemm!(alpha, A, B, beta, C::oneAPI.oneStridedMatrix) =
+    NextLA.gemm!('N', 'T', alpha, A, B, beta, C)
