@@ -251,6 +251,17 @@ function NextLA.gemm_batched!(transA::Char,
                               B::AbstractVector{<:CUDA.CuArray{T,2}},
                               beta,
                               C::AbstractVector{<:CUDA.CuArray{T,2}}) where {T}
+    # CUBLAS.gemm_batched! covers only the five native types. A plain CuArray is
+    # a StridedCuMatrix too, but this signature is the more specific of the two,
+    # so BFloat16 landed here and raised a MethodError instead of reaching the
+    # cublasGemmBatchedEx path below -- which does know BFloat16. Hand anything
+    # non-native to that method rather than to a library that has no method.
+    NextLA._supports_native_gemm(T, T, T) || return invoke(
+        NextLA.gemm_batched!,
+        Tuple{Char,Char,Any,AbstractVector{<:CUDA.StridedCuMatrix{T}},
+              AbstractVector{<:CUDA.StridedCuMatrix{T}},Any,
+              AbstractVector{<:CUDA.StridedCuMatrix{T}}},
+        transA, transB, alpha, A, B, beta, C)
     return CUBLAS.gemm_batched!(transA, transB, alpha, A, B, beta, C)
 end
 
@@ -454,6 +465,29 @@ function NextLA._gemm_compute!(::NextLA.TF32, transA, transB, alpha,
         CUBLAS.CUBLAS_COMPUTE_32F_FAST_TF32, CUBLAS.CUBLAS_GEMM_DEFAULT,
     )
     return C
+end
+
+# TF32 over a pointer batch. Without this method the generic
+# _gemm_compute_batched_ptrs!(::TF32, ...) throws "TF32 GEMM is supported only
+# on CUDA" -- on CUDA. The other two TF32 modes were overridden here and this
+# one was not, so TLR's compressed accumulation, which passes the caller's mode
+# straight through to precision_gemm_batched_ptrs!, could not use TF32 at all.
+function NextLA._gemm_compute_batched_ptrs!(::NextLA.TF32, transA, transB, alpha,
+                                            Aptrs::CUDA.CuArray, Aref::AbstractMatrix,
+                                            Bptrs::CUDA.CuArray, Bref::AbstractMatrix,
+                                            beta,
+                                            Cptrs::CUDA.CuArray, Cref::AbstractMatrix,
+                                            batch_count)
+    batch_count <= 0 && return Cptrs
+    m, n, k, lda, ldb, ldc = NextLA._gemm_dims(transA, transB, Aref, Bref, Cref)
+    CUBLAS.cublasGemmBatchedEx(
+        CUBLAS.handle(), transA, transB, m, n, k, CUDA.CuRef{Float32}(alpha),
+        Aptrs, Float32, lda, Bptrs, Float32, ldb,
+        CUDA.CuRef{Float32}(beta), Cptrs, Float32, ldc,
+        Int(batch_count), CUBLAS.CUBLAS_COMPUTE_32F_FAST_TF32,
+        CUBLAS.CUBLAS_GEMM_DEFAULT,
+    )
+    return Cptrs
 end
 
 function NextLA._gemm_compute_batched!(::NextLA.TF32, transA, transB, alpha,

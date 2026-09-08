@@ -3,7 +3,7 @@ using LinearAlgebra
 using Logging
 
 @test NextLA.GEMM_COMPUTE_TYPES == (Float16, Float32, Float64, ComplexF32, ComplexF64, Int32)
-@test !(:gemmEx! in names(NextLA))
+@test :gemmEx! in names(NextLA)
 @test !(:gemmEx_batched! in names(NextLA))
 @test NextLA.gemm! !== LinearAlgebra.mul!
 @test parentmodule(NextLA.gemm!) === NextLA
@@ -68,7 +68,7 @@ _apply_transpose(A::AbstractMatrix, trans::Char) =
             B_single_dev = _to_backend(AT, copy(B_single))
             C_single_dev = _to_backend(AT, copy(C_single))
 
-            if name in ("CUDA", "AMDGPU")
+            if name in ("CPU", "CUDA", "AMDGPU")
                 NextLA.gemmEx!(transA_batch, transB_batch, alpha_batch, A_single_dev, B_single_dev, beta_batch, C_single_dev)
                 sync(C_single_dev)
                 @test Array(C_single_dev) ≈ expected_single
@@ -375,6 +375,141 @@ end
             else
                 @test_throws ArgumentError BatchPtrDescriptor(A_dev)
             end
+        end
+    end
+end
+
+# A batch member the CPU cannot hand to BLAS is refused by name rather than
+# reaching BLAS.gemm! as a MethodError.
+@testset "CPU batch refuses members BLAS cannot take" begin
+    @test_throws ArgumentError NextLA.gemm_batched!(
+        'N', 'N', 1.0, rand(Float64, 6, 6, 2), rand(Float32, 6, 6, 2), 0.0,
+        zeros(Float64, 6, 6, 2))
+    @test_throws ArgumentError NextLA.gemm_batched!(
+        'N', 'N', 1.0f0, [rand(Float16, 3, 3)], [rand(Float16, 3, 3)], 0.0f0,
+        [zeros(Float16, 3, 3)])
+end
+
+# swap_batch_ptrs! moves a slot on the device; set_batch_ptrs! republishes the
+# whole host table to bring one slot across. If the swap is not mirrored into
+# the host table, the set silently reverts it and the batch multiplies the
+# wrong members -- with no error anywhere.
+@testset "a swap survives a later set" begin
+    for (name, AT, sync) in backends
+        name in ("CUDA", "AMDGPU") || continue
+        @testset "$name" begin
+            n = 2
+            mats = [AT(fill(Float32(k), n, n)) for k in 1:3]
+            d = NextLA.BatchPtrDescriptor(mats)
+            before = Array(d.ptrs)
+
+            NextLA.swap_batch_ptrs!(d, 1, 2)
+            @test Array(d.ptrs)[1] == before[2]
+            @test Array(d.ptrs)[2] == before[1]
+
+            # touch an unrelated slot; slots 1 and 2 must stay swapped
+            NextLA.set_batch_ptrs!(d, 3, [mats[3]])
+            @test Array(d.ptrs)[1] == before[2]
+            @test Array(d.ptrs)[2] == before[1]
+            @test Array(d.ptrs)[3] == before[3]
+
+            # the two tables agree, which is what makes the next set safe
+            @test Array(d.ptrs) == Array(d.host)
+        end
+    end
+end
+
+# The precision policy is a table, and the table disagreed with itself: the
+# BFloat16 row rejected a Float32 destination that the identical Float16 row
+# allowed, and Int8 was documented as supported while every backend's answer
+# was no. These assert the shared table CUDA and AMDGPU read, not a
+# computation, so they run anywhere.
+@testset "precision signatures the table claims" begin
+    sig(TA, TB, TC, W) = NextLA._tensor_core_gemm_supported(TA, TB, TC, W)
+
+    @test sig(Float32, Float32, Float32, Float32)
+    @test sig(Float64, Float64, Float64, Float64)
+    @test sig(Float16, Float16, Float16, Float16)
+    @test sig(Float16, Float16, Float32, Float32)
+
+    # the two that were refused
+    @test sig(Core.BFloat16, Core.BFloat16, Float32, Float32)
+    @test sig(Int8, Int8, Int32, Int32)
+
+    # and things that must still be refused
+    @test !sig(Float32, Float32, Float64, Float64)
+    @test !sig(Float64, Float64, Float64, Float32)
+end
+
+# Widening, not narrowing, when the destination is the narrow one. Rounding the
+# operands to Float16 before multiplying loses roughly an order of magnitude
+# more than accumulating wide and rounding once on store.
+@testset "a narrow destination does not narrow the operands" begin
+    n = 32
+    A = rand(Float32, n, n)
+    B = rand(Float32, n, n)
+    C = zeros(Float16, n, n)
+    NextLA.recgemm!(1.0, A, B, 0.0, C)
+    ref = Float64.(A) * Float64.(B)
+    err = maximum(abs.(Float64.(C) .- ref)) / maximum(abs, ref)
+    # Float16 storage alone costs ~1e-3; rounding the operands first costs an
+    # order of magnitude more than that.
+    @test err < 2e-3
+end
+
+# Backend coverage of the batched entry points.
+#
+# These run wherever the backend exists. On the machine this was integrated on
+# only CPU and CUDA do, so the oneAPI and Metal branches have never executed --
+# they are written so that the first person with the hardware finds out
+# immediately rather than discovering it through a wrong result. Metal refuses
+# the vector-of-matrices form outright; what matters there is that the refusal
+# comes from its own method, not from the generic CPU fallback handing
+# BLAS.gemm! a device matrix.
+@testset "batched GEMM stays on its backend" begin
+    for (name, AT, sync) in backends
+        name == "CPU" && continue
+        @testset "$name" begin
+            nb, n = 3, 4
+            Ah = [rand(Float32, n, n) for _ in 1:nb]
+            Bh = [rand(Float32, n, n) for _ in 1:nb]
+            Ad = [AT(a) for a in Ah]
+            Bd = [AT(b) for b in Bh]
+            Cd = [AT(zeros(Float32, n, n)) for _ in 1:nb]
+
+            # the vector-of-matrices form must be served by the backend's own
+            # method, not by the generic loop in src/gemm/gemm_batched.jl
+            # occursin, not ==: _method_file returns an absolute path and the
+            # expected value is the repo-relative suffix, which is the idiom the
+            # rest of this file already uses.
+            @test occursin(_expected_gemm_batched_file(name),
+                           _method_file(NextLA.gemm_batched!, 'N', 'N', 1.0f0,
+                                        Ad, Bd, 0.0f0, Cd))
+
+            # and the same shape through gemmEx_batched!, which reaches
+            # gemm_batched! via _try_same_type_batched! for a same-type batch
+            Cd2 = [AT(zeros(Float32, n, n)) for _ in 1:nb]
+            if name == "Metal"
+                @test_throws ArgumentError NextLA.gemm_batched!('N', 'N', 1.0f0, Ad, Bd, 0.0f0, Cd)
+                @test_throws ArgumentError NextLA.gemmEx_batched!('N', 'N', 1.0f0, Ad, Bd, 0.0f0, Cd2)
+            else
+                NextLA.gemm_batched!('N', 'N', 1.0f0, Ad, Bd, 0.0f0, Cd)
+                sync(Cd[1])
+                for i in 1:nb
+                    @test Array(Cd[i]) ≈ Ah[i] * Bh[i] rtol=1e-5
+                end
+
+                NextLA.gemmEx_batched!('N', 'N', 1.0f0, Ad, Bd, 0.0f0, Cd2)
+                sync(Cd2[1])
+                for i in 1:nb
+                    @test Array(Cd2[i]) ≈ Ah[i] * Bh[i] rtol=1e-5
+                end
+            end
+
+            # an invalid compute type is diagnosed rather than accepted; oneAPI
+            # and Metal skipped this check while CUDA and AMDGPU made it
+            @test_throws ArgumentError NextLA.gemmEx_batched!(
+                'N', 'N', 1.0f0, Ad, Bd, 0.0f0, Cd2; compute_type=Int8)
         end
     end
 end

@@ -30,9 +30,18 @@ Float32 compute type, and native Float32/Float64.
                                              ::Type{T}) where {TA,TB,TC,T}
     T === Float16 && return TA === TB === TC === Float16
     T === Float32 && return (TA === TB === Float16 && TC in (Float16, Float32)) ||
-                            (TA === TB === Core.BFloat16 && TC === Core.BFloat16) ||
+                            # BFloat16 into Float32 was missing while the
+                            # identical Float16 case above was allowed. Both
+                            # vendors do it, and TLR's own precision check reads
+                            # this table, so the omission refused a BFloat16 TLR
+                            # GEMM writing into a Float32 destination.
+                            (TA === TB === Core.BFloat16 &&
+                             TC in (Core.BFloat16, Float32)) ||
                             (TA === TB === TC === Float32)
     T === Float64 && return TA === TB === TC === Float64
+    # Int8 into Int32 is in the gemm_types.jl table and was in no backend's
+    # answer, so precision_gemm! refused what a direct gemmEx! accepts.
+    T === Int32 && return TA === TB === Int8 && TC === Int32
     return false
 end
 

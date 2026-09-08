@@ -6,6 +6,7 @@ const NATIVE_STRIDED_BATCHED_TYPES = Union{Float32, Float64, ComplexF32, Complex
 @inline NextLA.supports_pointer_batched(::Type{<:AMDGPU.ROCBackend}) = true
 
 @inline _rocblas_datatype(::Type{Float16}) = rocBLAS.rocblas_datatype_f16_r
+@inline _rocblas_datatype(::Type{Core.BFloat16}) = rocBLAS.rocblas_datatype_bf16_r
 @inline _rocblas_datatype(::Type{Float32}) = rocBLAS.rocblas_datatype_f32_r
 @inline _rocblas_datatype(::Type{Float64}) = rocBLAS.rocblas_datatype_f64_r
 @inline _rocblas_datatype(::Type{ComplexF32}) = rocBLAS.rocblas_datatype_f32_c
