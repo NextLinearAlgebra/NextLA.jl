@@ -9,6 +9,9 @@ import LinearAlgebra: BLAS, LAPACK
 import LinearAlgebra.BLAS: @blasfunc
 using Random: Random
 using KernelAbstractions
+# @unroll: chol_kernel_register! unrolls over its register strip. TLRmodule
+# imports it separately, being its own module.
+using KernelAbstractions.Extras: @unroll
 
 """
 	lamch(::Type{T}, cmach) where{T<: Number}

@@ -1,98 +1,76 @@
-using LinearAlgebra
-using StochasticRounding
-include("symmmixedprec.jl")
-include("recmixedprectri.jl")
-include("trsm.jl")
-include("trmm.jl")
-include("matmul.jl")
-include("rectrxm.jl")
-include("recsyrk.jl")
-include("potrf.jl")
-include("wrappers.jl")
+# The default block_size of potrf_recursive!, dense and mixed-precision: blocks
+# of at most this many rows go to potrf!. vicki-development's leaf size; not tuned.
+const POTRF_BLOCK_SIZE = 4096
+
+export potrf_recursive!
 
 """
-    potrf_recursive!(A, block_size)
+    potrf_recursive!(A, block_size=POTRF_BLOCK_SIZE; uplo='L')
 
-Performs an in-place, nested recursive Cholesky factorization on the matrix `A`.
-The recursion dynamically splits the matrix until the sub-block size is less than or 
-equal to `block_size`, at which point it falls back to standard hardware BLAS/LAPACK routines.
+Perform an in-place, nested recursive Cholesky factorization of the symmetric
+positive definite matrix `A`: `A = L * Lᵀ` with `L` written into the lower triangle
+for `uplo = 'L'`, or `A = Uᵀ * U` with `U` in the upper triangle for `'U'`.
+
+The recursion splits `A` into a 2x2 block scheme and stops once a sub-block is
+`block_size` or smaller, at which point it falls back to [`potrf!`](@ref).
+
+The panel solve always goes through [`unified_rectrxm!`](@ref), main's portable
+triangular solve. The branch called a vendor `trsm!` from `src/wrappers.jl` for
+everything but `Float16`; that file is not merged, and `BLAS.trsm!` would pin
+this routine to the CPU, so the recursive path is used throughout. The rank-k
+update still splits: `syrk!` reaches BLAS or the vendor library, but has no
+`Float16` method anywhere, so half precision takes [`recsyrk!`](@ref).
+
+The other triangle is not referenced and is left as it was on entry. A matrix that is not
+positive definite throws `PosDefException(k)`, `k` the order of the first leading minor that
+is not, as `LinearAlgebra.cholesky!` does; `A` is then partly factored. The recursion splits
+`n` at the largest power of two below it (at `n ÷ 2` when `n` is one).
 """
-function potrf_recursive!(A, block_size)
+function potrf_recursive!(A::AbstractMatrix, block_size::Integer=POTRF_BLOCK_SIZE; uplo::Char='L')
+    uplo in ('L', 'U') || throw(ArgumentError("uplo must be 'L' or 'U', got '$uplo'"))
+    block_size >= 1 || throw(ArgumentError("block_size must be at least 1"))
+    size(A, 1) == size(A, 2) || throw(DimensionMismatch("potrf_recursive!: A must be square, got $(size(A))"))
+    return _potrf_recursive!(A, block_size, uplo, 0)
+end
+
+# offset is where A starts in the matrix the caller passed, so a leaf's info
+# becomes the order of the leading minor in the whole matrix.
+function _potrf_recursive!(A, block_size, uplo::Char, offset::Int)
     n = size(A, 1)
 
     if n <= block_size
-        potrf!(A)
-        return
+        _, info = potrf!(uplo, A)
+        info > 0 && throw(LinearAlgebra.PosDefException(offset + Int(info)))
+        return A
     end
 
-    n1 = 2^floor(Int, log2(n)) ÷ 2  
-    
+    n1 = _rec_split(n)
+
     A11 = @view A[1:n1, 1:n1]
-    A21 = @view A[n1+1:end, 1:n1]
-    A22 = @view A[n1+1:end, n1+1:end]
+    A22 = @view A[(n1 + 1):end, (n1 + 1):end]
 
-    potrf_recursive!(A11, block_size)
+    _potrf_recursive!(A11, block_size, uplo, offset)
 
-    if (eltype(A11) == Float16)
-        unified_rectrxm!('R', 'L', 'T', 'N', 1.0, 'S', A11, A21)
+    if uplo == 'L'
+        # L21 = A21 * L11⁻ᵀ, then A22 -= L21 * L21ᵀ
+        A21 = @view A[(n1 + 1):end, 1:n1]
+        unified_rectrxm!('R', 'L', 'T', 'N', one(eltype(A11)), 'S', A11, A21)
+        if eltype(A21) == Float16
+            recsyrk!(-1.0, A21, 1.0, A22)
+        else
+            syrk!('L', 'N', -one(eltype(A22)), A21, one(eltype(A22)), A22)
+        end
     else
-        trsm!('R', 'L', 'T', 'N', 1.0, A11, A21)
+        # U12 = U11⁻ᵀ * A12, then A22 -= U12ᵀ * U12
+        A12 = @view A[1:n1, (n1 + 1):end]
+        unified_rectrxm!('L', 'U', 'T', 'N', one(eltype(A11)), 'S', A11, A12)
+        if eltype(A12) == Float16
+            recsyrk!(-1.0, copy(transpose(A12)), 1.0, A22; uplo='U')
+        else
+            syrk!('U', 'T', -one(eltype(A22)), A12, one(eltype(A22)), A22)
+        end
     end
 
-    if (eltype(A21) == Float16)
-        recsyrk!(-1.0, A21, 1.0, A22)
-    else
-        syrk!('L', 'N', -1.0, A21, 1.0, A22)
-    end
-    
-    potrf_recursive!(A22, block_size)
-end
-
-"""
-    reconstruct_matrix(A::SymmMixedPrec{T_Base})
-
-Reconstructs a full dense matrix from the symmetric mixed-precision recursive block 
-structure `A`. Used primarily for validation and returning to standard dense formats.
-"""
-function reconstruct_matrix(A::SymmMixedPrec{T_Base}) where {T_Base}
-    if A.BaseCase !== nothing
-        return copy(A.BaseCase)
-    end
-    
-    C11 = reconstruct_matrix(A.A11)
-    C22 = reconstruct_matrix(A.A22)
-    C21 = A.OffDiag
-    n1, m1 = size(C11)
-    n2, m2 = size(C22)
-    n = n1 + n2
-
-    C_full = CuArray{T_Base}(undef, n, n)
-    C_full[1:n1, 1:m1] .= C11
-    C_full[n1+1:n, 1:m1] .= C21
-    C_full[n1+1:n, m1+1:n] .= C22
-    C_full[1:n1, m1+1:n] .= transpose(C21)
-
-    return C_full
-end
-
-"""
-    potrf_recursive!(A::SymmMixedPrec)
-
-Performs an in-place, nested recursive Cholesky factorization on a symmetric mixed-precision 
-matrix structure `A`. The recursion handles off-diagonal updates and falls back to standard 
-hardware routines at the base case.
-"""
-function potrf_recursive!(A::SymmMixedPrec)
-    if A.BaseCase !== nothing
-        potrf_recursive!(A.BaseCase, 4096)
-        return
-    end
-
-    potrf_recursive!(A.A11) 
-
-    unified_rectrxm!('R', 'L', 'T', 'N', 1.0, 'S', TriMixedPrec(A.A11), A.OffDiag)
-
-    recsyrk!(-1.0, A.OffDiag, 1.0, A.A22)
-
-    potrf_recursive!(A.A22)
+    _potrf_recursive!(A22, block_size, uplo, offset + n1)
+    return A
 end

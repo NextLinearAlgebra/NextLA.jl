@@ -1,322 +1,181 @@
-using KernelAbstractions
-using CUDA
-using LinearAlgebra
+export cholesky_blocked!
 
-const MAX_THREADS = 512
-const MAX_SHARED_SIZE = 2048
-const BLOCK_SIZE = 64
-#padding for bank conflicts
-const PAD = 1
-const STRIDE = BLOCK_SIZE + PAD
+# Right-looking blocked Cholesky: the panel form of the factorisation, driving a
+# shared-memory kernel on each diagonal block.
+#
+# Source: vicki-development @ 694d019, src/potrf.jl -- the live third of it; the
+# other two thirds are an earlier version of the same kernel, commented out.
+# src/potrf_left.jl carries a near-identical driver differing only in which
+# kernel it calls, so one driver is merged rather than two.
+#
+# This is the blocked counterpart to potrf_recursive!: same factorisation, a
+# panel sweep instead of a subdivision. For a single diagonal block, cholesky_lower!
+# in potrf_kernel.jl is the portable choice; this is for a matrix large enough
+# that the trailing update dominates.
 
+# The branch tiles a 64-wide block into shared memory with one column of padding,
+# so that column c lands at (c-1)*CHOL_STRIDE and consecutive rows fall in
+# different banks. Named apart from the branch's BLOCK_SIZE/PAD/STRIDE, which are
+# too generic to hold at module scope.
+const CHOL_BLOCK = 64
+const CHOL_STRIDE = CHOL_BLOCK + 1
 
-# @kernel function chol_kernel_lower!(A, N)
-#     tx = @index(Global, Linear)
+# Shared-memory Cholesky of one diagonal block, verbatim in structure.
+#
+# `cpu=false` is the author's and is kept: the body indexes a flat @localmem tile
+# with a hand-computed stride and strides the work across a fixed thread count,
+# neither of which survives the CPU backend's ndrange split. cholesky_blocked!
+# refuses on the CPU rather than let that fail obscurely.
+@kernel cpu=false inbounds=true unsafe_indices=false function chol_kernel_shared!(
+        A, ::Val{N}, ::Val{NT}) where {N, NT}
+    tx = @index(Global, Linear)
 
-#     # put block into shared memory 
-#     tile = @localmem eltype(A) (BLOCK_SIZE * STRIDE)
-
-#     total_elements = N * N
-#     idx = tx
-
-#     #load into shared memory 
-#     while idx <= total_elements
-#         # julia is column-major
-#         c = div(idx - 1, N) + 1
-#         r = rem(idx - 1, N) + 1
-
-#         s_idx = (c - 1) * STRIDE + r
-        
-#         @inbounds tile[s_idx] = A[r, c]
-#         idx += MAX_THREADS
-#     end
-
-#     @synchronize
-
-#     for k in 1:N
-#         # one thread does sqrt
-#         diag_idx = (k - 1) * STRIDE + k
-#         if tx == 1
-#             @inbounds tile[diag_idx] = sqrt(tile[diag_idx])
-#         end
-
-#         @synchronize
-
-#         # division is now parallelized 
-#         diag = @inbounds tile[diag_idx]
-#         idx = k + tx 
-#         while idx <= N
-#             s_idx = (k - 1) * STRIDE + idx
-#             @inbounds tile[s_idx] /= diag
-#             idx += MAX_THREADS
-#         end
-
-#         @synchronize
-
-#         # Elimination step
-#         # updates submatrix to right/bottom
-        
-#         len = Int32(N - k)
-#         tx_32 = Int32(tx)
-#         if len > 0
-#             limit = len * len
-#             t_idx = tx_32 - Int32(1) 
-#             stride = Int32(MAX_THREADS)
-
-#             # precalculate offsets to avoid division inside loop
-#             col_offset = div(t_idx, len)
-#             row_offset = rem(t_idx, len)
-#             stride_c = div(stride, len)
-#             stride_r = rem(stride, len)
-            
-#             while t_idx < limit
-#                 if row_offset >= col_offset
-#                     r = row_offset + Int32(k + 1)
-#                     c = col_offset + Int32(k + 1)
-#                     idx_rc = (c - 1) * STRIDE + r
-#                     idx_rk = (k - 1) * STRIDE + r
-#                     idx_ck = (k - 1) * STRIDE + c
-#                     # use muladd instead of * and - for speed
-#                     @inbounds tile[idx_rc] = muladd(-tile[idx_rk], tile[idx_ck], tile[idx_rc])
-#                 end
-                
-#                 # manual index updates to avoid modulo operations
-#                 t_idx += stride
-#                 col_offset += stride_c
-#                 row_offset += stride_r
-
-#                 if row_offset >= len
-#                     row_offset -= len
-#                     col_offset += Int32(1)
-#                 end
-#             end
-#         end
-
-#         @synchronize
-#     end
-
-#     # Zero out upper triangle
-#     # istart = (tx - 1) * ops_per_thread + 1
-#     # iend = min(N, istart + ops_per_thread - 1)
-
-#     # for i in istart:iend
-#     #     for j in (i+1):N
-#     #         A[i, j] = 0
-#     #     end
-#     # end
-
-#     # write results back to global memory 
-#     idx = tx
-#     while idx <= total_elements
-#         c = div(idx - 1, N) + 1
-#         r = rem(idx - 1, N) + 1
-        
-#         s_idx = (c - 1) * STRIDE + r
-        
-#         @inbounds A[r, c] = tile[s_idx]
-#         idx += MAX_THREADS
-#     end
-# end
-
-
-# function cholesky_lower!(A)
-#     N = size(A, 1)
-#     backend = CUDABackend()
-    
-#     #blocked algorithm - for sized bigger than 64x64 we do the trsm/gemm but not recursive.
-#     for k in 1:BLOCK_SIZE:N
-#         k_end = min(k + BLOCK_SIZE - 1, N)
-#         blk_len = k_end - k + 1
-#         A_diag = view(A, k:k_end, k:k_end)
-#         kernel = chol_kernel_lower!(backend, MAX_THREADS)
-#         kernel(A_diag, blk_len; ndrange=MAX_THREADS)
-        
-        
-#         if k_end < N
-#             A_panel = view(A, (k_end + 1):N, k:k_end)
-
-#             # RightUpperTRSM!(Transpose(A_diag), A_panel)
-#             unified_rectrxm!('R', 'L', 'T', 1.0, 'S', A_diag, A_panel)
-#             # CUBLAS.trsm!('R', 'L', 'T', 'N', one(eltype(A)), A_diag, A_panel)
-            
-#             A_trailing = view(A, (k_end + 1):N, (k_end + 1):N)
-            
-#             CUBLAS.gemm!('N', 'T', -one(eltype(A)), A_panel, A_panel, one(eltype(A)), A_trailing)
-#             # CUBLAS.syrk!('L', 'N', -1.0, A_panel, 1.0, A_trailing)
-#         end
-#     end
-
-#     KernelAbstractions.synchronize(backend)
-#     return A
-# end
-
-
-#right looking cholesky kernel
-@kernel cpu=false inbounds=true unsafe_indices=false function chol_kernel_lower!(A, ::Val{N}) where N
-    tx = @index(Global, Linear) #change global to local? 
-
-    # put block into shared memory 
-    tile = @localmem eltype(A) (BLOCK_SIZE * STRIDE) #stride prevents bank conflicts [64][65]
+    tile = @localmem eltype(A) (CHOL_BLOCK * CHOL_STRIDE)
 
     total_elements = N * N
     idx = tx
-
-    #load into shared memory 
     while idx <= total_elements
-        # julia is column-major
         c = div(idx - 1, N) + 1
         r = rem(idx - 1, N) + 1
-
-        s_idx = (c - 1) * STRIDE + r
-        
-        @inbounds tile[s_idx] = A[r, c]
-        idx += MAX_THREADS
+        @inbounds tile[(c - 1) * CHOL_STRIDE + r] = A[r, c]
+        idx += NT
     end
 
     @synchronize
 
-    #iterate thru diagonal k
     for k in 1:N
-        # one thread does sqrt
-        diag_idx = (k - 1) * STRIDE + k
+        diag_idx = (k - 1) * CHOL_STRIDE + k
         if tx == 1
             @inbounds tile[diag_idx] = sqrt(tile[diag_idx])
         end
 
         @synchronize
 
-        # division is now parallelized 
-        # divide col by diag
-        diag = @inbounds tile[diag_idx]
-        idx = k + tx 
+        # Read after the barrier, so every thread sees the root the first wrote.
+        dval = @inbounds tile[diag_idx]
+        idx = k + tx
         while idx <= N
-            s_idx = (k - 1) * STRIDE + idx
-            @inbounds tile[s_idx] /= diag
-            idx += MAX_THREADS
+            @inbounds tile[(k - 1) * CHOL_STRIDE + idx] /= dval
+            idx += NT
         end
 
         @synchronize
 
-        # Elimination step
-        # updates submatrix to right/bottom
-        # treat the 2D submatrix as a 1D flat array to balance work evenly (quicker than doing it by row)
-        
-        len = Int32(N - k) #size of submatrix
-        tx_32 = Int32(tx)
+        len = Int32(N - k)
         if len > 0
-            limit = len * len #total items to process
-
-            # map thread ID to the starting index in the flattened submatrix
-            t_idx = tx_32 - Int32(1) 
-            stride = Int32(MAX_THREADS)
-
-            # initial r, c
+            limit = len * len
+            t_idx = Int32(tx) - Int32(1)
+            stride = Int32(NT)
             col_offset = div(t_idx, len)
             row_offset = rem(t_idx, len)
-
-            # precalculate how much R/C change per stride to avoid division inside loop
             stride_c = div(stride, len)
             stride_r = rem(stride, len)
-            
-            # loop until this thread has finished its share of the submatrix
+
             while t_idx < limit
-                
-                #actual r, c
                 c = col_offset + Int32(k + 1)
                 r = row_offset + Int32(k + 1)
-                
-                # indices for the Target (rc), the Left Multiplier (rk), and Top Multiplier (ck)
-                idx_ck = (k - 1) * STRIDE + c
-                idx_rc = (c - 1) * STRIDE + r
-                idx_rk = (k - 1) * STRIDE + r
-                
-                # perform the update: A[r,c] = A[r,c] - L[r,k] * L[c,k]
-                @inbounds tile[idx_rc] -= tile[idx_rk] * tile[idx_ck]
-
-                # manual index updates to avoid modulo operations; update by stride
+                @inbounds tile[(c - 1) * CHOL_STRIDE + r] -=
+                    tile[(k - 1) * CHOL_STRIDE + r] * tile[(k - 1) * CHOL_STRIDE + c]
                 t_idx += stride
                 col_offset += stride_c
                 row_offset += stride_r
-
-                #wrap around logic
                 if row_offset >= len
                     row_offset -= len
                     col_offset += Int32(1)
                 end
-                
             end
         end
 
         @synchronize
     end
 
-    # write results back to global memory - have a warp dedicated to write back (as write warps)??? but cant do it after sync?
     idx = tx
     while idx <= total_elements
         c = div(idx - 1, N) + 1
         r = rem(idx - 1, N) + 1
-        
-        s_idx = (c - 1) * STRIDE + r
-        
-        # @inbounds A[r, c] = tile[s_idx]
-
         if r >= c
-            @inbounds A[r, c] = tile[s_idx]
+            @inbounds A[r, c] = tile[(c - 1) * CHOL_STRIDE + r]
         end
-        idx += MAX_THREADS
+        idx += NT
     end
 end
 
-function cholesky_lower!(A)
+"""
+    cholesky_blocked!(A; block = 64, threads = 512, kernel = :shared) -> A
+
+In-place right-looking blocked Cholesky, `A = L * Lᵀ`, writing `L` into the lower
+triangle of `A` and leaving the strict upper triangle untouched.
+
+Each pass factors one diagonal block with a kernel, updates the panel below it
+with a triangular solve, and applies the trailing rank-`block` update. `block`
+must not exceed 64, the width both kernels are sized for.
+
+`kernel` picks how a diagonal block is factored, and only that -- the panel
+solve and the trailing update are the same either way:
+
+  - `:shared` stages the block in shared memory (`chol_kernel_shared!`), and
+    takes `threads` as given.
+  - `:register` keeps each thread's four columns in registers and shares only
+    the active column (`chol_kernel_register!`). Its thread mapping is fixed, so
+    it ignores `threads` and launches `CHOL_REG_THREADS` of them in one
+    workgroup; the backend has to allow a workgroup that large.
+
+GPU only: the kernel is declared `cpu=false` on the branch this came from, and
+the CPU backend cannot run it. Use [`potrf!`](@ref) or [`potrf_recursive!`](@ref)
+there.
+
+!!! warning
+    No positive-definiteness check. The kernel takes `sqrt` of each diagonal
+    entry as it goes, so an indefinite matrix yields `NaN` rather than an error
+    or an `info` code — unlike `potrf!`, which reports through `info`.
+"""
+function cholesky_blocked!(A::AbstractMatrix; block::Integer = CHOL_BLOCK,
+                           threads::Integer = 512, kernel::Symbol = :shared)
+    backend = KernelAbstractions.get_backend(A)
+    backend isa KernelAbstractions.CPU && throw(ArgumentError(
+        "cholesky_blocked! is GPU-only; its kernel is declared cpu=false. " *
+        "Use potrf! or potrf_recursive! on the CPU backend."))
+    size(A, 1) == size(A, 2) ||
+        throw(DimensionMismatch("cholesky_blocked!: A must be square"))
+    1 <= block <= CHOL_BLOCK || throw(ArgumentError(
+        "block must be between 1 and $CHOL_BLOCK; the shared tile is sized for that"))
+    kernel in (:shared, :register) || throw(ArgumentError(
+        "kernel must be :shared or :register, got :$kernel"))
+
     N = size(A, 1)
-    backend = CUDABackend()
-    
-    # looping through the matrix in 64x64 blocks
-    for k in 1:N_MATRIX:N
-        k_end = min(k + N_MATRIX - 1, N)
-        blk_len = k_end - k + 1
-        
-        # if not the first block, we need to update the current panel using previous results
+    T = eltype(A)
+    for k in 1:block:N
+        k_end = min(k + block - 1, N)
+        blk = k_end - k + 1
+
         if k > 1
-            L_prev_cols = view(A, k:N, 1:k-1) 
-            L_prev_top  = view(A, k:k_end, 1:k-1)
-            A_panel     = view(A, k:N, k:k_end)
-            
-            CUBLAS.gemm!('N', 'T', -one(eltype(A)), L_prev_cols, L_prev_top, one(eltype(A)), A_panel)
+            # A_panel -= L_prev_cols * L_prev_topᵀ. The branch called
+            # CUBLAS.gemm!('N','T',...); the output-first gemm! here takes the
+            # transpose on the argument instead, which reaches the same call.
+            L_prev_cols = view(A, k:N, 1:(k - 1))
+            L_prev_top = view(A, k:k_end, 1:(k - 1))
+            gemm!(view(A, k:N, k:k_end), L_prev_cols, transpose(L_prev_top),
+                  -one(T), one(T))
         end
-        
-        # grabbing the diagonal block to solve with our custom kernel
+
         A_diag = view(A, k:k_end, k:k_end)
-        
-        kernel = chol_kernel_lower!(backend, MAX_THREADS)
-        # crucial: we must force workgroupsize to be 768 so all threads are in the same block
-        kernel(A_diag, Val(blk_len); ndrange=MAX_THREADS)
-        
-        # update the panel to the right if we aren't at the end yet
+        if kernel === :shared
+            chol_kernel_shared!(backend, threads)(
+                A_diag, Val(blk), Val(Int(threads)); ndrange = threads)
+        else
+            # One workgroup, and the whole of it: the mapping cuts exactly
+            # CHOL_REG_THREADS threads into chunks and every barrier in the
+            # kernel is a workgroup barrier.
+            chol_kernel_register!(backend, CHOL_REG_THREADS)(
+                A_diag, Val(blk); ndrange = CHOL_REG_THREADS)
+        end
+
         if k_end < N
-            A_off_diag = view(A, (k_end + 1):N, k:k_end)
-            unified_rectrxm!('R', 'L', 'T', 'N', 1.0, 'S', A_diag, A_off_diag)
+            # L21 = A21 * L11⁻ᵀ
+            unified_rectrxm!('R', 'L', 'T', 'N', one(T), 'S',
+                             A_diag, view(A, (k_end + 1):N, k:k_end))
         end
     end
-
     KernelAbstractions.synchronize(backend)
     return A
 end
-
-# function test_cholesky_lower(N)
-#     println("Testing lower Cholesky for N = $N")
-#     A = rand(Float16, N, N)
-#     A = A * A' + N * I
-
-#     A_gpu = CuArray(A)
-#     t1 = @elapsed cholesky_lower!(A_gpu)
-
-#     t2 = @elapsed L_ref = cholesky(A).L
-#     L_gpu = Array(A_gpu)
-
-#     rel_err = norm(L_gpu - L_ref) / norm(L_ref)
-#     println("Relative error: $rel_err")
-#     println((t1, t2))
-# end
-
-# test_cholesky_lower(256)
