@@ -1,4 +1,7 @@
 const rocBLAS = AMDGPU.rocBLAS
+# rocSOLVER is the solver library rather than BLAS; as with CUSOLVER it
+# arrives with the Cholesky work that first needs it.
+const rocSOLVER = AMDGPU.rocSOLVER
 
 const NATIVE_STRIDED_BATCHED_TYPES = Union{Float32, Float64, ComplexF32, ComplexF64}
 

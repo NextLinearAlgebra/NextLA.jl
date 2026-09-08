@@ -16,6 +16,15 @@ const support = oneAPI.Support
 @inline _onemkl_trsm_fname(::Type{Float64}, ::Val{:strided}) = support.onemklDtrsm_batch_strided
 @inline _onemkl_trsm_fname(::Type{ComplexF32}, ::Val{:strided}) = support.onemklCtrsm_batch_strided
 @inline _onemkl_trsm_fname(::Type{ComplexF64}, ::Val{:strided}) = support.onemklZtrsm_batch_strided
+# Cholesky entry points, added with src/cholesky/potrf_batched.jl.
+@inline _onemkl_potrf_strided_fname(::Type{Float32}) = support.onemklSpotrf_batch_strided
+@inline _onemkl_potrf_strided_fname(::Type{Float64}) = support.onemklDpotrf_batch_strided
+@inline _onemkl_potrf_strided_fname(::Type{ComplexF32}) = support.onemklCpotrf_batch_strided
+@inline _onemkl_potrf_strided_fname(::Type{ComplexF64}) = support.onemklZpotrf_batch_strided
+@inline _onemkl_potrf_strided_scratchpad_fname(::Type{Float32}) = support.onemklSpotrf_batch_strided_scratchpad_size
+@inline _onemkl_potrf_strided_scratchpad_fname(::Type{Float64}) = support.onemklDpotrf_batch_strided_scratchpad_size
+@inline _onemkl_potrf_strided_scratchpad_fname(::Type{ComplexF32}) = support.onemklCpotrf_batch_strided_scratchpad_size
+@inline _onemkl_potrf_strided_scratchpad_fname(::Type{ComplexF64}) = support.onemklZpotrf_batch_strided_scratchpad_size
 
 # SYRK entry points, added with src/syrk/. oneMKL has a native strided
 # batched SYRK but no pointer-batched one.

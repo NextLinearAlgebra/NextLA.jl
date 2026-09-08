@@ -36,6 +36,15 @@ function _expected_gemm_batched_file(name::String)
     error("Unknown backend `$name`")
 end
 
+function _expected_potrf_batched_file(name::String)
+    name == "CPU" && return "src/cholesky/potrf_batched.jl"
+    name == "CUDA" && return "ext/cuda/potrf.jl"
+    name == "AMDGPU" && return "ext/amdgpu/potrf.jl"
+    name == "oneAPI" && return "ext/oneapi/potrf.jl"
+    name == "Metal" && return "ext/metal/potrf.jl"
+    error("Unknown backend `$name`")
+end
+
 function _expected_syrk_file(name::String)
     name == "CPU" && return "src/syrk/syrk_dispatch.jl"
     name == "CUDA" && return "ext/cuda/syrk.jl"

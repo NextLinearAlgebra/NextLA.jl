@@ -1,4 +1,7 @@
 const CUBLAS = CUDA.CUBLAS
+# CUSOLVER is the solver library rather than BLAS, and nothing in the GEMM
+# layer touches it; it arrives with the Cholesky work that first needs it.
+const CUSOLVER = CUDA.CUSOLVER
 
 @inline NextLA.SUBGROUP_SIZE(::Type{<:CUDA.CUDABackend}) = Val(32)
 @inline NextLA.supports_pointer_batched(::Type{<:CUDA.CUDABackend}) = true
