@@ -19,3 +19,6 @@
 # git mv plus one include line -- the export travels with it.
 
 include("potrf.jl")
+include("potrf_blocked.jl")
+include("potrf_register.jl")
+include("recpotrf.jl")
