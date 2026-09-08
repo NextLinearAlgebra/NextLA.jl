@@ -18,3 +18,5 @@
 
 include("lu_base.jl")
 include("lu_tiled.jl")
+include("reclu.jl")
+include("recursive_nopivlu.jl")
