@@ -82,4 +82,6 @@ include("axpy.jl")
 include("pemv.jl")
 include("ttmqr.jl")
 include("ttqrt.jl")
+include("lu/lu_base.jl")
+include("lu/lu_tiled.jl")
 end
