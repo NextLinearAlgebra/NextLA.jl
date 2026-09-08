@@ -55,6 +55,7 @@ end
 # Backend capability traits. First, because both the GEMM machinery and TLR
 # read them, and the vendor extensions add methods to them.
 include("backend_traits.jl")
+include("recursion.jl")
 include("NextLAMatrix.jl")
 include("lu.jl")
 include("lu/factor.jl")
