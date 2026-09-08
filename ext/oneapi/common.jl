@@ -16,3 +16,10 @@ const support = oneAPI.Support
 @inline _onemkl_trsm_fname(::Type{Float64}, ::Val{:strided}) = support.onemklDtrsm_batch_strided
 @inline _onemkl_trsm_fname(::Type{ComplexF32}, ::Val{:strided}) = support.onemklCtrsm_batch_strided
 @inline _onemkl_trsm_fname(::Type{ComplexF64}, ::Val{:strided}) = support.onemklZtrsm_batch_strided
+
+# SYRK entry points, added with src/syrk/. oneMKL has a native strided
+# batched SYRK but no pointer-batched one.
+@inline _onemkl_syrk_fname(::Type{Float32}) = support.onemklSsyrk_batch_strided
+@inline _onemkl_syrk_fname(::Type{Float64}) = support.onemklDsyrk_batch_strided
+@inline _onemkl_syrk_fname(::Type{ComplexF32}) = support.onemklCsyrk_batch_strided
+@inline _onemkl_syrk_fname(::Type{ComplexF64}) = support.onemklZsyrk_batch_strided

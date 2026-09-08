@@ -29,3 +29,18 @@ end
 
 @inline NextLA._build_batch_ptrs(batch::AbstractVector{<:AMDGPU.StridedROCMatrix}) =
     _device_batch_strided(batch)
+
+# SYRK entry points, added with src/syrk/. rocBLAS is the only backend
+# with a native batched SYRK in both layouts.
+@inline _rocblas_syrk_fname(::Type{Float32}, ::Val{:single}) = rocBLAS.rocblas_ssyrk_64
+@inline _rocblas_syrk_fname(::Type{Float64}, ::Val{:single}) = rocBLAS.rocblas_dsyrk_64
+@inline _rocblas_syrk_fname(::Type{ComplexF32}, ::Val{:single}) = rocBLAS.rocblas_csyrk_64
+@inline _rocblas_syrk_fname(::Type{ComplexF64}, ::Val{:single}) = rocBLAS.rocblas_zsyrk_64
+@inline _rocblas_syrk_fname(::Type{Float32}, ::Val{:batched}) = rocBLAS.rocblas_ssyrk_batched_64
+@inline _rocblas_syrk_fname(::Type{Float64}, ::Val{:batched}) = rocBLAS.rocblas_dsyrk_batched_64
+@inline _rocblas_syrk_fname(::Type{ComplexF32}, ::Val{:batched}) = rocBLAS.rocblas_csyrk_batched_64
+@inline _rocblas_syrk_fname(::Type{ComplexF64}, ::Val{:batched}) = rocBLAS.rocblas_zsyrk_batched_64
+@inline _rocblas_syrk_fname(::Type{Float32}, ::Val{:strided}) = rocBLAS.rocblas_ssyrk_strided_batched_64
+@inline _rocblas_syrk_fname(::Type{Float64}, ::Val{:strided}) = rocBLAS.rocblas_dsyrk_strided_batched_64
+@inline _rocblas_syrk_fname(::Type{ComplexF32}, ::Val{:strided}) = rocBLAS.rocblas_csyrk_strided_batched_64
+@inline _rocblas_syrk_fname(::Type{ComplexF64}, ::Val{:strided}) = rocBLAS.rocblas_zsyrk_strided_batched_64

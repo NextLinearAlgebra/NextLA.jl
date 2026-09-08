@@ -24,3 +24,10 @@ end
     copyto!(C, Cdense)
     return C
 end
+
+# Single-matrix counterpart of _supports_mps_batched_matmul above, added with
+# src/syrk/: MPS gates matmul on the (input, output) element-type pair either
+# way, batched or not.
+@inline function _supports_mps_matmul(::Type{Tin}, ::Type{Tin}, ::Type{Tout}) where {Tin, Tout}
+    return (Tin, Tout) in MPS.MPS_VALID_MATMUL_TYPES
+end
