@@ -12,7 +12,7 @@ import ..NextLA: recgemm!, recsyrk!, potrf_recursive!, lu_recursive!,
                  unified_rectrxm!
 
 using ..NextLA: _gemm_dispatch!, _syrk_dispatch!, _rec_split, unified_rec,
-                LU_BLOCK_SIZE, RECSYRK_PARALLEL_THRESHOLD
+                LU_BLOCK_SIZE, POTRF_BLOCK_SIZE, RECSYRK_PARALLEL_THRESHOLD
 
 abstract type AbstractMixedPrec{T} <: AbstractMatrix{T} end
 
