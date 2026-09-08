@@ -10,7 +10,7 @@ using LinearAlgebra
 
 import ..NextLA: recgemm!
 
-using ..NextLA: GEMM_ADD!, GEMM_SUB!, _gemm_dispatch!, _rec_split, unified_rec
+using ..NextLA: _gemm_dispatch!, _rec_split, unified_rec
 
 abstract type AbstractMixedPrec{T} <: AbstractMatrix{T} end
 
@@ -21,12 +21,13 @@ include("symmmixedprec.jl")
 include("trimixedprec.jl")
 include("tiledtrimixedprec.jl")
 include("adaptive.jl")
+include("quantize.jl")
 
 include("gemm/recgemm_mixedprec.jl")
-include("quantize.jl")
 include("trsm/rectrxm_mixed.jl")
 
 export FullMixedPrec, SymmMixedPrec, TriMixedPrec, TiledTriMixedPrec
 export reconstruct_matrix, adaptive_precisions, adaptive_precision_LT
+export dequantize, quantize, unified_rec_mixed
 
 end
