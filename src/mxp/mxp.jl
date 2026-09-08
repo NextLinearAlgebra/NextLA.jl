@@ -21,6 +21,7 @@ include("symmmixedprec.jl")
 include("trimixedprec.jl")
 include("tiledtrimixedprec.jl")
 include("adaptive.jl")
+
 include("gemm/recgemm_mixedprec.jl")
 
 export FullMixedPrec, SymmMixedPrec, TriMixedPrec, TiledTriMixedPrec
