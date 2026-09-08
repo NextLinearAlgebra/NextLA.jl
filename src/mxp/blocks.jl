@@ -85,3 +85,16 @@ function _triangular_tree(::Type{C}, A::AbstractMatrix, uplo::Char, precisions::
         OffDiag_scale, unit_scale, nothing, uplo, n
     )
 end
+
+# Solves an off-diagonal block in place against a factored diagonal block and
+# returns the block's scale. The solve is linear, so it runs on the stored values
+# under that scale. The diagonal block is T_Base and the solve takes one element
+# type, so a narrower block is solved in a T_Base copy and stored back through
+# _requantize!, which raises the scale if the solution outgrew the block's type.
+function _solve_block!(solve!, block::AbstractMatrix, scale, ::Type{T_Base}) where {T_Base}
+    eltype(block) == T_Base && (solve!(block); return scale)
+    W = similar(block, T_Base, size(block))
+    W .= block
+    solve!(W)
+    return _requantize!(block, W, scale)
+end

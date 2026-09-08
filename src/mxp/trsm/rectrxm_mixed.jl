@@ -258,64 +258,33 @@ function unified_rec_mixed(
 end
 
 """
-Unified recursive function for triangular matrix solve (TRSM) and multiply (TRMM) operations.
+    unified_rectrxm!(side, uplo, trans, diag, alpha, func, A, B) -> B
 
-This function supports both solving triangular systems of equations and performing triangular matrix multiplications.
-
-Arguments:
-- side::Char: Specifies the side of the operation:
-    - 'L': Left multiplication (A * B or inv(A) * B).
-    - 'R': Right multiplication (B * A or B * inv(A)).
-- uplo::Char: Specifies the triangular part of the matrix to reference:
-    - 'U': Use the upper triangle.
-    - 'L': Use the lower triangle.
-- trans::Char: Specifies the transposition operation:
-    - 'N': No transpose.
-    - 'T': Transpose.
-    - 'C': Conjugate transpose.
-- diag::Char: Specifies whether the matrix is unit triangular.
-- alpha::Number: Scalar multiplier applied to the operation.
-- func::Char: Specifies the function type:
-    - 'S': Solve (TRSM, A * X = alpha * B).
-    - 'M': Multiply (TRMM, Update B = alpha * A * B or alpha * B * A).
-- A::AbstractMixedPrec: The triangular matrix, with mixed precision data structure.
-- B::StridedMatrix: The matrix to multiply or solve for.
-
-Returns:
-- Updated matrix `B` after performing the specified operation.
-
-Notes:
-- The function modifies `B` in place.
+`unified_rectrxm!` for a mixed-precision container `A`: solves `op(A) X = alpha B` for
+`func = 'S'`, or computes `B = alpha op(A) B` for `func = 'M'`, on side `side` (`B * op(A)`
+for `'R'`), in place in `B`. `op` is the identity for `trans = 'N'` and the transpose for `'T'`
+or `'C'`; `uplo` names the triangle of `A` that is read and `diag = 'U'` takes its diagonal as
+ones.
 """
 function unified_rectrxm!(
-        side::Char, 
-        uplo::Char, 
-        trans::Char, 
-        diag::Char,
-        alpha::Number, 
-        func::Char, 
-        A::AbstractMixedPrec, 
-        B::StridedMatrix
+        side::Char, uplo::Char, trans::Char, diag::Char, alpha::Number, func::Char,
+        A::_RecMixedPrec, B::AbstractMatrix
     )
-    threshold = 16
-    if trans == 'T' || trans == 'C'
-        A = transpose(A) 
-        uplo = (uplo == 'L') ? 'U' : 'L'
-    end    
-    
-    if func == 'S'
-        threshold = 256
-        B .= alpha .* B
-    end
-    unified_rec_mixed(func, side, uplo, diag, A, B, threshold)
-    if func == 'M'
-        B .= alpha .* B
-    end
+    side in ('L', 'R') || throw(ArgumentError("side must be 'L' or 'R', got '$side'"))
+    uplo in ('L', 'U') || throw(ArgumentError("uplo must be 'L' or 'U', got '$uplo'"))
+    trans in ('N', 'T', 'C') || throw(ArgumentError("trans must be 'N', 'T' or 'C', got '$trans'"))
+    diag in ('N', 'U') || throw(ArgumentError("diag must be 'N' or 'U', got '$diag'"))
+    func in ('S', 'M') || throw(ArgumentError("func must be 'S' or 'M', got '$func'"))
+    op_A, op_uplo = trans == 'N' ? (A, uplo) : (transpose(A), uplo == 'L' ? 'U' : 'L')
+    func == 'S' && (B .= alpha .* B)
+    unified_rec_mixed(func, side, op_uplo, diag, op_A, B)
+    func == 'M' && (B .= alpha .* B)
     return B
 end
 
 function unified_rectrxm!(
-        side::Char, uplo::Char, trans::Char, alpha::Number, func::Char, A::AbstractMixedPrec, B::StridedMatrix
+        side::Char, uplo::Char, trans::Char, alpha::Number, func::Char,
+        A::_RecMixedPrec, B::AbstractMatrix
     )
     return unified_rectrxm!(side, uplo, trans, 'N', alpha, func, A, B)
 end

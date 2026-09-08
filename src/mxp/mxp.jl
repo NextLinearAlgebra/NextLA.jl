@@ -10,7 +10,7 @@ using LinearAlgebra
 
 import ..NextLA: recgemm!, lu_recursive!, unified_rectrxm!
 
-using ..NextLA: _gemm_dispatch!, _rec_split, unified_rec
+using ..NextLA: _gemm_dispatch!, _rec_split, unified_rec, LU_BLOCK_SIZE
 
 abstract type AbstractMixedPrec{T} <: AbstractMatrix{T} end
 
@@ -29,6 +29,6 @@ include("lu/reclu_mixedprec.jl")
 
 export FullMixedPrec, SymmMixedPrec, TriMixedPrec, TiledTriMixedPrec
 export reconstruct_matrix, adaptive_precisions, adaptive_precision_LT
-export dequantize, quantize, unified_rec_mixed
+export dequantize, lu_recursive_mixed!, quantize, unified_rec_mixed
 
 end
