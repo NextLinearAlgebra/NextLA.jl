@@ -8,7 +8,7 @@ module MixedPrecision
 
 using LinearAlgebra
 
-import ..NextLA: recgemm!
+import ..NextLA: recgemm!, lu_recursive!, unified_rectrxm!
 
 using ..NextLA: _gemm_dispatch!, _rec_split, unified_rec
 
@@ -25,6 +25,7 @@ include("quantize.jl")
 
 include("gemm/recgemm_mixedprec.jl")
 include("trsm/rectrxm_mixed.jl")
+include("lu/reclu_mixedprec.jl")
 
 export FullMixedPrec, SymmMixedPrec, TriMixedPrec, TiledTriMixedPrec
 export reconstruct_matrix, adaptive_precisions, adaptive_precision_LT

@@ -256,3 +256,66 @@ function unified_rec_mixed(
 )
     return unified_rec_mixed(func, side, uplo, 'N', A, B, threshold)
 end
+
+"""
+Unified recursive function for triangular matrix solve (TRSM) and multiply (TRMM) operations.
+
+This function supports both solving triangular systems of equations and performing triangular matrix multiplications.
+
+Arguments:
+- side::Char: Specifies the side of the operation:
+    - 'L': Left multiplication (A * B or inv(A) * B).
+    - 'R': Right multiplication (B * A or B * inv(A)).
+- uplo::Char: Specifies the triangular part of the matrix to reference:
+    - 'U': Use the upper triangle.
+    - 'L': Use the lower triangle.
+- trans::Char: Specifies the transposition operation:
+    - 'N': No transpose.
+    - 'T': Transpose.
+    - 'C': Conjugate transpose.
+- diag::Char: Specifies whether the matrix is unit triangular.
+- alpha::Number: Scalar multiplier applied to the operation.
+- func::Char: Specifies the function type:
+    - 'S': Solve (TRSM, A * X = alpha * B).
+    - 'M': Multiply (TRMM, Update B = alpha * A * B or alpha * B * A).
+- A::AbstractMixedPrec: The triangular matrix, with mixed precision data structure.
+- B::StridedMatrix: The matrix to multiply or solve for.
+
+Returns:
+- Updated matrix `B` after performing the specified operation.
+
+Notes:
+- The function modifies `B` in place.
+"""
+function unified_rectrxm!(
+        side::Char, 
+        uplo::Char, 
+        trans::Char, 
+        diag::Char,
+        alpha::Number, 
+        func::Char, 
+        A::AbstractMixedPrec, 
+        B::StridedMatrix
+    )
+    threshold = 16
+    if trans == 'T' || trans == 'C'
+        A = transpose(A) 
+        uplo = (uplo == 'L') ? 'U' : 'L'
+    end    
+    
+    if func == 'S'
+        threshold = 256
+        B .= alpha .* B
+    end
+    unified_rec_mixed(func, side, uplo, diag, A, B, threshold)
+    if func == 'M'
+        B .= alpha .* B
+    end
+    return B
+end
+
+function unified_rectrxm!(
+        side::Char, uplo::Char, trans::Char, alpha::Number, func::Char, A::AbstractMixedPrec, B::StridedMatrix
+    )
+    return unified_rectrxm!(side, uplo, trans, 'N', alpha, func, A, B)
+end
