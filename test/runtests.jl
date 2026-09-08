@@ -52,7 +52,7 @@ end
 
 include("NextLAMatrix.jl")
 include("lu.jl")
-include("unified_rectrxm.jl")
+include("trsm/unified_rectrxm.jl")
 include("trsm.jl")
 include("lauum.jl")
 include("axpy.jl")

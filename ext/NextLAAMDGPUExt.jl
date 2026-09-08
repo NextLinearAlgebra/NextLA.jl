@@ -7,5 +7,6 @@ using LinearAlgebra
 include("amdgpu/common.jl")
 include("amdgpu/gemm.jl")
 include("amdgpu/trsm.jl")
+include("amdgpu/rectrxm.jl")
 
 end
