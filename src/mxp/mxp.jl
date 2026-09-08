@@ -8,7 +8,9 @@ module MixedPrecision
 
 using LinearAlgebra
 
-using ..NextLA: _rec_split
+import ..NextLA: recgemm!
+
+using ..NextLA: _gemm_dispatch!, _rec_split
 
 abstract type AbstractMixedPrec{T} <: AbstractMatrix{T} end
 
@@ -19,6 +21,7 @@ include("symmmixedprec.jl")
 include("trimixedprec.jl")
 include("tiledtrimixedprec.jl")
 include("adaptive.jl")
+include("gemm/recgemm_mixedprec.jl")
 
 export FullMixedPrec, SymmMixedPrec, TriMixedPrec, TiledTriMixedPrec
 export reconstruct_matrix, adaptive_precisions, adaptive_precision_LT
