@@ -1,48 +1,47 @@
-"""
-    _recsyrk_impl!(alpha::Number, A::AbstractMatrix, beta::Number, C::SymmMixedPrec; parallel::Bool)
+# The SymmMixedPrec methods of recsyrk!. Source: vicki-development @ 694d019,
+# by Vicki <vickicar@mit.edu>, where they sat in src/recsyrk.jl.
 
-Internal implementation for nested recursive symmetric rank-k updates specifically for the `SymmMixedPrec` block structure.
-Recursively divides matrices into sub-blocks and applies updates in-place, falling back to standard hardware routines using the dispatch helper at the base case.
 """
-function _recsyrk_impl!(
-    alpha::Number, A::AbstractMatrix, beta::Number, C::SymmMixedPrec;
-    parallel::Bool
-)
-    if C.BaseCase !== nothing
-        recsyrk!(alpha, A, beta, C.BaseCase, 4096)
-        return
+    recsyrk!(alpha, A, beta, C::SymmMixedPrec) -> C
+
+Computes `C = alpha * A * transpose(A) + beta * C` in place on the stored triangle (`C.uplo`)
+of the `n × n` `SymmMixedPrec` `C`, where `A` is `n × k`. It walks `C`'s block tree: each
+off-diagonal block takes one GEMM through `_syrk_dispatch!` at its own precision, and each
+leaf the dense `recsyrk!`. A block stored with a scale factor `s` holds `C / s`, so its update
+uses `alpha / s`; an off-diagonal block with less range than `Float32` is updated in a
+`Float32` copy and stored back with its scale raised when the update took it past `floatmax`
+of its type. When the first diagonal block of the top level
+has more than `RECSYRK_PARALLEL_THRESHOLD` rows, the two diagonal halves run on separate threads,
+so a task is spawned only when it has that much work.
+"""
+function recsyrk!(alpha::Number, A::AbstractMatrix, beta::Number, C::SymmMixedPrec)
+    size(A, 1) == size(C, 1) || throw(DimensionMismatch("A must have $(size(C, 1)) rows, like C"))
+    parallel = C.Base === nothing && size(C.A11, 1) > RECSYRK_PARALLEL_THRESHOLD
+    return _recsyrk_mixed!(alpha, A, beta, C; parallel=parallel)
+end
+
+function _recsyrk_mixed!(alpha::Number, A::AbstractMatrix, beta::Number, C::SymmMixedPrec;
+                        parallel::Bool)
+    if C.Base !== nothing
+        recsyrk!(alpha / C.Base_scale, A, beta, C.Base; uplo=C.uplo)
+        return C
     end
 
     n1 = size(C.A11, 1)
-    A1 = @view A[1:n1, :]; A2 = @view A[n1+1:end, :]
-
-    _syrk_dispatch!(:GEMM, alpha, A2, A1, beta, C.OffDiag)
+    A1, A2 = view(A, 1:n1, :), view(A, n1+1:size(A, 1), :)
+    a = alpha / C.OffDiag_scale
+    C.OffDiag_scale = _update_block!(C.OffDiag, C.OffDiag_scale) do P
+        C.uplo == 'L' ? _syrk_dispatch!(:GEMM, a, A2, A1, beta, P) : _syrk_dispatch!(:GEMM, a, A1, A2, beta, P)
+    end
 
     if parallel
         @sync begin
-            @async _recsyrk_impl!(alpha, A1, beta, C.A11, parallel=false)
-            @async _recsyrk_impl!(alpha, A2, beta, C.A22, parallel=false)
+            Threads.@spawn _recsyrk_mixed!(alpha, A1, beta, C.A11; parallel=false)
+            Threads.@spawn _recsyrk_mixed!(alpha, A2, beta, C.A22; parallel=false)
         end
     else
-        _recsyrk_impl!(alpha, A1, beta, C.A11, parallel=false)
-        _recsyrk_impl!(alpha, A2, beta, C.A22, parallel=false)
+        _recsyrk_mixed!(alpha, A1, beta, C.A11; parallel=false)
+        _recsyrk_mixed!(alpha, A2, beta, C.A22; parallel=false)
     end
-end
-
-"""
-    recsyrk!(alpha::Number, A::AbstractMatrix, beta::Number, C::SymmMixedPrec)
-
-Performs an in-place, nested recursive block symmetric rank-k update on a symmetric mixed-precision matrix structure.
-Falls back to standard hardware routines using the dispatch helper at the base case.
-"""
-function recsyrk!(
-    alpha::Number, A::AbstractMatrix, beta::Number, C::SymmMixedPrec
-)
-    if C.BaseCase !== nothing
-        recsyrk!(alpha, A, beta, C.BaseCase)
-        return
-    end
-    n_subproblem = size(C.A11, 1)
-    should_parallelize = n_subproblem > PARALLEL_THRESHOLD
-    _recsyrk_impl!(alpha, A, beta, C, parallel=should_parallelize)
+    return C
 end

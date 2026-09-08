@@ -8,11 +8,10 @@ module MixedPrecision
 
 using LinearAlgebra
 
-import ..NextLA: recgemm!, recsyrk!, _recsyrk_impl!, lu_recursive!,
-                 unified_rectrxm!
+import ..NextLA: recgemm!, recsyrk!, lu_recursive!, unified_rectrxm!
 
-using ..NextLA: PARALLEL_THRESHOLD, _gemm_dispatch!, _syrk_dispatch!,
-                _rec_split, unified_rec, LU_BLOCK_SIZE
+using ..NextLA: _gemm_dispatch!, _syrk_dispatch!, _rec_split, unified_rec,
+                LU_BLOCK_SIZE, RECSYRK_PARALLEL_THRESHOLD
 
 abstract type AbstractMixedPrec{T} <: AbstractMatrix{T} end
 
