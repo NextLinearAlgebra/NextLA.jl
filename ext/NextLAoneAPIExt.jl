@@ -6,5 +6,6 @@ using LinearAlgebra
 
 include("oneapi/common.jl")
 include("oneapi/gemm.jl")
+include("oneapi/trsm.jl")
 
 end

@@ -6,5 +6,6 @@ using LinearAlgebra
 
 include("metal/common.jl")
 include("metal/gemm.jl")
+include("metal/trsm.jl")
 
 end

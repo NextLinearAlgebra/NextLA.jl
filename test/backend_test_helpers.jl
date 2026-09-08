@@ -35,3 +35,12 @@ function _expected_gemm_batched_file(name::String)
     name == "Metal" && return "ext/metal/gemm.jl"
     error("Unknown backend `$name`")
 end
+
+function _expected_trsm_batched_file(name::String)
+    name == "CPU" && return "src/trsm/trsm_batched.jl"
+    name == "CUDA" && return "ext/cuda/trsm.jl"
+    name == "AMDGPU" && return "ext/amdgpu/trsm.jl"
+    name == "oneAPI" && return "ext/oneapi/trsm.jl"
+    name == "Metal" && return "ext/metal/trsm.jl"
+    error("Unknown backend `$name`")
+end

@@ -62,6 +62,7 @@ include("trsm.jl")
 include("rectrxm.jl")
 include("gemm/matmul.jl")
 include("gemm/gemm.jl")
+include("trsm/batched.jl")
 include("lauu2.jl")
 include("lauum.jl")
 
