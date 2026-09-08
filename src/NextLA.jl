@@ -52,12 +52,16 @@ function lamch(::Type{T}, cmach) where {T <: Number}
 	end
 end
 
+# Backend capability traits. First, because both the GEMM machinery and TLR
+# read them, and the vendor extensions add methods to them.
+include("backend_traits.jl")
 include("NextLAMatrix.jl")
 include("lu.jl")
 include("trmm.jl")
 include("trsm.jl")
 include("rectrxm.jl")
 include("matmul.jl")
+include("gemm/gemm.jl")
 include("lauu2.jl")
 include("lauum.jl")
 
