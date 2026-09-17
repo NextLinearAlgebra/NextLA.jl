@@ -90,3 +90,52 @@ end
         end
     end
 end
+
+# getrf2! reports through its return value, on every path.
+#
+# Each early exit used to `return` bare, so the caller's
+# `A, ipiv, info = getrf2!(...)` raised MethodError: no method matching
+# iterate(::Nothing) -- a 0-by-0 input was enough. The two singular paths also
+# wrote `info[] = 1` to an Int, which is a MethodError of its own, and the two
+# recursive calls dropped the info they computed, so a singular block never
+# reached the caller.
+@testset "getrf2! returns (A, ipiv, info) on every path" begin
+    for T in (Float64, ComplexF64)
+        # quick return: the path that crashed the caller
+        A = zeros(T, 0, 0)
+        Af, ipiv, info = NextLA.getrf2!(A, Int[], 0)
+        @test Af === A
+        @test info == 0
+
+        # m == 1 with a zero pivot: singular, reported through info
+        A = zeros(T, 1, 1)
+        _, _, info = NextLA.getrf2!(A, Vector{Int}(undef, 1), 0)
+        @test info == 1
+
+        # n == 1, all zero: the other single-column exit
+        A = zeros(T, 4, 1)
+        _, _, info = NextLA.getrf2!(A, Vector{Int}(undef, 1), 0)
+        @test info == 1
+
+        # a singular block inside the recursion: info is the failing column,
+        # offset by the split, not lost
+        A = T[1 0; 0 0]
+        _, _, info = NextLA.getrf2!(A, Vector{Int}(undef, 2), 0)
+        @test info == 2
+
+        # and a non-singular matrix still factors, with info == 0
+        A0 = T[4 1; 1 3]
+        A = copy(A0)
+        Af, ipiv, info = NextLA.getrf2!(A, Vector{Int}(undef, 2), 0)
+        @test info == 0
+        L = UnitLowerTriangular(Af)
+        U = UpperTriangular(Af)
+        @test L * U ≈ A0[LinearAlgebra.ipiv2perm(ipiv, 2), :]
+
+        # the caller reports it as LAPACK does rather than crashing
+        F = LinearAlgebra.lu!(NextLAMatrix{T}(T[1 0; 0 0]), RowMaximum(); check=false)
+        @test F.info == 2
+        @test_throws LinearAlgebra.SingularException LinearAlgebra.lu!(
+            NextLAMatrix{T}(T[1 0; 0 0]), RowMaximum())
+    end
+end
