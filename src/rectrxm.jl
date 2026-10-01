@@ -9,6 +9,17 @@ function stochastic_convert(::Type{T_out}, M_in::AbstractArray) where T_out
     return M_out
 end
 
+function checked_copy_fp16!(dest, src)
+    all(isfinite, src) ||
+        error("Nonfinite value before FP16 storage")
+
+    maximum(abs, src) <= Float32(floatmax(Float16)) ||
+        error("FP16 storage overflow: rescaling is required")
+
+    copyto!(dest, src)
+    return dest
+end
+
 """
     quantize(matrix::AbstractMatrix{T}) where T <: AbstractFloat
 
@@ -20,14 +31,20 @@ function quantize(matrix::AbstractMatrix{T}) where T <: AbstractFloat
     FP16_MAX_VAL = 65504.0f0
     alpha = maximum(abs, matrix) 
     
+    # if iszero(alpha)
+    #     return similar(matrix, Float16), 1.0f0
+    # end
     if iszero(alpha)
-        return similar(matrix, Float16), 1.0f0
+        return fill!(similar(matrix, Float16), Float16(0)), 1.0f0
     end
 
     if alpha > FP16_MAX_VAL
         s = Float32(alpha / FP16_MAX_VAL)
         quantized_matrix = similar(matrix, Float16, size(matrix))
-        @. quantized_matrix = Float16(round(clamp(matrix / s, -FP16_MAX_VAL, FP16_MAX_VAL)))
+        # @. quantized_matrix = Float16(round(clamp(matrix / s, -FP16_MAX_VAL, FP16_MAX_VAL)))
+        @. quantized_matrix = Float16(clamp(
+            matrix / s, -FP16_MAX_VAL, FP16_MAX_VAL
+        ))
     else
         s = 1.0f0
         quantized_matrix = similar(matrix, Float16, size(matrix))
@@ -64,8 +81,9 @@ function GEMM_ADD!(A, B, C::AnyGPUArray, scale::Float32=1.0f0)
         if eltype(C) == Float16
             C_op = Float32.(C)
             gemmEx!(transA, transB, scale, A_mat, B_mat, 1.0f0, C_op)
-            clamp!(C_op, floatmin(Float16), floatmax(Float16))
-            copy!(C, C_op)
+            # clamp!(C_op, floatmin(Float16), floatmax(Float16))
+            # copy!(C, C_op)
+            checked_copy_fp16!(C, C_op)
         else
             gemmEx!(transA, transB, scale, A_mat, B_mat, 1.0f0, C)
         end
@@ -91,8 +109,9 @@ function GEMM_SUB!(C::AnyGPUArray, A, B, scale::Float32=1.0f0)
         if eltype(C) == Float16
             C_op = Float32.(C)
             gemmEx!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C_op)
-            clamp!(C_op, floatmin(Float16), floatmax(Float16))
-            copy!(C, C_op)
+            # clamp!(C_op, floatmin(Float16), floatmax(Float16))
+            # copy!(C, C_op)
+            checked_copy_fp16!(C, C_op)
         else
             gemmEx!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C)
         end
@@ -454,8 +473,13 @@ function unified_rec_mixed(
                 B ./= A_scale
             else
                 temp_B_f32 = Float32.(B) .* A_scale
-                clamp!(temp_B_f32, floatmin(eltype(B)), floatmax(eltype(B)))
-                copy!(B, temp_B_f32)
+                # clamp!(temp_B_f32, floatmin(eltype(B)), floatmax(eltype(B)))
+                # copy!(B, temp_B_f32)
+                if eltype(B) == Float16
+                    checked_copy_fp16!(B, temp_B_f32)
+                else
+                    copyto!(B, temp_B_f32)
+                end
             end
         else
             if eltype(A.BaseCase) == B_type
