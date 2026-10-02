@@ -2,23 +2,13 @@ export unified_rectrxm!
 using StochasticRounding
 include("wrappers.jl")
 
-
 function stochastic_convert(::Type{T_out}, M_in::AbstractArray) where T_out
     M_out = similar(M_in, T_out)
     @. M_out = stochastic_round(T_out, M_in)
     return M_out
 end
 
-function checked_copy_fp16!(dest, src)
-    all(isfinite, src) ||
-        error("Nonfinite value before FP16 storage")
 
-    maximum(abs, src) <= Float32(floatmax(Float16)) ||
-        error("FP16 storage overflow: rescaling is required")
-
-    copyto!(dest, src)
-    return dest
-end
 
 """
     quantize(matrix::AbstractMatrix{T}) where T <: AbstractFloat
@@ -30,7 +20,7 @@ Returns the quantized matrix and the scaling factor `s`.
 function quantize(matrix::AbstractMatrix{T}) where T <: AbstractFloat
     FP16_MAX_VAL = 65504.0f0
     alpha = maximum(abs, matrix) 
-    
+
     # if iszero(alpha)
     #     return similar(matrix, Float16), 1.0f0
     # end
@@ -83,7 +73,7 @@ function GEMM_ADD!(A, B, C::AnyGPUArray, scale::Float32=1.0f0)
             gemmEx!(transA, transB, scale, A_mat, B_mat, 1.0f0, C_op)
             # clamp!(C_op, floatmin(Float16), floatmax(Float16))
             # copy!(C, C_op)
-            checked_copy_fp16!(C, C_op)
+            copyto!(C, C_op)
         else
             gemmEx!(transA, transB, scale, A_mat, B_mat, 1.0f0, C)
         end
@@ -111,7 +101,7 @@ function GEMM_SUB!(C::AnyGPUArray, A, B, scale::Float32=1.0f0)
             gemmEx!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C_op)
             # clamp!(C_op, floatmin(Float16), floatmax(Float16))
             # copy!(C, C_op)
-            checked_copy_fp16!(C, C_op)
+            copyto!(C, C_op)
         else
             gemmEx!(transA, transB, -scale, A_mat, B_mat, 1.0f0, C)
         end
@@ -139,26 +129,32 @@ function GEMM_SUB!(C::oneAPI.oneDeviceArray, A, B, scale::Float32=1.0f0)
     oneMKL.gemm!(transA, transB, T_C(-scale), A_mat, B_mat, T_C(1.0), C)
 end
 
-function dispatch_trsm!(side, uplo, trans, diag, alpha, A, B)
-    if eltype(A) == Float16
-        B_temp = Float32.(B)
-        trsm!(side, uplo, trans, diag, alpha, Float32.(A), B_temp)
-        copy!(B, B_temp)
-    else
-        trsm!(side, uplo, trans, diag, alpha, A, B)
+function dispatch_trsm!(side, uplo, trans, diag, alpha, A, B; A_scale=1.0f0)
+    T = promote_type(Float32, eltype(A), eltype(B))
+    A_op = eltype(A) == T ? A : T.(A)
+    if A_scale != 1.0f0
+        A_op = A_op .* T(A_scale)
     end
-end
-
-function dispatch_trmm!(side, uplo, trans, diag, alpha, A, B)
-    if eltype(A) == Float16
-        B_temp = Float32.(B)
-        trmm!(side, uplo, trans, diag, alpha, Float32.(A), B_temp, B_temp)
-        copy!(B, B_temp)
-    else
-        trmm!(side, uplo, trans, diag, alpha, A, B, B)
+    B_op = eltype(B) == T ? B : T.(B)
+    trsm!(side, uplo, trans, diag, T(alpha), A_op, B_op)
+    if B_op !== B
+        copyto!(B, B_op)
     end
+    return B
 end
-
+function dispatch_trmm!(side, uplo, trans, diag, alpha, A, B; A_scale=1.0f0)
+    T = promote_type(Float32, eltype(A), eltype(B))
+    A_op = eltype(A) == T ? A : T.(A)
+    if A_scale != 1.0f0
+        A_op = A_op .* T(A_scale)
+    end
+    B_op = eltype(B) == T ? B : T.(B)
+    trmm!(side, uplo, trans, diag, T(alpha), A_op, B_op, B_op)
+    if B_op !== B
+        copyto!(B, B_op)
+    end
+    return B
+end
 """
 Unified recursive function for triangular matrix solve (TRSM) and multiply (TRMM) operations.
 
@@ -202,10 +198,10 @@ function unified_rectrxm!(
     n = size(A, 1)
 
     if transpose == 'T' || transpose == 'C'
-        A = (transpose == 'T') ? Transpose(A) : Adjoint(A)
+        A = Transpose(A)  # T and C coincide for real inputs
         uplo = (uplo == 'L') ? 'U' : 'L'
     end    
-    
+
     if func == 'S'
         threshold = 256
         B .= alpha .* B
@@ -236,9 +232,9 @@ function unified_rec(func::Char, side::Char, uplo::Char, diag::Char,
         orig_uplo = (uplo == 'L') ? 'U' : 'L'
 
         if func == 'S'
-            dispatch_trsm!(side, orig_uplo, 'T', diag, 1.0f0, A_orig, B)
+            dispatch_trsm!(side, orig_uplo, 'T', diag, 1.0f0, A_orig, B; A_scale=A_scale)
         else 
-            dispatch_trmm!(side, orig_uplo, 'T', diag, 1.0f0, A_orig, B)
+            dispatch_trmm!(side, orig_uplo, 'T', diag, 1.0f0, A_orig, B; A_scale=A_scale)
         end
         return B
     end
@@ -304,9 +300,9 @@ function unified_rec(func::Char, side::Char, uplo::Char, diag::Char,
     n = size(A, 1)
     if n <= threshold
         if func == 'S'
-            dispatch_trsm!(side, uplo, 'N', diag, 1.0f0, A, B)
+            dispatch_trsm!(side, uplo, 'N', diag, 1.0f0, A, B; A_scale=A_scale)
         else 
-            dispatch_trmm!(side, uplo, 'N', diag, 1.0f0, A, B)
+            dispatch_trmm!(side, uplo, 'N', diag, 1.0f0, A, B; A_scale=A_scale)
         end
         return B    
     end
@@ -418,10 +414,10 @@ function unified_rectrxm!(
     )
     threshold = 16
     if trans == 'T' || trans == 'C'
-        A = transpose(A) 
+        A = TransposedMixedPrec(A) 
         uplo = (uplo == 'L') ? 'U' : 'L'
     end    
-    
+
     if func == 'S'
         threshold = 256
         B .= alpha .* B
@@ -455,40 +451,12 @@ function unified_rec_mixed(
     if A.BaseCase !== nothing
         A_block = A.BaseCase
         A_scale = A.base_scale !== nothing ? A.base_scale : 1.0f0
-        B_type = eltype(B) 
-
-        if eltype(A_block) == Float16 
-            if B_type == eltype(A_block)
-                unified_rec(func, side, uplo, diag, A_block, B, threshold; A_scale=A_scale)
-            else 
-                B_quant, B_scale = quantize(B)
-
-                unified_rec(func, side, uplo, diag, A_block, B_quant, threshold; A_scale=A_scale)
-
-                B_dequant = dequantize(B_quant, B_scale, B_type)
-                copy!(B, B_dequant)
-            end
-
-            if func == 'S'
-                B ./= A_scale
-            else
-                temp_B_f32 = Float32.(B) .* A_scale
-                # clamp!(temp_B_f32, floatmin(eltype(B)), floatmax(eltype(B)))
-                # copy!(B, temp_B_f32)
-                if eltype(B) == Float16
-                    checked_copy_fp16!(B, temp_B_f32)
-                else
-                    copyto!(B, temp_B_f32)
-                end
-            end
-        else
-            if eltype(A.BaseCase) == B_type
-                unified_rec(func, side, uplo, diag, A.BaseCase, B, threshold)
-            else
-                B_converted = eltype(A.BaseCase).(B)
-                unified_rec(func, side, uplo, diag, A.BaseCase, B_converted, threshold)
-                B .= B_converted
-            end
+        T_work = promote_type(Float32, eltype(A_block), eltype(B))
+        A_work = eltype(A_block) == T_work ? A_block : T_work.(A_block)
+        B_work = eltype(B) == T_work ? B : T_work.(B)
+        unified_rec(func, side, uplo, diag, A_work, B_work, threshold; A_scale=A_scale)
+        if B_work !== B
+            copyto!(B, B_work)
         end
         return B
     else
@@ -513,7 +481,7 @@ function unified_rec_mixed(
         (side == 'R' && uplo == 'U' && func == 'S') || 
         (side == 'L' && uplo == 'U' && func == 'M') || 
         (side == 'R' && uplo == 'L' && func == 'M')
-        
+
             unified_rec_mixed(func, side, uplo, diag, A.A11, B1, threshold)
 
             A_type = eltype(OffDiag_block)
@@ -525,60 +493,67 @@ function unified_rec_mixed(
             B_type = eltype(B) 
 
             if A_type != B_type
+                B_source = func == 'S' ? B1 : B2
+                if A_type == Float16
+                    B_operand, B_scale = quantize(B_source)
+                    A_scale *= B_scale
+                else
+                    B_operand = A_type.(B_source)
+                end
                 if side == 'L' && func == 'S'
                     if A_type == Float16
                         if B_type !== Float64
-                            GEMM_SUB!(B2, OffDiag_block, A_type.(B1), A_scale)
+                            GEMM_SUB!(B2, OffDiag_block, B_operand, A_scale)
                         else
                             B2_lp = Float32.(B2) 
-                            GEMM_SUB!(B2_lp, OffDiag_block, A_type.(B1), A_scale)
+                            GEMM_SUB!(B2_lp, OffDiag_block, B_operand, A_scale)
                             copy!(B2, B2_lp)
                         end
                     else
                         B2_lp = A_type.(B2) 
-                        GEMM_SUB!(B2_lp, OffDiag_block, A_type.(B1), A_scale)
+                        GEMM_SUB!(B2_lp, OffDiag_block, B_operand, A_scale)
                         copy!(B2, B2_lp)
                     end
                 elseif side == 'L' && func == 'M'
                     if A_type == Float16
                         if B_type !== Float64
-                            GEMM_ADD!(OffDiag_block, A_type.(B2), B1, A_scale)
+                            GEMM_ADD!(OffDiag_block, B_operand, B1, A_scale)
                         else
                             B1_lp = Float32.(B1)
-                            GEMM_ADD!(OffDiag_block, A_type.(B2), B1_lp, A_scale)
+                            GEMM_ADD!(OffDiag_block, B_operand, B1_lp, A_scale)
                             copy!(B1, B1_lp)
                         end
                     else
                         B1_lp = A_type.(B1)
-                        GEMM_ADD!(OffDiag_block, A_type.(B2), B1_lp, A_scale)
+                        GEMM_ADD!(OffDiag_block, B_operand, B1_lp, A_scale)
                         copy!(B1, B1_lp)
                     end
                 elseif side == 'R' && func == 'S'
                     if A_type == Float16
                         if B_type !== Float64
-                            GEMM_SUB!(B2, A_type.(B1), OffDiag_block, A_scale)
+                            GEMM_SUB!(B2, B_operand, OffDiag_block, A_scale)
                         else
                             B2_lp = Float32.(B2) 
-                            GEMM_SUB!(B2_lp, A_type.(B1), OffDiag_block, A_scale)
+                            GEMM_SUB!(B2_lp, B_operand, OffDiag_block, A_scale)
                             copy!(B2, B2_lp)
                         end
                     else
                         B2_lp = A_type.(B2) 
-                        GEMM_SUB!(B2_lp, A_type.(B1), OffDiag_block, A_scale)
+                        GEMM_SUB!(B2_lp, B_operand, OffDiag_block, A_scale)
                         copy!(B2, B2_lp)
                     end
                 else 
                     if A_type == Float16
                         if B_type !== Float64
-                            GEMM_ADD!(A_type.(B2), OffDiag_block, B1, A_scale)
+                            GEMM_ADD!(B_operand, OffDiag_block, B1, A_scale)
                         else
                             B1_lp = Float32.(B1)
-                            GEMM_ADD!(A_type.(B2), OffDiag_block, B1_lp, A_scale)
+                            GEMM_ADD!(B_operand, OffDiag_block, B1_lp, A_scale)
                             copy!(B1, B1_lp) 
                         end
                     else
                         B1_lp = A_type.(B1)
-                        GEMM_ADD!(A_type.(B2), OffDiag_block, B1_lp, A_scale)
+                        GEMM_ADD!(B_operand, OffDiag_block, B1_lp, A_scale)
                         copy!(B1, B1_lp) 
                     end
                 end
@@ -605,62 +580,69 @@ function unified_rec_mixed(
                 A_scale = A.offDiag_scale !== nothing ? A.offDiag_scale : 1.0f0
             end
             B_type = eltype(B)
-            
+
             if A_type != B_type
+                B_source = func == 'S' ? B2 : B1
+                if A_type == Float16
+                    B_operand, B_scale = quantize(B_source)
+                    A_scale *= B_scale
+                else
+                    B_operand = A_type.(B_source)
+                end
                 if side == 'L' && func == 'S'
                     if A_type == Float16
                         if B_type !== Float64
-                            GEMM_SUB!(B1, OffDiag_block, A_type.(B2), A_scale)
+                            GEMM_SUB!(B1, OffDiag_block, B_operand, A_scale)
                         else
                             B1_lp = Float32.(B1)
-                            GEMM_SUB!(B1_lp, OffDiag_block, A_type.(B2), A_scale)
+                            GEMM_SUB!(B1_lp, OffDiag_block, B_operand, A_scale)
                             copy!(B1, B1_lp)
                         end
                     else
                         B1_lp = A_type.(B1)
-                        GEMM_SUB!(B1_lp, OffDiag_block, A_type.(B2), A_scale)
+                        GEMM_SUB!(B1_lp, OffDiag_block, B_operand, A_scale)
                         copy!(B1, B1_lp)
                     end
                 elseif side == 'L' && func == 'M'
                     if A_type == Float16
                         if B_type !== Float64
-                            GEMM_ADD!(OffDiag_block, A_type.(B1), B2, A_scale)
+                            GEMM_ADD!(OffDiag_block, B_operand, B2, A_scale)
                         else
                             B2_lp = Float32.(B2)
-                            GEMM_ADD!(OffDiag_block, A_type.(B1), B2_lp, A_scale)
+                            GEMM_ADD!(OffDiag_block, B_operand, B2_lp, A_scale)
                             copy!(B2, B2_lp)
                         end
                     else
                         B2_lp = A_type.(B2)
-                        GEMM_ADD!(OffDiag_block, A_type.(B1), B2_lp, A_scale)
+                        GEMM_ADD!(OffDiag_block, B_operand, B2_lp, A_scale)
                         copy!(B2, B2_lp)
                     end
                 elseif side == 'R' && func == 'S'
                     if A_type == Float16
                         if B_type !== Float64
-                            GEMM_SUB!(B1, A_type.(B2), OffDiag_block, A_scale)
+                            GEMM_SUB!(B1, B_operand, OffDiag_block, A_scale)
                         else
                             B1_lp = Float32.(B1)
-                            GEMM_SUB!(B1_lp, A_type.(B2), OffDiag_block, A_scale)
+                            GEMM_SUB!(B1_lp, B_operand, OffDiag_block, A_scale)
                             copy!(B1, B1_lp)
                         end
                     else
                         B1_lp = A_type.(B1)
-                        GEMM_SUB!(B1_lp, A_type.(B2), OffDiag_block, A_scale)
+                        GEMM_SUB!(B1_lp, B_operand, OffDiag_block, A_scale)
                         copy!(B1, B1_lp)
                     end
                 else 
                     if A_type == Float16
                         if B_type !== Float64
-                            GEMM_ADD!(A_type.(B1), OffDiag_block, B2, A_scale)
+                            GEMM_ADD!(B_operand, OffDiag_block, B2, A_scale)
                         else
                             B2_lp = Float32.(B2)
-                            GEMM_ADD!(A_type.(B1), OffDiag_block, B2_lp, A_scale)
+                            GEMM_ADD!(B_operand, OffDiag_block, B2_lp, A_scale)
                             copy!(B2, B2_lp) 
                         end
                     else
                         B2_lp = A_type.(B2)
-                        GEMM_ADD!(A_type.(B1), OffDiag_block, B2_lp, A_scale)
+                        GEMM_ADD!(B_operand, OffDiag_block, B2_lp, A_scale)
                         copy!(B2, B2_lp) 
                     end
                 end
@@ -675,13 +657,13 @@ function unified_rec_mixed(
                     GEMM_ADD!(B1, OffDiag_block, B2, A_scale)
                 end
             end
-            
+
             unified_rec_mixed(func, side, uplo, diag, A.A11, B1, threshold)
         end
 
         return B
     end
-    
+
 end
 
 function unified_rec_mixed(
@@ -691,27 +673,19 @@ function unified_rec_mixed(
     threshold::Int=256
 )
     A_orig = parent(A)
-    
+
     if A_orig.BaseCase !== nothing
         A_block = A_orig.BaseCase
-        scale = A_orig.base_scale !== nothing ? A_orig.base_scale : 1.0f0
-        if eltype(A_block) == Float16
-            B_converted = Float32.(B)
-            unified_rec(func, side, uplo, diag, transpose(Float32.(A)), B_converted, threshold; A_scale=scale)
-            copy!(B, B_converted)
-        else
-            A_block_transposed = transpose(A_block) 
-            if eltype(A_block) != eltype(B)
-                B_converted = eltype(A_block).(B)
-                unified_rec(func, side, uplo, diag, A_block_transposed, B_converted, threshold; A_scale=scale)
-                copy!(B, B_converted)
-            else
-                unified_rec(func, side, uplo, diag, A_block_transposed, B, threshold; A_scale=scale)
-            end
+        A_scale = A_orig.base_scale !== nothing ? A_orig.base_scale : 1.0f0
+        T_work = promote_type(Float32, eltype(A_block), eltype(B))
+        A_work = eltype(A_block) == T_work ? A_block : T_work.(A_block)
+        B_work = eltype(B) == T_work ? B : T_work.(B)
+        unified_rec(func, side, uplo, diag, transpose(A_work), B_work, threshold; A_scale=A_scale)
+        if B_work !== B
+            copyto!(B, B_work)
         end
         return B
     end
-
     mid = size(A_orig.A11, 1)
     n = size(A_orig, 1)
 
@@ -723,77 +697,90 @@ function unified_rec_mixed(
         B2 = view(B, :, mid+1:n)
     end
 
-    A11_trans = transpose(A_orig.A11)
-    A22_trans = transpose(A_orig.A22)
-    OffDiag_block_trans = transpose(A_orig.OffDiag) 
+    A11_trans = TransposedMixedPrec(A_orig.A11)
+    A22_trans = TransposedMixedPrec(A_orig.A22)
+    if hasproperty(A_orig, :A21)
+        OffDiag_block = uplo == 'U' ? A_orig.A21 : A_orig.A12
+        off_scale = uplo == 'U' ? A_orig.A21_scale : A_orig.A12_scale
+    else
+        OffDiag_block = A_orig.OffDiag
+        off_scale = A_orig.offDiag_scale
+    end
+    OffDiag_block_trans = transpose(OffDiag_block) 
 
     if (side == 'L' && uplo == 'L' && func == 'S') || 
        (side == 'R' && uplo == 'U' && func == 'S') || 
        (side == 'L' && uplo == 'U' && func == 'M') || 
        (side == 'R' && uplo == 'L' && func == 'M')
-       
+
         unified_rec_mixed(func, side, uplo, diag, A11_trans, B1, threshold)
-        
-        
-        A_type = eltype(A_orig.OffDiag)
-        A_scale = A_orig.offDiag_scale !== nothing ? A_orig.offDiag_scale : 1.0f0
+
+        A_type = eltype(OffDiag_block)
+        A_scale = off_scale !== nothing ? off_scale : 1.0f0
         B_type = eltype(B) 
 
         if A_type != B_type
+            B_source = func == 'S' ? B1 : B2
+            if A_type == Float16
+                B_operand, B_scale = quantize(B_source)
+                A_scale *= B_scale
+            else
+                B_operand = A_type.(B_source)
+            end
             if side == 'L' && func == 'S'
                 if A_type == Float16
                     if B_type !== Float64
-                        GEMM_SUB!(B2, OffDiag_block_trans, A_type.(B1), A_scale)
+                        GEMM_SUB!(B2, OffDiag_block_trans, B_operand, A_scale)
                     else
                         B2_lp = Float32.(B2) 
-                        GEMM_SUB!(B2_lp, OffDiag_block_trans, A_type.(B1), A_scale)
+                        GEMM_SUB!(B2_lp, OffDiag_block_trans, B_operand, A_scale)
                         copy!(B2, B2_lp)
                     end
                 else
                     B2_lp = A_type.(B2) 
-                    GEMM_SUB!(B2_lp, OffDiag_block_trans, A_type.(B1), A_scale)
+                    GEMM_SUB!(B2_lp, OffDiag_block_trans, B_operand, A_scale)
                     copy!(B2, B2_lp)
                 end
             elseif side == 'L' && func == 'M'
                  if A_type == Float16
                      if B_type !== Float64
-                         GEMM_ADD!(B1, OffDiag_block_trans, A_type.(B2), A_scale)
+                         GEMM_ADD!(OffDiag_block_trans, B_operand, B1, A_scale)
                      else
                          B1_lp = Float32.(B1)
-                         GEMM_ADD!(B1_lp, OffDiag_block_trans, A_type.(B2), A_scale)
+                         GEMM_ADD!(OffDiag_block_trans, B_operand, B1_lp, A_scale)
                          copy!(B1, B1_lp)
                      end
                  else
                      B1_lp = A_type.(B1)
-                     GEMM_ADD!(B1_lp, OffDiag_block_trans, A_type.(B2), A_scale)
+                     GEMM_ADD!(OffDiag_block_trans, B_operand, B1_lp, A_scale)
                      copy!(B1, B1_lp)
                  end
             elseif side == 'R' && func == 'S'
                  if A_type == Float16
                      if B_type !== Float64
-                         GEMM_SUB!(B2, A_type.(B1), OffDiag_block_trans, A_scale)
+                         GEMM_SUB!(B2, B_operand, OffDiag_block_trans, A_scale)
                      else
                          B2_lp = Float32.(B2) 
-                         GEMM_SUB!(B2_lp, A_type.(B1), OffDiag_block_trans, A_scale)
+                         GEMM_SUB!(B2_lp, B_operand, OffDiag_block_trans, A_scale)
                          copy!(B2, B2_lp)
                      end
                  else
                      B2_lp = A_type.(B2) 
-                     GEMM_SUB!(B2_lp, A_type.(B1), OffDiag_block_trans, A_scale)
+                     GEMM_SUB!(B2_lp, B_operand, OffDiag_block_trans, A_scale)
                      copy!(B2, B2_lp)
                  end
             else 
                  if A_type == Float16
                      if B_type !== Float64
-                         GEMM_ADD!(B1, A_type.(B2), OffDiag_block_trans, A_scale)
+                         GEMM_ADD!(B_operand, OffDiag_block_trans, B1, A_scale)
                      else
                          B1_lp = Float32.(B1)
-                         GEMM_ADD!(B1_lp, A_type.(B2), OffDiag_block_trans, A_scale)
+                         GEMM_ADD!(B_operand, OffDiag_block_trans, B1_lp, A_scale)
                          copy!(B1, B1_lp) 
                      end
                  else
                      B1_lp = A_type.(B1)
-                     GEMM_ADD!(B1_lp, A_type.(B2), OffDiag_block_trans, A_scale)
+                     GEMM_ADD!(B_operand, OffDiag_block_trans, B1_lp, A_scale)
                      copy!(B1, B1_lp) 
                  end
             end
@@ -801,77 +788,84 @@ function unified_rec_mixed(
             if side == 'L' && func == 'S'
                 GEMM_SUB!(B2, OffDiag_block_trans, B1, A_scale)
             elseif side == 'L' && func == 'M'
-                GEMM_ADD!(B1, OffDiag_block_trans, B2, A_scale)
+                GEMM_ADD!(OffDiag_block_trans, B2, B1, A_scale)
             elseif side == 'R' && func == 'S'
                 GEMM_SUB!(B2, B1, OffDiag_block_trans, A_scale)
             else
-                GEMM_ADD!(B1, B2, OffDiag_block_trans, A_scale)
+                GEMM_ADD!(B2, OffDiag_block_trans, B1, A_scale)
             end
         end
-        
+
         unified_rec_mixed(func, side, uplo, diag, A22_trans, B2, threshold)
     else 
         unified_rec_mixed(func, side, uplo, diag, A22_trans, B2, threshold)
 
-        A_type = eltype(A_orig.OffDiag)
-        A_scale = A_orig.offDiag_scale !== nothing ? A_orig.offDiag_scale : 1.0f0
+        A_type = eltype(OffDiag_block)
+        A_scale = off_scale !== nothing ? off_scale : 1.0f0
         B_type = eltype(B)
-        
+
         if A_type != B_type
+            B_source = func == 'S' ? B2 : B1
+            if A_type == Float16
+                B_operand, B_scale = quantize(B_source)
+                A_scale *= B_scale
+            else
+                B_operand = A_type.(B_source)
+            end
             if side == 'L' && func == 'S'
                 if A_type == Float16
                     if B_type !== Float64
-                        GEMM_SUB!(B1, OffDiag_block_trans, A_type.(B2), A_scale)
+                        GEMM_SUB!(B1, OffDiag_block_trans, B_operand, A_scale)
                     else
                         B1_lp = Float32.(B1)
-                        GEMM_SUB!(B1_lp, OffDiag_block_trans, A_type.(B2), A_scale)
+                        GEMM_SUB!(B1_lp, OffDiag_block_trans, B_operand, A_scale)
                         copy!(B1, B1_lp)
                     end
                 else
                     B1_lp = A_type.(B1)
-                    GEMM_SUB!(B1_lp, OffDiag_block_trans, A_type.(B2), A_scale)
+                    GEMM_SUB!(B1_lp, OffDiag_block_trans, B_operand, A_scale)
                     copy!(B1, B1_lp)
                 end
             elseif side == 'L' && func == 'M'
                 if A_type == Float16
                     if B_type !== Float64
-                        GEMM_ADD!(B2, OffDiag_block_trans, A_type.(B1), A_scale)
+                        GEMM_ADD!(OffDiag_block_trans, B_operand, B2, A_scale)
                     else
                         B2_lp = Float32.(B2)
-                        GEMM_ADD!(B2_lp, OffDiag_block_trans, A_type.(B1), A_scale)
+                        GEMM_ADD!(OffDiag_block_trans, B_operand, B2_lp, A_scale)
                         copy!(B2, B2_lp)
                     end
                 else
                     B2_lp = A_type.(B2)
-                    GEMM_ADD!(B2_lp, OffDiag_block_trans, A_type.(B1), A_scale)
+                    GEMM_ADD!(OffDiag_block_trans, B_operand, B2_lp, A_scale)
                     copy!(B2, B2_lp)
                 end
             elseif side == 'R' && func == 'S'
                 if A_type == Float16
                     if B_type !== Float64
-                        GEMM_SUB!(B1, A_type.(B2), OffDiag_block_trans, A_scale)
+                        GEMM_SUB!(B1, B_operand, OffDiag_block_trans, A_scale)
                     else
                         B1_lp = Float32.(B1)
-                        GEMM_SUB!(B1_lp, A_type.(B2), OffDiag_block_trans, A_scale)
+                        GEMM_SUB!(B1_lp, B_operand, OffDiag_block_trans, A_scale)
                         copy!(B1, B1_lp)
                     end
                 else
                     B1_lp = A_type.(B1)
-                    GEMM_SUB!(B1_lp, A_type.(B2), OffDiag_block_trans, A_scale)
+                    GEMM_SUB!(B1_lp, B_operand, OffDiag_block_trans, A_scale)
                     copy!(B1, B1_lp)
                 end
             else 
                 if A_type == Float16
                     if B_type !== Float64
-                        GEMM_ADD!(B2, A_type.(B1), OffDiag_block_trans, A_scale)
+                        GEMM_ADD!(B_operand, OffDiag_block_trans, B2, A_scale)
                     else
                         B2_lp = Float32.(B2)
-                        GEMM_ADD!(B2_lp, A_type.(B1), OffDiag_block_trans, A_scale)
+                        GEMM_ADD!(B_operand, OffDiag_block_trans, B2_lp, A_scale)
                         copy!(B2, B2_lp) 
                     end
                 else
                     B2_lp = A_type.(B2)
-                    GEMM_ADD!(B2_lp, A_type.(B1), OffDiag_block_trans, A_scale)
+                    GEMM_ADD!(B_operand, OffDiag_block_trans, B2_lp, A_scale)
                     copy!(B2, B2_lp) 
                 end
             end
@@ -879,14 +873,14 @@ function unified_rec_mixed(
             if side == 'L' && func == 'S'
                 GEMM_SUB!(B1, OffDiag_block_trans, B2, A_scale)
             elseif side == 'L' && func == 'M'
-                GEMM_ADD!(B2, OffDiag_block_trans, B1, A_scale)
+                GEMM_ADD!(OffDiag_block_trans, B1, B2, A_scale)
             elseif side == 'R' && func == 'S'
                 GEMM_SUB!(B1, B2, OffDiag_block_trans, A_scale)
             else
-                GEMM_ADD!(B2, B1, OffDiag_block_trans, A_scale)
+                GEMM_ADD!(B1, OffDiag_block_trans, B2, A_scale)
             end
         end
-        
+
         unified_rec_mixed(func, side, uplo, diag, A11_trans, B1, threshold)
     end
 

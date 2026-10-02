@@ -38,7 +38,7 @@ function SymmMixedPrec(
     @assert n == size(A, 2) "A must be square"
 
     if length(precisions) == 1 || n <= 1
-        T_Base = precisions[1]
+        T_Base = precisions[end]
         local base_matrix
         local base_scale
         
@@ -47,7 +47,8 @@ function SymmMixedPrec(
             if alpha > FP16_MAX_VAL
                 base_scale = Float32(alpha / FP16_MAX_VAL)
                 base_matrix = similar(A, Float16, size(A))
-                @. base_matrix = Float16(round(clamp(A / base_scale, -FP16_MAX_VAL, FP16_MAX_VAL)))
+                # @. base_matrix = Float16(round(clamp(A / base_scale, -FP16_MAX_VAL, FP16_MAX_VAL)))
+                @. base_matrix = Float16(clamp(A / base_scale, -FP16_MAX_VAL, FP16_MAX_VAL))
             else
                 base_scale = nothing
                 base_matrix = similar(A, Float16, size(A))
@@ -84,7 +85,10 @@ function SymmMixedPrec(
         if alpha_offDiag > FP16_MAX_VAL
             offDiag_scale = Float32(alpha_offDiag / FP16_MAX_VAL)
             offDiag_matrix = similar(offDiag_view, Float16, size(offDiag_view))
-            @. offDiag_matrix = Float16(round(clamp(offDiag_view / offDiag_scale, -FP16_MAX_VAL, FP16_MAX_VAL)))
+            # @. offDiag_matrix = Float16(round(clamp(offDiag_view / offDiag_scale, -FP16_MAX_VAL, FP16_MAX_VAL)))
+            @. offDiag_matrix = Float16(clamp(
+                offDiag_view / offDiag_scale, -FP16_MAX_VAL, FP16_MAX_VAL
+            ))
         else
             offDiag_matrix = similar(offDiag_view, Float16, size(offDiag_view))
             offDiag_matrix .= offDiag_view

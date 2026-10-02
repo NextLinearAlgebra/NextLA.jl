@@ -56,21 +56,32 @@ structure `A`. Used primarily for validation and returning to standard dense for
 """
 function reconstruct_matrix(A::SymmMixedPrec{T_Base}) where {T_Base}
     if A.BaseCase !== nothing
-        return copy(A.BaseCase)
+        scale = A.base_scale === nothing ? 1.0 : Float64(A.base_scale)
+        return Float64.(A.BaseCase) .* scale
     end
-    
+
     C11 = reconstruct_matrix(A.A11)
     C22 = reconstruct_matrix(A.A22)
-    C21 = A.OffDiag
-    n1, m1 = size(C11)
-    n2, m2 = size(C22)
+
+    scale = A.offDiag_scale === nothing ? 1.0 : Float64(A.offDiag_scale)
+    C21 = Float64.(A.OffDiag) .* scale
+
+    n1 = size(C11, 1)
+    n2 = size(C22, 1)
     n = n1 + n2
 
-    C_full = CuArray{T_Base}(undef, n, n)
-    C_full[1:n1, 1:m1] .= C11
-    C_full[n1+1:n, 1:m1] .= C21
-    C_full[n1+1:n, m1+1:n] .= C22
-    C_full[1:n1, m1+1:n] .= transpose(C21)
+    C_full = CuArray{Float64}(undef, n, n)
+
+    C_full[1:n1, 1:n1] .= C11
+    C_full[n1+1:n, n1+1:n] .= C22
+
+    if A.uplo == 'L'
+        C_full[n1+1:n, 1:n1] .= C21
+        C_full[1:n1, n1+1:n] .= transpose(C21)
+    else
+        C_full[1:n1, n1+1:n] .= C21
+        C_full[n1+1:n, 1:n1] .= transpose(C21)
+    end
 
     return C_full
 end
@@ -85,6 +96,9 @@ hardware routines at the base case.
 function potrf_recursive!(A::SymmMixedPrec)
     if A.BaseCase !== nothing
         potrf_recursive!(A.BaseCase, 4096)
+        if A.base_scale !== nothing
+            A.BaseCase ./= sqrt(A.base_scale)
+        end
         return
     end
 
@@ -92,7 +106,11 @@ function potrf_recursive!(A::SymmMixedPrec)
 
     unified_rectrxm!('R', 'L', 'T', 'N', 1.0, 'S', TriMixedPrec(A.A11), A.OffDiag)
 
-    recsyrk!(-1.0, A.OffDiag, 1.0, A.A22)
+    # recsyrk!(-1.0, A.OffDiag, 1.0, A.A22)
+    recsyrk!(
+        -1.0, A.OffDiag, 1.0, A.A22;
+        input_scale = A.offDiag_scale === nothing ? 1.0f0 : A.offDiag_scale
+    )
 
     potrf_recursive!(A.A22)
 end
