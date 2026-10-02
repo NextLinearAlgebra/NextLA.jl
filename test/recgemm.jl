@@ -10,29 +10,29 @@ function run_recgemm_benchmark()
         "Pure F16"             => [Float16, Float16, Float16],
         "Pure F32"             => [Float32, Float32, Float32],
         "Pure F64"             => [Float64, Float64, Float64],
-        "[F32, F32, F64]"      => [Float32, Float32, Float64],
-        "[F32, F32, F64, F64]" => [Float32, Float32, Float64, Float64],
-        "[F64, F64, F32, F32]" => [Float64, Float64, Float32, Float32],
-        "[F32, F64, F64]"      => [Float32, Float64, Float64],
-        "[F16, F16, F32]"      => [Float16, Float16, Float32],
-        "[F16, F16, F16, F32]" => [Float16, Float16, Float16, Float32],
-        "[F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float32],
-        "[F16, F32, F32]"      => [Float16, Float32, Float32],
-        "[F16, F32]"           => [Float16, Float32],
+        # "[F32, F32, F64]"      => [Float32, Float32, Float64],
+        # "[F32, F32, F64, F64]" => [Float32, Float32, Float64, Float64],
+        # "[F64, F64, F32, F32]" => [Float64, Float64, Float32, Float32],
+        # "[F32, F64, F64]"      => [Float32, Float64, Float64],
+        # "[F16, F16, F32]"      => [Float16, Float16, Float32],
+        # "[F16, F16, F16, F32]" => [Float16, Float16, Float16, Float32],
+        # "[F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float32],
+        # "[F16, F32, F32]"      => [Float16, Float32, Float32],
+        # "[F16, F32]"           => [Float16, Float32],
         
         # --- Compelling New Configurations ---
         
         # Smooth Gradients (F16 leaf -> F32 mid -> F64 root)
-        "[F16, F16, F32, F64]" => [Float16, Float16, Float32, Float64],
-        "[F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float32, Float64],
-        "[F16, F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float16, Float32, Float64],
-        "[F16, F16, F16, F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float16, Float16, Float16, Float32, Float64],
+        # "[F16, F16, F32, F64]" => [Float16, Float16, Float32, Float64],
+        # "[F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float32, Float64],
+        # "[F16, F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float16, Float32, Float64],
+        # "[F16, F16, F16, F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float16, Float16, Float16, Float32, Float64],
 
-        # Extreme Jumps (F16 direct to F64)
-        "[F16, F64]"           => [Float16, Float64],
-        "[F16, F16, F16, F64]" => [Float16, Float16, Float16, Float64],
-        "[F16, F16, F16, F16, F64]" => [Float16, Float16, Float16, Float16, Float64],
-        "[F16, F16, F16, F16, F16, F16, F64]" => [Float16, Float16, Float16, Float16, Float16, Float16, Float64]
+        # # Extreme Jumps (F16 direct to F64)
+        # "[F16, F64]"           => [Float16, Float64],
+        # "[F16, F16, F16, F64]" => [Float16, Float16, Float16, Float64],
+        # "[F16, F16, F16, F16, F64]" => [Float16, Float16, Float16, Float16, Float64],
+        # "[F16, F16, F16, F16, F16, F16, F64]" => [Float16, Float16, Float16, Float16, Float16, Float16, Float64]
     )
 
     # Simplified dictionaries to store results
