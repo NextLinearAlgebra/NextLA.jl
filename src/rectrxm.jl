@@ -102,6 +102,7 @@ function GEMM_SUB!(C::AnyGPUArray, A, B, scale::Float32=1.0f0)
     end
 end
 
+if DEV == :oneAPI
 function GEMM_ADD!(A, B, C::oneAPI.oneDeviceArray, scale::Float32=1.0f0)
     transA = A isa Transpose ? 'T' : 'N'
     transB = B isa Transpose ? 'T' : 'N'
@@ -118,6 +119,7 @@ function GEMM_SUB!(C::oneAPI.oneDeviceArray, A, B, scale::Float32=1.0f0)
     B_mat = B isa Transpose ? parent(B) : B
     T_C = eltype(C)
     oneMKL.gemm!(transA, transB, T_C(-scale), A_mat, B_mat, T_C(1.0), C)
+end
 end
 
 function dispatch_trsm!(side, uplo, trans, diag, alpha, A, B)
