@@ -9,6 +9,9 @@ import LinearAlgebra: PivotingStrategy, BlasFloat, BlasInt
 import Random
 using KernelAbstractions
 using StaticArrays
+using GPUArraysCore: AnyGPUArray
+
+using GPUArraysCore: AnyGPUArray
 
 DEV = :NVIDIA
 
