@@ -23,7 +23,18 @@ const STILES_CORES = parse(Int, get(ENV, "STILES_CORES", get(ENV, "SLURM_CPUS_PE
 const SHIFT_SETTING = get(ENV, "DIAGONAL_SHIFT", "n")
 const CASES = get(ENV, "CASES", "all")
 const METHODS = get(ENV, "METHODS", "all")
-const REAL_SHIFT_POLICY = get(ENV, "REAL_SHIFT_POLICY", "dominant")
+# Synthetic dense matrices still use DIAGONAL_SHIFT, defaulting to n.
+# Real matrices use a separate setting, defaulting to no modification.
+const REAL_SHIFT_SETTING = get(ENV, "REAL_DIAGONAL_SHIFT", "0")
+const REAL_SHIFT_POLICY = get(ENV, "REAL_SHIFT_POLICY", "fixed")
+
+const REAL_MATRICES = filter(
+    name -> !isempty(name),
+    strip.(split(get(
+        ENV, "REAL_MATRICES",
+        "nasasrb,crankseg_2,bodyy4,bodyy5,bodyy6,inla_graph_animal2"
+    ), ','))
+)
 CASES in ("all", "dense", "real") || error("CASES must be all, dense, or real")
 METHODS in ("all", "gpu", "stiles") || error("METHODS must be all, gpu, or stiles")
 REAL_SHIFT_POLICY in ("dominant", "fixed") || error("REAL_SHIFT_POLICY must be dominant or fixed")
@@ -184,8 +195,11 @@ function load_case(name)
     n == m && issymmetric(A) || error("$name must be square and symmetric")
     d = diag(A)
     off = vec(sum(abs, A; dims=2)) .- abs.(d)
-    requested_shift = SHIFT_SETTING == "n" ? Float64(n) : parse(Float64, SHIFT_SETTING)
-    requested_shift >= 0 || error("DIAGONAL_SHIFT must be nonnegative")
+    requested_shift = REAL_SHIFT_SETTING == "n" ?
+                    Float64(n) : parse(Float64, REAL_SHIFT_SETTING)
+
+    isfinite(requested_shift) && requested_shift >= 0 ||
+        error("REAL_DIAGONAL_SHIFT must be finite and nonnegative")
     # For a symmetric matrix, d[i] + shift > sum(abs, offdiagonal row i))
     # guarantees positive definiteness and strong diagonal dominance.
     needed = max(0.0, maximum(off .- d))
@@ -197,8 +211,7 @@ function load_case(name)
     d .+= shift
     margin = d .- off
     fraction = count(>(0), margin) / n
-    @info "Diagonal dominance of shifted input" matrix=name shift=shift dominant_row_fraction=fraction worst_margin=minimum(margin)
-    fraction < 1 && @warn "Input is not strictly diagonally dominant in every row; keep this distinction in the results" matrix=name
+    @info "Input diagnostics" matrix=name shift=shift dominant_row_fraction=fraction worst_margin=minimum(margin)
     return A, shift
 end
 
@@ -278,7 +291,7 @@ function run_cholesky_benchmarks()
         end
     end
     if CASES != "dense"
-        for name in ("nasasrb", "crankseg_2")
+        for name in REAL_MATRICES
             A_cpu, shift = load_case(name)
             run_one_matrix("Real sparse $name", A_cpu, shift, pure_scenarios, mixed_scenarios)
             A_cpu = nothing
