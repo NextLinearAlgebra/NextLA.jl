@@ -119,7 +119,7 @@ _apply_transpose(A::AbstractMatrix, trans::Char) =
                 # library, not just the device. See KNOWN_ISSUES.md.
                 cublas_has_bf16 = any(m -> occursin("BFloat16", string(m.sig)),
                                       methods(cuda.CUBLAS.gemm_batched!))
-                if cuda.capability(cuda.device()) >= v"8.0" && cublas_has_bf16
+                if isdefined(Core, :BFloat16) && cuda.capability(cuda.device()) >= v"8.0" && cublas_has_bf16
                     Ab = _to_backend(AT, reshape(Core.BFloat16[1 2; 3 4], 2, 2, 1))
                     Bb = _to_backend(AT, reshape(Core.BFloat16[1 0; 0 1], 2, 2, 1))
                     Cb = _to_backend(AT, zeros(Core.BFloat16, 2, 2, 1))
@@ -433,7 +433,8 @@ end
     @test sig(Float16, Float16, Float32, Float32)
 
     # the two that were refused
-    @test sig(Core.BFloat16, Core.BFloat16, Float32, Float32)
+    # Core.BFloat16 exists from Julia 1.11.
+    isdefined(Core, :BFloat16) && @test sig(Core.BFloat16, Core.BFloat16, Float32, Float32)
     @test sig(Int8, Int8, Int32, Int32)
 
     # and things that must still be refused
