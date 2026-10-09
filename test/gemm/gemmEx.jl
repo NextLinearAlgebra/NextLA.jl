@@ -153,7 +153,7 @@ for (backend_name, ArrayType, synchronize) in available_backends()
                 NextLA.gemmEx!('N', 'N', 0.0, Ainf, Binf, 0.0, Cz; compute_type=Float32)
                 @test all(iszero, Cz)
 
-                # the BLAS fast path has always had this; assert it stays
+                # BLAS-type operands too: alpha = 0 must not reach BLAS, whose kernels may read A
                 Ad = fill(Inf, n, n)
                 Cd = fill(2.0, n, n)
                 NextLA.gemmEx!('N', 'N', 0.0, Ad, ones(n, n), 3.0, Cd)

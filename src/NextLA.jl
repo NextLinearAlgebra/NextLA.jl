@@ -13,6 +13,9 @@ using KernelAbstractions
 # imports it separately, being its own module.
 using KernelAbstractions.Extras: @unroll
 
+# Core.BFloat16 exists from Julia 1.11; before that, no type (Union{}).
+const _BFloat16 = isdefined(Core, :BFloat16) ? Core.BFloat16 : Union{}
+
 """
 	lamch(::Type{T}, cmach) where{T<: Number}
 

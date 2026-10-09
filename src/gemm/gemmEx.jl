@@ -125,7 +125,7 @@ function gemmEx!(transA::Char,
 
     # Same shape as the AMDGPU method: hand a triple BLAS can take straight to
     # BLAS, and only fall back to a wide accumulation for the rest.
-    if _cpu_blas_gemm(TA, TB, TC) && compute_type == TC
+    if _cpu_blas_gemm(TA, TB, TC) && compute_type == TC && !iszero(alpha)
         return BLAS.gemm!(transA, transB, TC(alpha), A, B, TC(beta), C)
     end
 
@@ -139,8 +139,8 @@ function gemmEx!(transA::Char,
     W = compute_type
     a, b = W(alpha), W(beta)
 
-    # alpha == 0 means A and B are not read at all. BLAS guarantees this and the
-    # fast path above inherits it, so the wide path has to honour it too --
+    # alpha == 0 means A and B are not read at all. BLAS should guarantee this,
+    # but some OpenBLAS kernels read A anyway, so it is always handled here --
     # otherwise an Inf in an operand, which a Float16 overflow produces readily,
     # turns 0 * Inf into a NaN that poisons a result the caller never asked to
     # depend on A or B. It also skips the product entirely, which is the whole

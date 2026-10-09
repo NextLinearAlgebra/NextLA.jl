@@ -1,4 +1,4 @@
-@inline _supported(T) = T in (Float16, Core.BFloat16, Float32, Float64) || nameof(T) === :Float8_E5M2
+@inline _supported(T) = T in (Float16, _BFloat16, Float32, Float64) || nameof(T) === :Float8_E5M2
 
 function _check_args(A::AbstractMatrix, precisions::Vector{DataType}, ::Type{S}) where {S}
     size(A, 1) == size(A, 2) || throw(DimensionMismatch("A must be square"))
