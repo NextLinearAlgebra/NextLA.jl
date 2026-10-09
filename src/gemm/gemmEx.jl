@@ -15,7 +15,7 @@ function gemm end
 Compute `C := alpha * A * B + beta * C` in place.
 
 `gemm!` is the common NextLA dispatch point for dense and structured matrix
-products. Dense matrix products forward to [`LinearAlgebra.mul!`](@ref), while
+products. Dense matrix products forward to `LinearAlgebra.mul!`, while
 structured matrix types provide specialized methods.
 """
 function gemm! end
