@@ -4,7 +4,7 @@ CurrentModule = NextLA
 
 # NextLA
 
-Documentation for [NextLA](https://github.com/rabab53/NextLA.jl).
+Documentation for [NextLA](https://github.com/NextLinearAlgebra/NextLA.jl).
 
 ```@index
 ```
