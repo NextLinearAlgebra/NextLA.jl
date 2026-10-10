@@ -1,0 +1,828 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{booktabs}
+\usepackage[expansion=false]{microtype}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue]{hyperref}
+
+\algrenewcommand\algorithmicrequire{\textbf{Input:}}
+\algrenewcommand\algorithmicensure{\textbf{Output:}}
+
+\newtheorem{remark}{Remark}
+\newtheorem{proposition}{Proposition}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\T}{\mathsf{T}}
+\newcommand{\Fnorm}[1]{\left\|#1\right\|_F}
+\newcommand{\rank}{\operatorname{rank}}
+
+\title{A Blocked Randomized Range-Finder Baseline\\
+for Tile Low-Rank GEMM:\\
+GPU Implementation Blueprint}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We give an implementation blueprint for the update of the output tiles of a tile
+low-rank (TLR) matrix product $C\leftarrow\alpha AB+\beta C$ using a blocked
+adaptive randomized range finder (ARA), in contrast to the deterministic
+sequential-recompression baseline used by libraries such as KBLAS. The
+contribution of the reduction index is never materialized as a dense tile, nor
+as an explicit running low-rank accumulator recompressed at every contraction
+step; it is kept as a \emph{factor list} and applied implicitly through cheap
+batched GEMMs. We cost the deterministic baseline first (\S\ref{sec:strategies})
+to fix the metric the randomized design is judged against, show how
+distributivity turns the whole reduction over the contraction index into a
+sketching problem solved with GEMMs rather than $q_k$ separate QR/SVD
+recompressions (\S\ref{sec:factorlist}), show how the existing $\beta C_{ij}$
+term is folded into the same range finder as one further factor pair, and
+derive a workspace-driven rolling schedule that traverses the output one block
+row (or block column) at a time. The design targets stock batched GPU
+primitives (batched GEMM, SYRK, POTRF, TRSM, and a batched symmetric
+eigensolver) with no dependence on routines that form Householder $Q$ factors.
+\end{abstract}
+
+\tableofcontents
+
+\section{Setting and notation}
+\label{sec:setting}
+
+Let $A\in\R^{M\times K}$ and $B\in\R^{K\times N}$ be stored in TLR form with
+tiles of size $b_m\times b_k$ and $b_k\times b_n$, and set $q_m=M/b_m$,
+$q_k=K/b_k$, $q_n=N/b_n$. Off-diagonal tiles are stored as outer products,
+diagonal tiles densely. For the low-rank tiles,
+\[
+A_{i\ell}=U^A_{i\ell}\bigl(V^A_{i\ell}\bigr)^{\T},
+\qquad
+B_{\ell j}=U^B_{\ell j}\bigl(V^B_{\ell j}\bigr)^{\T},
+\qquad
+C_{ij}=U^C_{ij}\bigl(V^C_{ij}\bigr)^{\T},
+\]
+The implementation uses compact ASCII spellings of these axis-indexed quantities:
+$(b_m,b_k,b_n)\leftrightarrow(\texttt{bm},\texttt{bk},\texttt{bn})$ and
+$(q_m,q_k,q_n)\leftrightarrow(\texttt{qm},\texttt{qk},\texttt{qn})$.
+Likewise, $(r_A,r_B,r_C)$ are written as `rA`, `rB`, and `rC`; the four
+logical factor handles correspond to $U^A,V^A,U^B,V^B$ in that order.
+with ranks $r_{A,i\ell}$, $r_{B,\ell j}$, $r_{C,ij}$. Any product of two such
+tiles collapses through a small bilinear pairing, the \emph{coupling matrix}
+\begin{equation}
+\label{eq:coupling}
+S_{i\ell j}:=\bigl(V^A_{i\ell}\bigr)^{\T}U^B_{\ell j}
+\in\R^{r_{A,i\ell}\times r_{B,\ell j}},
+\qquad
+A_{i\ell}B_{\ell j}=U^A_{i\ell}S_{i\ell j}(V^B_{\ell j})^{\T},
+\end{equation}
+independent of how the sum over $\ell$ is subsequently handled --- the two
+alternatives are the subject of \S\ref{sec:strategies}. We update one output
+tile
+\begin{equation}
+\label{eq:update}
+X_{ij}=\alpha\sum_{\ell=1}^{q_k}A_{i\ell}B_{\ell j}+\beta C_{ij}
+\end{equation}
+and return it in low-rank form to the Frobenius tolerance
+\begin{equation}
+\label{eq:tol}
+\Fnorm{X_{ij}-U_{ij}V_{ij}^{\T}}\le\tau_{ij},
+\qquad
+\tau_{ij}=\max\bigl(\varepsilon_{\mathrm{abs}},\,
+\varepsilon_{\mathrm{rel}}\Fnorm{X_{ij}}\bigr).
+\end{equation}
+The absolute floor keeps the criterion well posed when cancellation makes the
+updated tile numerically zero. We write
+$\rho_i=\sum_\ell r_{A,i\ell}$ for the total left rank of block row $i$,
+$\gamma_j=\sum_\ell r_{B,\ell j}$ for the total right rank of block column $j$,
+and
+$\hat\rho_{ij}=r_{C,ij}[\beta\ne0]+\sum_\ell\min(r_{A,i\ell},r_{B,\ell j})$
+for the width of the factor list of \S\ref{sec:factorlist}. All three are known
+from rank metadata alone, at no arithmetic cost, and drive the schedule of
+\S\ref{sec:schedule}. The chief target of this paper's design is
+$\hat\rho_{ij}$, not $b_mb_n$ and not $q_k$: \S\ref{sec:strategies} costs a
+deterministic scheme that pays for $q_k$ and a randomized one that does not.
+
+\section{Two strategies for the TLR product}
+\label{sec:strategies}
+
+There is more than one correct way to realize \eqref{eq:update} at the tile
+level. This section fixes a strong deterministic baseline, in the style of
+KBLAS-family TLR GEMM implementations, states its cost precisely, and uses
+that cost to motivate the randomized design developed in the rest of the
+paper.
+
+\subsection{Deterministic sequential recompression}
+\label{sec:kblas}
+
+KBLAS assumes a sum-of-outer-products formulation of \eqref{eq:update}
+evaluated by literal, deterministic recompression: the reduction index $\ell$
+is processed one step at a time, and after each step the running accumulator
+is folded back down to a single low-rank pair before moving on to $\ell+1$.
+Seeding $(U,V)\gets(U^C_{ij},\beta V^C_{ij})$ when $\beta\ne0$ (empty
+otherwise):
+
+\begin{algorithm}[H]
+\caption{Deterministic sequential recompression, one output tile
+(KBLAS-style)}
+\label{alg:kblas}
+\begin{algorithmic}[1]
+\Procedure{DeterministicUpdate}{$\{A_{i\ell}\}_{\ell=1}^{q_k},\,
+\{B_{\ell j}\}_{\ell=1}^{q_k},\,\beta C_{ij}$}
+  \State $(U,V)\gets(U^C_{ij},\,\beta V^C_{ij})$ if $\beta\ne0$, else empty
+  \For{$\ell=1$ to $q_k$}
+     \Comment{sequential: step $\ell$ needs step $\ell-1$'s recompressed output}
+     \State $S_{i\ell j}\gets(V^A_{i\ell})^{\T}U^B_{\ell j}$
+        \Comment{\eqref{eq:coupling}, batched over all $(i,j)$}
+     \State $U\gets[\,U\ \ U^A_{i\ell}\,]$;\quad
+            $V\gets[\,V\ \ \alpha V^B_{\ell j}S_{i\ell j}^{\T}\,]$
+        \Comment{concatenate: rank grows by $r_{A,i\ell}$}
+     \State $(Q_U,R_U)\gets\textsc{QR}(U)$;\quad
+            $(Q_V,R_V)\gets\textsc{QR}(V)$
+        \Comment{2 batched QRs, explicit Householder $Q$}
+     \State $(W,\Sigma,P)\gets\textsc{SVD}(R_UR_V^{\T})$; truncate to the
+            working rank $\hat r$
+     \State $U\gets Q_UW(:,1{:}\hat r)$;\quad
+            $V\gets Q_VP(:,1{:}\hat r)\Sigma(1{:}\hat r)$
+        \Comment{recompress before the next step}
+  \EndFor
+  \State \Return $(U,V)$
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+Every line inside the $\ell$-loop is one batched call over all $q_mq_n$ output
+tiles; the loop itself is sequential because step $\ell$ needs step $\ell-1$'s
+recompressed factors. This costs, per tile, \emph{exactly $q_k$ compressions}
+--- batched over the whole grid, that is $q_k$ batched QR-plus-SVD
+compressions with batch size $q_mq_n$, i.e.\ $O(q_kq_mq_n)$ small dense
+factorizations in total, against $O(q_mq_n)$ for a scheme that compresses
+each tile once. Two costs compound this:
+
+\begin{itemize}
+\item \textbf{The QR forms an explicit $Q$.} Recompressing
+  $[\,U\ \ U^A_{i\ell}\,]$ and $[\,V\ \ \alpha V^B_{\ell j}S_{i\ell j}^{\T}\,]$
+  needs their orthonormal bases, i.e.\ two full Householder QR factorizations
+  of panels up to $b_m\times\hat r$ and $b_n\times\hat r$, on top of the
+  $\hat r\times\hat r$ SVD used to rotate into the truncated basis.
+\item \textbf{Memory traffic scales with $q_k$, not with the tile once.}
+  Because the tile is never left implicit, its $O((b_m+b_n)r)$ factor pair is
+  read out of and written back to device memory at every one of the $q_k$
+  steps rather than once, and because rank grows by up to $r_{A,i\ell}$ before
+  each truncation, the QR/SVD themselves run on panels wider than the
+  converged rank $r_{C,ij}$ would require.
+\end{itemize}
+
+This is the metric the rest of the paper is built against: not the arithmetic
+operation count alone, but the number and width of compressions and the
+amount of factor-pair traffic they force.
+
+\subsection{Randomized sketching: trading QR+SVD for GEMM}
+\label{sec:randomized}
+
+The randomized alternative developed here keeps every $A_{i\ell}B_{\ell j}$
+term of \eqref{eq:update} \emph{implicit} for the whole reduction over $\ell$
+and applies a blocked adaptive randomized range finder (ARA) to the entire sum
+at once, so that a tile is compressed exactly once, at the very end,
+regardless of $q_k$. Two changes follow from that decision:
+
+\begin{enumerate}
+\item \textbf{The QR/SVD-based recompression at every $\ell$ disappears.}
+  Nothing about the tile is ever materialized as an explicit factor pair
+  before convergence, so there is nothing to recompress at intermediate
+  steps. The only factorizations are the range finder's Cholesky-QR
+  normalization of a narrow sketch block (\S\ref{sec:cholqr}) --- a
+  GEMM-plus-small-triangular-solve operation, not a Householder QR --- and,
+  once, the final thin SVD of the co-range at \S\ref{sec:ara}'s exit. Total
+  compressions per tile: one, not $q_k$.
+\item \textbf{The reduction over $\ell$ becomes an ordinary GEMM contraction
+  axis.} Rather than accumulating and re-truncating $q_k$ times, the sum
+  $\sum_\ell A_{i\ell}B_{\ell j}$ is sketched as a whole: sketch first and sum
+  the (narrow) samples afterwards, instead of summing (wide) tiles and
+  sketching the sum. \S\ref{sec:factorlist} makes this precise; the key fact
+  is that a random sketch commutes with the outer reduction because matrix
+  multiplication is bilinear, so the $\ell$ sum can be folded into the
+  contraction dimension of one large batched GEMM instead of being unrolled
+  into $q_k$ sequential steps.
+\end{enumerate}
+
+Both properties reduce, in the language of \S\ref{sec:setting}, to keeping the
+working set proportional to $\hat\rho_{ij}$ and the sketch width $s$ rather
+than to $b_m$, $b_n$, or $q_k$ directly --- quantified in \S\ref{sec:minws}
+and \S\ref{sec:cost}.
+
+\section{The tile update as a factor list}
+\label{sec:factorlist}
+
+Using the coupling matrix \eqref{eq:coupling}, the update \eqref{eq:update} is
+a sum of $n_f$ outer products,
+\begin{equation}
+\label{eq:list}
+X_{ij}=\sum_{a=1}^{n_f}L_aR_a^{\T},
+\qquad
+L_a\in\R^{b_m\times\nu_a},\quad R_a\in\R^{b_n\times\nu_a},
+\end{equation}
+where the coupling is absorbed into the narrower side so that
+$\nu_\ell=\min(r_{A,i\ell},r_{B,\ell j})$,
+\begin{equation}
+\label{eq:absorb}
+(L_\ell,R_\ell)=
+\begin{cases}
+\bigl(U^A_{i\ell},\;\alpha V^B_{\ell j}S_{i\ell j}^{\T}\bigr),
+& r_{A,i\ell}\le r_{B,\ell j},\\[4pt]
+\bigl(U^A_{i\ell}S_{i\ell j},\;\alpha V^B_{\ell j}\bigr),
+& r_{A,i\ell}>r_{B,\ell j}.
+\end{cases}
+\end{equation}
+The term $(L_C,R_C)=(U^C_{ij},\beta V^C_{ij})$ is included when $\beta\ne0$
+(\S\ref{sec:beta}). Unlike \textsc{DeterministicUpdate}
+(Algorithm~\ref{alg:kblas}), this list is never assembled, concatenated, or
+recompressed as a running accumulator; it is an iterator whose pairs are
+produced on demand, consumed, and discarded. Everything downstream is built
+from two implicit operators,
+\begin{equation}
+\label{eq:apply}
+\mathrm{ApplyRight}(\Omega)=X_{ij}\Omega=\sum_aL_a\bigl(R_a^{\T}\Omega\bigr),
+\qquad
+\mathrm{ApplyLeft}(Q)=X_{ij}^{\T}Q=\sum_aR_a\bigl(L_a^{\T}Q\bigr).
+\end{equation}
+
+\subsection{Sketching the right-hand side}
+\label{sec:ordering}
+
+Fix a sketch block $\Omega\in\R^{b_n\times s}$ with $s$ small (tens of
+columns, versus $b_n$ in the hundreds). \eqref{eq:apply} already sums small
+products, but it is worth deriving $\mathrm{ApplyRight}$ directly from
+\eqref{eq:update} to see exactly what commutes with what. By distributivity
+and associativity of matrix multiplication,
+\begin{align}
+X_{ij}\Omega
+&=\Bigl(\alpha\sum_{\ell=1}^{q_k}A_{i\ell}B_{\ell j}+\beta C_{ij}\Bigr)\Omega
+\notag\\
+&=\alpha\sum_{\ell=1}^{q_k}U^A_{i\ell}S_{i\ell j}\bigl((V^B_{\ell j})^{\T}
+\Omega\bigr)+\beta U^C_{ij}\bigl((V^C_{ij})^{\T}\Omega\bigr),
+\label{eq:distrib}
+\end{align}
+substituting $A_{i\ell}B_{\ell j}=U^A_{i\ell}S_{i\ell j}(V^B_{\ell j})^{\T}$
+term by term: the sketch is pushed onto the \emph{right-hand factor} of every
+term before anything is summed. Two definitions turn \eqref{eq:distrib} into
+a fused reduction. With
+\begin{equation}
+\label{eq:HT}
+H_{\ell j}:=\bigl(V^B_{\ell j}\bigr)^{\T}\Omega\in\R^{r_{B,\ell j}\times s},
+\qquad
+T_{i\ell j}:=\alpha\,S_{i\ell j}H_{\ell j}\in\R^{r_{A,i\ell}\times s},
+\end{equation}
+the sample is
+\begin{equation}
+\label{eq:Y}
+Y_{ij}=X_{ij}\Omega=\sum_{\ell=1}^{q_k}U^A_{i\ell}\,T_{i\ell j}
+\;+\;\beta\,U^C_{ij}\bigl((V^C_{ij})^{\T}\Omega\bigr).
+\end{equation}
+Every quantity computed before the final sum in \eqref{eq:Y} is small:
+$H_{\ell j}$ and $T_{i\ell j}$ each have one dimension equal to the sketch
+width $s$ and the other equal to a rank, never to $b_m$ or $b_n$. For a
+representative off-diagonal tile with rank $r\sim30$ and sketch width
+$s\sim16$ against a tile edge $b\sim300$, $H_{\ell j}$ and $T_{i\ell j}$ hold
+on the order of $rs\approx500$ entries each, against $b^2\approx9\times10^4$
+for the dense tile that is never formed. The long dimension $b_m$ is touched
+exactly once, by the final GEMM \eqref{eq:Y}.
+
+That final GEMM is where the reduction over $\ell$ is folded into an ordinary
+contraction axis rather than unrolled into $q_k$ sequential steps.
+Concatenating the per-$\ell$ pieces horizontally and vertically,
+\begin{equation}
+\label{eq:foldedgemm}
+\mathbf U_i:=\bigl[\,U^A_{i1}\ \cdots\ U^A_{iq_k}\,\bigr]\in\R^{b_m\times\rho_i},
+\qquad
+\mathbf T_{ij}:=\begin{bmatrix}T_{i1j}\\\vdots\\T_{iq_kj}\end{bmatrix}
+\in\R^{\rho_i\times s},
+\end{equation}
+\eqref{eq:Y}'s sum (the $\beta$ term aside) is literally the single product
+$Y_{ij}=\mathbf U_i\mathbf T_{ij}$: one GEMM with contraction dimension
+$\rho_i$. \textsc{DeterministicUpdate} also concatenates factors (its
+line~3) --- but it concatenates \emph{into a recompression}, at every step,
+whereas \eqref{eq:foldedgemm} concatenates \emph{into a GEMM's contraction
+axis}, once per sketch block, with no factorization in between. The
+implementation never materializes $\mathbf U_i$ or $\mathbf T_{ij}$ as literal
+contiguous arrays either: the same result comes from one batched-GEMM call
+whose stride/batch structure already treats $\ell$ as an extra contraction
+index, but \eqref{eq:foldedgemm} is the clearest way to see why this is one
+GEMM and not $q_k$.
+
+The alternative ordering $(\sum_aL_aR_a^{\T})\Omega$ would instead form a
+$b_m\times b_n$ object. Explicitly, the two are algebraically identical,
+\[
+Y=\sum_a L_a\bigl(R_a^{\T}\Omega\bigr)
+\quad\text{(inner size }\nu_a\times s)\qquad\text{versus}\qquad
+Y=\sum_a\bigl(L_aR_a^{\T}\bigr)\Omega
+\quad\text{(inner size }b_m\times b_n),
+\]
+but only the first has cost proportional to $\hat\rho_{ij}s$ rather than
+$b_mb_n$. The transpose apply $X^{\T}Q$ is evaluated symmetrically,
+eliminating $b_m$ first through $(U^A_{i\ell})^{\T}Q$.
+
+\begin{remark}[What gets hoisted and reused]
+\label{rem:hoist}
+$S_{i\ell j}$ is independent of $\Omega$ and is computed once per tile,
+retained across all range-finder iterations --- the analogue of
+\textsc{DeterministicUpdate}'s $S_{i\ell j}$ (Algorithm~\ref{alg:kblas},
+line~3), except there it is recomputed at whatever moment $\ell$ is visited
+and consumed immediately into a recompression, while here it is computed once
+and read many times. Only $H_{\ell j}$ and $T_{i\ell j}$ are regenerated per
+sketch block. Moreover $H_{\ell j}$ carries no row index $i$: fixing a block
+column $j$ and sweeping $i$ computes $H_{\ell j}$ once and reuses it across
+the whole column. Nothing in \textsc{DeterministicUpdate} is reusable this
+way --- its running accumulator $(U,V)$ is private to one output tile by
+construction, since it is exactly the thing being recompressed. Column-wide
+sharing of $H_{\ell j}$ is one of the two reasons the schedule of
+\S\ref{sec:schedule} traverses by column (or, symmetrically, by row).
+\end{remark}
+
+\begin{remark}[Batch shape]
+\label{rem:batch}
+The association order in \eqref{eq:HT} is chosen per term from the ranks: the
+coupling is contracted against whichever operand is cheaper. Because ranks vary
+with $\ell$, the batch over $\ell$ in stages \eqref{eq:HT} is a grouped
+(nonuniform) GEMM. The fused reduction \eqref{eq:Y}, by contrast, is a single
+GEMM per tile with contraction dimension $\rho_i$: it is the large,
+high-arithmetic-intensity kernel that dominates the useful work and that the
+whole factored form exists to expose.
+\end{remark}
+
+\subsection{ApplyRight versus ApplyLeft}
+\label{sec:applyroles}
+
+The two operators of \eqref{eq:apply} play different roles inside the range
+finder (Algorithm~\ref{alg:ara}) and are not interchangeable simplifications
+of each other.
+
+$\mathrm{ApplyRight}(\Omega_\Delta)=X_{ij}\Omega_\Delta$ is applied to a
+\emph{fresh Gaussian} sketch every pass. Its output $Y_\Delta$ is what gets
+orthogonalized against the existing basis and tested by the stopping rule
+(\S\ref{sec:samplestop}): it is the mechanism that discovers new range
+directions, and it is why the norm estimate \eqref{eq:normest} is unbiased
+--- the randomness lives entirely in $\Omega_\Delta$.
+
+$\mathrm{ApplyLeft}(Q_\Delta)=X_{ij}^{\T}Q_\Delta$ is applied to the
+\emph{deterministic, already-orthonormalized} increment $Q_\Delta$ produced
+by that same pass, not to a random sketch. Its output $Z_\Delta$ accumulates
+the co-range coefficients the final truncation (\S\ref{sec:ara}) needs:
+$Z=X_{ij}^{\T}Q$ is exactly the matrix whose thin SVD gives the optimal
+$U,V$ once $Q$ is judged converged. ApplyLeft never decides whether to stop;
+it only records, for the directions ApplyRight already confirmed, their
+coordinates against the operator.
+
+Both share the same cost structure and the same hoisting: ApplyLeft's
+reduction eliminates $b_m$ first through $(U^A_{i\ell})^{\T}Q_\Delta$ exactly
+as \eqref{eq:HT} eliminates it for ApplyRight, and its analogue of
+$H_{\ell j}$ is equally column- (or row-) shared. The asymmetry is only in
+what feeds them: random noise on the right, confirmed basis vectors on the
+left.
+
+\subsection{Canonical storage and sampling contract}
+\label{sec:canonicalcontract}
+
+The first implementation deliberately exposes a predictable restricted API:
+$C$, $A$, and $B$ are all stored physically tile-row-major, while the transpose
+flags define only their logical orientations.  On a regular tile grid this
+gives the following operation-level schedule:
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+$\operatorname{op}(A)$ & $\operatorname{op}(B)$ & repeated sample & run family \\
+\midrule
+$N$ & $N$ & $X\Omega$ & fixed output row \\
+$N$ & $T$ & $X\Omega$ or $X^{\T}\Omega$ & fixed column or fixed row \\
+$T$ & $T$ & $X^{\T}\Omega$ & fixed output row \\
+$T$ & $N$ & deferred & packed/reduced general-storage path \\
+\bottomrule
+\end{tabular}
+\end{center}
+In the $NT$ case both terminal contraction stacks are natural.  Their retained
+workspace is estimated from the active rank caps of the two operands, and one
+side is selected for the complete operation.  Selection is not made per tile:
+one run family preserves uniform batches and permits converged members to be
+swap-removed into a dense active prefix.
+
+``Natural'' here concerns both tile order and rank extent.  A panel at its
+physical rank capacity is a zero-copy view.  If metadata trims that capacity,
+the active rank prefix has gaps between adjacent tiles and cannot be reshaped
+into the terminal GPU GEMM.  It is therefore packed once into compact
+run-local storage and reused by all range-finder passes.  The more general
+$TN$ packing/reduction problem is intentionally postponed rather than hidden
+inside this canonical contract.
+
+\section{Stopping: what is computed, and what it costs}
+\label{sec:energy}
+
+The loop stops on a quantity it has already computed, and it does not verify the
+result afterwards. This section gives the test, then the two reasons --- one
+statistical, one economic --- that no exact residual is formed on the hot path.
+
+\subsection{The sampling stop}
+\label{sec:samplestop}
+
+After a block is projected and orthonormalized, the norms of the freshly
+projected columns are already available: they are the diagonal of the Cholesky
+factor $R$ produced by the intra-block orthonormalization. The classical
+range-finder rule stops when a prescribed number $p$ of consecutive projected
+columns have norm below the tolerance scale, i.e.\ when successive blocks stop
+adding energy to the basis. Concretely, with
+$a_e=\max_{\text{last }p}\|Y_\Delta(:,\cdot)\|$ and $R_{\max}$ the running
+maximum of these norms, the loop stops when $a_e/R_{\max}$ falls below the
+relative tolerance. This costs an $\mathcal O(s)$ reduction over numbers the
+Cholesky QR already produced: no extra GEMM and no extra pass.
+
+The diagonal is the right signal, and column norms are not. At convergence the
+block is a set of random combinations of the few directions that remain, so
+every \emph{column} still has $\mathcal O(1)$ norm while the \emph{block} is
+rank deficient. By contrast $R[j,j]$ is the residual of column $j$ against both
+the existing basis and the earlier columns of the same block, so it collapses
+exactly when there is nothing new left.
+
+An unbiased norm estimate is also free from the first sample: for a Gaussian
+$\Omega\in\R^{b_n\times s}$, $\mathbb E\|X\Omega\|_F^2=s\|X\|_F^2$, so
+\begin{equation}
+\label{eq:normest}
+\widehat{\|X\|}_F=\|Y\|_F/\sqrt{s}
+\end{equation}
+serves the relative tolerance $\varepsilon_{\mathrm{rel}}\|X\|_F$ at the cost of
+one $\mathcal O(b_ms)$ norm.
+
+\subsection{Why no exact verification}
+\label{sec:noverify}
+
+\paragraph{The stop is a bound, not a heuristic.}
+Because each block is drawn from a \emph{fresh} Gaussian, $a_e$ is the
+Halko--Martinsson--Tropp a posteriori estimator of
+$\|(I-QQ^{\T})X\|_2$, whose failure probability decays like $10^{-p}$ in the
+number of consecutive small blocks. The confidence is therefore a tuning knob:
+raising $p$ by one costs a single block and buys an order of magnitude. Any
+scheme that instead \emph{verifies} must beat that exchange rate.
+
+\paragraph{It cannot.}
+Forming $\Fnorm{X}^2$ from the factor list costs $\mathcal O(n_f^2)$ small
+Grams, i.e.\ $\mathcal O(b_m\,q_k^2r^2)$ for representative rank $r$, whereas one
+further sketch block costs $\mathcal O(b_m\,q_k r\,\Delta s)$. The ratio is
+$q_k r/\Delta s$, about $32$ at $q_k=16$, $r=32$, $\Delta s=16$: it is far
+cheaper to draw another block than to check whether one was needed. Verification
+would only pay if it usually answered ``stop'', but the only situation that
+would invoke it is one in which the stop already looked doubtful.
+
+\paragraph{And the rank cap needs no residual either.}
+If $r_{\max}$ is reached before convergence, that fact is recorded in the output
+rank vector at no cost --- a tile returned at full rank is self-evidently
+capped. Moreover the \emph{truncation} part of the error is exactly
+$\sum_{k>r}\lambda_k$, available from the eigenvalues already computed for the
+final rotation (\S\ref{sec:ara}); only the range-capture part is unknown, and
+under a cap the truncation term dominates. So the honest error report is free.
+
+\begin{remark}[Verification as a test-only facility]
+\label{rem:verify}
+The exact Frobenius residual is still computable from the factor list without a
+dense tile, via $\Fnorm{X}^2=\sum_{a,b}\langle L_a^{\T}L_b,R_a^{\T}R_b\rangle_F$
+and the analogous cross term. It is worth implementing behind a debug flag, as
+an oracle for tests of the sampling stop. It should not appear on the execution
+path, and it carries a cancellation floor of its own: it subtracts quantities of
+size $\Fnorm{X}^2$ to obtain a residual of size $\tau^2$, so it is meaningful
+only for $\tau^2$ safely above $u_{\mathrm{hi}}\Fnorm{X}^2$.
+\end{remark}
+
+\section{Folding in the existing \texorpdfstring{$\beta C_{ij}$}{beta C} tile}
+\label{sec:beta}
+
+The output tile $C_{ij}$ already exists in the format, as a low-rank pair
+$(U^C_{ij},V^C_{ij})$ (or, on the diagonal, as a dense block). The GEMM
+overwrites it with the accumulated $X_{ij}$ of \eqref{eq:update}. There are two
+ways to include the $\beta C_{ij}$ term; we adopt the first and explain why.
+
+\paragraph{As one further factor pair (adopted).}
+Append $(L_C,R_C)=(U^C_{ij},\,\beta V^C_{ij})$ to the factor list. Then the range
+finder builds a basis for the \emph{entire} update $X_{ij}$, product terms and
+old tile together, and a single compression is performed. Concretely the term
+enters the sample \eqref{eq:Y} as the extra summand
+$\beta U^C_{ij}\bigl((V^C_{ij})^{\T}\Omega\bigr)$, and the transpose apply gains
+$\beta V^C_{ij}\bigl((U^C_{ij})^{\T}Q\bigr)$. Its width $r_{C,ij}$ adds to $\hat\rho_{ij}$. When $C_{ij}$ is a dense diagonal block $D$, the pair is
+replaced by the operators
+$\Omega\mapsto\beta D\Omega$ and $Q\mapsto\beta D^{\T}Q$ directly; no
+factorization of $D$ is needed for the apply.
+
+\paragraph{As a post-merge (rejected).}
+One could instead compress $\alpha\sum_\ell A_{i\ell}B_{\ell j}$ alone to a pair
+$(Q,Z)$ and afterwards merge $[\,U^C_{ij}\ \ Q\,]$, recompressing an object of
+width $r_{C,ij}+s$. This performs two truncations rather than one and introduces
+a second, avoidable approximation of the old tile --- the same failure mode, at
+smaller scale, as \textsc{DeterministicUpdate}'s per-step recompression
+(\S\ref{sec:kblas}). Carrying $\beta C_{ij}$ inside the range finder makes $Q$
+a range basis for the complete update and truncates exactly once.
+
+\begin{remark}[Why the format's orthonormality is not enough for a norm]
+\label{rem:betanorm}
+Because the update mixes the product terms with the stored tile, $X_{ij}$ has no
+closed-form Frobenius energy from the format's orthonormal-basis invariant alone.
+This costs nothing here: the sampling estimate \eqref{eq:normest} requires no
+closed form, and it is the only norm the execution path uses.
+\end{remark}
+
+\section{The blocked randomized range finder}
+\label{sec:ara}
+
+This is the range finder that replaces \textsc{DeterministicUpdate}
+(Algorithm~\ref{alg:kblas}): it produces the same low-rank output but performs
+exactly one compression per tile, never one per contraction step
+(\S\ref{sec:randomized}). A trial basis $Q\in\R^{b_m\times s_Q}$ for the
+column space of $X_{ij}$ is grown one block at a time; the projection
+$Z=X^{\T}Q$ is accumulated in step. The loop stops on the free sampling
+estimate of \S\ref{sec:samplestop} and does not verify afterwards
+(\S\ref{sec:noverify}). Block orthogonalization is classical block
+Gram--Schmidt with one reorthogonalization step (BCGS2); the intra-block
+orthonormalization is Cholesky QR, with the Gram and its Cholesky factor computed
+in a promoted precision while data is stored in the working precision.
+
+\begin{algorithm}[H]
+\caption{\textsc{RangeFind} --- compress one factor list to tolerance}
+\label{alg:ara}
+\begin{algorithmic}[1]
+\Procedure{RangeFind}{$\{(L_a,R_a)\},\,\varepsilon_{\mathrm{rel}},\varepsilon_{\mathrm{abs}},r_{\max},s,\Delta s,s_{\max}$}
+  \State $Q\gets[\,]$, $Z\gets[\,]$, $s_Q\gets0$
+  \While{$s_Q<s_{\max}$}
+     \State draw Gaussian $\Omega_\Delta\in\R^{b_n\times d}$,
+            $d=\min(\Delta s,\,s_{\max}-s_Q)$ (or $s$ on the first pass)
+     \State $Y_\Delta\gets\mathrm{ApplyRight}(\Omega_\Delta)$
+        \Comment{fused sample \eqref{eq:Y}}
+     \If{$s_Q=0$}\ $\widehat{\|X\|}_F\gets\|Y_\Delta\|_F/\sqrt d$;\
+        $\tau^2\gets\max(\varepsilon_{\mathrm{abs}}^2,
+        \varepsilon_{\mathrm{rel}}^2\widehat{\|X\|}_F^2)$
+     \EndIf
+        \Comment{norm estimate \eqref{eq:normest}, free}
+     \State $Q_\Delta\gets\Call{OrthAgainst}{Q,Y_\Delta}$
+        \Comment{BCGS2 $+$ Cholesky QR; column norms $=\mathrm{diag}(R)$}
+     \State update $a_e,R_{\max}$ from the projected column norms
+        \Comment{sampling stop, \S\ref{sec:samplestop}}
+     \State $Z_\Delta\gets\mathrm{ApplyLeft}(Q_\Delta)$
+        \Comment{fused $X^{\T}Q$, \S\ref{sec:applyroles}}
+     \State $Q\gets[\,Q\ \ Q_\Delta\,]$;\ $Z\gets[\,Z\ \ Z_\Delta\,]$;\
+            $s_Q\gets\mathrm{cols}(Q)$
+     \If{$p$ consecutive projected columns satisfy $a_e/R_{\max}<\varepsilon_{\mathrm{rel}}$}
+        \State \textbf{break}
+           \Comment{\S\ref{sec:noverify}: no verification pass}
+     \EndIf
+  \EndWhile
+  \State $K\gets Z^{\T}Z$ (promoted);\
+         $(\lambda,W)\gets\textsc{XsyevBatched}(K)$; reverse to descending
+  \State $r\gets\min\bigl(r_{\max},\ \min\{t:\textstyle\sum_{k>t}\lambda_k\le\tau^2\}\bigr)$
+     \Comment{$E_{\mathrm{pred}}$ screen}
+  \State $U\gets QW(:,1{:}r)$;\ $V\gets ZW(:,1{:}r)$
+  \State \Return $(U,\,V,\,\textstyle\sum_{k>r}\lambda_k,\;[\,r=r_{\max}\,])$
+     \Comment{achieved truncation error and the cap flag, both free}
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+There is a single exit. The sampling estimate decides when to stop and the tail
+sum $\sum_{k>r}\lambda_k$ against $\tau^2$ chooses the rank; both are byproducts
+of work already done, so the routine has no branch that costs an extra pass over
+the factor list. Randomness affects the pass count and, at the probability of
+\S\ref{sec:noverify}, the achieved accuracy.
+
+The final eigendecomposition is not a numerical crutch --- $Z$ is not rank
+deficient by construction --- but it does real work: blocked range finders
+overshoot the true rank by a few columns, since sampling proceeds in units of
+$\Delta s$, and rotating into the eigenbasis of $K$ before truncating recovers
+the optimal rank for the basis that was built.
+
+\subsection{Why Cholesky QR is safe here}
+\label{sec:cholqr}
+
+Cholesky QR squares the condition number and is unstable on rank-deficient input.
+It is nonetheless the right orthonormalizer inside this loop, for a structural
+reason. The block handed to it has already been projected against the existing
+basis by BCGS2, so in the normal case it is well conditioned and mixed-precision
+Cholesky QR (Gram and factor in promoted precision, data in working precision)
+suffices. The dangerous case is the final block at convergence, whose columns
+nearly lie in $\mathrm{span}(Q)$; those columns then have small norm and are
+flagged as converged, i.e.\ discarded, rather than trusted as basis vectors. The
+instability therefore lands precisely on the vectors that are thrown away. This
+safety depends on keeping $s$ small: enlarging the block to cut the pass count
+re-exposes it to ill conditioning. The large-GEMM efficiency should be recovered
+from the fused reduction \eqref{eq:Y}, whose contraction dimension is $\rho_i$
+independent of $s$, not from widening $s$.
+
+\subsection{Primitive inventory}
+\label{sec:primitives}
+
+Every kernel in Algorithm~\ref{alg:ara} is a stock batched routine:
+the applies \eqref{eq:HT}--\eqref{eq:Y} and the projections are batched
+(grouped) GEMM; the Gram is batched SYRK in promoted precision; the Cholesky is
+batched POTRF; the back-solve is batched TRSM; the small $s_Q\times s_Q$
+eigenproblem is \texttt{XsyevBatched} (exact, uncapped in the wrapper). No
+routine that forms an explicit Householder $Q$ factor is required, so no
+dependence on a library outside cuBLAS/cuSOLVER is incurred --- a direct
+contrast with Algorithm~\ref{alg:kblas}'s two Householder QRs per contraction
+step (\S\ref{sec:kblas}). The only custom kernels are
+small reductions: the projected-column norms feeding the stopping test, and the
+per-member convergence bookkeeping that decides how many columns each tile of a
+batch samples next.
+
+\section{Scheduling and workspace}
+\label{sec:schedule}
+
+The implemented scheduler preserves the sharing that determines the canonical
+sampling family and then rolls work through a reusable lane. A lane is either
+a fixed output column or a fixed output row. A fixed-column
+$\texttt{ColumnRunCoupling}$ forms the shared $H_{\ell j}$ once, while the fixed-row
+couplings retain their corresponding shared operand. Arbitrary output tiles
+are not admitted into one larger lane: doing so would discard this sharing and
+require a new mixed-tile coupling.
+
+The first implementation is deliberately single-lane, lane-local, and
+full-$k$. The workspace determines the number of simultaneously active members
+in that lane, not a rectangular macrotile or a new contiguous run per pass.
+Members that finish are retired in waves and their slots are reused by pending
+output tiles.
+
+\subsection{Minimum workspace per unit of work}
+\label{sec:minws}
+
+The working set for one tile in flight, at sketch width $s$, is
+\begin{equation}
+\label{eq:tilews}
+w_{ij}(s)=
+\underbrace{(b_m+b_n)\,s_{\max}}_{\text{accumulators }Q,\,Z}
+\;+\;
+\underbrace{\textstyle\sum_\ell r_{A,i\ell}r_{B,\ell j}}_{\text{retained }S_{i\ell j}}
+\;+\;
+\underbrace{\rho_i\,s}_{\text{applied }T\text{ column}},
+\end{equation}
+sized at the cap $s_{\max}$ for the accumulators, since $Q$ and $Z$ grow to at
+most that width. No $b_m\times b_n$ buffer ever appears --- nor does
+\textsc{DeterministicUpdate}'s running $(U,V)$ pair need to be widened past its
+converged rank at any point, since there is no recompression step to size for.
+For a block column $j$, the coupling matrices $H_{\ell j}$ are shared, adding a
+one-time $\sum_\ell r_{B,\ell j}\,s=\gamma_j s$ that is amortized over the
+column rather than paid per tile. The minimum viable workspace to process a
+single tile of the column is thus $w_{ij}(s_0)$ at the initial width $s_0$; the
+minimum to run the column with maximal accumulator width is
+$\max_i w_{ij}(s_{\max})+\gamma_j s_{\max}$.
+
+These quantities are computable \emph{before any arithmetic} from rank metadata:
+$\rho_i$, $\gamma_j$, and $\sum_\ell r_{A,i\ell}r_{B,\ell j}$ are all read from
+the stored ranks. They describe admission and sampling cost, while the
+implementation chooses capacity through exact typed arena-size formulas.
+
+The arena separates whole-run persistent storage from phase storage. Persistent
+storage contains the basis, packed factor stacks, and run state. Phase storage
+is reused between admission, sampling, and retirement:
+\begin{equation}
+\label{eq:arena}
+w_{\mathrm{run}}=w_{\mathrm{persistent}}+
+\max\{w_{\mathrm{admission}},w_{\mathrm{sampling}},w_{\mathrm{retirement}}\}.
+\end{equation}
+Admission-time $S$ formation is released before sampling, and the same phase
+allocation is reused for co-range application, truncation, and scatter. The
+minimum workspace is the one-slot bound; the maximum is the complete-lane
+bound. An intermediate byte budget selects the largest fitting slot capacity,
+while a budget below the minimum is rejected and excess bytes are capped.
+
+\subsection{Rolling traversal within one lane}
+\label{sec:traversal}
+
+For a lane with capacity $c$, the scheduler maintains an active prefix of at
+most $c$ members and a pending queue. It admits an initial wave, forms each
+member's one-time $S$ core over the complete contraction range, and clears the
+slot-local ARA state. Every subsequent sampling pass operates on the active
+prefix. Members converging at the same full-$k$ boundary form one retirement
+wave; the scheduler applies the co-range, truncates, and scatters that wave
+before admitting replacements into the released slots. A replacement joins
+the current block schedule with fresh basis and convergence state; it does not
+replay earlier sketch widths.
+
+\begin{algorithm}[H]
+\caption{\textsc{Schedule} --- rolling admission in one lane}
+\label{alg:sched}
+\begin{algorithmic}[1]
+\Procedure{Schedule}{lane,\,$c$}
+  \State pending $\gets$ output members of lane
+  \State active $\gets$ \Call{AdmitWave}{first $\min(c,|$pending$|)$ members}
+  \While{active $\neq\varnothing$}
+     \State sample all active members through one complete full-$k$ pass
+     \State $W\gets$ members converged at this boundary
+     \If{$W\neq\varnothing$}
+        \State \Call{RetireWave}{co-range, truncate, scatter, $W$}
+        \State remove $W$ from active by swap-compaction
+        \State admit up to $|W|$ pending members into released slots
+        \State reset their basis, diagnostics, and convergence state
+     \EndIf
+  \EndWhile
+\EndProcedure
+\end{algorithmic}
+\end{algorithm}
+
+The active prefix is kept packed. Full-width members remain in front of a
+terminal-width suffix, so a pass uses no more than two orthogonalization groups
+while retaining one fused full-$k$ contraction. Retirement is wave-batched
+rather than member-at-a-time; consequently co-range and finalization launch
+growth is bounded by convergence boundaries, not by the number of output tiles.
+Sampling parameters are cohort-global. This can oversample an easy late
+arrival, so schedule statistics record sampled columns and FLOPs per member in
+addition to active and pending widths.
+
+\subsection{Reduction staging is deferred}
+\label{sec:staging}
+
+The current scheduler always retains the full contraction range in one fused
+sampling operation. If a single tile's full-$k$ working set does not fit, the
+operation fails its workspace contract rather than silently changing the
+reduction. Chunking $k$ into panels would accumulate
+$Y^{(K_t)}=\sum_{\ell\in K_t}U^A_{i\ell}T_{i\ell j}$ repeatedly and move roughly
+$(2\kappa-1)b_ms$ sample elements for $\kappa$ panels. It remains a future
+optimization, to be enabled only if full-$k$ transient storage, rather than
+lane tails, limits occupancy.
+
+\subsection{Workspace and deferred scheduling}
+\label{sec:choose}
+
+The public operation receives an optional reusable workspace. Internally,
+$\texttt{CompressedGemmWorkspace}$ owns the arena, slot-local progress, convergence
+and diagnostic arrays, output panels, and global scatter buffers. The workspace
+compatibility key includes the selected sampling family, geometry, active rank
+caps, block width, output rank cap, and slot capacity. The driver can therefore
+reuse the same allocation across complete GEMM calls without changing the
+schedule. Internal schedule statistics expose admissions, retirement waves,
+active and pending widths, passes, padded projection columns, discarded
+terminal columns, and phase timings without adding profiling keywords to the
+public GEMM API.
+
+The sketch width $s$ (and its cap $s_{\max}$) remains small enough that
+Cholesky QR stays well conditioned (\S\ref{sec:cholqr}) and the accumulators
+remain modest. The large-GEMM efficiency still comes from the fused reduction
+\eqref{eq:Y}, whose contraction dimension $\rho_i$ is set by the data.
+
+The next occupancy step is R4.5: combine ready members from several lanes into
+one larger pointer-batched GEMM call. This recovers cross-lane occupancy without
+independent streams or shared free-list state, but gives up some same-axis
+sharing. A shared multi-lane arena and an arbitrary mixed-tile cohort are
+separate deferred designs; the latter requires a new coupling. The $TN$
+operation, arbitrary physical tile orders, boundary tiles, and reduction
+sub-panelling likewise remain outside the canonical scheduling contract.
+
+\section{Cost}
+\label{sec:cost}
+
+Per tile, to leading order and excluding the coupling prologue $S_{i\ell j}$
+(common to any method):
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Stage & Cost & Note \\
+\midrule
+$H_{\ell j}$ (per sample)        & $2b_n\gamma_j s$ & once per column, $/q_m$ per tile \\
+$Y_{ij}=X\Omega$                 & $2b_m\rho_i s$   & one fused GEMM, contraction $\rho_i$ \\
+$Z_{ij}=X^{\T}Q$                 & $2b_m\rho_i s+2b_n\gamma_j s$ & two fused GEMMs \\
+Gram $+$ eig (\textsc{XsyevBatched}) & $2b_ms_Q^2+O(s_Q^3)$ & promoted Gram, small eig \\
+form $U,V$                       & $2(b_m+b_n)s_QR$ & final lift to output rank $R$ \\
+norm estimate \eqref{eq:normest} & $O(b_ms)$ & free, every tile \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The number of small dense factorizations is $O(q_mq_n)$ (one eigenproblem per
+tile, of size $s_Q$) against Algorithm~\ref{alg:kblas}'s $O(q_kq_mq_n)$, and
+the chain of dependent launches per tile is $O(1)$:
+the reduction over $\ell$ is a single fused GEMM, not a serial recurrence. Batch
+shapes at fixed $s$ are uniform across a run, and the number of range-finder
+passes is the only data-dependent quantity. No term is quadratic in $q_k$: the reduction is never
+revisited once sampled, which is what removing the verification pass buys.
+
+\section{Summary of the blueprint}
+\label{sec:summary}
+
+The baseline is a per-tile blocked range finder (Algorithm~\ref{alg:ara}) driven
+by the rolling single-lane scheduler (Algorithm~\ref{alg:sched}), replacing the
+deterministic sequential recompression of Algorithm~\ref{alg:kblas}
+(\S\ref{sec:strategies}). The
+reduction over $\ell$ is folded into a single high-intensity GEMM
+\eqref{eq:Y} by the long-dimension-last ordering; the existing $\beta C_{ij}$
+tile is carried inside the range finder as one further factor pair
+(\S\ref{sec:beta}) so that a single truncation produces the output; the loop
+stops on the free sampling estimate (\S\ref{sec:samplestop}), which is an a
+posteriori bound rather than a heuristic, and never verifies afterwards, because
+drawing another block is roughly $q_kr/\Delta s$ times cheaper than checking
+whether one was needed (\S\ref{sec:noverify}); and every kernel is a
+stock batched cuBLAS/cuSOLVER routine (\S\ref{sec:primitives}), with Cholesky QR
+made safe by the convergence-time discarding of small columns
+(\S\ref{sec:cholqr}). Rank metadata determines the lane family and workspace
+capacity before arithmetic; rolling admission and retirement then handle the
+data-dependent convergence without reallocating the numerical arena. The net
+effect against \S\ref{sec:kblas}'s baseline is a compression count cut from
+$O(q_kq_mq_n)$ to $O(q_mq_n)$ and every recompression's Householder QR
+replaced by batched GEMM and Cholesky-QR. Full-$k$
+reduction remains the baseline; multi-lane growth and reduction staging are
+deferred.
+
+\end{document}
