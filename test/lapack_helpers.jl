@@ -33,6 +33,27 @@ for (elty, func) in ((Float64,    :dlarfg_),
     end
 end
 
+# ── xLARTG — Givens rotation generation ─────────────────────────────────────
+# Reference for lartg comparison tests.
+for (elty, func, rty) in ((Float64,    :dlartg_, Float64),
+                          (Float32,    :slartg_, Float32),
+                          (ComplexF64, :zlartg_, Float64),
+                          (ComplexF32, :clartg_, Float32))
+    @eval begin
+        function lapack_lartg(f::$elty, g::$elty)
+            fref = Ref{$elty}(f)
+            gref = Ref{$elty}(g)
+            cref = Ref{$rty}(0)
+            sref = Ref{$elty}(0)
+            rref = Ref{$elty}(0)
+            ccall((@blasfunc($func), libblastrampoline), Cvoid,
+                  (Ref{$elty}, Ref{$elty}, Ref{$rty}, Ref{$elty}, Ref{$elty}),
+                  fref, gref, cref, sref, rref)
+            return cref[], sref[], rref[]
+        end
+    end
+end
+
 # ── xTPQRT — triangular‑pentagonal QR factorization ─────────────────────────
 # Reference for tsqrt! (l=0) and ttqrt! (l=n).
 for (elty, func) in ((Float64,    :dtpqrt_),

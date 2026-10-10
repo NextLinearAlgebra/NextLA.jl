@@ -14,6 +14,7 @@ makedocs(;
     ),
     pages=[
         "Home" => "index.md",
+        "Mixed precision" => "mixed_precision.md",
     ],
 )
 

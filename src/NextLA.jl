@@ -9,6 +9,12 @@ import LinearAlgebra: BLAS, LAPACK
 import LinearAlgebra.BLAS: @blasfunc
 using Random: Random
 using KernelAbstractions
+# @unroll: chol_kernel_register! unrolls over its register strip. TLRmodule
+# imports it separately, being its own module.
+using KernelAbstractions.Extras: @unroll
+
+# Core.BFloat16 exists from Julia 1.11; before that, no type (Union{}).
+const _BFloat16 = isdefined(Core, :BFloat16) ? Core.BFloat16 : Union{}
 
 """
 	lamch(::Type{T}, cmach) where{T<: Number}
@@ -52,12 +58,22 @@ function lamch(::Type{T}, cmach) where {T <: Number}
 	end
 end
 
+# Backend capability traits. First, because both the GEMM machinery and TLR
+# read them, and the vendor extensions add methods to them.
+include("backend_traits.jl")
+include("recursion.jl")
 include("NextLAMatrix.jl")
 include("lu.jl")
-include("trmm.jl")
-include("trsm.jl")
-include("rectrxm.jl")
-include("matmul.jl")
+include("lu/factor.jl")
+include("trsm/trmm.jl")
+include("trsm/trsm.jl")
+include("trsm/rectrxm.jl")
+include("gemm/matmul.jl")
+include("gemm/gemm.jl")
+include("syrk/syrk.jl")
+include("cholesky/potrf_batched.jl")
+include("cholesky/cholesky.jl")
+include("trsm/batched.jl")
 include("lauu2.jl")
 include("lauum.jl")
 
@@ -69,6 +85,7 @@ include("larft.jl")
 include("larfb.jl")
 include("unmqr.jl")
 include("gerc.jl")
+include("rotations/lartg.jl")
 include("tsqrt.jl")
 include("tsmqr.jl")
 include("parfb.jl")
@@ -77,4 +94,6 @@ include("axpy.jl")
 include("pemv.jl")
 include("ttmqr.jl")
 include("ttqrt.jl")
+include("mxp/mxp.jl")
+
 end

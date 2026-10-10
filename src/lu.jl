@@ -190,22 +190,28 @@ function getrf2!(A::AbstractMatrix{T}, ipiv::AbstractVector{Int}, info::Int)  wh
     lda = m
     info = 0
 
+    # Every exit returns the triple: the caller destructures it (see lu!
+    # above), so a bare `return` there raises MethodError on `iterate(::Nothing)`
+    # instead of reporting the argument error it just detected.
     if m < 0
         info = -1
-        return
+        return A, ipiv, info
     end
     if n < 0
         info = -2
-        return
+        return A, ipiv, info
+    end
+
+    # quick return. This comes before the leading-dimension check, which LAPACK
+    # makes first: there lda is passed in, and a 0-by-0 matrix still carries
+    # lda >= 1. Here lda is derived from A, so m == 0 would fail that check and
+    # report an illegal argument for an empty matrix that is simply done.
+    if m == 0 || n == 0
+        return A, ipiv, info
     end
     if lda < max(1,m)
         info = -4
-        return
-    end
-
-    # quick return
-    if m == 0 || n == 0
-        return
+        return A, ipiv, info
     end
 
     if m == 1
@@ -213,8 +219,9 @@ function getrf2!(A::AbstractMatrix{T}, ipiv::AbstractVector{Int}, info::Int)  wh
         ipiv[1] = 1
 
         if A[1,1] == zero(T)
-            info[] = 1
-            return
+            # info is an Int, not a Ref: `info[] = 1` raised MethodError here.
+            info = 1
+            return A, ipiv, info
         end
 
     elseif n == 1
@@ -247,8 +254,8 @@ function getrf2!(A::AbstractMatrix{T}, ipiv::AbstractVector{Int}, info::Int)  wh
                 view(A, 2:m, 1) ./= A[1,1]
             end
         else
-            info[] = 1
-            return
+            info = 1
+            return A, ipiv, info
         end
     else
         #use recursive code
@@ -259,10 +266,11 @@ function getrf2!(A::AbstractMatrix{T}, ipiv::AbstractVector{Int}, info::Int)  wh
         #Factor    [---]
         #          [A12]
 
-        iinfo = 0
         Aleft = @view A[:, 1:n1]
 
-        getrf2!(Aleft, ipiv, iinfo)
+        # iinfo is an Int, so the recursive call cannot report through the
+        # argument -- it comes back in the return value.
+        _, _, iinfo = getrf2!(Aleft, view(ipiv, 1:min(m, n1)), 0)
 
         if info == 0 && iinfo > 0
             info = iinfo
@@ -280,8 +288,8 @@ function getrf2!(A::AbstractMatrix{T}, ipiv::AbstractVector{Int}, info::Int)  wh
         LinearAlgebra.BLAS.gemm!('N', 'N', -one(T), view(A, n1+1:m, 1:n1), view(A, 1:n1, n1+1:n), one(T), view(A, n1+1:m, n1+1:n))
 
         #Factor A22
-        iinfo = 0
-        getrf2!(view(A, n1+1:m, n1+1:n), view(ipiv, n1+1:min(m,n)), iinfo)
+        _, _, iinfo = getrf2!(view(A, n1+1:m, n1+1:n),
+                              view(ipiv, n1+1:min(m,n)), 0)
 
         #Adjust INFO and pivot indicies
         if info == 0 && iinfo > 0
