@@ -28,6 +28,10 @@ function NextLA.gemm_batched!(transA::Char,
                               B::oneAPI.oneStridedArray{<:Any,3},
                               beta,
                               C::oneAPI.oneStridedArray{<:Any,3})
+    # Every other backend validates the batch shape before handing it to the
+    # vendor; this one did not, so a mismatched batch reached oneMKL as an
+    # opaque failure instead of a DimensionMismatch naming the sizes.
+    NextLA._check_batch_dims(A, B, C)
     oneMKL.gemm_strided_batched!(transA, transB, alpha, A, B, beta, C)
     return C
 end

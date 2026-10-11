@@ -97,6 +97,22 @@ function NextLA.gemmEx_batched!(transA::Char,
     throw(ArgumentError("NextLA.gemmEx_batched! mixed-type batched GEMM is not supported on Metal"))
 end
 
+# Metal batches a strided 3-D array through MPS; it has no primitive for a
+# list of separately allocated matrices. Without this method such a call -- and
+# Metal's own gemmEx_batched! for the same shape, which routes here through
+# _try_same_type_batched! -- falls through to the generic CPU loop in
+# src/gemm/gemm_batched.jl and hands BLAS.gemm! a Metal device matrix. Refuse
+# it here instead, with an error that names the backend.
+function NextLA.gemm_batched!(transA::Char,
+                              transB::Char,
+                              alpha,
+                              A::AbstractVector{<:Metal.MtlArray{<:Any, 2}},
+                              B::AbstractVector{<:Metal.MtlArray{<:Any, 2}},
+                              beta,
+                              C::AbstractVector{<:Metal.MtlArray{<:Any, 2}})
+    throw(ArgumentError("NextLA.gemm_batched! for a vector of matrices is not supported on Metal; use a 3-D MtlArray"))
+end
+
 function NextLA.gemmEx_batched!(transA::Char,
                                 transB::Char,
                                 alpha,

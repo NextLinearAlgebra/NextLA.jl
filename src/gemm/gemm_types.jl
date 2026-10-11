@@ -20,9 +20,9 @@ other fast-math settings.
    mixed-type GEMM where the result storage may differ from the operand
    storage.
 
-`compute_type` is inferred from `alpha`, `beta`, and the operand/result types
-using [`default_compute_type`](@ref). Support for the inferred combination
-depends on the backend.
+`compute_type` is chosen from the storage types of `A`, `B` and `C` by
+[`default_compute_type`](@ref); `alpha` and `beta` take no part and are
+converted to it. Support for the chosen combination depends on the backend.
 
 The table below summarizes the current behavior.
 
@@ -30,20 +30,53 @@ Standard GEMM behavior:
 
 | Operation | CPU | CUDA | AMDGPU | oneAPI | Metal |
 | --- | --- | --- | --- | --- | --- |
-| `gemmEx!` with default `compute_type` | unsupported | cuBLAS GEMMEx | rocBLAS GEMMEx | unsupported | unsupported |
-| `gemm_batched!` | loop of standard GEMMs | pointer or strided batched GEMM | pointer or strided batched GEMM | pointer or strided batched GEMM | strided MPS matmul |
+| `gemmEx!` with default `compute_type` | BLAS, or a wide accumulation | cuBLAS GEMMEx | rocBLAS GEMMEx | throws | throws |
+| `gemm_batched!`, 3-D strided | BLAS loop, same-type BLAS types only; a batch count of 1 broadcasts | strided batched, or GEMMEx | strided batched, or GEMMEx | oneMKL strided | MPS; equal batch counts only |
+| `gemm_batched!`, vector of matrices | BLAS loop, same-type BLAS types only | pointer batched; non-native types via GEMMEx | rocBLAS batched | oneMKL batched | throws |
+| `gemm_batched_ptrs!` | throws | pointer batched | pointer batched | throws | throws |
 | `gemmEx_batched!` with default `compute_type` | same-type fallback only | cuBLAS batched GEMMEx | rocBLAS batched GEMMEx | same-type fallback only | same-type fallback only |
+| grouped GEMM, unequal shapes | loop of `precision_gemm!` | grouped GEMMEx | throws | throws | throws |
+| TF32 | throws | single, batched and pointer batched | throws | throws | throws |
 
-Representative supported `compute_type` combinations:
+The CPU column is served by BLAS. Single-matrix `gemmEx!` is the exception: there
+is no CPU GEMMEx primitive, so a triple BLAS accepts goes to `BLAS.gemm!` and
+everything else is accumulated in `compute_type` and rounded once on store. The
+batched and precision entry points do not extend that to the CPU -- they take
+what BLAS takes and raise `ArgumentError` for the rest. The CPU has no
+half-precision arithmetic, so a wide accumulation there is a convenience, not a
+speed-up.
 
-| A/B storage | C storage | `compute_type` | CUDA | AMDGPU | oneAPI | Metal |
-| --- | --- | --- | --- | --- | --- | --- |
-| `Float16` | `Float16` | `Float32` | yes | yes | unsupported | unsupported |
-| `Float16` | `Float32` | `Float32` | yes | yes | unsupported | unsupported |
-| `BFloat16` | `BFloat16` | `Float32` | CUDA grouped GEMMEx (SM80+) | unsupported | unsupported | unsupported |
-| `Int8` | `Int32` | `Int32` | yes | yes | unsupported | unsupported |
+A `throws` above is a vendor limitation or an unverified path rather than an
+oversight. Neither oneMKL nor MPS exposes a pointer-array batched GEMM or a
+heterogeneous grouped GEMM, and TF32 is CUDA hardware. `gemmEx!` on oneAPI and
+Metal, and Metal's vector-of-matrices batch, throw because no device was
+available to verify a same-type path; a 3-D batch is the supported Metal form. `supports_pointer_batched` and
+`supports_grouped_gemm` answer for the backend, so a caller can ask before
+committing to a path.
 
-TF32 and other backend-specific fast-math modes are intentionally excluded from
+The oneAPI and Metal entries are written from the vendor APIs and have never
+been executed -- neither device was available during the integration.
+
+Representative supported `compute_type` combinations, as
+`gemm_signature_supported` answers them:
+
+| A/B storage | C storage | `compute_type` | CPU | CUDA | AMDGPU | oneAPI | Metal |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `Float16` | `Float16` | `Float32` | unsupported | yes | yes | unsupported | unsupported |
+| `Float16` | `Float32` | `Float32` | unsupported | yes | yes | unsupported | unsupported |
+| `BFloat16` | `BFloat16` | `Float32` | unsupported | yes | yes | unsupported | unsupported |
+| `BFloat16` | `Float32` | `Float32` | unsupported | yes | yes | unsupported | unsupported |
+| `Int8` | `Int32` | `Int32` | unsupported | yes | yes | unsupported | unsupported |
+| `Float32` | `Float32` | `Float32` | BLAS | yes | yes | yes | yes |
+| `Float64` | `Float64` | `Float64` | BLAS | yes | yes | yes | yes |
+
+AMDGPU serves `BFloat16` as CUDA does: `_rocblas_datatype` maps it to
+rocBLAS's `rocblas_datatype_bf16_r`, and `rocblas_gemm_ex` takes it with a
+`Float32` compute type. Like the rest of the AMDGPU column it compiles but has
+not run on a device.
+
+TF32 is reached through `precision_gemm!` and its batched siblings with the
+`TF32()` mode rather than a `compute_type`, and only CUDA implements it.
 these APIs for now.
 """
 const GEMM_COMPUTE_TYPES = (
@@ -98,16 +131,14 @@ The rule is intentionally simple and backend-agnostic:
 - integer inputs default to `Int32`
 - complex inputs follow the corresponding real compute type
 
+Only the storage types of `A`, `B` and `C` decide. `alpha` and `beta` are
+accepted for the signature but take no part, so an untyped literal such as
+`0.5` on `Float32` data cannot raise the compute type to `Float64`.
+
 Backends may still reject unsupported storage and compute type combinations.
 """
 @inline function default_compute_type(alpha, A, B, beta, C)
-    T = promote_type(
-        eltype(alpha),
-        _batch_eltype(A),
-        _batch_eltype(B),
-        eltype(beta),
-        _batch_eltype(C),
-    )
+    T = promote_type(_batch_eltype(A), _batch_eltype(B), _batch_eltype(C))
     return _default_compute_type(T)
 end
 

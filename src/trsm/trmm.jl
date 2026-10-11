@@ -40,8 +40,8 @@ Uses shared memory tiling with configurable bank offset to avoid conflicts.
 - Includes bounds checking for non-square input matrices
 - Synchronization points ensure correct shared memory access patterns
 """
-@kernel function LeftLowerTRMM_kernel!(A,B,
-                            ::Val{BANK} = Val(1)) where BANK
+@kernel function LeftLowerTRMM_kernel!(A, B, ::Val{U},
+                            ::Val{BANK} = Val(1)) where {U, BANK}
     
     # Get thread and block indices
     gi,gj = @index(Group, NTuple)
@@ -70,7 +70,7 @@ Uses shared memory tiling with configurable bank offset to avoid conflicts.
 
     # Load input matrix A into shared memory tile with bounds checking
     if i <= N && j <= N
-        @inbounds tile1[i, j] = A[i, j]
+        @inbounds tile1[i, j] = (U && i == j) ? one(eltype(A)) : A[i, j]
     else
         @inbounds tile1[i, j] = zero(eltype(A))
     end
@@ -113,8 +113,8 @@ end
 
 
 # A is an NxN upper triangular matrix and B is an NxM matrix
-@kernel function LeftUpperTRMM_kernel!(A,B,
-                            ::Val{BANK} = Val(1)) where BANK
+@kernel function LeftUpperTRMM_kernel!(A, B, ::Val{U},
+                            ::Val{BANK} = Val(1)) where {U, BANK}
     gi,gj = @index(Group, NTuple)
     i,j = @index(Local, NTuple)
 
@@ -140,7 +140,7 @@ end
 
     # load input A into tile, with bounds checking for non-square matrices
     if I <= N && j <= R
-        @inbounds tile1[i, j] = A[I, j]
+        @inbounds tile1[i, j] = (U && I == j) ? one(eltype(A)) : A[I, j]
     else
         @inbounds tile1[i, j] = 0.0
     end
@@ -186,8 +186,8 @@ end
 
 
 
-@kernel function RightLowerTRMM_kernel!(A,B,
-                ::Val{BANK} = Val(1)) where BANK
+@kernel function RightLowerTRMM_kernel!(A, B, ::Val{U},
+                ::Val{BANK} = Val(1)) where {U, BANK}
     gi,gj = @index(Group, NTuple)
     i,j = @index(Local, NTuple)
 
@@ -212,7 +212,7 @@ end
 
     # load input A into tile, with bounds checking for non-square matrices
     if i <= N && j <= N
-        @inbounds tile1[i, j] = A[i, j]
+        @inbounds tile1[i, j] = (U && i == j) ? one(eltype(A)) : A[i, j]
     else
         @inbounds tile1[i, j] = 0.0
     end
@@ -249,8 +249,8 @@ end
 
 end
 
-@kernel function RightUpperTRMM_kernel!(A,B,
-    ::Val{BANK} = Val(1)) where BANK
+@kernel function RightUpperTRMM_kernel!(A, B, ::Val{U},
+    ::Val{BANK} = Val(1)) where {U, BANK}
     gi,gj = @index(Group, NTuple)
     i,j = @index(Local, NTuple)
 
@@ -275,7 +275,7 @@ end
 
     # load input A into tile, with bounds checking for non-square matrices
     if i <= N && j <= N
-        @inbounds tile1[i, j] = A[i, j]
+        @inbounds tile1[i, j] = (U && i == j) ? one(eltype(A)) : A[i, j]
     else
         @inbounds tile1[i, j] = 0.0
     end
@@ -329,12 +329,12 @@ Perform left-sided lower triangular matrix multiplication: B := A * B
 - Thread block size should not exceed hardware limits
 - NDRange is padded to handle boundary conditions
 """
-function LeftLowerTRMM!(A, B; n_threads = (16,16))
+function LeftLowerTRMM!(A, B, unitdiag::Bool=false; n_threads = (16,16))
     backend = get_backend(A)
     # Calculate NDRange with padding to handle boundary threads
     Ndrange = max(size(A), size(B))
     Ndrange = (Ndrange[1] + 16, Ndrange[2] + 16)
-    LeftLowerTRMM_kernel!(backend, n_threads)(A, B, ndrange = Ndrange)
+    LeftLowerTRMM_kernel!(backend, n_threads)(A, B, Val(unitdiag), ndrange = Ndrange)
 end
 
 """
@@ -347,11 +347,11 @@ Perform left-sided upper triangular matrix multiplication: B := A * B
 - `B::AbstractMatrix`: N×M target matrix (modified in-place)
 - `n_threads::Tuple`: Thread block dimensions (default: (16,16))
 """
-function LeftUpperTRMM!(A, B; n_threads = (16,16))
+function LeftUpperTRMM!(A, B, unitdiag::Bool=false; n_threads = (16,16))
     backend = get_backend(A)
     Ndrange = max(size(A), size(B))
     Ndrange = (Ndrange[1] + 16, Ndrange[2] + 16)
-    LeftUpperTRMM_kernel!(backend, n_threads)(A, B, ndrange = Ndrange)
+    LeftUpperTRMM_kernel!(backend, n_threads)(A, B, Val(unitdiag), ndrange = Ndrange)
 end
 
 """
@@ -364,11 +364,11 @@ Perform right-sided lower triangular matrix multiplication: B := B * A
 - `B::AbstractMatrix`: M×N target matrix (modified in-place)  
 - `n_threads::Tuple`: Thread block dimensions (default: (16,16))
 """
-function RightLowerTRMM!(A, B; n_threads = (16,16))
+function RightLowerTRMM!(A, B, unitdiag::Bool=false; n_threads = (16,16))
     backend = get_backend(A)
     Ndrange = max(size(A), size(B))
     Ndrange = (Ndrange[1] + 16, Ndrange[2] + 16)
-    RightLowerTRMM_kernel!(backend, n_threads)(A, B, ndrange = Ndrange)
+    RightLowerTRMM_kernel!(backend, n_threads)(A, B, Val(unitdiag), ndrange = Ndrange)
 end
 
 """
@@ -381,11 +381,11 @@ Perform right-sided upper triangular matrix multiplication: B := B * A
 - `B::AbstractMatrix`: M×N target matrix (modified in-place)
 - `n_threads::Tuple`: Thread block dimensions (default: (16,16))
 """
-function RightUpperTRMM!(A, B; n_threads = (16,16))
+function RightUpperTRMM!(A, B, unitdiag::Bool=false; n_threads = (16,16))
     backend = get_backend(A)
     Ndrange = max(size(A), size(B))
     Ndrange = (Ndrange[1] + 16, Ndrange[2] + 16)
-    RightUpperTRMM_kernel!(backend, n_threads)(A, B, ndrange = Ndrange)
+    RightUpperTRMM_kernel!(backend, n_threads)(A, B, Val(unitdiag), ndrange = Ndrange)
 end
 
 """
@@ -446,3 +446,42 @@ function trmm(side, uplo, transa, diag, A, B, alpha=one(eltype(A)))
         error("Unsupported combination of side='$side', uplo='$uplo'")
     end
 end
+
+# The BLAS-order entry points. They live here, beside the kernels, rather than
+# in rectrxm.jl: unified_rectrxm! is the engine (recursion plus vendor fast
+# paths) and trmm! is the public name over it.
+"""
+    trmm!(side, uplo, transa, diag, alpha, A, B) -> B
+
+Triangular multiply in the BLAS argument order, in place:
+`B := alpha * op(A) * B` (`side = 'L'`) or `B := alpha * B * op(A)`
+(`side = 'R'`), with `op`, `uplo` and `diag` as for [`trsm!`](@ref).
+
+A thin entry point over [`unified_rectrxm!`](@ref) with `func = 'M'`: cuBLAS /
+rocBLAS `trmm!` on `CuMatrix` / `ROCMatrix` of `Float32`, `Float64`, `ComplexF32`
+or `ComplexF64`, the
+portable recursive kernels everywhere else.
+"""
+trmm!(side::Char, uplo::Char, transa::Char, diag::Char, alpha::Number,
+      A::AbstractMatrix, B::AbstractMatrix) =
+    unified_rectrxm!(side, uplo, transa, diag, alpha, 'M', A, B)
+
+"""
+    trmm!(side, uplo, transa, diag, alpha, A, B, C) -> C
+
+Triangular multiply into a separate output: `C := alpha * op(A) * B`
+(`side = 'L'`) or `C := alpha * B * op(A)` (`side = 'R'`), leaving `B` as it
+was. This is the argument list of cuBLAS / rocBLAS `trmm!` and of
+vicki-development's `wrappers.jl`; passing `C = B` gives the in-place form.
+`B` is copied into `C` and multiplied there by the in-place method, so it runs
+wherever that does.
+"""
+function trmm!(side::Char, uplo::Char, transa::Char, diag::Char, alpha::Number,
+               A::AbstractMatrix, B::AbstractMatrix, C::AbstractMatrix)
+    size(C) == size(B) || throw(DimensionMismatch(
+        "trmm!: C must be the size of B, got $(size(C)) and $(size(B))"))
+    C === B || copyto!(C, B)
+    return trmm!(side, uplo, transa, diag, alpha, A, C)
+end
+
+export trmm!

@@ -4,6 +4,7 @@
     @test _TLRM.tlr_orthogonalization_type(Float16) == Float32
     @test _TLRM.tlr_orthogonalization_type(Float32) == Float64
     @test _TLRM.tlr_orthogonalization_type(Float64) == Float64
+    @test NextLA.gemm_compute_type(_TLRM.default_gemm_compute_mode(Float16)) == Float32
 
     rng = MersenneTwister(511)
     X = randn(rng, Float32, 7, 5, 4)

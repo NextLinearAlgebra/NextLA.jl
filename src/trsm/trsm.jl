@@ -2,7 +2,7 @@
 export LeftLowerTRSM!, LeftUpperTRSM!, RightLowerTRSM!, RightUpperTRSM!
 
 # Kernel function for solving lower triangular system Ax = b
-@kernel function lower_left_kernel(A, B, n)
+@kernel function lower_left_kernel(A, B, n, ::Val{U}) where {U}
     col = @index(Group)
     row = @index(Local)
 
@@ -13,7 +13,7 @@ export LeftLowerTRSM!, LeftUpperTRSM!, RightLowerTRSM!, RightUpperTRSM!
 
     # Initialize diagonal and B column
     if row <= n
-        @inbounds diag[row] = A[row, row]
+        @inbounds diag[row] = U ? one(eltype(A)) : A[row, row]
         @inbounds B_c[row] = B[row, col] / diag[row]
     end
 
@@ -33,7 +33,7 @@ export LeftLowerTRSM!, LeftUpperTRSM!, RightLowerTRSM!, RightUpperTRSM!
 end
 
 # Kernel function for solving upper triangular system Ax = b
-@kernel function upper_left_kernel(A, B, n)
+@kernel function upper_left_kernel(A, B, n, ::Val{U}) where {U}
     col = @index(Group)
     row = @index(Local)
 
@@ -44,7 +44,7 @@ end
 
     # Initialize diagonal and B column
     if row <= n
-        @inbounds diag[row] = A[row, row]
+        @inbounds diag[row] = U ? one(eltype(A)) : A[row, row]
         @inbounds B_c[row] = B[row, col] / diag[row]
     end
 
@@ -64,7 +64,7 @@ end
 end
 
 # Kernel function for solving lower triangular system xA = b
-@kernel function right_lower_kernel(A, B, n)
+@kernel function right_lower_kernel(A, B, n, ::Val{U}) where {U}
     row = @index(Group)
     col = @index(Local)
 
@@ -75,7 +75,7 @@ end
 
     # Initialize diagonal and B row
     if col <= n
-        @inbounds diag[col] = A[col, col]
+        @inbounds diag[col] = U ? one(eltype(A)) : A[col, col]
         @inbounds B_r[col] = B[row, col] / diag[col]
     end
 
@@ -95,7 +95,7 @@ end
 end
 
 # Kernel function for solving upper triangular system xA = b
-@kernel function right_upper_kernel(A, B, n)
+@kernel function right_upper_kernel(A, B, n, ::Val{U}) where {U}
     row = @index(Group)
     col = @index(Local)
 
@@ -106,7 +106,7 @@ end
 
     # Initialize diagonal and B row
     if col <= n
-        @inbounds diag[col] = A[col, col]
+        @inbounds diag[col] = U ? one(eltype(A)) : A[col, col]
         @inbounds B_r[col] = B[row, col] / diag[col]
     end
     
@@ -125,28 +125,28 @@ end
     end
 end
 
-function LeftLowerTRSM!(A, B)
+function LeftLowerTRSM!(A, B, unitdiag::Bool=false)
     n, m = size(B)
     backend = get_backend(A)
-    lower_left_kernel(backend, (n,))(Transpose(A), B, n, ndrange=(n, m))
+    lower_left_kernel(backend, (n,))(Transpose(A), B, n, Val(unitdiag), ndrange=(n, m))
 end
 
-function LeftUpperTRSM!(A, B)
+function LeftUpperTRSM!(A, B, unitdiag::Bool=false)
     n, m = size(B)
     backend = get_backend(A)
-    upper_left_kernel(backend, (n,))(A, B, n, ndrange=(n, m))
+    upper_left_kernel(backend, (n,))(A, B, n, Val(unitdiag), ndrange=(n, m))
 end
 
-function RightLowerTRSM!(A, B)
+function RightLowerTRSM!(A, B, unitdiag::Bool=false)
     n, m = size(B)
     backend = get_backend(A)
-    right_lower_kernel(backend, (m,))(A, B, m, ndrange=(m, n))
+    right_lower_kernel(backend, (m,))(A, B, m, Val(unitdiag), ndrange=(m, n))
 end
 
-function RightUpperTRSM!(A, B)
+function RightUpperTRSM!(A, B, unitdiag::Bool=false)
     n, m = size(B)
     backend = get_backend(A)
-    right_upper_kernel(backend, (m,))(Transpose(A), B, m, ndrange=(m, n))
+    right_upper_kernel(backend, (m,))(Transpose(A), B, m, Val(unitdiag), ndrange=(m, n))
 end
 
 """
@@ -203,3 +203,28 @@ function trsm(side, uplo, transa, diag, A, B, alpha=one(eltype(A)))
     end
     
 end
+
+# The BLAS-order entry point. It lives here, beside the kernels, rather than in
+# rectrxm.jl: unified_rectrxm! is the engine (recursion plus vendor fast paths)
+# and trsm! is the public name over it.
+"""
+    trsm!(side, uplo, transa, diag, alpha, A, B) -> B
+
+Triangular solve in the BLAS argument order, in place: `B` is overwritten with
+the `X` that solves `op(A) * X = alpha * B` (`side = 'L'`) or
+`X * op(A) = alpha * B` (`side = 'R'`), where `op(A)` is `A`, `transpose(A)` or
+`adjoint(A)` for `transa = 'N'`, `'T'` or `'C'`, `A` is the `uplo` triangle and
+`diag = 'U'` takes its diagonal as ones without reading it.
+
+A thin entry point over [`unified_rectrxm!`](@ref) with `func = 'S'`, so it runs
+wherever that does, for real and complex element types. On `CuMatrix` and
+`ROCMatrix` of `Float32`, `Float64`, `ComplexF32` or `ComplexF64` it
+reaches cuBLAS / rocBLAS `trsm!` through that function's extension methods; on
+the CPU, oneAPI, Metal, `Float16` and views it runs the portable recursive
+kernels. `LinearAlgebra.BLAS.trsm!` takes the same arguments but is CPU BLAS only.
+"""
+trsm!(side::Char, uplo::Char, transa::Char, diag::Char, alpha::Number,
+      A::AbstractMatrix, B::AbstractMatrix) =
+    unified_rectrxm!(side, uplo, transa, diag, alpha, 'S', A, B)
+
+export trsm!

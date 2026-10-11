@@ -33,7 +33,7 @@ function NextLA.gemm_batched!(transA::Char,
                               B::AbstractVector{<:AMDGPU.ROCArray{T, 2}},
                               beta,
                               C::AbstractVector{<:AMDGPU.ROCArray{T, 2}}) where {T}
-    return rocBLAS.gemm_batched!(transA, transB, alpha, A, B, beta, C)
+    return rocBLAS.gemm_batched!(transA, transB, T(alpha), A, B, T(beta), C)
 end
 
 function NextLA.gemm_batched!(transA::Char,
@@ -93,7 +93,8 @@ function NextLA.gemm_batched!(transA::Char,
         if A isa AMDGPU.ROCArray{<:Any, 3} &&
            B isa AMDGPU.ROCArray{<:Any, 3} &&
            C isa AMDGPU.ROCArray{<:Any, 3}
-            return rocBLAS.gemm_batched!(transA, transB, alpha, A, B, beta, C)
+            return rocBLAS.gemm_batched!(transA, transB, eltype(C)(alpha), A, B,
+                                         eltype(C)(beta), C)
         end
         throw(ArgumentError("AMDGPU strided batched GEMM views are supported only for eltypes with native strided-batched kernels"))
     end

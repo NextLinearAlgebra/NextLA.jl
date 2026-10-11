@@ -10,7 +10,7 @@ function NextLA.trsm_batched!(side::Char,
                               A::AbstractVector{<:AMDGPU.StridedROCMatrix{T}},
                               B::AbstractVector{<:AMDGPU.StridedROCMatrix{T}},
                               alpha=one(T)) where {T}
-    rocBLAS.trsm_batched!(side, uplo, transa, diag, alpha, A, B)
+    rocBLAS.trsm_batched!(side, uplo, transa, diag, T(alpha), A, B)
     return B
 end
 

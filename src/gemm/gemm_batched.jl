@@ -67,6 +67,20 @@ by backends without a native mixed-type batched GEMM primitive.
     return nothing
 end
 
+# One member of a CPU batch. The CPU batched path is BLAS only: a member BLAS
+# cannot take -- Float16, or mixed widths -- is refused here by name. This loop
+# used to hand such a member straight to BLAS.gemm!, which answered with a
+# MethodError that said nothing about why. Single-matrix gemmEx! does accept
+# these on the CPU; loop it per member if that is what is wanted.
+@inline function _batched_member!(transA::Char, transB::Char, alpha, Ai, Bi, beta, Ci)
+    T = eltype(Ci)
+    _cpu_blas_gemm(eltype(Ai), eltype(Bi), T) ||
+        throw(ArgumentError("CPU gemm_batched! needs same-type Float32, Float64, " *
+                            "ComplexF32 or ComplexF64 members; got " *
+                            "$(eltype(Ai)) × $(eltype(Bi)) → $T"))
+    return BLAS.gemm!(transA, transB, T(alpha), Ai, Bi, T(beta), Ci)
+end
+
 """
     gemm_batched!(transA, transB, alpha, A, B, beta, C)
 
@@ -101,7 +115,7 @@ function gemm_batched!(transA::Char,
         Ai = @view A[:, :, batchA == 1 ? 1 : i]
         Bi = @view B[:, :, batchB == 1 ? 1 : i]
         Ci = @view C[:, :, i]
-        BLAS.gemm!(transA, transB, eltype(Ci)(alpha), Ai, Bi, eltype(Ci)(beta), Ci)
+        _batched_member!(transA, transB, alpha, Ai, Bi, beta, Ci)
     end
     return C
 end
@@ -176,7 +190,7 @@ function gemm_batched!(transA::Char,
                        C::AbstractVector{<:AbstractArray{<:Any, 2}})
     _check_batch_lengths(A, B, C)
     for i in eachindex(A, B, C)
-        BLAS.gemm!(transA, transB, eltype(C[i])(alpha), A[i], B[i], eltype(C[i])(beta), C[i])
+        _batched_member!(transA, transB, alpha, A[i], B[i], beta, C[i])
     end
     return C
 end
@@ -352,6 +366,12 @@ underlying batch members when active-prefix packing retires one.
 function swap_batch_ptrs!(d::BatchPtrDescriptor, p::Int, q::Int)
     p == q && return d
     _swap_batch_ptr_kernel!(get_backend(d))(d.ptrs, p, q; ndrange=(1,))
+    # The host table has to follow the device one. set_batch_ptrs! republishes
+    # the whole of `host` to bring a single slot across, so a `host` that has
+    # drifted out of step silently reverts every swap made since it last
+    # matched -- and the batched GEMM then multiplies the wrong members with no
+    # error anywhere.
+    @inbounds d.host[p], d.host[q] = d.host[q], d.host[p]
     return d
 end
 
@@ -369,6 +389,12 @@ function swap_batch_ptrs!(d::BatchPtrDescriptor, p::Int, q::Int, blocklen::Int)
     _swap_batch_ptr_block_kernel!(get_backend(d))(
         d.ptrs, p, q, blocklen; ndrange=(blocklen,),
     )
+    # Same mirror as the single-slot form, over the whole block. p and q are
+    # block numbers, as in the kernel: block p is slots (p-1)*blocklen+1 on.
+    ps, qs = (p - 1) * blocklen, (q - 1) * blocklen
+    @inbounds for k in 1:blocklen
+        d.host[ps + k], d.host[qs + k] = d.host[qs + k], d.host[ps + k]
+    end
     return d
 end
 

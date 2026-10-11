@@ -9,11 +9,12 @@ import LinearAlgebra: BLAS, LAPACK
 import LinearAlgebra.BLAS: @blasfunc
 using Random: Random
 using KernelAbstractions
+# @unroll: chol_kernel_register! unrolls over its register strip. TLRmodule
+# imports it separately, being its own module.
+using KernelAbstractions.Extras: @unroll
 
-@inline SUBGROUP_SIZE(::Type{<:KernelAbstractions.CPU}) = Val(1)
-@inline unwrap(::Val{x}) where {x} = x
-@inline supports_pointer_batched(backend) = supports_pointer_batched(typeof(backend))
-@inline supports_pointer_batched(::Type) = false
+# Core.BFloat16 exists from Julia 1.11; before that, no type (Union{}).
+const _BFloat16 = isdefined(Core, :BFloat16) ? Core.BFloat16 : Union{}
 
 """
 	lamch(::Type{T}, cmach) where{T<: Number}
@@ -57,22 +58,25 @@ function lamch(::Type{T}, cmach) where {T <: Number}
 	end
 end
 
+# Backend capability traits. First, because both the GEMM machinery and TLR
+# read them, and the vendor extensions add methods to them.
+include("backend_traits.jl")
+include("recursion.jl")
 include("NextLAMatrix.jl")
 include("lu.jl")
-include("trmm.jl")
-include("trsm.jl")
-include("trsm_batched.jl")
-include("rectrxm.jl")
-include("matmul.jl")
-include("gemm_types.jl")
-include("gemmEx.jl")
-include("gemm_batched.jl")
-include("gemm_precision.jl")
-include("gemm_grouped.jl")
+include("lu/factor.jl")
+include("trsm/trmm.jl")
+include("trsm/trsm.jl")
+include("trsm/rectrxm.jl")
+include("gemm/matmul.jl")
+include("gemm/gemm.jl")
 include("streams.jl")
+include("syrk/syrk.jl")
+include("cholesky/potrf_batched.jl")
+include("cholesky/cholesky.jl")
+include("trsm/batched.jl")
 include("lauu2.jl")
 include("lauum.jl")
-include("potrf_batched.jl")
 
 include("geqrt.jl")
 include("geqr2.jl")
@@ -82,6 +86,7 @@ include("larft.jl")
 include("larfb.jl")
 include("unmqr.jl")
 include("gerc.jl")
+include("rotations/lartg.jl")
 include("tsqrt.jl")
 include("tsmqr.jl")
 include("parfb.jl")
@@ -90,6 +95,7 @@ include("axpy.jl")
 include("pemv.jl")
 include("ttmqr.jl")
 include("ttqrt.jl")
+include("mxp/mxp.jl")
 
 include("TLR/TLRmodule.jl")
 using .TLRmodule: TileColMajor, TileRowMajor
@@ -111,4 +117,5 @@ export rank_multiple, maximum_storage_rank
 export FTLRCompressionWorkspace
 export DenseGemmWorkspace
 export CompressedGemmAnalysis, CompressedMixedGemmAnalysis, analyze_compressed_gemm
+
 end

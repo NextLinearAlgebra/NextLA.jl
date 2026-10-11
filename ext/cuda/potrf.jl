@@ -18,3 +18,8 @@ function NextLA.potrf_batched!(uplo::Char,
     Av = [@view A[:, :, bid] for bid in axes(A, 3)]
     return NextLA.potrf_batched!(uplo, Av)
 end
+
+function NextLA.potrf!(uplo::Char, A::CUDA.StridedCuMatrix{T}) where {T<:Union{Float32,Float64,ComplexF32,ComplexF64}}
+    NextLA._potrf_dims(uplo, A)
+    return CUSOLVER.potrf!(uplo, A)
+end
