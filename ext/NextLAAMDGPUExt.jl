@@ -11,5 +11,7 @@ include("amdgpu/syrk.jl")
 include("amdgpu/trsm.jl")
 include("amdgpu/rectrxm.jl")
 include("amdgpu/lu.jl")
+include("amdgpu/streams.jl")
+include("amdgpu/svd.jl")
 
 end

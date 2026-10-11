@@ -70,6 +70,7 @@ include("trsm/trsm.jl")
 include("trsm/rectrxm.jl")
 include("gemm/matmul.jl")
 include("gemm/gemm.jl")
+include("streams.jl")
 include("syrk/syrk.jl")
 include("cholesky/potrf_batched.jl")
 include("cholesky/cholesky.jl")
@@ -95,5 +96,26 @@ include("pemv.jl")
 include("ttmqr.jl")
 include("ttqrt.jl")
 include("mxp/mxp.jl")
+
+include("TLR/TLRmodule.jl")
+using .TLRmodule: TileColMajor, TileRowMajor
+using .TLRmodule: AbstractTLRMatrix, TLRMatrix, CompressedFTLRMatrix
+using .TLRmodule: ndiag_tiles, tile_origin_coords, tile_size
+using .TLRmodule: maxrank, ranks, rank_multiple, maximum_storage_rank
+using .TLRmodule: residuals, dense_diag, dense_diag_corner, grid_size, nominal_tile_size, tail_tile_size
+using .TLRmodule: uncompress!
+using .TLRmodule: FTLRCompressionWorkspace
+using .TLRmodule: get_factors
+using .TLRmodule: offdiagonal
+using .TLRmodule: gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes, gemm_workspace_bytes
+using .TLRmodule: DenseGemmWorkspace
+using .TLRmodule: CompressedGemmAnalysis, CompressedMixedGemmAnalysis, analyze_compressed_gemm
+export TLRMatrix, CompressedFTLRMatrix
+export uncompress!
+export gemm_minimum_workspace_bytes, gemm_maximum_workspace_bytes, gemm_workspace_bytes
+export rank_multiple, maximum_storage_rank
+export FTLRCompressionWorkspace
+export DenseGemmWorkspace
+export CompressedGemmAnalysis, CompressedMixedGemmAnalysis, analyze_compressed_gemm
 
 end

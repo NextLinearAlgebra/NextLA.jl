@@ -10,5 +10,7 @@ include("cuda/syrk.jl")
 include("cuda/trsm.jl")
 include("cuda/rectrxm.jl")
 include("cuda/lu.jl")
+include("cuda/streams.jl")
+include("cuda/tlr.jl")
 
 end
