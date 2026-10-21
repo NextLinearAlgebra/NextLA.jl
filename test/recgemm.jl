@@ -3,22 +3,22 @@ include("benchmark.jl")
 
 function run_recgemm_benchmark()
     # Define the matrix sizes to test
-    n_values = [16384, 32768, 65536] #16, 32, 256, 512, 1024, 
+    n_values = [16384, 32768] #16, 32, 256, 512, 1024, ... 65536
 
     # Define the different mixed-precision scenarios
     test_scenarios = Dict(
-        "Pure F16"             => [Float16, Float16, Float16],
+        # "Pure F16"             => [Float16, Float16, Float16],
         # "Pure F32"             => [Float32, Float32, Float32],
         # "Pure F64"             => [Float64, Float64, Float64],
-        # "[F32, F32, F64]"      => [Float32, Float32, Float64],
+        "[F32, F32, F64]"      => [Float32, Float32, Float64],
         # "[F32, F32, F64, F64]" => [Float32, Float32, Float64, Float64],
         # "[F64, F64, F32, F32]" => [Float64, Float64, Float32, Float32],
-        # "[F32, F64, F64]"      => [Float32, Float64, Float64],
-        # "[F16, F16, F32]"      => [Float16, Float16, Float32],
+        "[F32, F64, F64]"      => [Float32, Float64, Float64],
+        "[F16, F16, F32]"      => [Float16, Float16, Float32],
         # "[F16, F16, F16, F32]" => [Float16, Float16, Float16, Float32],
         # "[F16, F16, F16, F16, F32]" => [Float16, Float16, Float16, Float16, Float32],
-        # "[F16, F32, F32]"      => [Float16, Float32, Float32],
-        # "[F16, F32]"           => [Float16, Float32],
+        "[F16, F32, F32]"      => [Float16, Float32, Float32],
+        "[F16, F32]"           => [Float16, Float32],
         
         # --- Compelling New Configurations ---
         
