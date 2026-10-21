@@ -8,8 +8,8 @@ function run_recgemm_benchmark()
     # Define the different mixed-precision scenarios
     test_scenarios = Dict(
         "Pure F16"             => [Float16, Float16, Float16],
-        "Pure F32"             => [Float32, Float32, Float32],
-        "Pure F64"             => [Float64, Float64, Float64],
+        # "Pure F32"             => [Float32, Float32, Float32],
+        # "Pure F64"             => [Float64, Float64, Float64],
         # "[F32, F32, F64]"      => [Float32, Float32, Float64],
         # "[F32, F32, F64, F64]" => [Float32, Float32, Float64, Float64],
         # "[F64, F64, F32, F32]" => [Float64, Float64, Float32, Float32],
