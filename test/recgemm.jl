@@ -177,8 +177,8 @@ function run_recgemm_benchmark()
                 B_cpu = randn(T_out, n, n) .* 0.001f0
 
                 # Make strictly diagonally dominant but safe from Float16 overflow (max 65504)
-                A_cpu .+= Diagonal(fill(T_out(100.0), n))
-                B_cpu .+= Diagonal(fill(T_out(100.0), n))
+                # A_cpu .+= Diagonal(fill(T_out(100.0), n))
+                # B_cpu .+= Diagonal(fill(T_out(100.0), n))
 
                 d_A = CuArray(A_cpu)
                 d_B = CuArray(B_cpu)
@@ -241,8 +241,8 @@ function run_recgemm_benchmark()
                 B_cpu = randn(T_prec, n, n) .* 0.001f0
 
                 # Make strictly diagonally dominant (consistent with above)
-                A_cpu .+= Diagonal(fill(T_prec(100.0), n))
-                B_cpu .+= Diagonal(fill(T_prec(100.0), n))
+                # A_cpu .+= Diagonal(fill(T_prec(100.0), n))
+                # B_cpu .+= Diagonal(fill(T_prec(100.0), n))
 
                 d_A_cublas = CuArray(A_cpu)
                 d_B_cublas = CuArray(B_cpu)
