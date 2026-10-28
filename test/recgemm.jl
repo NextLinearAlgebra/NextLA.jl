@@ -132,10 +132,10 @@ function run_recgemm_benchmark()
         # --- Compelling New Configurations ---
 
         # Smooth Gradients (F16 leaf -> F32 mid -> F64 root)
-        "[F16, F16, F32, F64]" => [Float16, Float16, Float32, Float64],
-        "[F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float32, Float64],
-        "[F16, F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float16, Float32, Float64],
-        "[F16, F16, F16, F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float16, Float16, Float16, Float32, Float64],
+        # "[F16, F16, F32, F64]" => [Float16, Float16, Float32, Float64],
+        # "[F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float32, Float64],
+        # "[F16, F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float16, Float32, Float64],
+        # "[F16, F16, F16, F16, F16, F16, F32, F64]" => [Float16, Float16, Float16, Float16, Float16, Float16, Float32, Float64],
 
         # # Extreme Jumps (F16 direct to F64)
         "[F16, F64]"           => [Float16, Float64],
