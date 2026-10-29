@@ -111,6 +111,7 @@ function GEMM_SUB!(C::AnyGPUArray, A, B, scale::Float32=1.0f0)
     end
 end
 
+if isdefined(@__MODULE__, :oneAPI)
 function GEMM_ADD!(A, B, C::oneAPI.oneDeviceArray, scale::Float32=1.0f0)
     transA = A isa Transpose ? 'T' : 'N'
     transB = B isa Transpose ? 'T' : 'N'
@@ -128,6 +129,7 @@ function GEMM_SUB!(C::oneAPI.oneDeviceArray, A, B, scale::Float32=1.0f0)
     T_C = eltype(C)
     oneMKL.gemm!(transA, transB, T_C(-scale), A_mat, B_mat, T_C(1.0), C)
 end
+end # Optional Intel backend; CUDA-only runs do not need oneAPI installed.
 
 function dispatch_trsm!(side, uplo, trans, diag, alpha, A, B; A_scale=1.0f0)
     T = promote_type(Float32, eltype(A), eltype(B))
@@ -221,7 +223,7 @@ end
 
 function unified_rec(func::Char, side::Char, uplo::Char, diag::Char,
     A::Transpose{T, M},
-    B::StridedMatrix{T}, threshold::Int=256;
+    B::AbstractMatrix{T}, threshold::Int=256;
     A_scale::Float32=1.0f0
 ) where {T <: AbstractFloat, M <: AbstractMatrix{T}}
 
@@ -285,16 +287,16 @@ function unified_rec(func::Char, side::Char, uplo::Char, diag::Char,
 end
 
 function unified_rec(func::Char, side::Char, uplo::Char,
-    A::Union{Transpose{T, M}, StridedMatrix{T}},
-    B::StridedMatrix{T}, threshold::Int=256;
+    A::AbstractMatrix{T},
+    B::AbstractMatrix{T}, threshold::Int=256;
     A_scale::Float32=1.0f0
-) where {T <: AbstractFloat, M <: AbstractMatrix{T}}
+) where {T <: AbstractFloat}
     return unified_rec(func, side, uplo, 'N', A, B, threshold; A_scale=A_scale)
 end
 
 function unified_rec(func::Char, side::Char, uplo::Char, diag::Char,
-    A::StridedMatrix{T},
-    B::StridedMatrix{T}, threshold::Int=256;
+    A::AbstractMatrix{T},
+    B::AbstractMatrix{T}, threshold::Int=256;
     A_scale::Float32=1.0f0) where T <: AbstractFloat
 
     n = size(A, 1)
@@ -410,7 +412,7 @@ function unified_rectrxm!(
         alpha::Number, 
         func::Char, 
         A::AbstractMixedPrec, 
-        B::StridedMatrix
+        B::AbstractMatrix
     )
     threshold = 16
     if trans == 'T' || trans == 'C'
@@ -430,7 +432,7 @@ function unified_rectrxm!(
 end
 
 function unified_rectrxm!(
-        side::Char, uplo::Char, trans::Char, alpha::Number, func::Char, A::AbstractMixedPrec, B::StridedMatrix
+        side::Char, uplo::Char, trans::Char, alpha::Number, func::Char, A::AbstractMixedPrec, B::AbstractMatrix
     )
     return unified_rectrxm!(side, uplo, trans, 'N', alpha, func, A, B)
 end
@@ -445,7 +447,7 @@ conversions between the precision hierarchies of `A` and `B`.
 function unified_rec_mixed(
     func::Char, side::Char, uplo::Char, diag::Char,
     A::AbstractMixedPrec{T_Base},
-    B::StridedMatrix,
+    B::AbstractMatrix,
     threshold::Int=256
 ) where {T_Base}
     if A.BaseCase !== nothing
@@ -669,7 +671,7 @@ end
 function unified_rec_mixed(
     func::Char, side::Char, uplo::Char, diag::Char,
     A::TransposedMixedPrec,
-    B::StridedMatrix,
+    B::AbstractMatrix,
     threshold::Int=256
 )
     A_orig = parent(A)
@@ -890,7 +892,7 @@ end
 function unified_rec_mixed(
     func::Char, side::Char, uplo::Char,
     A::TransposedMixedPrec,
-    B::StridedMatrix,
+    B::AbstractMatrix,
     threshold::Int=256
 )
     return unified_rec_mixed(func, side, uplo, 'N', A, B, threshold)

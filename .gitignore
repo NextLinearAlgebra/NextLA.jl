@@ -4,3 +4,6 @@
 /Manifest.toml
 /docs/Manifest.toml
 /docs/build/
+/data/matrices/
+/benchmark-results/
+/test/catalog/Manifest.toml

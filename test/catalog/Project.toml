@@ -1,0 +1,12 @@
+[deps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+MatrixMarket = "4d4711f2-db25-561a-b6b3-d35e7d4047d3"
+StochasticRounding = "3843c9a1-1f18-49ff-9d99-1b4c8a8e97ed"
+
+[compat]
+CUDA = "5"
+KernelAbstractions = "0.9"
+MatrixMarket = "0.5"
+StochasticRounding = "0.8"
+julia = "1.10"
