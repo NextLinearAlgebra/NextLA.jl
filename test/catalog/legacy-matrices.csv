@@ -1,0 +1,7 @@
+"name","n","group","application","expected_nnz","url","archive"
+"bodyy4","17546","Pothen","Structural Engineering","121550","https://sparse.tamu.edu/MM/Pothen/bodyy4.tar.gz","true"
+"bodyy5","18589","Pothen","Structural Engineering","128853","https://sparse.tamu.edu/MM/Pothen/bodyy5.tar.gz","true"
+"bodyy6","19366","Pothen","Structural Engineering","134208","https://sparse.tamu.edu/MM/Pothen/bodyy6.tar.gz","true"
+"nasasrb","54870","group6","Structural Engineering","2677324","https://esmail.r-inla-download.org/mtx/group6/nasasrb.mtx","false"
+"crankseg_2","63838","group3","Structural Engineering","14148858","https://esmail.r-inla-download.org/mtx/group3/crankseg_2.mtx","false"
+"inla_graph_animal2","50126","group2","Bayesian Statistics","502803876","https://esmail.r-inla-download.org/mtx/group2/inla_graph_animal2.mtx","false"

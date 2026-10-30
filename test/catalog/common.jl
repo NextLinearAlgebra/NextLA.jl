@@ -56,6 +56,7 @@ function settings()
         "gpu_timeout" => positive_env("GPU_TIMEOUT_SECONDS", 600),
         "stiles_timeout" => positive_env("STILES_TIMEOUT_SECONDS", 300),
         "sweep_timeout" => positive_env("SWEEP_TIMEOUT_SECONDS", 10800),
+        "gpu_memory_copies" => positive_env("GPU_MEMORY_COPIES", 5),
         "seed" => 20261029, "shift" => 0,
     )
 end

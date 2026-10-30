@@ -318,6 +318,50 @@ Use the sTiles comparison and remaining feature plots to discuss exceptions.
 
 ## Validation
 
+## Rerun the earlier six matrices and measure sTiles CPU scaling
+
+Inside the existing H200 allocation with 14 CPUs, from the full Git checkout:
+
+```bash
+bash test/catalog/extended.sh 2>&1 | tee extended-run.log
+```
+
+This first measures sTiles at 14, 1, 8, 2 and 4 requested cores on
+`inla_graph_sem_n5000`, `inla_graph_spacetime`, and `inla_graph_animal1`, spanning
+very sparse, intermediate and dense inputs. Five repetitions, input files,
+BLAS thread limits and accuracy settings are held fixed. The order alternates
+core counts. `CORE_COUNTS` and `CORE_MATRICES` can override those selections.
+Recorded core counts are requested library parallelism; hardware and process
+affinity are captured separately, without claiming physical-core topology.
+
+It then searches the old checkout, home and scratch for the six earlier inputs
+and downloads missing files to `~/orcd/scratch/nextla-legacy-matrices`. Existing
+files are reused via symlinks. Download failures are retained as missing cases.
+One GPU backend and one 14-core sTiles backend are run per legacy matrix, starting
+with bodyy4/5/6. Loaded nonzero counts must match the earlier input descriptions.
+Fresh hashes identify these rerun files; dimensions/counts alone do not prove
+identical values to an earlier input whose hash was never recorded.
+
+All data go into a new `benchmark-results/extended-<job>-<timestamp>/` directory;
+the original survey is preserved. Per-worker and allocation-aware timeouts bound
+the run. Core stages get four minutes each; legacy GPU workers get up to 900 s
+and CPU workers 300 s, capped by remaining allocation time. Files such as animal2
+are large, and a complete run is not guaranteed within two hours.
+
+The extended launcher records a four-FP64-copy GPU memory budget instead of the
+default five, and the worker reuses F64 factors after timing to reduce peak memory.
+This allows attempting large inputs while keeping worker-level failure isolation;
+the estimate is not an OOM guarantee. Input quantization diagnostics now survive
+ordinary factorization exceptions, so failed cases can still reveal input damage.
+
+Do not update this checkout while workers are running. To compare scaling, use
+each `cores-N/results.csv` and its `analysis_repetition_ms` / `repetition_ms` fields;
+factor speedup at N cores is one-core factor time / N-core factor time, and parallel
+efficiency is that speedup divided by N. Compare analysis separately. Missing and
+timed-out cases do not supply speedups.
+
+## Validation commands
+
 ```bash
 julia --project=test/catalog test/catalog/runtests.jl
 julia --project=test/catalog test/catalog/runner_integration_tests.jl

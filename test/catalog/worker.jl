@@ -35,7 +35,7 @@ function timed_gpu(operation, reset; repeats=CONFIG["repeats"])
     times
 end
 
-function run_gpu(A, dense, method, inputs)
+function run_gpu(A, dense, method, inputs, row=Dict{String,Any}())
     S = CatalogSolver
     mixed = startswith(method, "M")
     work = nothing
@@ -50,6 +50,8 @@ function run_gpu(A, dense, method, inputs)
         scales = scale_stats(initial)
         decoded = decode_blocks(initial)
         quant_error = norm(decoded * CUDA.CuArray(inputs.omega) - CUDA.CuArray(inputs.aomega)) / norm(inputs.aomega)
+        row["quantization_error"] = quant_error
+        row["scaled_blocks"],row["max_scale"] = scales
         initial = decoded = nothing
         GC.gc(true); CUDA.reclaim()
         function operation()
@@ -66,11 +68,17 @@ function run_gpu(A, dense, method, inputs)
         T = endswith(method, "F64") ? Float64 : Float32
         clean = T.(dense)
         quant_error = norm(Float64.(clean) * CUDA.CuArray(inputs.omega) - CUDA.CuArray(inputs.aomega)) / norm(inputs.aomega)
+        row["quantization_error"] = quant_error
         work = copy(clean)
         operation = startswith(method, "cuSOLVER") ? (() -> CUDA.CUSOLVER.potrf!('L', work)) :
             (() -> S.potrf_recursive!(work, 4096))
         times = timed_gpu(operation, () -> copyto!(work, clean))
-        factor = tril!(Float64.(work))
+        # Release the reset copy and reuse F64 work for decoding. This reduces
+        # peak memory outside timing on the 50k–64k legacy inputs.
+        clean = nothing
+        factor = T == Float64 ? tril!(work) : tril!(Float64.(work))
+        work = nothing
+        GC.gc(true); CUDA.reclaim()
         scope = "factorization; excludes input conversion/transfer/reset/accuracy"
     end
     println("$method minimum_ms=$(minimum(times)) median_ms=$(median(times)); checking accuracy")
@@ -134,6 +142,9 @@ function main()
     entry = only(filter(row -> row["name"] == MATRIX_NAME, entries))
     path = joinpath(CONFIG["matrix_dir"], MATRIX_NAME * ".mtx")
     A = load_input(path, parse(Int, entry["n"]))
+    if !isempty(get(entry,"expected_nnz",""))
+        nnz(A)==parse(Int,entry["expected_nnz"]) || error("Input nonzero count differs from the earlier matrix: $(nnz(A))")
+    end
     diagnostics = input_diagnostics(A)
     diagnostics["matrix_sha256"] = CatalogSweep.file_hash(path)
     diagnostics["matrix_sha256"] == CONFIG["input_hashes"][MATRIX_NAME] || error("Input changed after sweep started")
@@ -145,11 +156,11 @@ function main()
         CUDA.functional() || error("CUDA is not functional on this node")
         diagnostics["gpu"] = CUDA.name(CUDA.device())
         # One FP64 dense input plus factors, decoding and solver workspace.
-        needed = 5 * 8.0 * size(A, 1)^2
+        needed = CONFIG["gpu_memory_copies"] * 8.0 * size(A, 1)^2
         if needed > CUDA.available_memory()
             for method in METHODS
                 row = merge(CatalogSweep.base_row(entry, CONFIG, method), diagnostics)
-                row["status"], row["detail"] = "SKIP_MEMORY", "Conservative estimate: five FP64 dense matrices exceed currently available GPU memory"
+                row["status"], row["detail"] = "SKIP_MEMORY", "Configured dense-copy memory estimate exceeds currently available GPU memory"
                 checkpoint(row)
             end
             return
@@ -160,7 +171,7 @@ function main()
         start = time()
         row = merge(CatalogSweep.base_row(entry, CONFIG, method), diagnostics)
         try
-            metrics = BACKEND == "gpu" ? run_gpu(A, dense, method, inputs) : run_stiles(A, inputs)
+            metrics = BACKEND == "gpu" ? run_gpu(A, dense, method, inputs, row) : run_stiles(A, inputs)
             merge!(row, metrics)
             errors = [value for (key, value) in metrics if endswith(key, "error") || endswith(key, "residual")]
             row["status"] = all(isfinite, errors) ? "OK" : "NONFINITE"
