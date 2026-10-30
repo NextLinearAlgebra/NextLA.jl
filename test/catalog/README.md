@@ -316,8 +316,6 @@ Start the advisor discussion with completion/failures, forward-error heatmap,
 cuSOLVER F32 accuracy/speed tradeoff, and quantization-versus-factor-error plot.
 Use the sTiles comparison and remaining feature plots to discuss exceptions.
 
-## Validation
-
 ## Rerun the earlier six matrices and measure sTiles CPU scaling
 
 Inside the existing H200 allocation with 14 CPUs, from the full Git checkout:
@@ -361,6 +359,9 @@ efficiency is that speedup divided by N. Compare analysis separately. Missing an
 timed-out cases do not supply speedups.
 
 ## Validation commands
+
+The cross-experiment report (earlier real matrices, synthetic dense inputs,
+shifting and the catalog survey) is documented in [COMPREHENSIVE.md](COMPREHENSIVE.md).
 
 ```bash
 julia --project=test/catalog test/catalog/runtests.jl
