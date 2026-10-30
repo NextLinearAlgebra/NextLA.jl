@@ -244,6 +244,78 @@ environment fingerprint. Plots go into that run's `plots/` directory. sTiles
 speedups use numeric factor time; its analysis is separately available in the CSV.
 Errors/timeouts are labeled in the heatmap and omitted from finite scatter points.
 
+## Advisor report from the saved results
+
+Let the active sweep finish before updating its checkout: workers record source
+hashes, and resuming requires the same sources and environment. The new report
+does not change or rerun any factorization. The existing batch launcher still
+generates its original five PNG plots; generate this expanded report afterward.
+
+For the current ORCD run, after the launcher returns to the shell prompt:
+
+```bash
+cd ~/NextLA-catalog-run
+git fetch origin vicki-development
+# This benchmark checkout was created detached; update it after the run finishes.
+git merge --ff-only origin/vicki-development
+module load julia
+julia --project=test/catalog test/catalog/report.jl \
+  benchmark-results/catalog-27277754/results.csv
+```
+
+The report uses Plots, already installed by the batch setup step. No GPU is
+needed. It creates `benchmark-results/catalog-27277754/report/` containing:
+
+- `report.html`: one offline, shareable document with all figures embedded,
+  method summaries, fastest observed qualifying methods, failure details, and
+  experiment provenance. Open locally in a browser; Print / Save as PDF works.
+- `figures/`: 19 figures, each exported as PNG and vector SVG for slides.
+- `method-summary.csv`, `matrix-summary.csv`, `problems.csv`: exact numbers and
+  paired sample counts behind the summary, including qualifying-only speedups.
+- `results-snapshot.csv`, `settings-snapshot.toml`, `report-settings.toml`: the
+  input snapshot and analysis settings. The HTML records the input SHA-256.
+
+The figures cover completion/failures; factor, forward, equation and backward
+errors; runtimes; speedups and accuracy/speed tradeoffs against cuSOLVER F32,
+cuSOLVER F64 and CPU sTiles; speedup versus size/density; quantization error;
+dynamic range and diagonal dominance; accuracy coverage at several tolerances;
+and sTiles analysis/factor time shares.
+
+The default report uses **median** repeated timings and **forward error ≤ 1e-3**
+as an explicitly exploratory cutoff. This does not declare a scientifically
+appropriate tolerance for every application. `OK` is never treated as an accuracy
+pass on its own. Coverage denominators include every selected matrix, including
+missing observations and failures. Geometric-mean speedups use paired valid
+timings only, and must be read alongside their sample counts. CPU sparse and GPU
+dense algorithm scopes remain labeled. No condition number is inferred.
+
+Optional controls, applied only to analysis:
+
+```bash
+REPORT_TIMING=min REPORT_METRIC=solve_residual REPORT_TOLERANCE=1e-5 \
+  julia --project=test/catalog test/catalog/report.jl \
+  benchmark-results/catalog-27277754/results.csv \
+  benchmark-results/catalog-27277754/report-equation-residual
+```
+
+Supported metrics: `forward_error` (default), `factor_residual`, `solve_residual`,
+`backward_error`. With factor residual selected, sTiles cannot qualify because
+its factor residual is not measured. A partial snapshot is allowed and labeled;
+unrecorded cells never count as passes or become synthetic timing observations.
+Do not combine independent experiments into one input CSV; duplicate cells and
+mixed source/CPU/GPU provenance are rejected.
+
+To copy the complete report and slide figures to your laptop, run in local
+PowerShell after generating it (not inside the ORCD SSH session):
+
+```powershell
+scp -r vickicar@orcd-login.mit.edu:~/NextLA-catalog-run/benchmark-results/catalog-27277754/report "$HOME\Downloads\cholesky-catalog-report"
+```
+
+Start the advisor discussion with completion/failures, forward-error heatmap,
+cuSOLVER F32 accuracy/speed tradeoff, and quantization-versus-factor-error plot.
+Use the sTiles comparison and remaining feature plots to discuss exceptions.
+
 ## Validation
 
 ```bash
@@ -251,6 +323,9 @@ julia --project=test/catalog test/catalog/runtests.jl
 julia --project=test/catalog test/catalog/runner_integration_tests.jl
 julia --project=test/catalog test/catalog/integration_tests.jl
 julia --project=test/catalog test/catalog/stiles_smoke.jl
+julia test/catalog/report_tests.jl
+# Optional full rendering checks on explicitly synthetic data:
+julia --project=test/catalog test/catalog/report_tests.jl --render
 ```
 
 Tests exercise CSV/checkpoints, selection, scale-aware decoding, known-solution
