@@ -28,27 +28,80 @@ prepared=normpath(joinpath(@__DIR__,"..","..","benchmark-results","comprehensive
 if isfile(joinpath(prepared,"data","all-results.csv"))
     @testset "Available real experiment audit" begin
         rows=C.CatalogSweep.read_csv(joinpath(prepared,"data","all-results.csv"))
-        inv=C.inventory(rows);d=C.lookup(rows)
-        @test length(rows)==370
+        primary=C.primary_rows(rows);inv=C.inventory(primary);d=C.lookup(primary)
+        old=C.lookup(C.historical_rows(rows));scaling=C.scaling_rows(rows)
+        @test length(rows)==445
+        @test length(primary)==370
+        @test length(scaling)==15
+        @test length(C.historical_rows(rows))==170
         @test length(inv)==31
         @test count(r->r["kind"]=="real",inv)==26
         @test count(r->r["kind"]=="synthetic",inv)==5
         @test count(r->r["policy"]=="shifted",rows)==60
         @test all(r->!haskey(r,"time_ms") || isempty(r["time_ms"]),filter(r->r["policy"]=="shifted",rows))
-        @test C.nval(d[("animal2","original","M6")],"time_ms")==338.315
-        @test C.nval(d[("nasasrb","original","M6")],"factor_residual")==.272
+        @test C.nval(d[("animal2","original","M6")],"time_ms")==357.482628
+        @test C.nval(old[("nasasrb","original","M6")],"factor_residual")==.272
+        @test d[("nasasrb","original","M6")]["status"]=="ERROR"
+        @test C.nval(d[("nasasrb","original","M6")],"quantization_error")≈7.564124732457926e-5
+        @test d[("crankseg_2","original","M6")]["status"]=="ERROR"
+        @test d[("animal2","original","sTiles_F64")]["status"]=="TIMEOUT"
+        @test !C.validtime(d[("animal2","original","sTiles_F64")])
         @test C.nval(d[("nasasrb","shifted","M6")],"factor_residual")==.00257
         @test C.nval(d[("dense_65536","seeded dense + nI","M6")],"time_ms")==413.606
         @test d[("dense_65536","seeded dense + nI","sTiles_F64")]["status"]=="SKIP"
         @test d[("nasasrb","original","M7")]["status"]=="ERROR"
-        @test occursin("rounded",d[("bodyy6","original","M1")]["source_precision"])
+        @test d[("bodyy6","original","M1")]["source_precision"]=="raw CSV"
+        @test occursin("rounded",old[("bodyy6","original","M1")]["source_precision"])
         @test count(r->r["cohort"]=="Catalog / 14-core CPU" && r["status"]=="ERROR",rows)==29
-        @test length(C.chart_specs(rows,inv))==13
+        current=C.analysis_rows(primary)
+        @test length(current)==260
+        @test count(r->r["status"]=="OK",current)==226
+        @test count(r->r["status"]=="ERROR",current)==33
+        @test count(r->r["status"]=="TIMEOUT",current)==1
+        for method in C.MIXED
+            @test count(r->r["method"]==method && C.passes(r),current)==(method=="M1" ? 14 : 11)
+        end
+        best=[C.bestmixed(filter(r->r["matrix"]==name,current)) for name in unique(getindex.(current,"matrix"))]
+        eligible=filter(!isnothing,best)
+        compared=filter(r->C.validtime(d[(r["matrix"],"original","sTiles_F64")]),eligible)
+        @test length(eligible)==14
+        @test length(compared)==13
+        @test count(r->C.nval(d[(r["matrix"],"original","sTiles_F64")],"time_ms")>C.nval(r,"time_ms"),compared)==4
+        specs=C.chart_specs(primary,inv;history=C.historical_rows(rows),scaling=scaling)
+        @test length(specs)==20
+        coverage=only(filter(s->s.id=="29-current-coverage",specs))
+        @test [Int(p["y"]) for p in coverage.points if p["series"]=="Backward ≤ 1e-3"]==[25,26,25,21,19,16,15,25,26,25]
+        backwardchart=only(filter(s->s.id=="35-current-backward-tradeoff",specs))
+        @test length(backwardchart.points)==sum(r->r["method"] in C.MIXED && C.validtime(r) && C.okay(r,"backward_error"),current)
+        @test any(p->startswith(p["label"],"nasasrb / M4") && p["x"]<1e-3 && p["y"]>1,backwardchart.points)
+        @test C.nval(d[("nasasrb","original","M4")],"forward_error")>.8
+        shiftchart=only(filter(s->s.id=="23-shift-factor",specs))
+        @test any(p->p["series"]=="original" && p["label"]=="nasasrb" && p["y"]==.272,shiftchart.points)
+        for r in scaling
+            @test r["status"]=="OK"
+            @test length(split(r["repetition_ms"],';'))==5
+            @test C.nval(r,"efficiency")≈C.nval(r,"speedup")/C.nval(r,"stiles_cores")
+            @test C.nval(r,"repeat_min")<=C.nval(r,"time_ms")<=C.nval(r,"repeat_max")
+            @test r["matrix_sha256"]==d[(r["matrix"],"original","sTiles_F64")]["matrix_sha256"]
+        end
+        sem=filter(r->r["matrix"]=="inla_graph_sem_n5000",scaling)
+        @test C.nval(sem[argmin(C.nval.(sem,"time_ms"))],"stiles_cores")==2
+        @test C.nval(only(filter(r->C.nval(r,"stiles_cores")==14,sem)),"speedup")<1
+        for folder in ("legacy-14","cores-1","cores-2","cores-4","cores-8","cores-14")
+            source=joinpath(prepared,"..","extended-27277754-20261029-230602",folder,"results.csv")
+            copy=joinpath(prepared,"data","extended",folder,"results.csv")
+            @test read(source)==read(copy)
+        end
         @test all(r->C.nval(r,"density_percent")+C.nval(r,"sparsity_percent")≈100,inv)
         html=read(joinpath(prepared,"report.html"),String)
-        @test count("<figure ",html)==32
+        @test count("<figure ",html)==39
         @test count("<section class='matrix'>",html)==31
-        @test count("<h2 id='",html)==13
+        @test count("<h2 id='",html)==14
+        @test [m.captures[1] for m in eachmatch(r"<h2 id='([^']+)'",html)]==first.(C.REPORT_SECTIONS)
+        @test first(findfirst("fig-29-current-coverage",html))<first(findfirst("id='crossover'",html))
+        @test first(findfirst("fig-35-current-backward-tradeoff",html))<first(findfirst("id='crossover'",html))
+        @test !occursin("separate pending experiment",html)
+        @test !occursin("extended sweep is prepared but",html)
         @test occursin("Historical precision",html)
         @test occursin("Overall conclusion",html)
     end

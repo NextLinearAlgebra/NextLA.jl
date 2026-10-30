@@ -14,7 +14,8 @@ const METRICS = ["quantization_error","factor_residual","forward_error","solve_r
 const FIELDS = ["cohort","kind","matrix","n","policy","shift","method","status","time_ms","timing_statistic",
     "min_ms","median_ms","analysis_ms","factor_ms","stiles_cores","nnz","density","application","dominant_fraction",
     "max_abs","min_abs_nonzero","worst_margin","scaled_blocks","max_scale","quantization_error","factor_residual",
-    "forward_error","solve_residual","backward_error","detail","accuracy_source","timing_source","source_precision"]
+    "forward_error","solve_residual","backward_error","detail","accuracy_source","timing_source","source_precision",
+    "repetition_ms","analysis_repetition_ms","git_commit","source_hash","matrix_sha256","probes","nrhs","repeats","seed","blas_threads"]
 nval(r,k) = something(tryparse(Float64,get(r,k,"")),NaN)
 fnum(x) = x isa Number ? (isfinite(x) ? (isinteger(x) && abs(x)<1e12 ? @sprintf("%.0f",x) : @sprintf("%.4g",x)) : "—") : string(x)
 esc(x) = replace(string(x),'&'=>"&amp;",'<'=>"&lt;",'>'=>"&gt;",'"'=>"&quot;",'\''=>"&#39;")
@@ -142,16 +143,40 @@ function legacy_dense(doc,csv)
     length(rows)==50 || error("Expected 50 raw dense accuracy rows")
     rows
 end
-function current_rows(path)
+function current_rows(path;cohort="Catalog / 14-core CPU",expected=200)
     out=Dict{String,String}[]
     for row in CatalogSweep.read_csv(path)
         r=Dict{String,String}(k=>get(row,k,"") for k in FIELDS)
-        merge!(r,Dict("cohort"=>"Catalog / 14-core CPU","kind"=>"real","policy"=>"original","time_ms"=>row["median_ms"],
-            "timing_statistic"=>"median of five repetitions","accuracy_source"=>"Catalog results.csv (raw)",
-            "timing_source"=>"Catalog results.csv (same run)","source_precision"=>"raw CSV"))
+        r["matrix"]=canonical(row["matrix"])
+        merge!(r,Dict("cohort"=>cohort,"kind"=>"real","policy"=>"original","time_ms"=>row["median_ms"],
+            "timing_statistic"=>"median of five repetitions","accuracy_source"=>cohort*": results.csv (raw)",
+            "timing_source"=>cohort*": results.csv (same run)","source_precision"=>"raw CSV"))
         push!(out,r)
     end
-    length(out)==200 || error("Expected the complete 200-row catalog survey")
+    length(out)==expected || error("Expected $expected rows in $path")
+    out
+end
+# Retain every observation in all-results.csv, but use fresh original-input reruns
+# for current comparisons. Never combine a rerun original with a historical shift.
+function primary_rows(rows)
+    rerun=Set(r["matrix"] for r in rows if r["cohort"]=="Legacy rerun / 14-core CPU")
+    filter(r->!startswith(r["cohort"],"Core sweep /") &&
+        !(r["cohort"]=="Earlier / 1-core CPU" && r["policy"]=="original" && r["matrix"] in rerun),rows)
+end
+historical_rows(rows)=filter(r->r["cohort"]=="Earlier / 1-core CPU",rows)
+core_rows(rows)=filter(r->startswith(r["cohort"],"Core sweep /"),rows)
+function scaling_rows(rows)
+    rr=core_rows(rows);out=Dict{String,String}[]
+    for name in sort(unique(getindex.(rr,"matrix")))
+        group=sort(filter(r->r["matrix"]==name,rr);by=r->nval(r,"stiles_cores"))
+        baseline=only(filter(r->nval(r,"stiles_cores")==1,group))
+        for r in group
+            speed=validtime(r)&&validtime(baseline) ? nval(baseline,"time_ms")/nval(r,"time_ms") : NaN
+            reps=filter(isfinite,[something(tryparse(Float64,x),NaN) for x in split(get(r,"repetition_ms",""),';')])
+            push!(out,merge(copy(r),Dict("speedup"=>string(speed),"efficiency"=>string(speed/nval(r,"stiles_cores")),
+                "repeat_min"=>string(isempty(reps) ? NaN : minimum(reps)),"repeat_max"=>string(isempty(reps) ? NaN : maximum(reps)))))
+        end
+    end
     out
 end
 function inventory(rows)
@@ -191,18 +216,38 @@ function geometry(n,k)
     (leaves=a.leaves+b.leaves,offdiag=1+a.offdiag+b.offdiag,minleaf=min(a.minleaf,b.minleaf),maxleaf=max(a.maxleaf,b.maxleaf),
         fp16_entries=mid*(n-mid)+a.fp16_entries+b.fp16_entries)
 end
-function prepare(docfile,densefile,rundir,outdir)
+function prepare(docfile,densefile,rundir,outdir,extended=nothing)
     mkpath(joinpath(outdir,"data"));mkpath(joinpath(outdir,"figures"));mkpath(joinpath(outdir,"chart-data"))
     doc=read(docfile,String)
     rows=vcat(current_rows(joinpath(rundir,"results.csv")),legacy_real(doc),legacy_dense(doc,densefile))
-    lookup(rows);length(rows)==370 || error("Expected 370 normalized observations")
+    lookup(rows);length(rows)==370 || error("Expected 370 original normalized observations")
+    if extended!==nothing
+        for (folder,cohort,expected) in vcat([("legacy-14","Legacy rerun / 14-core CPU",60)],
+                [("cores-$p","Core sweep / $p requested cores",3) for p in (1,2,4,8,14)])
+            path=joinpath(extended,folder)
+            append!(rows,current_rows(joinpath(path,"results.csv");cohort=cohort,expected=expected))
+            dest=joinpath(outdir,"data","extended",folder);mkpath(dest)
+            for filename in ("results.csv","settings.toml","cases-summary.csv")
+                isfile(joinpath(path,filename)) && cp(joinpath(path,filename),joinpath(dest,filename);force=true)
+            end
+            # Preserve failure stage evidence and the run's worker output.
+            for foldername in ("logs","cases")
+                isdir(joinpath(path,foldername)) && cp(joinpath(path,foldername),joinpath(dest,foldername);force=true)
+            end
+        end
+        cp(joinpath(extended,"hardware.txt"),joinpath(outdir,"data","extended","hardware.txt");force=true)
+    end
     CatalogSweep.write_csv(joinpath(outdir,"data","all-results.csv"),rows;columns=FIELDS)
-    inv=inventory(rows)
+    primary=primary_rows(rows);lookup(primary)
+    CatalogSweep.write_csv(joinpath(outdir,"data","primary-results.csv"),primary;columns=FIELDS)
+    scaling=scaling_rows(rows)
+    CatalogSweep.write_csv(joinpath(outdir,"data","cpu-scaling.csv"),scaling;columns=vcat(FIELDS,["speedup","efficiency","repeat_min","repeat_max"]))
+    inv=inventory(primary)
     CatalogSweep.write_csv(joinpath(outdir,"data","matrix-inventory.csv"),inv;columns=sort(collect(keys(first(inv)))))
     for (source,target) in [(docfile,"earlier-synthesis.txt"),(densefile,"earlier-accuracy-original.csv"),(joinpath(rundir,"results.csv"),"catalog-results-original.csv"),(joinpath(rundir,"settings.toml"),"catalog-settings.toml")]
         cp(source,joinpath(outdir,"data",target);force=true)
     end
-    specs=chart_specs(rows,inv)
+    specs=chart_specs(primary,inv;history=historical_rows(rows),scaling=scaling)
     for spec in specs
         CatalogSweep.write_csv(joinpath(outdir,"chart-data",spec.id*".csv"),spec.points;columns=["series","x","y","label"])
     end
@@ -212,7 +257,7 @@ function prepare(docfile,densefile,rundir,outdir)
 end
 
 # Standard plotting backends consume these numeric datasets; no chart contains invented observations.
-function chart_specs(rows,inv)
+function chart_specs(rows,inv;history=historical_rows(rows),scaling=Dict{String,String}[])
     specs=NamedTuple[]
     add(id,title,xlabel,ylabel,points;xlog=false,ylog=false,kind="scatter")=push!(specs,(id=id,title=title,xlabel=xlabel,ylabel=ylabel,points=points,xlog=xlog,ylog=ylog,kind=kind))
     pt(series,x,y,label)=Dict{String,Any}("series"=>series,"x"=>x,"y"=>y,"label"=>label)
@@ -224,13 +269,13 @@ function chart_specs(rows,inv)
     for name in ("dense_4096","dense_16384","dense_65536","animal2","bodyy6")
         rr=filter(r->r["matrix"]==name && r["policy"]!="shifted" && r["method"] in MIXED,rows)
         points=[pt("Time (ms)",parse(Int,r["method"][2:end]),nval(r,"time_ms"),r["method"]) for r in rr if validtime(r)]
-        add("22-depth-"*name,"Hierarchy depth versus runtime: "*name,"FP16 hierarchy entries k","Minimum runtime (ms)",points;ylog=true,kind="line")
+        add("22-depth-"*name,"Hierarchy depth versus runtime: "*name,"FP16 hierarchy entries k",name in OLD_NAMES ? "Current median runtime (ms)" : "Historical minimum runtime (ms)",points;ylog=true,kind="line")
     end
-    d=lookup(rows)
+    d=lookup(rows);paired=lookup(history)
     for (id,metric,title) in [("23-shift-factor","factor_residual","Diagonal shift: M6 factor residual"),("24-shift-forward","forward_error","Diagonal shift: M6 solution error")]
         points=Dict{String,Any}[]
         for (i,name) in enumerate(OLD_NAMES),policy in ("original","shifted")
-            row=get(d,(name,policy,"M6"),nothing)
+            row=get(paired,(name,policy,"M6"),nothing)
             okay(row,metric) && push!(points,pt(policy,i,max(nval(row,metric),1e-18),name))
         end
         add(id,title,"Matrix (labels below)",metric,points;ylog=true,kind="line")
@@ -251,12 +296,46 @@ function chart_specs(rows,inv)
         end
         add(id,title,metric=="density" ? "Nonzero density (%)" : "Dimension n","CPU numeric factor / mixed time",points;xlog=true,ylog=true)
     end
+    current=filter(r->r["kind"]=="real" && r["policy"]=="original" && r["source_precision"]=="raw CSV",rows)
+    points=Dict{String,Any}[]
+    for (i,method) in enumerate(METHODS)
+        rr=filter(r->r["method"]==method,current)
+        for (label,metric,tol) in [("Completed","time_ms",Inf),("Forward ≤ 1e-3","forward_error",1e-3),("Forward ≤ 1e-6","forward_error",1e-6),("Backward ≤ 1e-3","backward_error",1e-3)]
+            push!(points,pt(label,i,count(r->passes(r,metric,tol),rr),method))
+        end
+    end
+    add("29-current-coverage","All 26 real matrices: completion, forward and backward screens","Method","Number of matrices (out of 26)",points;kind="line")
+    points=Dict{String,Any}[]
+    for r in current
+        r["method"] in MIXED && validtime(r) && okay(r,"forward_error") || continue
+        ref=d[(r["matrix"],"original","cuSOLVER_F32")];validtime(ref) || continue
+        push!(points,pt(r["method"],max(nval(r,"forward_error"),1e-18),nval(ref,"time_ms")/nval(r,"time_ms"),r["matrix"]*" / "*r["method"]))
+    end
+    add("30-current-tradeoff","All 26 real matrices: speed gain versus solution error","Known-solution forward error (left is better)","cuSOLVER F32 / mixed median time (above 1 is faster)",points;xlog=true,ylog=true)
+    points=Dict{String,Any}[]
+    for r in current
+        r["method"] in MIXED && validtime(r) && okay(r,"backward_error") || continue
+        ref=d[(r["matrix"],"original","cuSOLVER_F32")];validtime(ref) || continue
+        push!(points,pt(r["method"],max(nval(r,"backward_error"),1e-18),nval(ref,"time_ms")/nval(r,"time_ms"),
+            r["matrix"]*" / "*r["method"]*"; forward="*fnum(nval(r,"forward_error"))))
+    end
+    add("35-current-backward-tradeoff","All 26 real matrices: speed gain versus backward error","Frobenius-scaled backward error (left is smaller)","cuSOLVER F32 / mixed median time (above 1 is faster)",points;xlog=true,ylog=true)
+    if !isempty(scaling)
+        for (id,field,title,ylabel) in [("31-core-runtime","time_ms","sTiles numeric factorization: measured core sweep","Median factor time (ms)"),
+                ("32-core-speedup","speedup","sTiles factor speedup relative to one requested core","T1 / Tp (factor medians)"),
+                ("33-core-analysis","analysis_ms","sTiles analysis cost across requested core counts","Recorded selected analysis time (ms)")]
+            points=[pt(r["matrix"],nval(r,"stiles_cores"),nval(r,field),r["matrix"]*" / "*r["stiles_cores"]*" cores") for r in scaling if isfinite(nval(r,field))]
+            add(id,title,"Requested sTiles cores (BLAS threads = 1)",ylabel,points;ylog=field!="speedup",kind="line")
+        end
+        points=[pt(r["matrix"],parse(Int,r["method"][2:end]),max(nval(r,"forward_error"),1e-18),r["method"]) for r in current if r["matrix"] in OLD_NAMES && r["method"] in MIXED && okay(r,"forward_error")]
+        add("34-rerun-depth-forward","Six legacy inputs rerun: deeper precision versus solution error","FP16 hierarchy entries k","Known-solution forward error",points;ylog=true,kind="line")
+    end
     specs
 end
 
 function main(args=ARGS)
     length(args)>=1 || error("Usage: comprehensive.jl --prepare doc.txt dense.csv run-dir output-dir | --html output-dir run-dir")
-    if args[1]=="--prepare"; length(args)==5 || error("Expected four paths");prepare(args[2:end]...)
+    if args[1]=="--prepare"; length(args) in (5,6) || error("Expected four paths and optional extended-run directory");prepare(args[2:end]...)
     elseif args[1]=="--html"; length(args)==3 || error("Expected output and run directory");build_html(args[2],args[3])
     else; error("Unknown mode")
     end
