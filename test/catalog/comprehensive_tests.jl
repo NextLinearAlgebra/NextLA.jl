@@ -67,6 +67,22 @@ if isfile(joinpath(prepared,"data","all-results.csv"))
         @test length(eligible)==14
         @test length(compared)==13
         @test count(r->C.nval(d[(r["matrix"],"original","sTiles_F64")],"time_ms")>C.nval(r,"time_ms"),compared)==4
+        outcomes=C.outcome_rows(primary,inv)
+        @test length(outcomes)==26
+        @test length(unique(getindex.(outcomes,"matrix")))==26
+        @test [count(r->r["outcome"]==g,outcomes) for g in C.OUTCOME_GROUPS]==[11,3,10,2]
+        @test Set(r["matrix"] for r in outcomes if r["outcome"]==C.OUTCOME_GROUPS[2])==Set(["bodyy4","bodyy5","bodyy6"])
+        @test all(r->r["accurate_methods"]=="M1",filter(r->r["outcome"]==C.OUTCOME_GROUPS[2],outcomes))
+        @test all(r->r["application"]=="Bayesian Statistics",filter(r->r["outcome"]==C.OUTCOME_GROUPS[1],outcomes))
+        @test Set(r["matrix"] for r in outcomes if r["outcome"]==C.OUTCOME_GROUPS[4])==Set(["gyro_m","inla_graph_stcov"])
+        @test count(r->C.nval(r,"severe_forward_methods")>0,outcomes)==9
+        @test count(r->r["outcome"]==C.OUTCOME_GROUPS[1] && C.nval(r,"quantization_max")<=1e-12,outcomes)==10
+        @test all(r->C.nval(r,"dominant_fraction")<.336,filter(r->r["outcome"]==C.OUTCOME_GROUPS[3],outcomes))
+        @test count(r->C.nval(r,"dominant_fraction")==1,outcomes)==10
+        @test all(r->C.nval(r,"mixed_completed")==5,filter(r->C.nval(r,"dominant_fraction")==1,outcomes))
+        @test all(r->C.passes(r),filter(r->r["kind"]=="synthetic" && r["method"] in C.MIXED,primary))
+        exported=C.CatalogSweep.read_csv(joinpath(prepared,"data","matrix-outcomes.csv"))
+        @test getindex.(exported,"outcome")==getindex.(outcomes,"outcome")
         specs=C.chart_specs(primary,inv;history=C.historical_rows(rows),scaling=scaling)
         @test length(specs)==20
         coverage=only(filter(s->s.id=="29-current-coverage",specs))
@@ -97,10 +113,12 @@ if isfile(joinpath(prepared,"data","all-results.csv"))
         html=read(joinpath(prepared,"report.html"),String)
         @test count("<figure ",html)==39
         @test count("<section class='matrix'>",html)==31
-        @test count("<h2 id='",html)==14
+        @test count("<h2 id='",html)==15
         @test [m.captures[1] for m in eachmatch(r"<h2 id='([^']+)'",html)]==first.(C.REPORT_SECTIONS)
         @test first(findfirst("fig-29-current-coverage",html))<first(findfirst("id='crossover'",html))
         @test first(findfirst("fig-35-current-backward-tradeoff",html))<first(findfirst("id='crossover'",html))
+        @test first.(C.REPORT_SECTIONS)[2]=="patterns"
+        @test occursin("sh7Pgi has zero strictly dominant rows",html)
         @test !occursin("separate pending experiment",html)
         @test !occursin("extended sweep is prepared but",html)
         @test occursin("Historical precision",html)

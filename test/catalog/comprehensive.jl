@@ -205,6 +205,29 @@ function lookup(rows)
     length(d)==length(rows) || error("Duplicate observations after normalizing sources")
     d
 end
+const OUTCOME_GROUPS=["All five depths accurate","Some depths accurate","Breakdown; no accurate depth","All depths complete; none accurate"]
+function outcome_rows(rows,inv;tol=1e-3)
+    out=Dict{String,String}[]
+    for meta in inv
+        meta["kind"]=="real" || continue
+        rr=filter(r->r["matrix"]==meta["matrix"] && r["policy"]=="original" && r["method"] in MIXED,rows)
+        length(rr)==5 || error("Expected five current mixed observations for $(meta["matrix"])")
+        good=filter(r->passes(r,"forward_error",tol),rr)
+        failed=filter(r->r["status"]!="OK",rr)
+        group=length(good)==5 ? OUTCOME_GROUPS[1] : !isempty(good) ? OUTCOME_GROUPS[2] : !isempty(failed) ? OUTCOME_GROUPS[3] : OUTCOME_GROUPS[4]
+        finitevalues(key)=[nval(r,key) for r in rr if isfinite(nval(r,key))]
+        q=finitevalues("quantization_error");f=finitevalues("forward_error")
+        row=copy(meta)
+        merge!(row,Dict("outcome"=>group,"forward_cutoff"=>string(tol),"accurate_methods"=>join(getindex.(good,"method"),";"),
+            "failed_methods"=>join([r["method"]*":"*r["status"] for r in failed],";"),
+            "mixed_forward_passes"=>string(length(good)),"mixed_completed"=>string(5-length(failed)),
+            "severe_forward_methods"=>string(count(>=(.1),f)),"quantization_observed_methods"=>string(length(q)),
+            "quantization_min"=>string(isempty(q) ? NaN : minimum(q)),"quantization_max"=>string(isempty(q) ? NaN : maximum(q)),
+            "best_forward"=>string(isempty(f) ? NaN : minimum(f)),"worst_forward"=>string(isempty(f) ? NaN : maximum(f))))
+        push!(out,row)
+    end
+    out
+end
 function bestmixed(rr; metric="forward_error",tol=1e-3,qualified=true)
     eligible=filter(r->r["method"] in MIXED && validtime(r) && (!qualified || passes(r,metric,tol)),rr)
     isempty(eligible) ? nothing : eligible[argmin(nval.(eligible,"time_ms"))]
@@ -244,6 +267,8 @@ function prepare(docfile,densefile,rundir,outdir,extended=nothing)
     CatalogSweep.write_csv(joinpath(outdir,"data","cpu-scaling.csv"),scaling;columns=vcat(FIELDS,["speedup","efficiency","repeat_min","repeat_max"]))
     inv=inventory(primary)
     CatalogSweep.write_csv(joinpath(outdir,"data","matrix-inventory.csv"),inv;columns=sort(collect(keys(first(inv)))))
+    outcomes=outcome_rows(primary,inv)
+    CatalogSweep.write_csv(joinpath(outdir,"data","matrix-outcomes.csv"),outcomes;columns=sort(collect(keys(first(outcomes)))))
     for (source,target) in [(docfile,"earlier-synthesis.txt"),(densefile,"earlier-accuracy-original.csv"),(joinpath(rundir,"results.csv"),"catalog-results-original.csv"),(joinpath(rundir,"settings.toml"),"catalog-settings.toml")]
         cp(source,joinpath(outdir,"data",target);force=true)
     end

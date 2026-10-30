@@ -36,11 +36,19 @@ and are used alongside their historical shifts, never replaced by a fresh
 original to form a cross-run pair. Core sweep observations stay separate from
 the primary per-matrix lookup. Raw CSVs, settings, logs, per-case output and
 hardware evidence are copied into `data/extended` unchanged.
+`data/matrix-outcomes.csv` classifies all 26 current real matrices at the declared
+forward cutoff into all-depth success, partial success, breakdown without a pass,
+and complete-without-a-pass. It retains application labels, measured properties,
+passing/failed methods, severe finite-error counts and input-probe coverage.
 
 The reading order is controlled by `REPORT_SECTIONS`: findings and three overview
-plots first (coverage, forward tradeoff, backward tradeoff), then performance, CPU scaling, synthetic trends, depth,
+plots first (coverage, forward tradeoff, backward tradeoff), then a matrix-property
+patterns chapter, performance, CPU scaling, synthetic trends, depth,
 error definitions, failures, quantization, shifting, inventory and dossiers.
 Experimental provenance and the audit trail remain available at the end.
+The patterns chapter contrasts application families, dominance, quantization,
+global value range, density and size, with counterexamples and no causal or
+universal selection claim. Fifteen sections retain the high-level-to-detail order.
 All 39 figures have accompanying interpretation. The 19 original catalog plots
 are explicitly labeled as a 20-input subset; new overview plots use all 26 real
 inputs. Timeouts are not assigned numeric factor times or speedup lower bounds.
