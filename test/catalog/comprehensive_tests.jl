@@ -71,6 +71,7 @@ if isfile(joinpath(prepared,"data","all-results.csv"))
         @test length(specs)==20
         coverage=only(filter(s->s.id=="29-current-coverage",specs))
         @test [Int(p["y"]) for p in coverage.points if p["series"]=="Backward ≤ 1e-3"]==[25,26,25,21,19,16,15,25,26,25]
+        @test [Int(p["y"]) for p in coverage.points if p["series"]=="Backward ≤ 1e-6"]==[25,26,24,20,18,13,12,25,26,25]
         backwardchart=only(filter(s->s.id=="35-current-backward-tradeoff",specs))
         @test length(backwardchart.points)==sum(r->r["method"] in C.MIXED && C.validtime(r) && C.okay(r,"backward_error"),current)
         @test any(p->startswith(p["label"],"nasasrb / M4") && p["x"]<1e-3 && p["y"]>1,backwardchart.points)

@@ -300,7 +300,7 @@ function chart_specs(rows,inv;history=historical_rows(rows),scaling=Dict{String,
     points=Dict{String,Any}[]
     for (i,method) in enumerate(METHODS)
         rr=filter(r->r["method"]==method,current)
-        for (label,metric,tol) in [("Completed","time_ms",Inf),("Forward ≤ 1e-3","forward_error",1e-3),("Forward ≤ 1e-6","forward_error",1e-6),("Backward ≤ 1e-3","backward_error",1e-3)]
+        for (label,metric,tol) in [("Completed","time_ms",Inf),("Forward ≤ 1e-3","forward_error",1e-3),("Forward ≤ 1e-6","forward_error",1e-6),("Backward ≤ 1e-3","backward_error",1e-3),("Backward ≤ 1e-6","backward_error",1e-6)]
             push!(points,pt(label,i,count(r->passes(r,metric,tol),rr),method))
         end
     end
