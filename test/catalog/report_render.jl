@@ -69,23 +69,38 @@ function scatterplot(d, title, subtitle, points; xlabel, ylabel, xlog=true, ylog
     p
 end
 
+function plot_stacks!(p,values,labels,colors; horizontal=false)
+    labeled = Set{Int}()
+    for segment in stack_segments(values)
+        i,j = segment.row,segment.column
+        positions = [i-.36,i+.36,i+.36,i-.36]
+        levels = [segment.lower,segment.lower,segment.upper,segment.upper]
+        shape = horizontal ? Shape(levels,positions) : Shape(positions,levels)
+        plot!(p,shape;label=j in labeled ? "" : labels[j],color=colors[j],linecolor=:white,linewidth=.5)
+        push!(labeled,j)
+    end
+    p
+end
+
 function statusplot(d)
     states=sort(unique(vcat([status(r) for r in values(d.lookup)],["NOT_RECORDED"])))
     counts=[count(name -> status(rowat(d,name,method))==state,d.matrices) for method in d.methods,state in states]
-    bar(1:length(d.methods),counts;bar_position=:stack,label=permutedims(states),
-        color=permutedims([get(STATUS_COLORS,s,"#555555") for s in states]),
+    p=plot(;
         xticks=(1:length(d.methods),d.methods),xrotation=35,ylims=(0,length(d.matrices)),
+        xlims=(.4,length(d.methods)+.6),
         ylabel="Selected matrices",title="Completion and failures (OK is not an accuracy pass)",
-        legend=:outerright,size=(1250,600),bottom_margin=13Plots.mm,linecolor=:white)
+        legend=:outerright,size=(1250,600),bottom_margin=13Plots.mm)
+    plot_stacks!(p,counts,states,[get(STATUS_COLORS,s,"#555555") for s in states])
 end
 function stilesplot(d)
     selected=[r for name in d.matrices for r in [rowat(d,name,"sTiles_F64")]
         if ok(r,"analysis_ms") && ok(r,"factor_ms") && num(r,"analysis_ms")+num(r,"factor_ms")>0]
     isempty(selected) && return plot(;title="sTiles phase costs: no completed measurements",axis=false,grid=false,legend=false)
     analysis=[100num(r,"analysis_ms")/(num(r,"analysis_ms")+num(r,"factor_ms")) for r in selected]
-    bar(1:length(selected),hcat(analysis,100 .- analysis);orientation=:h,bar_position=:stack,
+    p=plot(;
         yticks=(1:length(selected),getindex.(selected,"matrix")),yflip=true,xlims=(0,100),
-        label=["Analysis" "Numeric factorization"],color=["#56B4E9" "#0072B2"],linecolor=:white,
+        ylims=(.4,length(selected)+.6),
         xlabel="Share of minimum combined analysis + factor time (%)",title="sTiles phase costs",
         legend=:outertopright,size=(1250,max(480,150+30length(selected))),left_margin=16Plots.mm)
+    plot_stacks!(p,hcat(analysis,100 .- analysis),["Analysis","Numeric factorization"],["#56B4E9","#0072B2"];horizontal=true)
 end

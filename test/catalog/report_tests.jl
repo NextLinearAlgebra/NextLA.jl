@@ -76,6 +76,18 @@ end
     @test occursin("&lt;settings&gt;",html)
 end
 
+@testset "Stacked count and phase bars have disjoint intervals" begin
+    segments=R.stack_segments([2 1 0; 0 1 2])
+    first_bar=filter(s -> s.row==1,segments)
+    @test [(s.lower,s.upper) for s in first_bar]==[(0.0,2.0),(2.0,3.0)]
+    @test last(filter(s -> s.row==2,segments)).upper==3
+    @test length(segments)==4
+    phases=R.stack_segments([25.0 75.0; 0.0 100.0])
+    @test all(i -> last(filter(s -> s.row==i,phases)).upper==100,1:2)
+    @test_throws ErrorException R.stack_segments([1.0 -1.0])
+    @test_throws ErrorException R.stack_segments([NaN 1.0])
+end
+
 # Inspect the real chart datasets even on systems without a usable GR library.
 @testset "Figure datasets and incomplete baseline coverage" begin
     rows,settings=fixture()

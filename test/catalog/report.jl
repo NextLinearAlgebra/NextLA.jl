@@ -111,6 +111,21 @@ function summaries(d)
     summary, winners, problems
 end
 
+# Explicit stack intervals avoid relying on backend-specific bar-position support.
+function stack_segments(values)
+    all(x -> isfinite(x) && x >= 0,values) || error("Stack values must be finite and nonnegative")
+    segments = NamedTuple[]
+    for i in axes(values,1)
+        lower = 0.0
+        for j in axes(values,2)
+            upper = lower + values[i,j]
+            upper > lower && push!(segments,(row=i,column=j,lower=lower,upper=upper))
+            lower = upper
+        end
+    end
+    segments
+end
+
 point(row,x,y)=(method=row["method"],x=x,y=y,matrix=row["matrix"])
 
 function figures(d; renderer=nothing)
@@ -261,15 +276,13 @@ function generate(input; outdir=joinpath(dirname(abspath(input)),"report"), timi
     savecsv("matrix-summary.csv",winners,["matrix"])
     savecsv("problems.csv",problems,["matrix","method","status","detail"])
     isempty(settings_text) || write(joinpath(outdir,"settings-snapshot.toml"),settings_text)
-    if !isdefined(@__MODULE__,:Plots)
-        @eval include(joinpath(@__DIR__,"report_render.jl"))
-    end
-    rawfigs = Base.invokelatest(figures,d)
+    isdefined(@__MODULE__,:Plots) || error("Rendering is not initialized; run report.jl as a script or load report_render.jl at top level first")
+    rawfigs = figures(d)
     figs = NamedTuple[]
     for f in rawfigs
         svg_path = joinpath(outdir,"figures",f.id*".svg")
-        Base.invokelatest(Plots.savefig,f.svg,svg_path)
-        Base.invokelatest(Plots.savefig,f.svg,joinpath(outdir,"figures",f.id*".png"))
+        Plots.savefig(f.svg,svg_path)
+        Plots.savefig(f.svg,joinpath(outdir,"figures",f.id*".png"))
         svg = read(svg_path,String)
         svg = replace(svg,r"<\?xml[^>]*\?>"=>"",r"<!DOCTYPE[^>]*>"=>"")
         # GR reuses SVG IDs; namespace each image before embedding in one document.
@@ -288,6 +301,13 @@ end
 function main(args=ARGS)
     1 <= length(args) <= 2 || error("Usage: julia test/catalog/report.jl /path/to/results.csv [output-directory]")
     length(args)==2 ? generate(args[1];outdir=args[2]) : generate(args[1])
+end
+
+# Julia 1.12 also tracks global bindings in world age. Import the renderer at
+# module top level, before main/generate runs, instead of evaluating using Plots
+# inside an already-running function. Pure calculation tests do not need Plots.
+if abspath(PROGRAM_FILE)==abspath(@__FILE__) || "--render" in ARGS
+    include("report_render.jl")
 end
 end
 abspath(PROGRAM_FILE)==abspath(@__FILE__) && CatalogReport.main()
