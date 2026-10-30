@@ -29,6 +29,8 @@ if CUDA.functional()
             @test norm(factor*factor'-A)/norm(A) < 1e-3
         end
     end
+elseif get(ENV, "REQUIRE_CUDA", "0") == "1"
+    error("CUDA device unavailable: refusing to start the GPU catalog sweep")
 else
     @info "GPU numerical checks skipped: CUDA device unavailable"
 end

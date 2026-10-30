@@ -7,3 +7,4 @@
 /data/matrices/
 /benchmark-results/
 /test/catalog/Manifest.toml
+/slurm-catalog-*.out

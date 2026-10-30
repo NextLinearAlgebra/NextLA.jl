@@ -72,6 +72,55 @@ does not read all matrix entries. Fix missing files before the full run.
 
 ## Run the selected matrices
 
+### Unattended four-hour batch job on ORCD
+
+Submit from the **full Git repository**, not `nextla-catalog-download`:
+
+```bash
+cd ~/NextLA.jl
+git switch vicki-development
+git pull --ff-only origin vicki-development
+export MATRIX_DIR="$HOME/orcd/scratch/nextla-matrices"
+sbatch test/catalog/run.sbatch
+```
+
+The batch script requests one H200, 14 CPU cores and 256 GB RAM. It loads Julia,
+prepares the catalog environment including plotting, validates the existing matrix
+files, and runs small GPU and native sTiles factor/solve checks before the sweep.
+A missing GPU or failed check stops the job. It does not download matrices.
+Setup and checks have process timeouts. The sweep gets up to three hours, reduced
+automatically if preparation leaves less allocation time; plots run afterward.
+
+`sbatch` prints a new job ID. This is a separate request and does not preserve the
+interactive job's queue position. After successful submission, cancel an unused
+pending interactive allocation with `scancel <old-interactive-job-id>` to avoid
+holding two allocations. You can log out after submitting the batch job.
+
+```bash
+squeue --me
+tail -f slurm-catalog-<new-job-id>.out
+```
+
+The log appears when the job starts. Results and plots go into
+`benchmark-results/catalog-<new-job-id>/`. The batch script respects the selection,
+method and timeout environment controls documented below. To resume, point
+`RESULTS_DIR` at the old directory and set `CATALOG_SETUP=0` before submitting,
+preserving the same installed environment and benchmark settings. Also set
+`SWEEP_TIMEOUT_SECONDS` to the previous `sweep_timeout` in `settings.toml`
+(as an integer number of seconds). The new allocation must leave enough time for
+that budget after checks; if the launcher reduces it, the runner will refuse to
+mix settings in the old directory.
+
+While queued, you can check the downloads on the login node (no GPU needed):
+
+```bash
+module load julia
+export MATRIX_DIR="$HOME/orcd/scratch/nextla-matrices"
+julia test/catalog/download.jl --check-only
+```
+
+### Interactive allocation
+
 For a two-hour interactive allocation, request CPU cores explicitly from a login node:
 
 ```bash
@@ -201,6 +250,7 @@ Errors/timeouts are labeled in the heatmap and omitted from finite scatter point
 julia --project=test/catalog test/catalog/runtests.jl
 julia --project=test/catalog test/catalog/runner_integration_tests.jl
 julia --project=test/catalog test/catalog/integration_tests.jl
+julia --project=test/catalog test/catalog/stiles_smoke.jl
 ```
 
 Tests exercise CSV/checkpoints, selection, scale-aware decoding, known-solution

@@ -1,0 +1,2 @@
+# Slurm requires Unix line endings, including when submitted from a Windows checkout.
+*.sbatch text eol=lf
