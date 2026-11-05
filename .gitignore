@@ -8,3 +8,6 @@
 /benchmark-results/
 /test/catalog/Manifest.toml
 /slurm-catalog-*.out
+/test/ordering/Manifest.toml
+/test/ordering/results/
+/slurm-ordering-*.out

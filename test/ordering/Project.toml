@@ -1,0 +1,8 @@
+[deps]
+AMD = "14f7f29c-3bd6-536c-9a0b-7339e30b5a3e"
+MatrixMarket = "4d4711f2-db25-561a-b6b3-d35e7d4047d3"
+Scotch = "c8656ae5-b689-4c12-92d5-de0ad806c81d"
+
+[compat]
+Scotch = "1.2"
+julia = "1.11"
