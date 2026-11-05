@@ -1,13 +1,13 @@
 # CPU Float64 ordering exploration; no NextLA/CUDA or mixed precision.
 using LinearAlgebra, SparseArrays, Random, Printf, Dates, SHA
+import MatrixMarket
 setting(name, default) = parse(Int, get(ENV, name, string(default)))
 include("methods.jl")
 esc(x) = replace(string(x), '&'=>"&amp;", '<'=>"&lt;", '>'=>"&gt;", '"'=>"&quot;")
 csv(x) = "\"" * replace(string(x), "\""=>"\"\"") * "\""
 
 function loadmatrix(path)
-    @eval import MatrixMarket
-    A = sparse(Float64.(Base.invokelatest(MatrixMarket.mmread, path)))
+    A = sparse(Float64.(MatrixMarket.mmread(path)))
     size(A, 1) == size(A, 2) || error("Input must be square")
     if !issymmetric(A)
         A = istril(A) ? sparse(Symmetric(A, :L)) :

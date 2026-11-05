@@ -103,6 +103,57 @@ which solver this report measures. Use CPU jobs for later ordering-only runs.
 
 ## Compared methods
 
+## Sweep all available catalog and legacy inputs
+
+Inside an existing compute allocation, after setup:
+
+```bash
+module load julia
+export MATRIX_DIR="$HOME/orcd/scratch/nextla-matrices"
+export LEGACY_MATRIX_DIR="$HOME/orcd/scratch/nextla-legacy-matrices"
+export ORDERING_SWEEP_OUTPUT="$PWD/benchmark-results/ordering-many-$SLURM_JOB_ID"
+bash test/ordering/sweep.sh
+```
+
+The sweep searches both directories and the repository root for each file.
+It prioritizes animal1 and bodyy4/5/6, then tries the remaining catalog inputs,
+nasasrb, and crankseg_2 (25 matrices total). This is a coverage list, not a claim
+that all these inputs have passed every previous numerical test. Missing inputs
+are recorded and skipped. AMD/RCM/SCOTCH/CHOLMOD/sTiles run before natural/random
+so expensive baselines do not prevent obtaining the main ordering comparisons.
+Each matrix gets a separate report and log; the top-level `index.html` links them.
+The default is three repetitions and a 300-second process limit per matrix.
+Individual method results are checkpointed. Timeouts may leave partial reports.
+The sweep stops 90 seconds before the allocation end when Slurm supplies that
+time. To resume, reuse `ORDERING_SWEEP_OUTPUT`; finished matrix processes are
+skipped, while interrupted cases restart. Inspect reports for method-level
+failures even when a process is marked finished.
+
+For just the requested smaller inputs:
+
+```bash
+export ORDERING_SWEEP_MATRICES=inla_graph_animal1,bodyy4,bodyy5,bodyy6
+bash test/ordering/sweep.sh
+```
+
+Animal2 is opt-in because the catalog lists about 503 million lower-triangle
+nonzeros. Run it separately with more time/memory available; the timeout below
+is a cap, not an estimate of completion time:
+
+```bash
+export ORDERING_SWEEP_MATRICES=inla_graph_animal2
+export ORDERING_MATRIX_TIMEOUT=1800
+export ORDERING_METHODS=amd,rcm,scotch,cholmod,stiles
+export ORDERING_SWEEP_OUTPUT="$PWD/benchmark-results/ordering-animal2-$SLURM_JOB_ID"
+bash test/ordering/sweep.sh
+```
+
+Its original matrix still appears in every before/after comparison even when
+natural-order factorization is omitted. All results remain CPU Float64. A later
+GPU/mixed-precision experiment is needed to establish effects on NextLA.
+
+## Method reference
+
 | Method | Implementation | Intended purpose |
 |---|---|---|
 | natural | Identity permutation | Original-order baseline |
