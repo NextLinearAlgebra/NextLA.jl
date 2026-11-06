@@ -1,5 +1,35 @@
 # Explore sparse Cholesky orderings
 
+**Correction:** the original current-API sTiles adapter used the native export
+in the wrong direction. It now uses `invperm(sTiles.permutation(F))` for
+`A[p,p]`. A native-release check on a scrambled 225-node grid gives 1,780 factor
+entries natively and after inversion, versus 5,483 with the old adapter.
+Original real-matrix sTiles rows must be rerun and are withheld by the summary
+generator unless the metadata records the corrected adapter. The separate legacy
+`ordering(...).iperm` path is unchanged. Other ordering measurements are unaffected.
+Run `julia --project=test/ordering test/ordering/stiles_direction_check.jl`
+on ORCD to check against the native factor count. Use a fresh sweep output folder
+and `ORDERING_METHODS=stiles` to rerun only these cases; old `.finished` markers
+would otherwise skip them.
+
+For a single consolidated analysis of the November 5 sweep, use
+`summarize.py INPUT_DIRECTORY OUTPUT_DIRECTORY` with Python, matplotlib and numpy.
+It creates standalone HTML and PDF documents with overall takeaways, ranked
+figures with bold takeaways, and all-matrix evidence. Example:
+
+```bash
+python -m pip install matplotlib numpy
+python test/ordering/summarize.py /path/to/ordering-many-27991088 /path/to/summary
+```
+
+The HTML embeds every figure and can be shared as one file. The output also
+includes Markdown, individual exportable figures, all metrics in one CSV, and
+source CSV fingerprints. This is a curated analysis for this specific sweep;
+its narrative examples require animal1, bodyy5 and 83o4NNNo and include a check
+against the recorded bodyy5 timing ratio. Review/update the narrative for new
+experiments rather than treating it as an unrestricted automatic conclusion
+generator. No matrix factorization or GPU allocation is needed to summarize.
+
 Start with the scrambled 24×24 grid demo (576 unknowns). It is deliberately SPD,
 small, and initially scrambled to make the visual changes easy to recognize.
 This is synthetic demonstration data, not a result for your real catalog.
@@ -162,7 +192,7 @@ GPU/mixed-precision experiment is needed to establish effects on NextLA.
 | rcm | Deterministic Julia BFS, lowest-degree roots, reversed | Bandwidth reduction; not an optimizer for fill |
 | scotch | Scotch.jl graph + native `SCOTCH_graphOrder` | SCOTCH default ordering, including nested dissection |
 | cholmod | Julia `cholesky(Symmetric(A)).p` | CHOLMOD's default fill-reducing choice |
-| stiles | Legacy `ordering(...).iperm`, or current `analyze` + `permutation` | sTiles' selected ordering |
+| stiles | Legacy `ordering(...).iperm`, or current `analyze` + inverse of `permutation` | sTiles' selected ordering |
 
 Scotch.jl currently exposes graph construction but no high-level graph ordering
 function. `methods.jl` contains one small adapter to its generated native binding.

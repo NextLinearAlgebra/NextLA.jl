@@ -67,7 +67,10 @@ function stiles_order(A, seed)
     end
     F = sTiles.analyze(A; cores=setting("STILES_CORES", 1), inverse=false)
     try
-        Int.(sTiles.permutation(F))
+        # Current native export maps original node -> reordered position.
+        # A[p,p] needs reordered position -> original node. Native symbolic
+        # fill agrees with CHOLMOD only after inversion (see direction check).
+        invperm(Int.(sTiles.permutation(F)))
     finally
         close(F)
     end

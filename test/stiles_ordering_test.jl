@@ -44,7 +44,7 @@ function stiles_order(A, cores)
         F = sTiles.analyze(A; cores=cores, inverse=false)
         try
             # Current public API; no numeric sTiles factorization is needed.
-            return sTiles.permutation(F)
+            return invperm(Int.(sTiles.permutation(F)))
         finally
             close(F)
         end

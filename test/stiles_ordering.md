@@ -25,6 +25,9 @@ No NextLA/CUDA import or mixed precision is involved.
 The current upstream Julia API runs an ordering bake-off during
 `F = sTiles.analyze(A; cores=cores, inverse=false)` and returns the permutation
 through `sTiles.permutation(F)`. Close `F` afterward, even if extraction fails.
+The current native export maps original indices to reordered positions: use
+`p = invperm(Int.(sTiles.permutation(F)))` for `A[p,p]`. The original sweep
+mistakenly used the export directly; those sTiles rows need rerunning.
 The script also supports the older `sTiles.ordering(A; cores=cores)` API and its
 `iperm` field. The current wrapper exposes no public keyword to force AMD, RCM,
 or SCOTCH, and its `mode` keyword controls tile regime, not ordering strategy.

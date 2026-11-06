@@ -238,6 +238,7 @@ function main()
     names = "--demo" in ARGS ? ["demo-grid-scrambled"] : strip.(split(get(ENV,"ORDERING_MATRICES",get(ENV,"ORDERING_MATRIX","bodyy5")),','))
     all(n -> occursin(r"^[A-Za-z0-9_-]+$",n),names) || error("Matrix names must be simple basenames")
     metadata = "Julia=$(VERSION)\nseed=$seed repeats=$repeats probes=$probes depth=$depth\nBLAS threads=$(BLAS.get_num_threads()) config=$(BLAS.get_config())\nCPU=$(Sys.CPU_NAME) hardware_threads=$(Sys.CPU_THREADS)\nSTILES_CORES=$(get(ENV,"STILES_CORES","1"))\nproject=$(Base.active_project())\n"
+    metadata *= "stiles_current_export=inverted_for_gather\n"
     rows = Dict{Symbol,Any}[]
     for name in names
         folder = joinpath(out,name); mkpath(folder)
