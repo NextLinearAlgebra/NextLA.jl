@@ -12,6 +12,29 @@ on ORCD to check against the native factor count. Use a fresh sweep output folde
 and `ORDERING_METHODS=stiles` to rerun only these cases; old `.finished` markers
 would otherwise skip them.
 
+For an unattended corrected rerun, submit `test/ordering/rerun_stiles.sbatch`
+from the repository root. It checks the native permutation convention first,
+then runs only sTiles on the 25-matrix list, with 600 seconds per matrix and
+three repetitions. It uses the existing Julia environment; set
+`ORDERING_SETUP=1` before submission only if setup has not been done.
+Results resume under `benchmark-results/ordering-stiles-corrected`, independent
+of the submitting terminal. Logs go to `slurm-stiles-corrected-<jobid>.out`.
+Submit only one job at a time to this output folder. Set `ORDERING_STILES_OUTPUT`
+to a different absolute directory for an independent run.
+
+The file defaults to the CPU `mit_normal` partition, 14 cores, 256 GiB and four
+hours. If needed, override the partition/account/QOS with your permitted
+configuration. For the user's previously working H200 allocation settings:
+
+```bash
+sbatch --partition=mit_normal_gpu --gres=gpu:h200:1 \
+  --account=mit_amf_advanced_gpu --qos=mit_amf_advanced_gpu \
+  test/ordering/rerun_stiles.sbatch
+```
+
+After `sbatch` prints `Submitted batch job <id>`, it is safe to log out.
+The script's ordering/factorization computations still run on CPU.
+
 For a single consolidated analysis of the November 5 sweep, use
 `summarize.py INPUT_DIRECTORY OUTPUT_DIRECTORY` with Python, matplotlib and numpy.
 It creates standalone HTML and PDF documents with overall takeaways, ranked

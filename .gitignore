@@ -11,3 +11,4 @@
 /test/ordering/Manifest.toml
 /test/ordering/results/
 /slurm-ordering-*.out
+/slurm-stiles-corrected-*.out
