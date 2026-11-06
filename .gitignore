@@ -12,3 +12,4 @@
 /test/ordering/results/
 /slurm-ordering-*.out
 /slurm-stiles-corrected-*.out
+/test/ordering/__pycache__/

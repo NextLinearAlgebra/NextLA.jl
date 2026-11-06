@@ -45,6 +45,21 @@ python -m pip install matplotlib numpy
 python test/ordering/summarize.py /path/to/ordering-many-27991088 /path/to/summary
 ```
 
+To incorporate the corrected rerun without recomputing other methods:
+
+```bash
+python test/ordering/summarize.py /path/to/ordering-many-27991088 /path/to/summary \
+  --corrected-stiles /path/to/ordering-stiles-node-28042904
+python test/ordering/summarize_tests.py
+```
+
+The merge requires matching input SHA-256 hashes, dimensions and nonzero counts,
+plus the corrected-permutation marker and an OK status for every new sTiles row.
+It replaces only sTiles metrics and uses the matching rerun figures/timing/block
+files. Source downloads remain unchanged; superseded measurements are archived
+separately. The report labels the rerun cohort and notes that its timing is from
+a different allocation, even when CPU class and software settings match.
+
 The HTML embeds every figure and can be shared as one file. The output also
 includes Markdown, individual exportable figures, all metrics in one CSV, and
 source CSV fingerprints. This is a curated analysis for this specific sweep;

@@ -27,6 +27,7 @@ import numpy as np
 
 METHODS = ["natural", "amd", "rcm", "scotch", "cholmod", "stiles", "random"]
 COLORS = dict(zip(METHODS, ["#64748b", "#0891b2", "#d97706", "#7c3aed", "#0d9488", "#db2777", "#94a3b8"]))
+ASSET_ROOTS = {}
 plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 10,
                      "axes.spines.top": False, "axes.spines.right": False,
                      "savefig.facecolor": "white"})
@@ -39,7 +40,8 @@ def short(name):
 def load(root):
     groups, metadata, provenance = {}, {}, []
     for path in sorted(root.glob("*/metrics.csv")):
-        rows = list(csv.DictReader(path.open(encoding="utf-8", newline="")))
+        with path.open(encoding="utf-8", newline="") as stream:
+            rows = list(csv.DictReader(stream))
         if not rows:
             continue
         name = path.parent.name
@@ -79,10 +81,54 @@ def winners(groups, name, key):
 
 
 def asset(root, name, file):
+    if file.startswith("stiles-"):
+        root = ASSET_ROOTS.get(name, root)
     for folder in (root/name/name, root/name):
         if (folder/file).exists():
             return folder/file
     return None
+
+
+def merge_corrected(groups, metadata, provenance, corrected_root):
+    """Replace only sTiles, after proving input identity and API convention.
+
+    Return audit rows and original/corrected metadata separately; never modify
+    either raw download. Assets are resolved from the same cohort as the row.
+    """
+    corrected, newmeta, newprovenance = load(corrected_root)
+    audit, cohorts, checked = [], {}, []
+    for name, methods in corrected.items():
+        if name not in groups or "stiles" not in methods:
+            raise ValueError(f"Unexpected corrected input: {name}")
+        if "stiles_current_export=inverted_for_gather" not in newmeta[name]:
+            raise ValueError(f"Corrected convention marker missing: {name}")
+        row = methods["stiles"]
+        if row["status"] != "OK":
+            raise ValueError(f"Corrected sTiles did not pass: {name}: {row['status']}")
+        def fingerprint(text):
+            match = re.search(r"^sha256=([a-f0-9]{64})$", text, re.M)
+            return match.group(1) if match else None
+        oldhash, newhash = fingerprint(metadata[name]), fingerprint(newmeta[name])
+        if oldhash is None or oldhash != newhash:
+            raise ValueError(f"Input SHA-256 mismatch or missing hash: {name}")
+        reference = groups[name]["amd"]
+        if any(row[k] != reference[k] for k in ("n", "nnz_A")):
+            raise ValueError(f"Input dimensions/nonzeros differ: {name}")
+        # Validate every case before mutating any merged groups.
+        checked.append((name,row))
+    for name, row in checked:
+        old = groups[name].get("stiles")
+        if old is not None:
+            audit.append(dict(old))
+        cohorts[name] = {"original": metadata[name], "corrected_stiles": newmeta[name]}
+        row["cohort"] = "corrected_stiles_rerun"
+        groups[name]["stiles"] = row
+        ASSET_ROOTS[name] = corrected_root
+        metadata[name] += "\nCORRECTED STILES RERUN (separate allocation):\n" + newmeta[name]
+    for p in newprovenance:
+        p["cohort"] = "corrected_stiles_rerun"
+    provenance.extend(newprovenance)
+    return audit, cohorts
 
 
 def occupancy(path):
@@ -131,6 +177,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--corrected-stiles", type=Path,
+                        help="Validated rerun folder; replaces only historical sTiles rows")
     args = parser.parse_args()
     root, out = args.input.resolve(), args.output.resolve()
     if root == out:
@@ -138,10 +186,21 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     figs = out/"figures"; figs.mkdir(exist_ok=True)
     groups, metadata, provenance = load(root)
+    for methods in groups.values():
+        for r in methods.values():
+            r["cohort"] = "original_sweep"
+    for p in provenance:
+        p["cohort"] = "original_sweep"
+    audit, cohort_metadata = [], {}
+    corrected = args.corrected_stiles is not None
+    if corrected:
+        audit, cohort_metadata = merge_corrected(groups, metadata, provenance, args.corrected_stiles.resolve())
     names = sorted(groups)
     rows = [r for g in groups.values() for r in g.values()]
     good = [r for r in rows if r["status"] == "OK"]
     counts = Counter(r["method"] for r in good)
+    if corrected and counts["stiles"] != len(names):
+        raise ValueError("This curated merged report requires a corrected sTiles row for every matrix")
     speedwins = Counter(m for n in names for m in winners(groups, n, "factor_median_s"))
     allcore = [n for n in names if all(m in groups[n] and groups[n][m]["status"] == "OK" for m in ("amd", "rcm", "scotch", "cholmod"))]
     maxres = max(r["solve_residual"] for r in good)
@@ -155,6 +214,13 @@ def main():
         f"All {len(good)} saved comparisons pass the runner's residual checks. Maximum solve residual is {maxres:.2e}; maximum forward error is {maxfwd:.2e}. This supports Float64 correctness for these probes, not a guarantee about mixed precision or all right-hand sides.",
         "Next: rerun only the corrected sTiles cases, then compare natural, AMD and SCOTCH on animal1/bodyy4/5/6 in a controlled Float64 NextLA GPU experiment. The existing AMD/RCM/SCOTCH/CHOLMOD measurements remain usable. Measure GPU timing and accuracy before changing precision schedules."
     ]
+    storagewins = Counter(m for n in names for m in winners(groups,n,"nnz_L"))
+    if corrected:
+        summary[0] = f"{len(names)} matrices now have {len(good)} valid comparisons, including {counts['stiles']} direction-corrected sTiles results. The 22 old invalid sTiles rows are archived separately, not mixed into rankings. Every rerun input SHA-256 matches the earlier sweep. Animal2 was not included; these are CPU Float64 CHOLMOD results, not GPU or mixed-precision measurements."
+        summary[1] = f"Corrected sTiles has the lowest recorded median on {speedwins['stiles']}/{len(names)} matrices; SCOTCH on {speedwins['scotch']}, CHOLMOD on {speedwins['cholmod']}, and AMD on {speedwins['amd']}. sTiles shares or holds the smallest factor on {storagewins['stiles']} matrices. Timing ranks are descriptive: the sTiles rerun used a separate allocation, and each case has only three repetitions."
+        summary[2] = "The body matrices show a storage/time tradeoff. Corrected sTiles has the smallest factor on bodyy4/5/6. On bodyy5 it stores 545,565 entries versus AMD's 636,443, while SCOTCH has a lower recorded median (0.0129 s versus sTiles' 0.0185 s). Natural order is much slower (0.610 s). The smallest factor need not be the fastest."
+        summary[4] = "The alarming original sTiles pictures came from our permutation-direction bug, not evidence of a bad selector. The native export must be inverted for A[p,p]. Corrected bodyy5 now has 0.546 million factor entries versus the old adapter's 23.79 million; that change is a bug correction, not an ordering-algorithm speedup. The current figures use only the corrected sTiles data."
+        summary[6] = "Next: compare natural, AMD, SCOTCH and corrected sTiles on animal1/bodyy4/5/6 using the actual Float64 NextLA GPU kernels. Include 83o4NNNo, where corrected sTiles reduces factor entries by 45.6% relative to AMD. Recheck close CPU timing ranks together if needed; only then change precision schedules and measure error."
     # These narrative examples must never silently apply to a different dataset.
     required = {"bodyy5": ("scotch", "natural", "amd"), "inla_graph_animal1": ("scotch", "natural"), "inla_graph_83o4NNNo": ("stiles",)}
     for name, methods in required.items():
@@ -171,6 +237,8 @@ def main():
         ("How to judge good or bad", "Correctness is a prerequisite. For sparse storage, smaller nnz(L) is better. For a one-off solve, compare setup + permutation + factorization + solve time; for repeated values with the same pattern, amortize setup. For a tile solver, active tiles, cache locality and parallelism also matter. A narrow bandwidth or a prettier picture alone is not proof of lower cost."),
         ("What this means for NextLA and precision", "Use measured runtime and memory with the actual NextLA kernels as the performance target, subject to your accuracy tolerance. Permutation changes which values enter off-diagonal blocks, and floating-point errors can change with operation order, but these input pictures cannot predict precision safety. Lower density does not automatically save dense-kernel work. Our red lines show the storage split geometry, not a tested precision schedule.")
     ]
+    if corrected:
+        context[3] = ("Why the old sTiles pictures looked unexpectedly bad", "The old adapter used the current native export in the wrong direction. The correction was checked against native factor counts, then rerun on all 25 real inputs. These corrected rows and their matching pictures replace the original sTiles evidence throughout this report. Solve residuals alone could not expose the bug: both directions produce a valid reordered system. The archived old rows are audit evidence only.")
     sections, appendix, manifest = [], [], []
     pdf = PdfPages(out/"ordering-summary.pdf", metadata={"Title":"Cholesky ordering: consolidated analysis", "Author":"NextLA experiment report"})
 
@@ -230,8 +298,10 @@ def main():
         ax.set_yticks(range(len(names)),[short(n) for n in names],fontsize=9); ax.set_title(title)
     fig.colorbar(im,ax=axes,shrink=.5,label="log2(ratio): blue better; red worse; color clipped, labels exact")
     add(fig,"1. The full comparison: no universal best ordering",
-        f"SCOTCH has the fastest recorded median on {speedwins['scotch']}/{len(names)} matrices among valid completed candidates. Old sTiles rows are excluded pending corrected reruns.",
-        f"All {len(names)} matrices are shown. Ratios are relative to AMD (1x = equal). Gray cells mean unavailable or withheld, never zero time: the 22 old sTiles measurements are withheld for the direction bug; natural/random exist on {counts['natural']} matrices. Candidate sets differ, so winner counts are not balanced rankings. Time includes fresh symbolic and numeric factorization, excluding setup/permutation.")
+        (f"Corrected sTiles has the fastest recorded median on {speedwins['stiles']}/{len(names)} matrices and SCOTCH on {speedwins['scotch']}; neither wins universally. Small timing differences across allocations need confirmation."
+         if corrected else f"SCOTCH has the fastest recorded median on {speedwins['scotch']}/{len(names)} matrices among valid completed candidates. Old sTiles rows are excluded pending corrected reruns."),
+        (f"All {len(names)} matrices are shown. Ratios are relative to AMD (1x = equal). Gray means no completed candidate. Corrected sTiles is from a separate allocation with matching CPU class/settings and verified identical input hashes; other columns retain the original sweep. Natural/random exist on {counts['natural']} matrices. Color is clipped; labels retain exact ratios. Times include fresh symbolic + numeric factorization, excluding setup/permutation."
+         if corrected else f"All {len(names)} matrices are shown. Ratios are relative to AMD (1x = equal). Gray cells mean unavailable or withheld, never zero time: the 22 old sTiles measurements are withheld for the direction bug; natural/random exist on {counts['natural']} matrices. Candidate sets differ, so winner counts are not balanced rankings. Time includes fresh symbolic and numeric factorization, excluding setup/permutation."))
 
     # 2. Priority body-family results.
     body=[n for n in ["bodyy4","bodyy5","bodyy6"] if n in groups]
@@ -244,8 +314,10 @@ def main():
         ax.set_xticks(range(len(body)),body);ax.set_yscale("log");ax.set_title(title);ax.grid(axis="y",alpha=.2)
     axes[0].legend(ncol=2)
     add(fig,"2. Bodyy4/5/6: the clearest practical ordering opportunity",
-        "On bodyy5, SCOTCH is 47.4x faster than natural order; AMD's factor is 11.7x smaller. The old sTiles measurements are invalid for evaluating its chosen order.",
-        "Log scales reveal large differences; storage counts are numerical nnz(L), not allocated bytes. Bodyy6 lacks a completed natural baseline. The sTiles slot is blank because the original adapter used the wrong permutation direction; it does not mean zero storage or zero time.")
+        ("Corrected sTiles gives the smallest factor on all three body matrices, while SCOTCH/CHOLMOD have lower recorded median factor times. Storage and runtime objectives differ."
+         if corrected else "On bodyy5, SCOTCH is 47.4x faster than natural order; AMD's factor is 11.7x smaller. The old sTiles measurements are invalid for evaluating its chosen order."),
+        ("Log scales; factor entries are numerical nnz(L), not allocated bytes. For bodyy5, corrected sTiles is 14.3% smaller than AMD (545,565 vs 636,443 entries), but its median is 0.0185 s vs SCOTCH's 0.0129 s. Bodyy6 lacks a natural baseline. sTiles timings come from a separate allocation, so recheck close timing ranks in one controlled run."
+         if corrected else "Log scales reveal large differences; storage counts are numerical nnz(L), not allocated bytes. Bodyy6 lacks a completed natural baseline. The sTiles slot is blank because the original adapter used the wrong permutation direction; it does not mean zero storage or zero time."))
 
     fig,axes=plt.subplots(2,4,figsize=(13,7),layout="constrained")
     for j,m in enumerate(choices):
@@ -261,16 +333,28 @@ def main():
         pattern(axes[1,j],root,groups,"inla_graph_animal1",m,"factor")
     add(fig,"4. Animal1: a modest sparse-factor win changes the recursive layout",
         "SCOTCH cuts animal1's factor entries by 18.1% and median factor time by 17.0% versus natural order; the recursive off-diagonal region becomes much denser.",
-        "Natural: 11.04 million factor nonzeros, 0.639 s median; SCOTCH: 9.05 million, 0.530 s. AMD and CHOLMOD have the same nnz(L) as natural, which alone does not prove equal permutations. The sTiles panel is withheld for the direction bug. This is animal1 (n = 5,126); animal2 was not run. Pixel and fill colors follow Figure 3.")
+        ("Natural: 11.04 million factor entries, 0.639 s median; SCOTCH: 9.05 million, 0.530 s. Corrected sTiles retains natural-like geometry and the same factor entry count; its median is 0.639 s in a separate allocation. Equal entry counts alone do not prove equal permutations. This is animal1 (n = 5,126), not animal2. Pixel and fill colors follow Figure 3."
+         if corrected else "Natural: 11.04 million factor nonzeros, 0.639 s median; SCOTCH: 9.05 million, 0.530 s. AMD and CHOLMOD have the same nnz(L) as natural, which alone does not prove equal permutations. The sTiles panel is withheld for the direction bug. This is animal1 (n = 5,126); animal2 was not run. Pixel and fill colors follow Figure 3."))
 
-    # 5. Independent native symbolic-factor audit, not a real-matrix rerun.
-    fig,ax=plt.subplots(figsize=(10,4.5),layout="constrained")
-    labels=["Native sTiles factor", "Old adapter: raw export", "Corrected: inverse export"]
-    bars=ax.bar(labels,[1780,5483,1780],color=["#0d9488","#db2777","#0891b2"])
-    ax.bar_label(bars,padding=4);ax.set_ylim(0,6500);ax.set_ylabel("Exact factor nonzeros");ax.set_title("Scrambled 15 × 15 grid (225 unknowns)")
-    add(fig,"5. The sTiles outliers exposed a permutation-direction bug",
-        "Inverting the current native export exactly matches sTiles' 1,780-entry factor; direct use creates 5,483 entries. Old real-matrix sTiles conclusions are withdrawn.",
-        "A separate Python process loaded native sTiles 3.0.0 (2026-09-24), the Julia wrapper's default release, avoiding a Julia/Windows DLL conflict. A 225-node scrambled grid with its diagonal present was analyzed with one core, tile size 40 and auto tile regime. Independent graph elimination computed exact symbolic counts for both directions. This diagnoses the adapter; it is not a corrected measurement of bodyy5 or any other catalog matrix.")
+    if corrected:
+        cases=["inla_graph_83o4NNNo","inla_graph_lgm_10010_bw2","inla_graph_spacetime"]
+        fig,axes=plt.subplots(1,2,figsize=(12,4.5),layout="constrained")
+        for ax,key,title in zip(axes,["nnz_L","factor_median_s"],["Factor entries / AMD","Recorded median factor time / AMD"]):
+            for j,m in enumerate(["amd","scotch","stiles"]):
+                ax.bar(np.arange(len(cases))+(j-1)*.23,[value(groups,n,m,key)/value(groups,n,"amd",key) for n in cases],width=.22,color=COLORS[m],label=m)
+            ax.set_xticks(range(len(cases)),[short(n) for n in cases]);ax.axhline(1,color="gray",lw=.8);ax.set_title(title);ax.set_ylim(0,1.6)
+        axes[0].legend()
+        add(fig,"5. Corrected sTiles is competitive and sometimes the best candidate",
+            "On 83o4NNNo, corrected sTiles has 45.6% fewer factor entries and a 58.5% lower recorded median than AMD. SCOTCH is stronger on spacetime.",
+            "These are corrected real-matrix measurements, with identical input hashes verified against the original sweep. Factor counts are comparable structurally; timing comparisons cross allocations. The corrected convention is inverse(current native export) for A[p,p]. The old 22 rows are archived separately and do not appear in this plot.")
+    else:
+        fig,ax=plt.subplots(figsize=(10,4.5),layout="constrained")
+        labels=["Native sTiles factor", "Old adapter: raw export", "Corrected: inverse export"]
+        bars=ax.bar(labels,[1780,5483,1780],color=["#0d9488","#db2777","#0891b2"])
+        ax.bar_label(bars,padding=4);ax.set_ylim(0,6500);ax.set_ylabel("Exact factor nonzeros");ax.set_title("Scrambled 15 × 15 grid (225 unknowns)")
+        add(fig,"5. The sTiles outliers exposed a permutation-direction bug",
+            "Inverting the current native export exactly matches sTiles' 1,780-entry factor; direct use creates 5,483 entries. Old real-matrix sTiles conclusions are withdrawn.",
+            "A separate Python process loaded native sTiles 3.0.0 (2026-09-24), the Julia wrapper's default release, avoiding a Julia/Windows DLL conflict. A 225-node scrambled grid with its diagonal present was analyzed with one core, tile size 40 and auto tile regime. Independent graph elimination computed exact symbolic counts for both directions. This diagnoses the adapter; it is not a corrected measurement of bodyy5 or any other catalog matrix.")
 
     # 6. Actual storage hierarchy measurements.
     fig,axes=plt.subplots(1,2,figsize=(12,4.6),layout="constrained")
@@ -333,8 +417,10 @@ def main():
     display=spreads[:10]
     axes[1].barh([short(n)+" / "+m for _,n,m in display],[v for v,_,_ in display],color="#64748b");axes[1].invert_yaxis();axes[1].set_xlabel("Maximum repetition time / minimum");axes[1].set_title("Largest within-case timing spreads")
     add(fig,"9. Coverage and timing variability limit how strongly we rank methods",
-        f"AMD, RCM, SCOTCH and CHOLMOD cover all {len(names)} matrices. The 22 old sTiles rows need a direction-corrected rerun; missing entries are not numerical failures.",
-        f"All four validated non-baseline candidates completed on {len(allcore)} matrices. Timeouts make later methods more likely to be missing; natural/random were omitted on resumed cases. sTiles rows are excluded for a separate adapter bug, not numerical failure. Three repetitions are too few for strong uncertainty estimates. Raw max/min timing spread is not a confidence interval. Source hashes and run metadata remain in the appendix.")
+        (f"All five non-baseline methods now cover {len(names)} matrices; natural and random cover {counts['natural']}. Three repetitions and separate allocations limit timing-rank confidence."
+         if corrected else f"AMD, RCM, SCOTCH and CHOLMOD cover all {len(names)} matrices. The 22 old sTiles rows need a direction-corrected rerun; missing entries are not numerical failures."),
+        ("Corrected sTiles completed 25/25 cases. Natural/random were omitted from later resumed runs. All rerun input hashes match; the recorded Julia version, CPU class and thread settings also match, but this does not control node load/frequency or run-to-run effects. The right panel shows raw max/min timing spread, not confidence intervals. Original and corrected metadata are both retained below."
+         if corrected else f"All four validated non-baseline candidates completed on {len(allcore)} matrices. Timeouts make later methods more likely to be missing; natural/random were omitted on resumed cases. sTiles rows are excluded for a separate adapter bug, not numerical failure. Three repetitions are too few for strong uncertainty estimates. Raw max/min timing spread is not a confidence interval. Source hashes and run metadata remain in the appendix."))
 
     # Comprehensive appendix: every matrix, in priority order after main findings.
     priority=["inla_graph_animal1","bodyy4","bodyy5","bodyy6","inla_graph_83o4NNNo"]
@@ -352,7 +438,7 @@ def main():
         takeaway=f"Fastest recorded median: {best} ({ms:,.3f} ms). Smallest numerical factor: {', '.join(smallest)}. Coverage: {len(groups[n])}/7 candidate rows."
         add(fig,"Appendix · "+short(n),takeaway,
             f"n = {int(groups[n][best]['n']):,}; input nnz = {int(groups[n][best]['nnz_A']):,}. Only measured candidates are ranked. The before/after order shown is the median-time winner, not automatically the storage winner. Tiny timing differences should not be treated as stable rankings.",detail=True)
-        fields=["method","status","nnz_L","factor_median_s","solve_min_s","setup_s","bandwidth","factor_residual","solve_residual","forward_error"]
+        fields=["method","cohort","status","nnz_L","factor_median_s","solve_min_s","setup_s","bandwidth","factor_residual","solve_residual","forward_error"]
         cells=['<table><tr>'+''.join('<th>'+html.escape(f)+'</th>' for f in fields)+'</tr>']
         for m in METHODS:
             r=groups[n].get(m)
@@ -370,6 +456,10 @@ def main():
         "Only current metrics.csv rows are counted. Stale pictures from interrupted attempts are ignored for missing methods. Timeouts are at the whole-matrix process level; the last printed method may not have completed. Raw status.csv has repeated history entries, not a single final numerical status.",
         "The SVG input plots contain aggregated occupancy only; there is no magnitude information to recover. Dense-looking pixels do not imply a dense matrix. Orange factor pixels indicate newly created nonzeros in a bin and may also contain original entries. Recursion overlays use the SymmMixedPrec storage split rule, not a full kernel execution trace."
     ]
+    if corrected:
+        caveats[1] = "The original sweep and corrected sTiles rerun both record Julia 1.12.6, Sapphire Rapids CPU class, one BLAS thread, STILES_CORES=14, seed 20261105, depth 3 and three repetitions. The rerun was a separate allocation (node3000 in the supplied terminal log). Timing ranks compare recorded snapshots, not simultaneous randomized trials or statistically established speedups. STILES_CORES controls sTiles preprocessing; CHOLMOD still uses one BLAS thread."
+        caveats[3] = "SCOTCH direction was checked against its inverse mapping. The current sTiles export must be inverted for A[p,p], as checked against native symbolic counts on two small graphs and by the ORCD integration test. All 25 new sTiles rows carry the corrected-convention metadata marker and pass residual checks. The 22 invalid historical rows are retained only in superseded-stiles-audit.csv; they contribute to no current metric, figure or rank."
+        caveats.append("Every corrected input SHA-256 is required to match the original case before merging, as are n and nnz(A). Only sTiles rows and sTiles-specific SVG/timing/block assets are replaced. The downloaded source folders remain unchanged. The source manifest records both CSV cohorts and their hashes.")
     doc='''<!doctype html><html lang="en"><meta charset="utf-8"><title>Ordering study — consolidated analysis</title>
     <style>body{font:17px/1.6 system-ui;color:#172d3a;max-width:1250px;margin:40px auto;padding:0 25px}h1{font-size:38px;line-height:1.15}h2{margin-top:45px}h3{line-height:1.3}figure{margin:42px 0 60px}figure img{width:100%;height:auto}figcaption strong{display:block;border-left:5px solid #0891b2;background:#edf7f8;padding:14px;font-size:18px}figcaption p,.muted{color:#536572;font-size:14px}li{margin-bottom:13px}.summary{padding:22px 28px;background:#f1f7fa;border-radius:12px}details{margin:15px 0;padding:12px;border:1px solid #d6e1e7;border-radius:8px}summary{cursor:pointer;font-weight:600}table{display:block;overflow:auto;border-collapse:collapse;font-size:12px}td,th{padding:7px;border-bottom:1px solid #ddd;text-align:left;white-space:nowrap}pre{white-space:pre-wrap;font-size:12px}a{color:#096c87}nav a{margin-right:18px}@media print{body{max-width:none;font-size:11px}figure{break-inside:avoid}details{display:block}nav,button{display:none}}</style>
     <h1>Reordering sparse Cholesky<br>Overall findings and visual evidence</h1>
@@ -379,7 +469,7 @@ def main():
     doc+=''.join('<li>'+html.escape(p)+'</li>' for p in summary)+'</ol></div>'
     doc+='<h2>Context: what sTiles selects, and what good means</h2>'
     doc+=''.join('<h3>'+html.escape(title)+'</h3><p>'+html.escape(paragraph)+'</p>' for title,paragraph in context)
-    doc+='<p>Selector source: <a href="https://arxiv.org/html/2609.29765v1#S3">Abdul Fattah et al., Section 3: Ordering and Symbolic Factorization</a>. API source: <a href="https://github.com/esmail-abdulfattah/sTiles/blob/main/julia/src/factor.jl">Julia analyze/permutation implementation</a>. Native-direction audit: Figure 5; the small graph test is independent of the real-matrix measurements.</p>'
+    doc+='<p>Selector source: <a href="https://arxiv.org/html/2609.29765v1#S3">Abdul Fattah et al., Section 3: Ordering and Symbolic Factorization</a>. API source: <a href="https://github.com/esmail-abdulfattah/sTiles/blob/main/julia/src/factor.jl">Julia analyze/permutation implementation</a>. Native-direction evidence comes from native_direction_check.py and stiles_direction_check.jl; those small graph checks are separate from the real-matrix measurements.</p>'
     doc+='<p>The figures below are ordered by relevance to choosing the next experiments, rather than by matrix name. Each figure has its takeaway in bold immediately underneath. The appendix contains every matrix and every saved candidate metric.</p><h2 id="evidence">Figures, most important first</h2>'
     doc+=''.join(sections)
     doc+='<h2 id="appendix">All 25 matrices</h2><p>Expand a matrix for its before/after figure, all candidate metrics and saved run metadata.</p><button onclick="document.querySelectorAll(\'details.matrix\').forEach(d=>d.open=true)">Expand all matrices</button>'
@@ -394,10 +484,13 @@ def main():
         md+=f"\n## {f['title']}\n\n![{f['title']}]({f['file']})\n\n**Takeaway: {f['takeaway']}**\n\n{f['caption']}\n"
     md+='\n# Methods and limits\n\n'+'\n\n'.join(caveats)
     (out/"ordering-summary.md").write_text(md,encoding="utf-8")
-    (out/"source-manifest.json").write_text(json.dumps({"metrics_sources":provenance,"figures":manifest,"metadata":metadata},indent=2),encoding="utf-8")
+    (out/"source-manifest.json").write_text(json.dumps({"metrics_sources":provenance,"figures":manifest,"metadata":metadata,"cohort_metadata":cohort_metadata,"superseded_stiles_rows":len(audit)},indent=2),encoding="utf-8")
     fields=list(rows[0])
     with (out/"all-metrics.csv").open("w",newline="",encoding="utf-8") as f:
         writer=csv.DictWriter(f,fieldnames=fields);writer.writeheader();writer.writerows(rows)
+    if audit:
+        with (out/"superseded-stiles-audit.csv").open("w",newline="",encoding="utf-8") as f:
+            writer=csv.DictWriter(f,fieldnames=list(audit[0]));writer.writeheader();writer.writerows(audit)
     print(json.dumps({"matrices":len(names),"completed":len(good),"coverage":dict(counts),"median_time_wins":dict(speedwins),"figures":len(manifest),"html":str(out/"ordering-summary.html"),"pdf":str(out/"ordering-summary.pdf")},indent=2))
 
 
