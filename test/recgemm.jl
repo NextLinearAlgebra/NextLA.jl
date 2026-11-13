@@ -236,52 +236,51 @@ function run_tallskinny_case(p, test_scenarios, emit, record!)
     emit("\n" * "-"^70 * "\n")
     emit("[$(p.family)] C($(p.m) x $(p.n)) = A($(p.m) x $(p.k)) * B($(p.k) x $(p.n))\n")
 
-    GC.gc(); CUDA.reclaim()
-    if ts_est_bytes(p) > 0.9 * CUDA.available_memory()
-        emit(@sprintf("  [skipped] needs ~%.1f GB, only %.1f GB free\n", ts_est_bytes(p) / 2^30, CUDA.available_memory() / 2^30))
-        return
-    end
     gemm_flops = flops_gemm(p.m, p.n, p.k)
     rec!(args...; kw...) = record!(p.n, args...; family = p.family, m = p.m, k = p.k, kw...)
 
     for (name, precisions) in sort!(collect(test_scenarios); by = first)
-        T_out = precisions[end]
-        alpha, beta = T_out(-1.0), T_out(1.0)
+        try
+            T_out = precisions[end]
+            alpha, beta = T_out(-1.0), T_out(1.0)
 
-        d_A = gpu_randn(T_out, p.m, p.k)
-        d_B = gpu_randn(T_out, p.k, p.n)
-        d_C_orig = CUDA.zeros(T_out, p.m, p.n)
+            d_A = gpu_randn(T_out, p.m, p.k)
+            d_B = gpu_randn(T_out, p.k, p.n)
+            d_C_orig = CUDA.zeros(T_out, p.m, p.n)
 
-        # Ground truth in FP64
-        d_C_truth = CUDA.zeros(Float64, p.m, p.n)
-        CUBLAS.gemm!('N', 'N', -1.0, Float64.(d_A), Float64.(d_B), 1.0, d_C_truth)
+            # Ground truth in FP64
+            d_C_truth = CUDA.zeros(Float64, p.m, p.n)
+            CUBLAS.gemm!('N', 'N', -1.0, Float64.(d_A), Float64.(d_B), 1.0, d_C_truth)
 
-        # Accuracy
-        C_mixed = FullMixedPrec(copy(d_C_orig); precisions = precisions)
-        recgemm!(alpha, d_A, d_B, beta, C_mixed)
-        X = Float64.(reconstruct_matrix(C_mixed))
-        X .-= d_C_truth
-        relative_error = max(norm(X) / norm(d_C_truth), 1e-20)
-        X = nothing
+            # Accuracy
+            C_mixed = FullMixedPrec(copy(d_C_orig); precisions = precisions)
+            recgemm!(alpha, d_A, d_B, beta, C_mixed)
+            X = Float64.(reconstruct_matrix(C_mixed))
+            X .-= d_C_truth
+            relative_error = max(norm(X) / norm(d_C_truth), 1e-20)
+            X = nothing
 
-        # Performance
-        backend = KernelAbstractions.get_backend(d_A)
-        C_perf = FullMixedPrec(copy(d_C_orig); precisions = precisions)   # reused across samples unless TS_INCLUDE_SETUP
-        time_ns = run_manual_benchmark(backend) do
-            if TS_INCLUDE_SETUP
-                C_s = FullMixedPrec(copy(d_C_orig); precisions = precisions)
-                CUDA.@sync recgemm!(alpha, d_A, d_B, beta, C_s)
-            else
-                CUDA.@sync recgemm!(alpha, d_A, d_B, beta, C_perf)
+            # Performance
+            backend = KernelAbstractions.get_backend(d_A)
+            C_perf = FullMixedPrec(copy(d_C_orig); precisions = precisions)   # reused across samples unless TS_INCLUDE_SETUP
+            time_ns = run_manual_benchmark(backend) do
+                if TS_INCLUDE_SETUP
+                    C_s = FullMixedPrec(copy(d_C_orig); precisions = precisions)
+                    CUDA.@sync recgemm!(alpha, d_A, d_B, beta, C_s)
+                else
+                    CUDA.@sync recgemm!(alpha, d_A, d_B, beta, C_perf)
+                end
             end
-        end
-        runtime_ms = time_ns / 1_000_000
-        gflops = calculate_gflops(gemm_flops, time_ns)
-        rec!(name, runtime_ms, gflops; rel_err = relative_error)
-        emit(@sprintf("  %-38s | Rel. Error: %9.2e | Runtime: %9.3f ms | %10.1f GFLOP/s\n",
-                      name, relative_error, runtime_ms, gflops))
+            runtime_ms = time_ns / 1_000_000
+            gflops = calculate_gflops(gemm_flops, time_ns)
+            rec!(name, runtime_ms, gflops; rel_err = relative_error)
+            emit(@sprintf("  %-38s | Rel. Error: %9.2e | Runtime: %9.3f ms | %10.1f GFLOP/s\n",
+                          name, relative_error, runtime_ms, gflops))
 
-        d_A = d_B = d_C_orig = d_C_truth = C_mixed = C_perf = nothing
+            d_A = d_B = d_C_orig = d_C_truth = C_mixed = C_perf = nothing
+        catch e
+            emit(@sprintf("  %-38s | FAILED: %s\n", name, first(split(sprint(showerror, e), '\n'))))
+        end
         GC.gc(); CUDA.reclaim()
     end
 
