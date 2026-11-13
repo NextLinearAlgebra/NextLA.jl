@@ -16,9 +16,12 @@ Base.getindex(A::TransposedMixedPrec, i::Int, j::Int) = parent(A)[j, i]
 """
     FullMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
 
-A hierarchical, recursive mixed-precision data structure that maps to full dense square matrices.
-It recursively partitions a matrix into four sub-blocks (`A11`, `A22`, `A21`, `A12`), enabling 
+A hierarchical, recursive mixed-precision data structure that maps to full dense matrices
+(square, or rectangular such as tall-and-skinny).
+It recursively partitions a matrix into four sub-blocks (`A11`, `A22`, `A21`, `A12`), enabling
 varying precision levels to be stored dynamically at different depths of the recursive hierarchy.
+The row split and the column split are chosen independently (see `_split_dim`), so for a
+rectangular matrix `A11` is `mid_r x mid_c`, `A22` is `(nr-mid_r) x (nc-mid_c)`, etc.
 """
 struct FullMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
     A11::Union{FullMixedPrec{T_Base}, Nothing}
@@ -33,28 +36,36 @@ struct FullMixedPrec{T_Base} <: AbstractMixedPrec{T_Base}
 end
 
 """
+    _split_dim(n)
+
+Split point for one dimension of length `n >= 2`: `n/2` if `n` is a power of 2, otherwise the
+largest power of 2 below `n`. Shared by `FullMixedPrec` (row and column splits) and `recgemm!`
+(inner-dimension split).
+"""
+_split_dim(n::Integer) = isinteger(log2(n)) ? div(n, 2) : 2^floor(Int, log2(n))
+
+"""
     FullMixedPrec(A::AbstractMatrix; precisions::Vector{DataType})
 
-Constructs a `FullMixedPrec` representation of the dense square matrix `A`.
+Constructs a `FullMixedPrec` representation of the dense matrix `A` (square or rectangular).
 
-The matrix is partitioned using a base-2 recursive splitting scheme. If the dimension `n` is a 
-power of 2, it splits evenly; otherwise, it splits at the largest power of 2 less than `n`.
-The recursion continues until only one precision remains in `precisions`, at which point it 
-forms a base case. For blocks assigned `Float16`, dynamic per-block quantization is applied 
-to prevent numerical overflow: values exceeding `65504.0f0` are scaled, clamped, and stored 
-alongside a `Float32` scaling factor.
+The matrix is partitioned using a base-2 recursive splitting scheme, applied to rows and columns
+independently. If a dimension is a power of 2 it splits evenly; otherwise, it splits at the
+largest power of 2 less than that dimension. For square `A` this is the original quadrant scheme.
+The recursion continues until only one precision remains in `precisions` (or a dimension is 1),
+at which point it forms a base case. For blocks assigned `Float16`, dynamic per-block
+quantization is applied to prevent numerical overflow: values exceeding `65504.0f0` are scaled,
+clamped, and stored alongside a `Float32` scaling factor.
 """
 function FullMixedPrec(
     A::AbstractMatrix;
     precisions::Vector{DataType}
 )
     FP16_MAX_VAL = 65504.0f0
-    n = size(A, 1)
-    m = size(A, 2)
-    
-    @assert n == m "A must be square for recursive factorization structure"
+    nr = size(A, 1)
+    nc = size(A, 2)
 
-    if length(precisions) == 1 || n <= 1
+    if length(precisions) == 1 || min(nr, nc) <= 1
         T_Base = precisions[1]
         local base_matrix
         local base_scale
@@ -76,19 +87,20 @@ function FullMixedPrec(
             base_scale = nothing
         end
 
-        return FullMixedPrec{T_Base}(nothing, nothing, nothing, nothing, nothing, nothing, base_scale, base_matrix, (n, n))
+        return FullMixedPrec{T_Base}(nothing, nothing, nothing, nothing, nothing, nothing, base_scale, base_matrix, (nr, nc))
     end
 
-    mid = isinteger(log2(n)) ? div(n, 2) : 2^floor(Int, log2(n))
+    mid_r = _split_dim(nr)   # row split
+    mid_c = _split_dim(nc)   # column split (== mid_r when A is square)
 
     T_OffDiag = precisions[1]
     remaining_precisions = precisions[2:end]
 
-    A11 = FullMixedPrec(view(A, 1:mid, 1:mid); precisions=remaining_precisions)
-    A22 = FullMixedPrec(view(A, mid+1:n, mid+1:n); precisions=remaining_precisions)
+    A11 = FullMixedPrec(view(A, 1:mid_r, 1:mid_c); precisions=remaining_precisions)
+    A22 = FullMixedPrec(view(A, mid_r+1:nr, mid_c+1:nc); precisions=remaining_precisions)
 
-    view_A21 = view(A, mid+1:n, 1:mid)
-    view_A12 = view(A, 1:mid, mid+1:n)
+    view_A21 = view(A, mid_r+1:nr, 1:mid_c)
+    view_A12 = view(A, 1:mid_r, mid_c+1:nc)
 
     local A21_matrix, A12_matrix
     local A21_scale = nothing
@@ -125,7 +137,7 @@ function FullMixedPrec(
     end
 
     T_Final_Base = precisions[end]
-    return FullMixedPrec{T_Final_Base}(A11, A22, A21_matrix, A12_matrix, A21_scale, A12_scale, nothing, nothing, (n, n))
+    return FullMixedPrec{T_Final_Base}(A11, A22, A21_matrix, A12_matrix, A21_scale, A12_scale, nothing, nothing, (nr, nc))
 end
 
 function Base.size(A::FullMixedPrec)
@@ -137,16 +149,16 @@ function Base.getindex(A::FullMixedPrec{T_Base}, i::Int, j::Int) where {T_Base}
         return A.BaseCase[i, j]
     end
 
-    mid = size(A.A11, 1)
+    mid_r, mid_c = size(A.A11)
 
-    if i <= mid && j <= mid
+    if i <= mid_r && j <= mid_c
         return A.A11[i, j]
-    elseif i > mid && j > mid
-        return A.A22[i - mid, j - mid]
-    elseif i > mid && j <= mid
-        return A.A21[i - mid, j]
+    elseif i > mid_r && j > mid_c
+        return A.A22[i - mid_r, j - mid_c]
+    elseif i > mid_r && j <= mid_c
+        return A.A21[i - mid_r, j]
     else
-        return A.A12[i, j - mid]
+        return A.A12[i, j - mid_c]
     end
 end
 
@@ -167,14 +179,15 @@ function reconstruct_matrix(A::FullMixedPrec{T_Base}) where {T_Base}
     
     n1, m1 = size(C11)
     n2, m2 = size(C22)
-    n = n1 + n2
+    nr = n1 + n2
+    nc = m1 + m2
 
-    C_full = similar(C21, T_Base, n, n)
-    
+    C_full = similar(C21, T_Base, nr, nc)
+
     C_full[1:n1, 1:m1] .= C11
-    C_full[n1+1:n, 1:m1] .= C21
-    C_full[n1+1:n, m1+1:n] .= C22
-    C_full[1:n1, m1+1:n] .= C12
+    C_full[n1+1:nr, 1:m1] .= C21
+    C_full[n1+1:nr, m1+1:nc] .= C22
+    C_full[1:n1, m1+1:nc] .= C12
 
     return C_full
 end
