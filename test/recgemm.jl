@@ -153,8 +153,6 @@ end
 # ---------------------------------------------------------------------------
 const TS_ENABLED       = get(ENV, "TS_SKIP", "0") != "1"
 const TS_QUICK         = get(ENV, "TS_QUICK", "0") == "1"
-# RECGEMM_ONLY=tallskinny  -> skip the square sweep (and its plots) and run only the tall-and-skinny sweep
-const SQ_ENABLED       = get(ENV, "RECGEMM_ONLY", "") != "tallskinny"
 const TS_INCLUDE_SETUP = get(ENV, "TS_INCLUDE_SETUP", "0") == "1"
 const TS_KS_TALL = TS_QUICK ? [64]          : [64, 256, 1024]
 const TS_MS_TALL = TS_QUICK ? [4096, 16384] : [4096, 16384, 65536, 262144, 1048576]
@@ -345,9 +343,25 @@ function plot_tallskinny(records)
     end
 end
 
+# Ask which sweeps to run. Interactive terminals get a prompt; non-interactive runs (Slurm batch, piped
+# stdin) skip it and run everything (tall/skinny still honours TS_SKIP=1).
+function ask_sweeps()
+    stdin isa Base.TTY || return (true, TS_ENABLED)
+    println("Which benchmarks do you want to run?")
+    println("  [1] square (n x n x n) only")
+    println("  [2] tall/skinny only")
+    println("  [3] both  (default)")
+    print("> "); flush(stdout)
+    ans = strip(readline(stdin))
+    ans == "1" && return (true, false)
+    ans == "2" && return (false, true)
+    return (true, TS_ENABLED)
+end
+
 function run_recgemm_benchmark()
+    sq_enabled, ts_enabled = ask_sweeps()
     # Define the matrix sizes to test
-    n_values = SQ_ENABLED ? [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768] : Int[] #16, 32, 256, 512, 1024, ... 65536
+    n_values = sq_enabled ? [64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768] : Int[] #16, 32, 256, 512, 1024, ... 65536
 
     # Define the different mixed-precision scenarios
     test_scenarios = Dict(
@@ -518,7 +532,7 @@ function run_recgemm_benchmark()
             end
         end
 
-        if SQ_ENABLED
+        if sq_enabled
         # --- Simplified Plotting Logic ---
         emit("\n" * "="^60 * "\n")
         emit("📊 Generating and saving plots...\n")
@@ -558,10 +572,10 @@ function run_recgemm_benchmark()
         savefig(acc_plot, "recgemm_accuracy.png")
         savefig(perf_plot, "recgemm_performance.png")
 
-        end  # SQ_ENABLED
+        end  # sq_enabled
 
         # --- Tall-and-skinny sweep (after the square results/plots are safely on disk) ---
-        if TS_ENABLED
+        if ts_enabled
             emit("\n" * "="^60 * "\n")
             emit("📐 Tall-and-skinny benchmarks$(TS_QUICK ? " (TS_QUICK)" : "")...\n")
             for p in tallskinny_problems()
