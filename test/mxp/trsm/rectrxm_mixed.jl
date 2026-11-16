@@ -36,7 +36,7 @@ _mxp_relerr(X, ref) = norm(Float64.(X) - ref) / norm(ref)
 
         Amp = TriMixedPrec(A, uplo; precisions = DataType[Float32, Float32])
         Bm = copy(B)
-        @test MixedPrecision.unified_rec_mixed(func, side, uplo, 'N', Amp, Bm) === Bm
+        @test unified_rectrxm!(side, uplo, 'N', 'N', 1, func, Amp, Bm) === Bm
         @test _mxp_relerr(Bm, _mxp_reference(func, side, uplo, 'N', 'N', A, B)) < rtol
     end
 
@@ -46,7 +46,7 @@ _mxp_relerr(X, ref) = norm(Float64.(X) - ref) / norm(ref)
         B = rand(Float32, n, m)
         Amp = TriMixedPrec(A, 'L'; precisions = DataType[Float32, Float32])
         Bm = copy(B)
-        MixedPrecision.unified_rec_mixed(func, 'L', 'L', 'U', Amp, Bm)
+        unified_rectrxm!('L', 'L', 'N', 'U', 1, func, Amp, Bm)
         @test _mxp_relerr(Bm, _mxp_reference(func, 'L', 'L', 'N', 'U', A, B)) < rtol
     end
 
@@ -56,7 +56,7 @@ _mxp_relerr(X, ref) = norm(Float64.(X) - ref) / norm(ref)
         B = side == 'L' ? rand(Float32, n, m) : rand(Float32, m, n)
         Amp = TriMixedPrec(A, 'L'; precisions = DataType[Float32, Float32])
         Bm = copy(B)
-        MixedPrecision.unified_rec_mixed(func, side, 'U', 'N', transpose(Amp), Bm)
+        unified_rectrxm!(side, 'L', 'T', 'N', 1, func, Amp, Bm)
         @test _mxp_relerr(Bm, _mxp_reference(func, side, 'L', 'T', 'N', A, B)) < rtol
     end
 
@@ -67,10 +67,10 @@ _mxp_relerr(X, ref) = norm(Float64.(X) - ref) / norm(ref)
         Amp = FullMixedPrec(A; precisions = DataType[Float32, Float32])
         Bm = copy(B)
         if t
-            MixedPrecision.unified_rec_mixed('S', 'L', uplo, 'N', transpose(Amp), Bm)
+            unified_rectrxm!('L', uplo == 'L' ? 'U' : 'L', 'T', 'N', 1, 'S', Amp, Bm)
             ref = _mxp_reference('S', 'L', uplo == 'L' ? 'U' : 'L', 'T', 'N', A, B)
         else
-            MixedPrecision.unified_rec_mixed('S', 'L', uplo, 'N', Amp, Bm)
+            unified_rectrxm!('L', uplo, 'N', 'N', 1, 'S', Amp, Bm)
             ref = _mxp_reference('S', 'L', uplo, 'N', 'N', A, B)
         end
         @test _mxp_relerr(Bm, ref) < rtol
@@ -80,10 +80,10 @@ _mxp_relerr(X, ref) = norm(Float64.(X) - ref) / norm(ref)
         n, m = 32, 4
         A = tril(rand(Float32, n, n)) + Diagonal(10f0 * ones(Float32, n))
         B = rand(Float32, n, m)
-        Amp = TriMixedPrec(A, 'L'; precisions = DataType[Float16, Float16])
+        Amp = TriMixedPrec(A, 'L'; precisions = DataType[Float16, Float32])
         ref = _mxp_reference(func, 'L', 'L', 'N', 'N', reconstruct_matrix(Amp), B)
         Bm = copy(B)
-        MixedPrecision.unified_rec_mixed(func, 'L', 'L', 'N', Amp, Bm)
+        unified_rectrxm!('L', 'L', 'N', 'N', 1, func, Amp, Bm)
         @test eltype(Bm) === Float32
         @test _mxp_relerr(Bm, ref) < 1e-2
     end
@@ -96,26 +96,26 @@ _mxp_relerr(X, ref) = norm(Float64.(X) - ref) / norm(ref)
         @test Amp.OffDiag_scale != 1
         ref = _mxp_reference(func, 'L', 'L', 'N', 'N', reconstruct_matrix(Amp), B)
         Bm = copy(B)
-        MixedPrecision.unified_rec_mixed(func, 'L', 'L', 'N', Amp, Bm)
+        unified_rectrxm!('L', 'L', 'N', 'N', 1, func, Amp, Bm)
         @test _mxp_relerr(Bm, ref) < 1e-2
     end
 
     @testset "a scaled leaf, func=$func" for func in ['S', 'M']
         n, m = 16, 4
-        A = tril(rand(n, n)) * 1.0e5 + 2.0e5I
-        Amp = TriMixedPrec(A, 'L'; precisions = DataType[Float16])
+        A = tril(rand(n, n)) * 1.0e39 + 2.0e39I
+        Amp = TriMixedPrec(A, 'L'; precisions = DataType[Float32])
         @test Amp.Base_scale != 1
-        B = rand(Float32, n, m)
+        B = rand(n, m)
         Bm = copy(B)
-        MixedPrecision.unified_rec_mixed(func, 'L', 'L', 'N', Amp, Bm)
+        unified_rectrxm!('L', 'L', 'N', 'N', 1, func, Amp, Bm)
         @test _mxp_relerr(Bm, _mxp_reference(func, 'L', 'L', 'N', 'N', A, B)) < 1e-2
     end
 
     @testset "a multiply that overflows gives Inf, not floatmax" begin
-        Amp = TriMixedPrec(Matrix(1.0e5I, 4, 4), 'L'; precisions = DataType[Float16])
+        Amp = TriMixedPrec(Matrix(1.0e39I, 4, 4), 'L'; precisions = DataType[Float32])
         @test Amp.Base_scale != 1
         B = fill(1f34, 4, 2)
-        MixedPrecision.unified_rec_mixed('M', 'L', 'L', 'N', Amp, B)
+        unified_rectrxm!('L', 'L', 'N', 'N', 1, 'M', Amp, B)
         @test all(isinf, B)
     end
 
@@ -129,7 +129,7 @@ _mxp_relerr(X, ref) = norm(Float64.(X) - ref) / norm(ref)
         B = 1.0f6 .* rand(Float32, n, 3)
         ref = Float64.(A) \ Float64.(B)
         Bm = copy(B)
-        MixedPrecision.unified_rec_mixed('S', 'L', 'L', 'N', Amp, Bm)
+        unified_rectrxm!('L', 'L', 'N', 'N', 1, 'S', Amp, Bm)
         @test all(isfinite, Bm)
         @test _mxp_relerr(Bm, ref) < 1e-2
     end
@@ -140,9 +140,34 @@ _mxp_relerr(X, ref) = norm(Float64.(X) - ref) / norm(ref)
         B = rand(Float32, n, 3)
         Amp = TriMixedPrec(A, 'L'; precisions = DataType[Float32, Float32])
         B1, B2 = copy(B), copy(B)
-        MixedPrecision.unified_rec_mixed('S', 'L', 'L', Amp, B1)
-        MixedPrecision.unified_rec_mixed('S', 'L', 'L', 'N', Amp, B2)
+        unified_rectrxm!('L', 'L', 'N', 1, 'S', Amp, B1)
+        unified_rectrxm!('L', 'L', 'N', 'N', 1, 'S', Amp, B2)
         @test B1 == B2
+    end
+
+    @testset "uplo must be A.uplo for a triangular or symmetric container" begin
+        n = 16
+        A = tril(rand(Float32, n, n)) + Diagonal(10f0 * ones(Float32, n))
+        B = rand(Float32, n, 3)
+        Tri = TriMixedPrec(A, 'L'; precisions = DataType[Float32, Float32])
+        Sym = SymmMixedPrec(A + tril(A, -1)', 'L'; precisions = DataType[Float32, Float32])
+        @test_throws ArgumentError unified_rectrxm!('L', 'U', 'N', 'N', 1, 'S', Tri, copy(B))
+        @test_throws ArgumentError unified_rectrxm!('R', 'U', 'T', 'N', 1, 'M', Tri, copy(B'))
+        @test_throws ArgumentError unified_rectrxm!('L', 'U', 'N', 'N', 1, 'S', Sym, copy(B))
+    end
+
+    # transpose(::SymmMixedPrec) is the matrix itself, but the recursion reads one
+    # stored triangle, whose transpose is the other one.
+    @testset "SymmMixedPrec with trans='T', n=$n uplo=$uplo" for n in [8, 13, 100], uplo in ['L', 'U']
+        S = Matrix(Symmetric(rand(n, n))) + n * I
+        Sy = SymmMixedPrec(copy(S), uplo; precisions = DataType[Float64, Float64, Float64])
+        Ad = uplo == 'L' ? tril(S) : triu(S)
+        for side in ('L', 'R'), func in ('S', 'M'), diag in ('N', 'U')
+            B = side == 'L' ? rand(n, 3) : rand(3, n)
+            X = copy(B)
+            unified_rectrxm!(side, uplo, 'T', diag, 1.0, func, Sy, X)
+            @test _mxp_relerr(X, _mxp_reference(func, side, uplo, 'T', diag, Ad, B)) < 1e-12
+        end
     end
 
     # The dense driver's TRMM base case is only valid up to TILE_DIM = 16;
@@ -156,7 +181,7 @@ _mxp_relerr(X, ref) = norm(Float64.(X) - ref) / norm(ref)
         Amp = TriMixedPrec(A, 'L'; precisions = DataType[Float32, Float32])
         # a deliberately oversized threshold must not reach src/trsm/trmm.jl's kernels
         Bm = copy(B)
-        MixedPrecision.unified_rec_mixed('M', 'L', 'L', 'N', Amp, Bm, 256)
+        MixedPrecision._rec_mixed!('M', 'L', 'L', 'N', Amp, Bm, 256)
         @test _mxp_relerr(Bm, _mxp_reference('M', 'L', 'L', 'N', 'N', A, B)) < rtol
     end
 
@@ -179,16 +204,16 @@ _mxp_relerr(X, ref) = norm(Float64.(X) - ref) / norm(ref)
         @test sz == 1f0
         @test all(iszero, z)
 
-        @testset "any storage and scale type" begin
-            q2, s2 = MixedPrecision.quantize(rand(Float64, 4, 4), Float32, Float64)
+        @testset "any storage type" begin
+            q2, s2 = MixedPrecision.quantize(rand(Float64, 4, 4), Float32)
             @test eltype(q2) === Float32
-            @test s2 isa Float64
+            @test s2 isa Float32
         end
 
         @testset "an empty matrix" begin
-            qe, se = MixedPrecision.quantize(zeros(Float64, 0, 3), Float16, Float64)
+            qe, se = MixedPrecision.quantize(zeros(Float64, 0, 3), Float16)
             @test size(qe) == (0, 3) && eltype(qe) === Float16
-            @test se === 1.0
+            @test se === 1f0
         end
 
         @testset "a non-finite matrix throws" begin
