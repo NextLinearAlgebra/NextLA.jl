@@ -4,6 +4,7 @@ authors = ["Rabab Alomairy, Evelyne Ringoot, Sophie Xuan, Vicki Carrica, Maxwell
 version = "0.2.3"
 
 [deps]
+BFloat16s = "ab4f0b2a-ad5b-11e8-123f-65d77653426b"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
@@ -21,6 +22,7 @@ NextLAMetalExt = "Metal"
 NextLAoneAPIExt = "oneAPI"
 
 [compat]
+BFloat16s = "0.5, 0.6"
 KernelAbstractions = "0.9.34"
 LinearAlgebra = "1"
 Random = "1"

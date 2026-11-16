@@ -14,7 +14,7 @@ using NextLA.MixedPrecision
         expected = alpha * A * B + beta * C_dense
 
         C_mp = FullMixedPrec(C_dense; precisions=DataType[Float32, Float32])
-        @test NextLA.recgemm!(alpha, A, B, beta, C_mp) === C_mp
+        @test recgemm!(alpha, A, B, beta, C_mp) === C_mp
         @test reconstruct_matrix(C_mp) ≈ expected rtol=1e-4
     end
 
@@ -24,25 +24,24 @@ using NextLA.MixedPrecision
         B = rand(Float64, k, n)
         C_dense = rand(Float64, n, n)
         C_mp = FullMixedPrec(copy(C_dense); precisions=DataType[Float64])
-        NextLA.recgemm!(1.0, A, B, 1.0, C_mp)
+        recgemm!(1.0, A, B, 1.0, C_mp)
         @test reconstruct_matrix(C_mp) ≈ A * B + C_dense rtol=1e-12
     end
 
-    @testset "a split C needs square A and B, k=$k" for k in [3, 20]
+    @testset "a split C takes any k, k=$k" for k in [1, 3, 20]
         n = 8
-        C_mp = FullMixedPrec(rand(Float64, n, n); precisions=DataType[Float32, Float64])
-        @test_throws DimensionMismatch NextLA.recgemm!(1.0, rand(n, k), rand(k, n), 1.0, C_mp)
+        A, B, C_dense = rand(n, k), rand(k, n), rand(n, n)
+        C_mp = FullMixedPrec(copy(C_dense); precisions=DataType[Float64, Float64, Float64])
+        recgemm!(1.0, A, B, 1.0, C_mp)
+        @test reconstruct_matrix(C_mp) ≈ A * B + C_dense rtol=1e-12
     end
 
-    @testset "an uneven split below the top needs its leaves, n=$n" for n in [5, 13]
-        # n = 5 splits 4 + 1: C11's second product A12 * B21 has k = 1. That is fine while
-        # C11 is a leaf and a DimensionMismatch once C11 is split again.
+    @testset "an uneven split at every level, n=$n" for n in [5, 13, 100]
+        # n = 13 splits 8 + 5 and 5 splits 4 + 1, so no level has equal halves.
         A, B, C_dense = rand(n, n), rand(n, n), rand(n, n)
-        leafy = FullMixedPrec(copy(C_dense); precisions=DataType[Float32, Float64])
-        NextLA.recgemm!(1.0, A, B, 1.0, leafy)
-        @test reconstruct_matrix(leafy) ≈ A * B + C_dense rtol=1e-5
-        deep = FullMixedPrec(copy(C_dense); precisions=DataType[Float32, Float32, Float64])
-        @test_throws DimensionMismatch NextLA.recgemm!(1.0, A, B, 1.0, deep)
+        C_mp = FullMixedPrec(copy(C_dense); precisions=DataType[Float64, Float64, Float64, Float64])
+        recgemm!(1.0, A, B, 1.0, C_mp)
+        @test reconstruct_matrix(C_mp) ≈ A * B + C_dense rtol=1e-12
     end
 
     @testset "Float16 off-diagonal blocks" begin
@@ -52,7 +51,7 @@ using NextLA.MixedPrecision
         C_dense = rand(Float32, n, n)
         C_mp = FullMixedPrec(C_dense; precisions=DataType[Float16, Float32])
         expected = A * B + C_dense
-        NextLA.recgemm!(1f0, A, B, 1f0, C_mp)
+        recgemm!(1f0, A, B, 1f0, C_mp)
         @test eltype(C_mp.A21) === Float16
         @test reconstruct_matrix(C_mp) ≈ expected rtol=1e-2
     end
@@ -66,7 +65,7 @@ using NextLA.MixedPrecision
         A = rand(Float64, n, n)
         B = rand(Float64, n, n)
         expected = -100 * A * B + C_dense
-        NextLA.recgemm!(-100.0, A, B, 1.0, C_mp)
+        recgemm!(-100.0, A, B, 1.0, C_mp)
         @test reconstruct_matrix(C_mp) ≈ expected rtol=1e-2
     end
 
@@ -75,7 +74,7 @@ using NextLA.MixedPrecision
         A = rand(Float64, n, n)
         B = rand(Float64, n, n)
         C_mp = FullMixedPrec(rand(Float64, n, n); precisions=DataType[Float32, Float64])
-        NextLA.recgemm!(1.0, A, B, 0.0, C_mp)
+        recgemm!(1.0, A, B, 0.0, C_mp)
         @test reconstruct_matrix(C_mp) ≈ A * B rtol=1e-5
     end
 
@@ -88,17 +87,17 @@ using NextLA.MixedPrecision
 
         C_seq = FullMixedPrec(copy(C_dense); precisions=DataType[Float32, Float32])
         C_par = FullMixedPrec(copy(C_dense); precisions=DataType[Float32, Float32])
-        NextLA.recgemm!(one(T), A, B, one(T), C_seq; parallel=false)
-        NextLA.recgemm!(one(T), A, B, one(T), C_par; parallel=true)
+        recgemm!(one(T), A, B, one(T), C_seq; parallel=false)
+        recgemm!(one(T), A, B, one(T), C_par; parallel=true)
 
         @test reconstruct_matrix(C_seq) ≈ reconstruct_matrix(C_par) rtol=1e-5
     end
 
     @testset "mismatched shapes throw DimensionMismatch" begin
         C_mp = FullMixedPrec(rand(8, 8); precisions=DataType[Float64])
-        @test_throws DimensionMismatch NextLA.recgemm!(1.0, rand(7, 4), rand(4, 8), 1.0, C_mp)
-        @test_throws DimensionMismatch NextLA.recgemm!(1.0, rand(8, 4), rand(4, 7), 1.0, C_mp)
-        @test_throws DimensionMismatch NextLA.recgemm!(1.0, rand(8, 4), rand(5, 8), 1.0, C_mp)
+        @test_throws DimensionMismatch recgemm!(1.0, rand(7, 4), rand(4, 8), 1.0, C_mp)
+        @test_throws DimensionMismatch recgemm!(1.0, rand(8, 4), rand(4, 7), 1.0, C_mp)
+        @test_throws DimensionMismatch recgemm!(1.0, rand(8, 4), rand(5, 8), 1.0, C_mp)
     end
 end
 
@@ -107,7 +106,7 @@ end
 @testset "RECGEMM mixed precision re-scales an overflowing block [CPU]" begin
     C_mp = FullMixedPrec(zeros(4, 4); precisions = DataType[Float16, Float32])
     A, B = fill(1000.0, 4, 4), fill(1000.0, 4, 4)
-    NextLA.recgemm!(1.0, A, B, 0.0, C_mp)
+    recgemm!(1.0, A, B, 0.0, C_mp)
     @test C_mp.A12_scale > 1 && C_mp.A21_scale > 1
     @test all(isfinite, reconstruct_matrix(C_mp))
     @test reconstruct_matrix(C_mp) ≈ A * B rtol=1e-2

@@ -12,7 +12,7 @@ _mxp_tri(uplo, X) = uplo == 'L' ? tril(X) : triu(X)
         C0 = rand(T, n, n); C0 = C0 + transpose(C0)
         mp = SymmMixedPrec(copy(C0), uplo; precisions = DataType[Float32, Float32])
 
-        @test NextLA.recsyrk!(T(1.5), A0, T(0.5), mp) === mp
+        @test recsyrk!(T(1.5), A0, T(0.5), mp) === mp
 
         expected = T(1.5) * (A0 * transpose(A0)) + T(0.5) * C0
         R = reconstruct_matrix(mp)
@@ -25,7 +25,7 @@ _mxp_tri(uplo, X) = uplo == 'L' ? tril(X) : triu(X)
         A0 = rand(Float32, n, 8)
         C0 = rand(Float32, n, n); C0 = C0 + transpose(C0)
         mp = SymmMixedPrec(copy(C0), uplo; precisions = DataType[Float16, Float32])
-        NextLA.recsyrk!(1f0, A0, 1f0, mp)
+        recsyrk!(1f0, A0, 1f0, mp)
         @test reconstruct_matrix(mp) ≈ A0 * transpose(A0) + C0 rtol=1e-2
     end
 
@@ -37,7 +37,7 @@ _mxp_tri(uplo, X) = uplo == 'L' ? tril(X) : triu(X)
         mp = SymmMixedPrec(copy(C0), 'L'; precisions = DataType[Float16, Float64])
         @test mp.OffDiag_scale != 1
         A0 = rand(Float64, n, 4)
-        NextLA.recsyrk!(-100.0, A0, 1.0, mp)
+        recsyrk!(-100.0, A0, 1.0, mp)
         @test reconstruct_matrix(mp) ≈ -100 * A0 * transpose(A0) + C0 rtol=1e-2
     end
 
@@ -54,7 +54,7 @@ _mxp_tri(uplo, X) = uplo == 'L' ? tril(X) : triu(X)
 
     @testset "A with the wrong number of rows throws" begin
         mp = SymmMixedPrec(rand(8, 8), 'L'; precisions = DataType[Float64])
-        @test_throws DimensionMismatch NextLA.recsyrk!(1.0, rand(7, 3), 1.0, mp)
+        @test_throws DimensionMismatch recsyrk!(1.0, rand(7, 3), 1.0, mp)
     end
 end
 
@@ -62,7 +62,7 @@ end
 @testset "RECSYRK mixed precision re-scales an overflowing block [CPU]" begin
     C_mp = SymmMixedPrec(zeros(4, 4), 'L'; precisions = DataType[Float16, Float32])
     A = fill(1000.0, 4, 2)
-    NextLA.recsyrk!(1.0, A, 0.0, C_mp)
+    recsyrk!(1.0, A, 0.0, C_mp)
     @test C_mp.OffDiag_scale > 1
     @test reconstruct_matrix(C_mp) ≈ A * A' rtol=1e-2
 end

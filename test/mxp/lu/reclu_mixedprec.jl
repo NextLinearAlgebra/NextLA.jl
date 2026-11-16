@@ -16,20 +16,13 @@ _mxp_lu_err(R, A0) = norm(UnitLowerTriangular(R) * UpperTriangular(R) - A0) / no
         @test _mxp_lu_err(reconstruct_matrix(mp), A0) < 1e-3
     end
 
-    @testset "an uneven split with a split trailing block throws" begin
+    @testset "an uneven split with a split trailing block, n=$n" for n in [12, 50, 100]
         # n = 50 splits 32 + 18: the trailing update multiplies an 18×32 block by a 32×18
-        # one into A22, which recgemm! accepts only while A22 is a leaf.
-        A0 = rand(Float64, 50, 50) + 100I
-        mp = FullMixedPrec(copy(A0); precisions = DataType[Float32, Float32, Float64])
-        @test_throws DimensionMismatch lu_recursive!(mp, 8)
-    end
-
-    @testset "lu_recursive_mixed! is the same function" begin
-        @test lu_recursive_mixed! === lu_recursive!
-        A0 = rand(Float64, 16, 16) + 32I
-        mp = FullMixedPrec(copy(A0); precisions = DataType[Float32, Float64])
-        lu_recursive_mixed!(mp, 4)
-        @test _mxp_lu_err(reconstruct_matrix(mp), A0) < 1e-5
+        # one into A22, which is split again.
+        A0 = rand(Float64, n, n) + 2n * I
+        mp = FullMixedPrec(copy(A0); precisions = DataType[Float64, Float64, Float64])
+        lu_recursive!(mp, 8)
+        @test _mxp_lu_err(reconstruct_matrix(mp), A0) < 1e-12
     end
 
     @testset "the dense method still takes a dense matrix" begin
@@ -57,10 +50,10 @@ _mxp_lu_err(R, A0) = norm(UnitLowerTriangular(R) * UpperTriangular(R) - A0) / no
         @test _mxp_lu_err(reconstruct_matrix(b), A0) < 1e-2
     end
 
-    @testset "two large Float16 scales do not overflow the trailing update" begin
+    @testset "two large Float32 scales do not overflow the trailing update" begin
         n = 8
-        A0 = rand(n, n) .* 2.0e7 + 1.0e10I
-        mp = FullMixedPrec(copy(A0); precisions = DataType[Float16, Float64], scale_type = Float16)
+        A0 = rand(n, n) .* 2.0e24 + 1.0e27I
+        mp = FullMixedPrec(copy(A0); precisions = DataType[Float16, Float64])
         @test isinf(mp.A21_scale * mp.A12_scale)
         lu_recursive!(mp, 4)
         @test all(isfinite, reconstruct_matrix(mp))
@@ -68,7 +61,7 @@ _mxp_lu_err(R, A0) = norm(UnitLowerTriangular(R) * UpperTriangular(R) - A0) / no
     end
 
     @testset "a leaf stored with a scale factor throws" begin
-        mp = FullMixedPrec(fill(1.0e5, 4, 4) + 1.0e6I; precisions = DataType[Float16])
+        mp = FullMixedPrec(fill(1.0e39, 4, 4) + 1.0e40I; precisions = DataType[Float32])
         @test mp.Base_scale != 1
         @test_throws ArgumentError lu_recursive!(mp)
     end
@@ -132,10 +125,17 @@ end
 # a raised scale instead of Inf.
 @testset "a solve that outgrows a Float16 block raises its scale [CPU]" begin
     blk = fill(Float16(100), 2, 2)
-    s = MixedPrecision._solve_block!(W -> (W .*= 1000), blk, 1f0, Float32)
+    s = MixedPrecision._solve_mixedprec_offdiag_block!(W -> (W .*= 1000), blk, 1f0, Float32)
     @test s > 1 && all(isfinite, blk)
     @test Float32.(blk) .* s ≈ fill(1f5, 2, 2) rtol=2e-3
     same = fill(1f0, 2, 2)
-    @test MixedPrecision._solve_block!(W -> (W .*= 2), same, 1f0, Float32) == 1f0
+    @test MixedPrecision._solve_mixedprec_offdiag_block!(W -> (W .*= 2), same, 1f0, Float32) == 1f0
     @test same == fill(2f0, 2, 2)
+end
+
+# A solve that takes a Float32 block past what a Float32 scale can carry throws
+# instead of storing Inf.
+@testset "a solve past what the scale can carry throws [CPU]" begin
+    blk = fill(1f0, 2, 2)
+    @test_throws ArgumentError MixedPrecision._solve_mixedprec_offdiag_block!(W -> (W .*= 1e80), blk, 1f0, Float64)
 end

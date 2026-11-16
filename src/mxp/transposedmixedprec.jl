@@ -4,6 +4,7 @@ end
 
 Base.transpose(A::AbstractMixedPrec) = TransposedMixedPrec(A)
 Base.transpose(A::TransposedMixedPrec) = parent(A)
+Base.adjoint(A::AbstractMixedPrec) = transpose(A)
 
 Base.parent(A::TransposedMixedPrec) = A.parent
 Base.size(A::TransposedMixedPrec) = reverse(size(parent(A)))
