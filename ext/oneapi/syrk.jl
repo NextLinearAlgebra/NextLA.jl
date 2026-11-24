@@ -3,7 +3,7 @@
 # Source: origin/pr/19, by Alessandro <axelcar482@gmail.com>, carved out of
 # that branch's monolithic ext/NextLAoneAPIExt.jl into this repo's per-backend
 # ext layout. Only the @warn wording differs, for the reason in
-# src/syrk/syrk.jl. The _onemkl_syrk_fname table went to common.jl beside the
+# src/dense/blas/syrk/syrk.jl. The _onemkl_syrk_fname table went to common.jl beside the
 # other oneMKL name tables.
 #
 # oneMKL has a native strided batched SYRK but no pointer-batched one, so the
@@ -72,7 +72,7 @@ function NextLA.syrk_batched!(uplo::Char,
     return C
 end
 
-# recsyrk!'s Float16 updates (src/syrk/recsyrk.jl). oneAPI has no gemmEx!, so the
+# recsyrk!'s Float16 updates (src/dense/blas/syrk/recsyrk.jl). oneAPI has no gemmEx!, so the
 # multiply goes through gemm! -- mul! on the device -- as vicki-development's
 # recsyrk_dev.jl did with oneMKL.gemm!. Never executed: no Intel GPU here.
 NextLA._syrk_half_gemm!(alpha, A, B, beta, C::oneAPI.oneStridedMatrix) =

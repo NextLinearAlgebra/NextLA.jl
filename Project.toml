@@ -26,10 +26,4 @@ BFloat16s = "0.5, 0.6"
 KernelAbstractions = "0.9.34"
 LinearAlgebra = "1"
 Random = "1"
-julia = "1.9"
-
-[extras]
-Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-
-[targets]
-test = ["Test"]
+julia = "1.10"

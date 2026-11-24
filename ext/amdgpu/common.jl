@@ -33,7 +33,7 @@ end
 @inline NextLA._build_batch_ptrs(batch::AbstractVector{<:AMDGPU.StridedROCMatrix}) =
     _device_batch_strided(batch)
 
-# SYRK entry points, added with src/syrk/. rocBLAS is the only backend
+# SYRK entry points, added with src/dense/blas/syrk/. rocBLAS is the only backend
 # with a native batched SYRK in both layouts.
 @inline _rocblas_syrk_fname(::Type{Float32}, ::Val{:single}) = rocBLAS.rocblas_ssyrk_64
 @inline _rocblas_syrk_fname(::Type{Float64}, ::Val{:single}) = rocBLAS.rocblas_dsyrk_64

@@ -101,7 +101,7 @@ end
 # list of separately allocated matrices. Without this method such a call -- and
 # Metal's own gemmEx_batched! for the same shape, which routes here through
 # _try_same_type_batched! -- falls through to the generic CPU loop in
-# src/gemm/gemm_batched.jl and hands BLAS.gemm! a Metal device matrix. Refuse
+# src/dense/blas/gemm/gemm_batched.jl and hands BLAS.gemm! a Metal device matrix. Refuse
 # it here instead, with an error that names the backend.
 function NextLA.gemm_batched!(transA::Char,
                               transB::Char,

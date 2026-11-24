@@ -1,5 +1,17 @@
 @inline NextLA.supports_grouped_gemm(::Type{<:CUDA.CUDABackend}) = true
 
+@inline function NextLA.TileLowRank.validate_compressed_ftlr_tile_alignment(
+    ::CUDA.CUDABackend, ::Type{T}, bm::Int, bn::Int) where {T}
+    return NextLA.TileLowRank.validate_compressed_ftlr_tile_alignment_cuda(T, bm, bn)
+end
+
+@inline NextLA.TileLowRank.required_tlr_gemm_rank_multiple(
+    ::CUDA.CUDABackend, ::Type{Float16}, mode) = 8
+@inline NextLA.TileLowRank.required_tlr_gemm_rank_multiple(
+    ::CUDA.CUDABackend, ::Type{NextLA.BFloat16}, mode) = 8
+@inline NextLA.TileLowRank.required_tlr_gemm_rank_multiple(
+    ::CUDA.CUDABackend, ::Type{Float32}, ::NextLA.TF32) = 4
+
 @inline _grouped_cuptr(A::CUDA.StridedCuArray{T}) where {T} = pointer(A)
 @inline _grouped_cuptr(A::Base.ReshapedArray) = _grouped_cuptr(parent(A))
 @inline _grouped_cuptr(A::SubArray{T}) where {T} = Base.unsafe_convert(CUDA.CuPtr{T}, A)

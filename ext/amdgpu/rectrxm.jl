@@ -2,7 +2,7 @@
 # ext/cuda/rectrxm.jl.
 #
 # Same design as the CUDA file: an added method, strictly more specific than
-# the AbstractMatrix method in src/trsm/rectrxm.jl, so the recursive
+# the AbstractMatrix method in src/dense/blas/trsm/rectrxm.jl, so the recursive
 # KernelAbstractions path stays for everything this does not cover. The
 # argument mapping is the CUDA one -- rocBLAS takes transa itself, so the
 # original uplo is passed unflipped, and alpha goes to rocBLAS directly with no
@@ -28,7 +28,7 @@
 
 function NextLA.unified_rectrxm!(side::Char,
                                  uplo::Char,
-                                 transpose::Char,
+                                 trans::Char,
                                  diag::Char,
                                  alpha::Number,
                                  func::Char,
@@ -38,10 +38,10 @@ function NextLA.unified_rectrxm!(side::Char,
         throw(ArgumentError("diag must be 'N' or 'U', got '$diag'"))
     end
     if func == 'S'
-        rocBLAS.trsm!(side, uplo, transpose, diag, T(alpha), A, B)
+        rocBLAS.trsm!(side, uplo, trans, diag, T(alpha), A, B)
     elseif func == 'M'
         C = similar(B)
-        rocBLAS.trmm!(side, uplo, transpose, diag, T(alpha), A, B, C)
+        rocBLAS.trmm!(side, uplo, trans, diag, T(alpha), A, B, C)
         copyto!(B, C)
     else
         throw(ArgumentError("func must be 'S' or 'M', got '$func'"))

@@ -9,7 +9,7 @@ import LinearAlgebra: BLAS, LAPACK
 import LinearAlgebra.BLAS: @blasfunc
 using Random: Random
 using KernelAbstractions
-# @unroll: chol_kernel_register! unrolls over its register strip. TLRmodule
+# @unroll: chol_kernel_register! unrolls over its register strip. TileLowRank
 # imports it separately, being its own module.
 using KernelAbstractions.Extras: @unroll
 
@@ -33,6 +33,15 @@ Determines single / double precision machine parameters
 		- eps = relative machine precision
 		- sfmin = safe min, such that 1/sfmin does not overflow
 		- base = base of the machine
+
+# Examples
+```jldoctest
+julia> NextLA.lamch(Float64, 'E') == eps(Float64) / 2
+true
+
+julia> NextLA.lamch(Float32, 'S') == floatmin(Float32)
+true
+```
 """
 function lamch(::Type{T}, cmach) where {T <: Number}
 	ep = eps(T)
@@ -66,38 +75,18 @@ end
 
 @inline _rec_split(n::Integer) = ispow2(n) ? n ÷ 2 : prevpow(2, n)
 
-include("NextLAMatrix.jl")
-include("lu.jl")
-include("lu/factor.jl")
-include("trsm/trmm.jl")
-include("trsm/trsm.jl")
-include("trsm/rectrxm.jl")
-include("gemm/matmul.jl")
-include("gemm/gemm.jl")
-include("syrk/syrk.jl")
-include("cholesky/potrf_batched.jl")
-include("cholesky/cholesky.jl")
-include("trsm/batched.jl")
-include("lauu2.jl")
-include("lauum.jl")
-
-include("geqrt.jl")
-include("geqr2.jl")
-include("larf.jl")
-include("larfg.jl")
-include("larft.jl")
-include("larfb.jl")
-include("unmqr.jl")
-include("gerc.jl")
-include("rotations/lartg.jl")
-include("tsqrt.jl")
-include("tsmqr.jl")
-include("parfb.jl")
-include("pamm.jl")
-include("axpy.jl")
-include("pemv.jl")
-include("ttmqr.jl")
-include("ttqrt.jl")
-include("mxp/mxp.jl")
+include("streams.jl")
+include("dense/core/NextLAMatrix.jl")
+include("dense/blas/gemm/gemm.jl")
+include("dense/blas/trsm/trsm.jl")
+include("dense/blas/syrk/syrk.jl")
+include("dense/blas/axpy.jl")
+include("dense/blas/gerc.jl")
+include("dense/lapack/lu/lu.jl")
+include("dense/lapack/cholesky/cholesky.jl")
+include("dense/lapack/qr/qr.jl")
+include("dense/lapack/rotations/rotations.jl")
+include("mxp/core/mxp.jl")
+include("tlr/core/tlr.jl")
 
 end

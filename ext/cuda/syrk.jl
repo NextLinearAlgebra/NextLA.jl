@@ -3,7 +3,7 @@
 # Source: origin/pr/19, by Alessandro <axelcar482@gmail.com>, carved out of
 # that branch's monolithic ext/NextLACUDAExt.jl into this repo's per-backend
 # ext layout. Only the @warn wording differs, for the reason in
-# src/syrk/syrk.jl.
+# src/dense/blas/syrk/syrk.jl.
 #
 # CUBLAS has no batched SYRK entry point, so both batch layouts loop single
 # syrk! calls rather than dispatching natively. That is a library gap, not an
