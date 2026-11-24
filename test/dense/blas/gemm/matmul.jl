@@ -46,7 +46,7 @@ for (backend_name, ArrayType, synchronize) in available_backends()
 end
 
 # The wrappers also expose the kernel's alpha and transpose flags, accumulate a
-# Float16 product in Float32, and check shapes. src/trsm/rectrxm.jl's mixed-precision
+# Float16 product in Float32, and check shapes. src/dense/blas/trsm/rectrxm.jl's mixed-precision
 # recursion needs all three.
 for (backend_name, ArrayType, synchronize) in available_backends()
     @testset "MATMUL scaled/transposed [$backend_name]" begin

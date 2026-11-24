@@ -478,7 +478,7 @@ end
             Cd = [AT(zeros(Float32, n, n)) for _ in 1:nb]
 
             # the vector-of-matrices form must be served by the backend's own
-            # method, not by the generic loop in src/gemm/gemm_batched.jl
+            # method, not by the generic loop in src/dense/blas/gemm/gemm_batched.jl
             # occursin, not ==: _method_file returns an absolute path and the
             # expected value is the repo-relative suffix, which is the idiom the
             # rest of this file already uses.

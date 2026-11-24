@@ -48,7 +48,7 @@ end
 
 # The GPU testset above is the only coverage unified_rectrxm! had, and on CUDA
 # it now dispatches into ext/cuda/rectrxm.jl. Without the block below, the
-# recursive KernelAbstractions path in src/trsm/rectrxm.jl — which is what CPU,
+# recursive KernelAbstractions path in src/dense/blas/trsm/rectrxm.jl — which is what CPU,
 # oneAPI and Metal use — would be exercised by nothing at all.
 @testset "unified_rectrxm! CPU (recursive KA path)" begin
     tol = 1e-12
@@ -97,9 +97,9 @@ end
     # The seven-argument form is generic and only delegates, so it always lands
     # in src/. The eight-argument form is the one the extension specialises.
     @test endswith(_slashes(_method_file(unified_rectrxm!, 'L', 'L', 'N', 1.0, 'S', A, B)),
-                   "src/trsm/rectrxm.jl")
+                   "src/dense/blas/trsm/rectrxm.jl")
     @test endswith(_slashes(_method_file(unified_rectrxm!, 'L', 'L', 'N', 'N', 1.0, 'S', A, B)),
-                   "src/trsm/rectrxm.jl")
+                   "src/dense/blas/trsm/rectrxm.jl")
 
     # Backends with a vendor fast path; the rest stay on the portable kernels.
     fast = Dict("CUDA" => "ext/cuda/rectrxm.jl", "AMDGPU" => "ext/amdgpu/rectrxm.jl")
