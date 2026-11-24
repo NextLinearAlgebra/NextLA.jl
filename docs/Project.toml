@@ -1,3 +1,9 @@
 [deps]
-NextLA = "d37ed344-79c4-486d-9307-6d11355a15a3"
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+NextLA = "d37ed344-79c4-486d-9307-6d11355a15a3"
+
+[sources]
+NextLA = {path = "/home/akhil/NEXTLA/NextLA.jl"}
+
+[compat]
+Documenter = "1"

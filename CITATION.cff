@@ -1,0 +1,125 @@
+cff-version: 1.2.0
+message: "If you use NextLA.jl in your research, please cite it as below."
+title: "NextLA.jl"
+abstract: >-
+  Hardware-agnostic, datatype-flexible dense linear algebra in pure Julia:
+  recursive GEMM, TRSM, SYRK, Cholesky and LU, tiled QR kernels, GPU backends
+  through package extensions, and mixed-precision factorizations.
+type: software
+license: MIT
+repository-code: "https://github.com/NextLinearAlgebra/NextLA.jl"
+url: "https://nextlinearalgebra.github.io/NextLA.jl"
+keywords:
+  - julia
+  - linear algebra
+  - GPU
+  - mixed precision
+  - BLAS
+  - LAPACK
+authors:
+  - given-names: Rabab
+    family-names: Alomairy
+  - given-names: Evelyne
+    family-names: Ringoot
+  - given-names: Sophie
+    family-names: Xuan
+  - given-names: Vicki
+    family-names: Carrica
+  - given-names: Maxwell
+    family-names: Onyango
+  - given-names: Julian
+    family-names: Samaroo
+  - given-names: Felipe
+    family-names: Tome
+preferred-citation:
+  type: conference-paper
+  title: "Synthesizing Numerical Linear Algebra using Julia"
+  authors:
+    - given-names: Sophie
+      family-names: Xuan
+    - given-names: Evelyne
+      family-names: Ringoot
+    - given-names: Rabab
+      family-names: Alomairy
+    - given-names: Felipe
+      family-names: Tome
+    - given-names: Julian
+      family-names: Samaroo
+    - given-names: Alan
+      family-names: Edelman
+  collection-title: "2024 IEEE High Performance Extreme Computing Conference (HPEC)"
+  publisher:
+    name: IEEE
+  year: 2024
+  url: "https://ieee-hpec.org/wp-content/uploads/2025/01/161.pdf"
+references:
+  - type: conference-paper
+    title: "Toward Portable GPU Performance: Julia Recursive Implementation of TRMM and TRSM"
+    authors:
+      - given-names: Vicki
+        family-names: Carrica
+      - given-names: Maxwell
+        family-names: Onyango
+      - given-names: Rabab
+        family-names: Alomairy
+      - given-names: Evelyne
+        family-names: Ringoot
+      - given-names: James
+        family-names: Schloss
+      - given-names: Alan
+        family-names: Edelman
+    collection-title: "Asynchronous Many-Task Systems and Applications (WAMTA)"
+    publisher:
+      name: Springer Nature
+    year: 2025
+    doi: "10.1007/978-3-031-97196-9_13"
+  - type: conference-paper
+    title: "Hierarchical Recursive Precision for Accelerating Symmetric Linear Solves on MXUs"
+    authors:
+      - given-names: Vicki
+        family-names: Carrica
+      - given-names: Rabab
+        family-names: Alomairy
+      - given-names: Evelyne
+        family-names: Ringoot
+      - given-names: Alan
+        family-names: Edelman
+    collection-title: "Euro-Par 2026: Parallel Processing"
+    publisher:
+      name: Springer Nature
+    start: 451
+    end: 465
+    year: 2026
+    doi: "10.1007/978-3-032-35248-4_31"
+  - type: conference-paper
+    title: "Performant Unified GPU Kernels for Portable Singular Value Computation Across Hardware and Precision"
+    authors:
+      - given-names: Evelyne
+        family-names: Ringoot
+      - given-names: Rabab
+        family-names: Alomairy
+      - given-names: Valentin
+        family-names: Churavy
+      - given-names: Alan
+        family-names: Edelman
+    collection-title: "Proceedings of the 54th International Conference on Parallel Processing (ICPP '25)"
+    publisher:
+      name: ACM
+    year: 2025
+    doi: "10.1145/3754598.3754667"
+  - type: conference-paper
+    title: "Accelerating Bidiagonalization of Banded Matrices through Memory-Aware Bulge-Chasing on GPUs"
+    authors:
+      - given-names: Evelyne
+        family-names: Ringoot
+      - given-names: Rabab
+        family-names: Alomairy
+      - given-names: Alan
+        family-names: Edelman
+    collection-title: "ISC High Performance 2026 Research Paper Proceedings (41st International Conference)"
+    publisher:
+      name: IEEE
+    start: 1
+    end: 14
+    year: 2026
+    doi: "10.23919/isc.2026.11520476"

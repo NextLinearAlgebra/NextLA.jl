@@ -2,5 +2,10 @@
 *.jl.cov
 *.jl.mem
 /Manifest.toml
+/test/Manifest.toml
 /docs/Manifest.toml
 /docs/build/
+/docs/src/citing.md
+/docs/src/dev/contributing.md
+/docs/src/dev/testing.md
+/docs/src/index.md

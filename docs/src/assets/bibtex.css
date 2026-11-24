@@ -1,0 +1,5 @@
+/* BibTeX boxes on the Citing page wrap long lines instead of scrolling sideways. */
+pre code.language-bibtex {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
