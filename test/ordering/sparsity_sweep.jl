@@ -86,8 +86,12 @@ function main()
     for (name, path) in paths
         config["input_hashes"][name] = CatalogSweep.file_hash(path)
     end
-    stop_at = min(time() + config["sweep_timeout"],
-                  parse(Float64, get(ENV,"SLURM_JOB_END_TIME","Inf")) - 60)
+    started_at = time()
+    job_end = parse(Float64, get(ENV, "SLURM_JOB_END_TIME", "Inf"))
+    stop_at = min(started_at + config["sweep_timeout"], job_end - 60)
+    remaining_at_start = stop_at - started_at
+    remaining_at_start >= 1 ||
+        error("Sweep deadline is expired or less than one second away (SLURM_JOB_END_TIME=$job_end; remaining=$(round(remaining_at_start; digits=1)) s). Check the allocation and deadline environment.")
     timeout = CatalogSweep.positive_env("SYMBOLIC_CASE_SECONDS", 240; integer=true)
     rows = Dict{String,Any}[]
     gpu_fields = unique(vcat(PREFIX, CatalogSweep.COLUMNS))
