@@ -16,8 +16,8 @@
 #
 # Every other case has the same three steps: recurse into one half, update the
 # other half with the off-diagonal block, recurse into the other half. Only two
-# things change between cases, and each has its own helper below:
-#   - which half goes first (_top_half_first), and
+# things change between cases, and _rec_mixed! below decides both:
+#   - which half goes first, and
 #   - which half the off-diagonal update reads and which it writes.
 #
 # Precision
@@ -25,12 +25,11 @@
 # An off-diagonal block is stored narrow because its precision matters least,
 # so its update runs at that narrow type (_offdiag_update!). A leaf is a
 # diagonal block, whose precision matters, so it runs at the wider of its own
-# type and B's (_leaf!). B, which accumulates the result, is never rounded.
+# type and B's (the leaf branch of _rec_mixed!). B, which accumulates the
+# result, is never rounded.
 
 const _RecMixedPrec = Union{FullMixedPrec, SymmMixedPrec, TriMixedPrec}
 const _RecMixedPrecOrTransposed = Union{_RecMixedPrec, TransposedMixedPrec{<:Any, <:_RecMixedPrec}}
-
-_flip(uplo::Char) = uplo == 'L' ? 'U' : 'L'
 
 # ---------------------------------------------------------------------------
 # Reading one node of the tree. A transposed container is read through its
@@ -60,35 +59,12 @@ function _children(A::_RecMixedPrec, uplo::Char)
 end
 function _children(A::TransposedMixedPrec, uplo::Char)
     P = parent(A)
-    offdiag, scale = _offdiag(P, _flip(uplo))
-    return (transpose(P.A11), transpose(P.A22), transpose(offdiag), scale, size(P.A11, 1))
+    offdiag, scale = _offdiag(P, uplo == 'L' ? 'U' : 'L')
+    return (TransposedMixedPrec(P.A11), TransposedMixedPrec(P.A22), transpose(offdiag), scale, size(P.A11, 1))
 end
 
 # ---------------------------------------------------------------------------
-# Which half goes first
-# ---------------------------------------------------------------------------
-
-# A solve must finish the half that does not depend on the other one first; a
-# multiply must finish the half that the other one is added into first, before
-# that half is overwritten. Worked out case by case:
-#
-#   func  side  uplo   first half
-#   'S'   'L'   'L'    top     X1 = A11 \ B1 needs nothing else
-#   'S'   'L'   'U'    bottom  X2 = A22 \ B2 needs nothing else
-#   'S'   'R'   'L'    right   X2 = B2 / A22 needs nothing else
-#   'S'   'R'   'U'    left    X1 = B1 / A11 needs nothing else
-#   'M'   any   any    the opposite half to the solve with the same side and uplo
-#
-# "Top" and "left" are both the A11 half, so the rule is: the A11 half goes
-# first exactly when (it is a solve) == (side and uplo agree).
-function _top_half_first(func::Char, side::Char, uplo::Char)
-    side_and_uplo_agree = (side == 'L') == (uplo == 'L')
-    is_solve = func == 'S'
-    return is_solve == side_and_uplo_agree
-end
-
-# ---------------------------------------------------------------------------
-# The two kinds of work
+# The off-diagonal update
 # ---------------------------------------------------------------------------
 
 # C = alpha * block * X + beta * C on the left, or alpha * X * block + beta * C
@@ -100,44 +76,6 @@ function _side_gemm!(side::Char, alpha, block, X, beta, C)
         return _gemm_dispatch!(alpha, X, block, beta, C)
     end
 end
-
-# Divides (solve) or multiplies (multiply) B by a block's scale: the block holds
-# its values divided by that scale, so the result computed from it is off by it.
-function _unscale!(func::Char, B::AbstractMatrix, scale)
-    isone(scale) && return B
-    if func == 'S'
-        B ./= scale
-    else
-        B .*= scale
-    end
-    return B
-end
-
-# The leaf: one dense diagonal block, solved or multiplied by the dense kernels.
-# Its precision matters, so the work runs in the wider of the block's type and
-# B's and neither is rounded; the kernels take one element type, so whichever of
-# the two is narrower is widened for the call. The leaf's scale is applied
-# before the result goes back into B, so a narrow B only sees the final values.
-function _leaf!(func::Char, side::Char, uplo::Char, diag::Char, block::AbstractMatrix, scale,
-                B::AbstractMatrix, threshold::Integer)
-    T_block, T_B = eltype(block), eltype(B)
-    T_work = promote_type(T_block, T_B)
-    block_work = T_block == T_work ? block : T_work.(block)
-    B_work = T_B == T_work ? B : T_work.(B)
-
-    unified_rec(func, side, uplo, block_work, size(block_work, 1), B_work, threshold; unitdiag=(diag == 'U'))
-    _unscale!(func, B_work, scale)
-
-    B_work === B || copy!(B, B_work)
-    return B
-end
-
-# B's part X of an off-diagonal product, rounded to the block's storage type T
-# the way the containers store a block: with its own scale when its values pass
-# floatmax(T), so they are not clipped. A non-finite X, left by an overflowed
-# multiply before it, converts as it is.
-_narrow(X::AbstractMatrix, ::Type{T}, ::Type{S}) where {T, S} =
-    all(isfinite, X) ? quantize(X, T, S) : (T.(X), one(S))
 
 # The off-diagonal update: target = target - scale * block * source for a solve,
 # target = target + scale * block * source for a multiply (source * block on the
@@ -162,12 +100,15 @@ function _offdiag_update!(func::Char, side::Char, target::AbstractMatrix, block:
     end
 
     # Case 2: the block is narrower than target, the usual case. The product
-    # runs at the block's type: source is rounded to it (with a scale of its
-    # own, which joins the block's in alpha), which adds an error of the order
-    # the block's storage already carries. The sum accumulates in at least
-    # Float32 -- gemmEx does this for Float16 -- and is added into target,
-    # which is never rounded.
-    source_narrow, source_scale = _narrow(source, T_block, T_target)
+    # runs at the block's type: source is rounded to it the way the containers
+    # store a block, with a scale of its own when its values pass floatmax, which
+    # joins the block's in alpha. That adds an error of the order the block's
+    # storage already carries. A non-finite source, left by an overflowed multiply
+    # before it, converts as it is. The sum accumulates in at least Float32 --
+    # gemmEx does this for Float16 -- and is added into target, which is never
+    # rounded.
+    source_narrow, source_scale =
+        all(isfinite, source) ? quantize(source, T_block) : (T_block.(source), 1f0)
     T_accumulate = sizeof(T_block) < 4 ? Float32 : T_block
     alpha = T_accumulate(sign * Float64(scale) * Float64(source_scale))
     if T_accumulate == T_target
@@ -187,8 +128,25 @@ end
 function _rec_mixed!(func::Char, side::Char, uplo::Char, diag::Char, A::_RecMixedPrecOrTransposed,
                      B::AbstractMatrix, threshold::Integer)
     if _is_leaf(A)
+        # The leaf: one dense diagonal block, solved or multiplied by the dense
+        # kernels. Its precision matters, so the work runs in the wider of the
+        # block's type and B's and neither is rounded; the kernels take one element
+        # type, so whichever of the two is narrower is widened for the call. The
+        # block holds its values divided by its scale, so a solve then divides by
+        # the scale and a multiply multiplies by it, before the result goes back
+        # into B, so a narrow B only sees the final values.
         block, scale = _leaf_block(A)
-        return _leaf!(func, side, uplo, diag, block, scale, B, threshold)
+        T_block, T_B = eltype(block), eltype(B)
+        T_work = promote_type(T_block, T_B)
+        block_work = T_block == T_work ? block : T_work.(block)
+        B_work = T_B == T_work ? B : T_work.(B)
+        unified_rec(func, side, uplo, block_work, size(block_work, 1), B_work, threshold;
+                    unitdiag=(diag == 'U'))
+        if !isone(scale)
+            func == 'S' ? (B_work ./= scale) : (B_work .*= scale)
+        end
+        B_work === B || copy!(B, B_work)
+        return B
     end
 
     A11, A22, offdiag, scale, mid = _children(A, uplo)
@@ -202,7 +160,20 @@ function _rec_mixed!(func::Char, side::Char, uplo::Char, diag::Char, A::_RecMixe
         B1, B2 = view(B, :, 1:mid), view(B, :, mid+1:n)
     end
 
-    if _top_half_first(func, side, uplo)
+    # A solve must finish the half that does not depend on the other one first; a
+    # multiply must finish the half that the other one is added into first, before
+    # that half is overwritten. Worked out case by case:
+    #
+    #   func  side  uplo   first half
+    #   'S'   'L'   'L'    top     X1 = A11 \ B1 needs nothing else
+    #   'S'   'L'   'U'    bottom  X2 = A22 \ B2 needs nothing else
+    #   'S'   'R'   'L'    right   X2 = B2 / A22 needs nothing else
+    #   'S'   'R'   'U'    left    X1 = B1 / A11 needs nothing else
+    #   'M'   any   any    the opposite half to the solve with the same side and uplo
+    #
+    # "Top" and "left" are both the A11 half, so the rule is: the A11 half goes
+    # first exactly when (it is a solve) == (side and uplo agree).
+    if (func == 'S') == ((side == 'L') == (uplo == 'L'))
         A_first, B_first, A_second, B_second = A11, B1, A22, B2
     else
         A_first, B_first, A_second, B_second = A22, B2, A11, B1
@@ -226,45 +197,17 @@ function _rec_mixed!(func::Char, side::Char, uplo::Char, diag::Char, A::_RecMixe
 end
 
 """
-    unified_rec_mixed(func, side, uplo, diag, A, B, threshold=256)
-
-Solves (`func = 'S'`) or multiplies (`func = 'M'`) `B` in place by the triangle `uplo` of the
-mixed-precision container `A`, or of its `transpose`, on side `side`, without densifying `A`.
-`diag = 'U'` takes the diagonal as ones. Each block is used with its scale factor.
-
-Each block's arithmetic runs at the precision the block is stored in, the precision its values
-were chosen to need. An off-diagonal product takes `B`'s part rounded to the block's type,
-through a scaled copy so that values past `floatmax` do not overflow, accumulates in at least
-`Float32` and is added into `B` without rounding `B`; rounding that part adds an error of the
-order the block's storage already carries, and no off-diagonal block is widened. A leaf, a
-diagonal block, works in the wider of its type and `B`'s, so neither is rounded.
-"""
-function unified_rec_mixed(
-    func::Char, side::Char, uplo::Char, diag::Char,
-    A::_RecMixedPrecOrTransposed,
-    B::AbstractMatrix,
-    threshold::Integer=256
-)
-    return _rec_mixed!(func, side, uplo, diag, A, B, threshold)
-end
-
-function unified_rec_mixed(
-    func::Char, side::Char, uplo::Char,
-    A::_RecMixedPrecOrTransposed,
-    B::AbstractMatrix,
-    threshold::Integer=256
-)
-    return unified_rec_mixed(func, side, uplo, 'N', A, B, threshold)
-end
-
-"""
     unified_rectrxm!(side, uplo, trans, diag, alpha, func, A, B) -> B
+    unified_rectrxm!(side, uplo, trans, alpha, func, A, B) -> B
 
-`unified_rectrxm!` for a mixed-precision container `A`: solves `op(A) X = alpha B` for
-`func = 'S'`, or computes `B = alpha op(A) B` for `func = 'M'`, on side `side` (`B * op(A)`
-for `'R'`), in place in `B`. `op` is the identity for `trans = 'N'` and the transpose for `'T'`
-or `'C'`; `uplo` names the triangle of `A` that is read and `diag = 'U'` takes its diagonal as
-ones.
+`unified_rectrxm!` for a mixed-precision container `A`: solves `op(A) X = alpha B` for `func =
+'S'`, or computes `B = alpha op(A) B` for `func = 'M'`, on side `side` (`B * op(A)` for
+`'R'`), in place in `B`. `op` is the identity for `trans = 'N'` and the transpose for `'T'` or
+`'C'`; `uplo` names the triangle of `A` that is read, and must be `A.uplo` for a
+`SymmMixedPrec` or `TriMixedPrec`, which store only that triangle. `diag = 'U'` takes the
+diagonal as ones, and the form without `diag` takes `diag = 'N'`. `A` is a `FullMixedPrec`,
+`SymmMixedPrec` or `TriMixedPrec`; for its transpose pass `trans = 'T'`, not `transpose(A)`.
+Any other `side`, `uplo`, `trans`, `diag` or `func` throws an `ArgumentError`.
 """
 function unified_rectrxm!(
         side::Char, uplo::Char, trans::Char, diag::Char, alpha::Number, func::Char,
@@ -275,9 +218,11 @@ function unified_rectrxm!(
     trans in ('N', 'T', 'C') || throw(ArgumentError("trans must be 'N', 'T' or 'C', got '$trans'"))
     diag in ('N', 'U') || throw(ArgumentError("diag must be 'N' or 'U', got '$diag'"))
     func in ('S', 'M') || throw(ArgumentError("func must be 'S' or 'M', got '$func'"))
-    op_A, op_uplo = trans == 'N' ? (A, uplo) : (transpose(A), uplo == 'L' ? 'U' : 'L')
+    A isa FullMixedPrec || uplo == A.uplo ||
+        throw(ArgumentError("uplo must be A.uplo, '$(A.uplo)', for a $(nameof(typeof(A))), got '$uplo'"))
+    op_A, op_uplo = trans == 'N' ? (A, uplo) : (TransposedMixedPrec(A), uplo == 'L' ? 'U' : 'L')
     func == 'S' && (B .= alpha .* B)
-    unified_rec_mixed(func, side, op_uplo, diag, op_A, B)
+    _rec_mixed!(func, side, op_uplo, diag, op_A, B, 256)
     func == 'M' && (B .= alpha .* B)
     return B
 end

@@ -13,8 +13,9 @@ using KernelAbstractions
 # imports it separately, being its own module.
 using KernelAbstractions.Extras: @unroll
 
-# Core.BFloat16 exists from Julia 1.11; before that, no type (Union{}).
-const _BFloat16 = isdefined(Core, :BFloat16) ? Core.BFloat16 : Union{}
+# BFloat16s.jl's BFloat16: Core.BFloat16 with its conversions and arithmetic from Julia
+# 1.11, and a software BFloat16 before that, so one working type on every version.
+using BFloat16s: BFloat16
 
 """
 	lamch(::Type{T}, cmach) where{T<: Number}
@@ -58,10 +59,13 @@ function lamch(::Type{T}, cmach) where {T <: Number}
 	end
 end
 
-# Backend capability traits. First, because both the GEMM machinery and TLR
-# read them, and the vendor extensions add methods to them.
-include("backend_traits.jl")
-include("recursion.jl")
+@inline SUBGROUP_SIZE(::Type{<:KernelAbstractions.CPU}) = Val(1)
+@inline unwrap(::Val{x}) where {x} = x
+@inline supports_pointer_batched(backend) = supports_pointer_batched(typeof(backend))
+@inline supports_pointer_batched(::Type) = false
+
+@inline _rec_split(n::Integer) = ispow2(n) ? n ÷ 2 : prevpow(2, n)
+
 include("NextLAMatrix.jl")
 include("lu.jl")
 include("lu/factor.jl")

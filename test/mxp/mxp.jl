@@ -41,10 +41,10 @@ const MXP_TYPES = (Float32, Float64)
             @test reconstruct_matrix(M) ≈ A rtol=1e-3
         end
 
-        @testset "scale_type sets the type of every scale" begin
-            M = FullMixedPrec(rand(8, 8); precisions=DataType[Float32, Float64], scale_type=Float64)
-            @test M.A21_scale isa Float64
-            @test M.A11.Base_scale isa Float64
+        @testset "every scale is Float32" begin
+            M = FullMixedPrec(rand(8, 8); precisions=DataType[Float32, Float64])
+            @test M.A21_scale isa Float32
+            @test M.A11.Base_scale isa Float32
         end
 
         @testset "arguments are checked" begin
@@ -53,15 +53,21 @@ const MXP_TYPES = (Float32, Float64)
             @test_throws ArgumentError FullMixedPrec(zeros(0, 0); precisions=DataType[Float64])
             @test_throws ArgumentError FullMixedPrec(rand(4, 4); precisions=DataType[])
             @test_throws ArgumentError FullMixedPrec(rand(4, 4); precisions=DataType[Int])
-            @test_throws ArgumentError FullMixedPrec(rand(4, 4); precisions=DataType[Float64],
-                                                     scale_type=BigFloat)
             @test_throws ArgumentError FullMixedPrec([1.0 NaN; 0.0 1.0]; precisions=DataType[Float64])
             @test_throws ArgumentError FullMixedPrec([1.0 Inf; 0.0 1.0]; precisions=DataType[Float64])
         end
 
         @testset "a block too large even for the largest scale throws" begin
             @test_throws ArgumentError FullMixedPrec(fill(1.0e300, 4, 4);
-                                                     precisions=DataType[Float16], scale_type=Float16)
+                                                     precisions=DataType[Float16, Float32])
+        end
+
+        @testset "typemin of an integer matrix is scaled, not stored as -Inf" begin
+            M = FullMixedPrec([1 0; typemin(Int) 1]; precisions=DataType[Float16, Float64])
+            @test M.A21_scale > 1 && all(isfinite, M.A21)
+            R = reconstruct_matrix(M)
+            @test all(isfinite, R)
+            @test R[2, 1] ≈ Float64(typemin(Int)) rtol=1e-3
         end
 
         @testset "out-of-bounds indexing throws" begin
@@ -262,6 +268,26 @@ const MXP_TYPES = (Float32, Float64)
             @test adaptive_precisions(A[1:3, 1:3]) == DataType[Float64]
         end
 
+        @testset "the leaves are no finer than eltype(A)" begin
+            u = adaptive_precisions(Float32.(A), DataType[Float16, Float32, Float64])
+            @test u[end] === Float32
+            @test all(T -> T in (Float16, Float32), u)
+            @test adaptive_precisions(Float16.(A))[end] === Float32
+            @test adaptive_precisions(Float32.(A), DataType[Float16])[end] === Float16
+        end
+
+        @testset "a 16-bit matrix with large block norms is finite" begin
+            H = Float16.(fill(100, 2048, 2048) + 1000I)
+            @test adaptive_precisions(H; uplo='F')[end] === Float32
+        end
+
+        @testset "a BFloat16 matrix with very large or very small entries" begin
+            for v in (1f20, 1f-25)
+                B = NextLA.BFloat16.(fill(v, 64, 64) + 10v * I)
+                @test adaptive_precisions(B, DataType[NextLA.BFloat16, Float32]; uplo='F')[end] === Float32
+            end
+        end
+
         @testset "U may be given in any order" begin
             @test adaptive_precisions(A, DataType[Float64, Float32]) == adaptive_precisions(A)
         end
@@ -294,18 +320,15 @@ const MXP_TYPES = (Float32, Float64)
             G[1, n] = NaN
             @test adaptive_precisions(G) == adaptive_precisions(A)
         end
-
-        @testset "adaptive_precision_LT is the same function" begin
-            @test adaptive_precision_LT === adaptive_precisions
-        end
     end
 
-    @testset "values beyond floatmax(T_Base) cannot be read back as T_Base" begin
-        A = fill(1.0e5, 4, 4)
-        M = FullMixedPrec(A; precisions=DataType[Float16])
-        @test M.Base_scale != 1
-        @test_broken all(isapprox.(Float64.(reconstruct_matrix(M)), A; rtol=1e-2))
-        @test_broken isapprox(Float64(M[1, 1]), A[1, 1]; rtol=1e-2)
+    @testset "leaves narrower than Float32 are refused" begin
+        for T in (Float16, NextLA.BFloat16)
+            @test_throws ArgumentError FullMixedPrec(fill(1.0e5, 4, 4); precisions=DataType[T])
+            @test_throws ArgumentError SymmMixedPrec(rand(4, 4), 'L'; precisions=DataType[Float16, T])
+            @test_throws ArgumentError TriMixedPrec(rand(4, 4), 'L'; precisions=DataType[Float16, T])
+        end
+        @test FullMixedPrec(rand(4, 4); precisions=DataType[Float16, Float32]) isa FullMixedPrec
     end
 
     @testset "a scaled off-diagonal block reads back unscaled" begin
@@ -316,4 +339,15 @@ const MXP_TYPES = (Float32, Float64)
         @test all(isapprox.(reconstruct_matrix(M), A; rtol=1e-2))
         @test isapprox(M[3, 1], 1.0e5; rtol=1e-2)
     end
+end
+
+# BFloat16 is BFloat16s.jl's type, which works on every Julia version: Core.BFloat16
+# with its methods from 1.11, a software type on 1.10. Core.BFloat16 alone has no
+# conversions, so storing a block in it used to fail unless BFloat16s was loaded.
+@testset "MXP BFloat16 blocks [CPU]" begin
+    A = rand(8, 8) + 8I
+    M = FullMixedPrec(copy(A); precisions=DataType[NextLA.BFloat16, Float32])
+    @test eltype(M.A21) === NextLA.BFloat16
+    @test isapprox(reconstruct_matrix(M), A; rtol=1e-2)
+    @test adaptive_precisions(A, DataType[NextLA.BFloat16, Float32]) isa Vector{DataType}
 end
