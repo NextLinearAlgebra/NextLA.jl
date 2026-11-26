@@ -1,5 +1,70 @@
 # Explore sparse Cholesky orderings
 
+## Symbolic tile sweep and dense GPU ordering comparison
+
+The symbolic sweep uses elimination-tree reach to count the structural entries
+of the lower factor, including fill. It projects them onto all seven mixed
+recursion levels and independently tiles each off-diagonal panel. The sweep
+requires no GPU and runs no numeric Cholesky. AMD and SCOTCH are the default
+orderings alongside natural order. Append `stiles` to `SPARSITY_ORDERS` when
+the ordering environment has the native sTiles dependency from `setup.jl --stiles`.
+
+```bash
+export MATRIX_DIR="$HOME/orcd/scratch/nextla-matrices"
+export LEGACY_MATRIX_DIR="$HOME/orcd/scratch/nextla-legacy-matrices"
+export SPARSITY_OUTPUT="$PWD/benchmark-results/sparsity-first"
+export REAL_MATRICES=inla_graph_spacetime,inla_graph_83o4NNNo,bodyy5,inla_graph_sem_n5000,inla_graph_animal1
+julia --project=test/ordering test/ordering/sparsity_sweep.jl symbolic
+```
+
+Use `REAL_MATRICES=all` for both catalog manifests. That symbolic sweep leaves
+animal2 as an explicit opt-in because of its input size. Each case has a
+wall-time limit (`SYMBOLIC_CASE_SECONDS`, default 240) and symbolic fill limit
+(`SYMBOLIC_NNZ_LIMIT`, default 30 million). A `FILL_LIMIT` case can still have
+a usable permutation. Only completed symbolic cases contribute measurements.
+Use `SYMBOLIC_TILE_WIDTHS` and `SYMBOLIC_DEPTH` to change the default widths
+of 128, 256, 512, and 1024 and the depth of seven.
+
+- `symbolic-summary.csv` rolls up each matrix, ordering, and tile width.
+  Whole-panel and panel-row/column counts repeat at each width.
+- `cases/<matrix>/<ordering>/panels.csv` gives per-panel results including
+  exact active row and column counts, nominal versus retained cells with edge
+  tiles accounted for, partially active tiles, and contiguous active ranges.
+  `fill_only_tiles` counts tiles an input-only mask would wrongly skip.
+- The Schur product counts compare every candidate SYRK/GEMM on the panel
+  grid, products remaining when both source tiles exist, and products
+  remaining when both sources share at least one logical inner column.
+  They describe a hypothetical tiled update. Actual cost also depends on
+  shape, data movement and GPU launch overhead.
+- `plan.toml` stores the permutation and SHA-256 of the original input.
+  The GPU phase checks the hash before applying the permutation.
+
+On an H200 compute node, reuse the same input directories and output folder.
+For the five default matrices, the checked-in archive supplies the natural,
+AMD, SCOTCH, and direction-corrected sTiles permutations. Each plan is checked
+against the original matrix file's SHA-256. With the catalog environment
+prepared, run from the repository root:
+
+```bash
+export MATRIX_DIR="$HOME/orcd/scratch/nextla-matrices"
+export LEGACY_MATRIX_DIR="$HOME/orcd/scratch/nextla-legacy-matrices"
+export SPARSITY_OUTPUT="$PWD/benchmark-results/sparsity-first"
+mkdir -p "$SPARSITY_OUTPUT"
+tar -xzf test/ordering/priority-plans.tar.gz -C "$SPARSITY_OUTPUT"
+export SPARSITY_ORDERS=natural,amd,scotch,stiles
+export GPU_METHODS=Pure_F64,cuSOLVER_F64,M1,M4,M6 BENCH_REPEATS=3
+julia --project=test/catalog test/ordering/sparsity_sweep.jl gpu
+```
+
+The dense GPU phase always includes natural order. It uses the unchanged
+numeric kernels on `A[p,p]` with the same physical probes and right-hand sides.
+`gpu-pairs.csv` gives original/reordered medians and errors side by side.
+`gpu-summary.csv` retains all methods, raw repetitions, and accuracy metrics.
+Permutation and transfer are outside numeric timing. The mixed time includes
+tree construction, consistent with the catalog. Set `SPARSITY_ORDERS` and
+`REAL_MATRICES` to select a smaller comparison. Each invocation refreshes its
+summary from the selected cases in that invocation.
+
 **Correction:** the original current-API sTiles adapter used the native export
 in the wrong direction. It now uses `invperm(sTiles.permutation(F))` for
 `A[p,p]`. A native-release check on a scrambled 225-node grid gives 1,780 factor

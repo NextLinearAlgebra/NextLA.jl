@@ -7,6 +7,7 @@ include("accuracy.jl")
 const CONFIG = TOML.parsefile(ARGS[1])
 const MATRIX_NAME, BACKEND, CSV_PATH = ARGS[2:4]
 const METHODS = split(ARGS[5], ',')
+const PERMUTATION_PLAN = length(ARGS) >= 6 ? TOML.parsefile(ARGS[6]) : nothing
 
 if BACKEND == "gpu"
     using CUDA
@@ -151,6 +152,18 @@ function main()
     diagnostics["blas_threads"] = BLAS.get_num_threads()
     diagnostics["cpu_model"] = first(Sys.cpu_info()).model
     inputs = accuracy_inputs(A, CONFIG)
+    if PERMUTATION_PLAN !== nothing
+        BACKEND == "gpu" || error("The external permutation benchmark is GPU-only")
+        PERMUTATION_PLAN["matrix"] == MATRIX_NAME || error("Permutation matrix name mismatch")
+        PERMUTATION_PLAN["matrix_sha256"] == diagnostics["matrix_sha256"] || error("Permutation input hash mismatch")
+        p = Int.(PERMUTATION_PLAN["permutation"])
+        length(p) == size(A, 1) && isperm(p) || error("Invalid permutation")
+        A = A[p, p]
+        # Compare the same physical RHS and probes in the new coordinates.
+        # Norm-based errors are invariant to mapping the vectors back.
+        inputs = (omega=inputs.omega[p, :], aomega=inputs.aomega[p, :],
+            truth=inputs.truth[p, :], rhs=inputs.rhs[p, :], anorm=inputs.anorm)
+    end
     dense = nothing
     if BACKEND == "gpu"
         CUDA.functional() || error("CUDA is not functional on this node")
