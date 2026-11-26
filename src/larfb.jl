@@ -67,7 +67,7 @@ function larfb!(side::Char, trans::Char, direct::Char, storev::Char, m::Integer,
         W .= conj.(transpose(C1))
 
         # W := W * V1
-        LinearAlgebra.mul!(W, W, V1)
+        LinearAlgebra.rmul!(W, V1)
 
         if m > k
             C2 = @view C[k+1:m, :]
@@ -78,10 +78,10 @@ function larfb!(side::Char, trans::Char, direct::Char, storev::Char, m::Integer,
 
         if trans == 'N'
             # W := W * T'
-            LinearAlgebra.mul!(W, W, adjoint(Tblock))
+            LinearAlgebra.rmul!(W, adjoint(Tblock))
         else
             # W := W * T
-            LinearAlgebra.mul!(W, W, Tblock)
+            LinearAlgebra.rmul!(W, Tblock)
         end
 
         if m > k
@@ -92,7 +92,7 @@ function larfb!(side::Char, trans::Char, direct::Char, storev::Char, m::Integer,
         end
 
         # W := W * V1'
-        LinearAlgebra.mul!(W, W, adjoint(V1))
+        LinearAlgebra.rmul!(W, adjoint(V1))
 
         # C1 -= W^H  (conjugate transpose)
         C1 .-= conj.(transpose(W))
@@ -109,7 +109,7 @@ function larfb!(side::Char, trans::Char, direct::Char, storev::Char, m::Integer,
         W .= C1
 
         # W := W * V1
-        LinearAlgebra.mul!(W, W, V1)
+        LinearAlgebra.rmul!(W, V1)
 
         if n > k
             C2 = @view C[:, k+1:n]
@@ -120,10 +120,10 @@ function larfb!(side::Char, trans::Char, direct::Char, storev::Char, m::Integer,
 
         if trans == 'N'
             # W := W * T
-            LinearAlgebra.mul!(W, W, Tblock)
+            LinearAlgebra.rmul!(W, Tblock)
         else
             # W := W * T'
-            LinearAlgebra.mul!(W, W, adjoint(Tblock))
+            LinearAlgebra.rmul!(W, adjoint(Tblock))
         end
 
         if n > k
@@ -134,7 +134,7 @@ function larfb!(side::Char, trans::Char, direct::Char, storev::Char, m::Integer,
         end
 
         # W := W * V1'
-        LinearAlgebra.mul!(W, W, adjoint(V1))
+        LinearAlgebra.rmul!(W, adjoint(V1))
 
         # C1 -= W
         C1 .-= W
