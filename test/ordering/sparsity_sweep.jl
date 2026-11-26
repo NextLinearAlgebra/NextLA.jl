@@ -77,9 +77,10 @@ function main()
     config["manifest"] = manifest
     config["input_hashes"] = Dict{String,String}()
     paths = Dict{String,String}()
-    legacy = expanduser(get(ENV, "LEGACY_MATRIX_DIR", config["matrix_dir"]))
+    legacy = abspath(expanduser(get(ENV, "LEGACY_MATRIX_DIR", config["matrix_dir"])))
+    input_dirs = unique([config["matrix_dir"], legacy, CatalogSweep.ROOT])
     for name in names
-        candidates = [joinpath(dir, name * ".mtx") for dir in (config["matrix_dir"], legacy)]
+        candidates = [joinpath(dir, name * ".mtx") for dir in input_dirs]
         found = findfirst(isfile, candidates)
         found === nothing || (paths[name] = candidates[found])
     end
@@ -102,11 +103,13 @@ function main()
         case = joinpath(out, "cases", name, order)
         mkpath(case)
         row = Dict{String,Any}("matrix"=>name, "ordering"=>order)
+        completed = Dict{String,String}[]
         # An unbounded run is inappropriate for the roughly half-billion-entry input.
         if mode == "symbolic" && name == "inla_graph_animal2" && selection == ["all"]
             row["status"], row["detail"] = "OPT_IN", "Select this matrix explicitly to analyze it"
         elseif !haskey(paths, name)
-            row["status"], row["detail"] = "MISSING", "No input in MATRIX_DIR or LEGACY_MATRIX_DIR"
+            row["status"] = "MISSING"
+            row["detail"] = "Could not find $name.mtx in " * join(input_dirs, " | ")
         elseif mode == "symbolic"
             result = joinpath(case, "panels.csv")
             isfile(result) && rm(result)
@@ -139,7 +142,9 @@ function main()
             else
                 row["status"], row["detail"] = "MISSING_PLAN", "Run symbolic mode first for this ordering"
             end
-            completed = isfile(output) ? CatalogSweep.read_csv(output) : []
+            isfile(output) && (completed = CatalogSweep.read_csv(output))
+        end
+        if mode == "gpu"
             for method in config["gpu_methods"]
                 i = findfirst(r -> r["method"] == method, completed)
                 status_row = copy(row)
@@ -148,13 +153,13 @@ function main()
                 n_ok += status_row["status"] == "OK"
                 push!(rows, status_row)
             end
-        end
-        if mode == "symbolic" && !any(r -> r["matrix"] == name && r["ordering"] == order, rows)
+        elseif !any(r -> r["matrix"] == name && r["ordering"] == order, rows)
             push!(rows, row)
         end
         CatalogSweep.write_csv(joinpath(out, mode * "-summary.csv"), rows; columns=mode == "gpu" ? gpu_fields : SUMMARY)
         mode == "gpu" && record_gpu_pairs(out, rows)
-        println("$mode $name / $order: ", last(rows)["status"])
+        println("$mode $name / $order: ", last(rows)["status"],
+                row["status"] == "MISSING" ? " (" * row["detail"] * ")" : "")
         flush(stdout)
     end
     n_ok > 0 || error("No successful $mode cases. See the case logs and summary in $out.")
